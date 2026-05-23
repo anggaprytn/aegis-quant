@@ -70,4 +70,5 @@ CREATE INDEX IF NOT EXISTS idx_signals_correlation_id ON signals (correlation_id
 CREATE INDEX IF NOT EXISTS idx_risk_decisions_correlation_id ON risk_decisions (correlation_id);
 CREATE INDEX IF NOT EXISTS idx_orders_correlation_id ON orders (correlation_id);
 CREATE INDEX IF NOT EXISTS idx_system_events_correlation_id ON system_events (correlation_id);
+CREATE INDEX IF NOT EXISTS idx_system_events_created_at_desc ON system_events (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_correlation_id ON audit_logs (correlation_id);

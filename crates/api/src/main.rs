@@ -2,21 +2,28 @@ use std::{env, net::SocketAddr, time::Instant};
 
 use aegis_core::MarketMode;
 use axum::{
-    extract::{Request, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
+    Extension, Json, Router,
 };
 use chrono::Utc;
-use db::{check_health, connect_pool, DbConfig, PgPool};
-use serde::Serialize;
+use db::{
+    check_health, connect_pool, get_system_event, list_recent_system_events, DbConfig, PgPool,
+    SystemEventRecord,
+};
+use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tracing::{error, info};
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const CORRELATION_ID_HEADER: HeaderName = HeaderName::from_static("x-correlation-id");
+const DEFAULT_RECENT_EVENTS_LIMIT: i64 = 50;
+const MAX_RECENT_EVENTS_LIMIT: i64 = 200;
 
 #[derive(Clone)]
 struct AppState {
@@ -114,6 +121,35 @@ struct DependencyStatus {
     status: &'static str,
 }
 
+#[derive(Deserialize)]
+struct RecentEventsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct RecentEventsResponse {
+    events: Vec<SystemEventRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct EventResponse {
+    event: SystemEventRecord,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: &'static str,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[tokio::main]
 async fn main() {
     init_tracing();
@@ -126,10 +162,27 @@ async fn main() {
     .await
     .expect("failed to connect to Postgres");
 
+    let event_publisher = PostgresEventPublisher::new(db_pool.clone());
+    let started_at = Utc::now();
+    let startup_correlation_id = Uuid::new_v4();
+
+    event_publisher
+        .publish(SystemEventType::SystemStarted.into_event(
+            startup_correlation_id,
+            config.app_name.clone(),
+            json!({
+                "service": config.app_name.clone(),
+                "environment": config.environment.clone(),
+                "market_mode": MarketMode::Paper,
+            }),
+        ))
+        .await
+        .expect("failed to publish system.started event");
+
     let state = AppState {
         config: config.clone(),
         db_pool,
-        started_at: Utc::now(),
+        started_at,
         market_mode: MarketMode::Paper,
     };
 
@@ -137,6 +190,8 @@ async fn main() {
         .route("/system/health", get(health))
         .route("/system/status", get(status))
         .route("/system/db-health", get(db_health))
+        .route("/events/recent", get(recent_events))
+        .route("/events/:id", get(event_by_id))
         .layer(middleware::from_fn(request_context_middleware))
         .with_state(state);
 
@@ -216,58 +271,58 @@ fn get_or_create_header(headers: &axum::http::HeaderMap, name: &HeaderName) -> S
         .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
 
-fn request_context(request: &RequestContext) -> (&str, &str) {
-    (&request.request_id, &request.correlation_id)
+fn request_context(request: Option<Extension<RequestContext>>) -> RequestContext {
+    request
+        .map(|Extension(value)| value)
+        .unwrap_or(RequestContext {
+            request_id: Uuid::new_v4().to_string(),
+            correlation_id: Uuid::new_v4().to_string(),
+        })
+}
+
+fn bounded_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_RECENT_EVENTS_LIMIT),
+        _ => DEFAULT_RECENT_EVENTS_LIMIT,
+    }
 }
 
 async fn health(
     State(state): State<AppState>,
-    request: Option<axum::extract::Extension<RequestContext>>,
+    request: Option<Extension<RequestContext>>,
 ) -> Json<HealthResponse> {
-    let request = request
-        .map(|axum::extract::Extension(value)| value)
-        .unwrap_or(RequestContext {
-            request_id: Uuid::new_v4().to_string(),
-            correlation_id: Uuid::new_v4().to_string(),
-        });
-    let (request_id, correlation_id) = request_context(&request);
+    let request = request_context(request);
 
     Json(HealthResponse {
         status: "ok",
         service: state.config.app_name,
         environment: state.config.environment,
-        request_id: request_id.to_string(),
-        correlation_id: correlation_id.to_string(),
+        request_id: request.request_id,
+        correlation_id: request.correlation_id,
         timestamp: Utc::now(),
     })
 }
 
 async fn status(
     State(state): State<AppState>,
-    request: Option<axum::extract::Extension<RequestContext>>,
+    request: Option<Extension<RequestContext>>,
 ) -> Json<StatusResponse> {
-    let request = request
-        .map(|axum::extract::Extension(value)| value)
-        .unwrap_or(RequestContext {
-            request_id: Uuid::new_v4().to_string(),
-            correlation_id: Uuid::new_v4().to_string(),
-        });
-    let (request_id, correlation_id) = request_context(&request);
+    let request = request_context(request);
 
     Json(StatusResponse {
         service: state.config.app_name,
         environment: state.config.environment,
         market_mode: state.market_mode,
         started_at: state.started_at,
-        request_id: request_id.to_string(),
-        correlation_id: correlation_id.to_string(),
+        request_id: request.request_id,
+        correlation_id: request.correlation_id,
         timestamp: Utc::now(),
         dependencies: Dependencies {
             database: DependencyStatus {
                 status: "configured",
             },
             event_bus: DependencyStatus {
-                status: "not_configured",
+                status: "configured",
             },
             exchange_execution: DependencyStatus { status: "disabled" },
         },
@@ -276,15 +331,9 @@ async fn status(
 
 async fn db_health(
     State(state): State<AppState>,
-    request: Option<axum::extract::Extension<RequestContext>>,
+    request: Option<Extension<RequestContext>>,
 ) -> impl IntoResponse {
-    let request = request
-        .map(|axum::extract::Extension(value)| value)
-        .unwrap_or(RequestContext {
-            request_id: Uuid::new_v4().to_string(),
-            correlation_id: Uuid::new_v4().to_string(),
-        });
-    let (request_id, correlation_id) = request_context(&request);
+    let request = request_context(request);
 
     match check_health(&state.db_pool).await {
         Ok(()) => (
@@ -292,16 +341,16 @@ async fn db_health(
             Json(DbHealthResponse {
                 status: "ok",
                 service: state.config.app_name,
-                request_id: request_id.to_string(),
-                correlation_id: correlation_id.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
             }),
         )
             .into_response(),
         Err(err) => {
             error!(
-                request_id = %request_id,
-                correlation_id = %correlation_id,
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
                 error = %err,
                 "database health check failed"
             );
@@ -311,12 +360,122 @@ async fn db_health(
                 Json(DbHealthResponse {
                     status: "error",
                     service: state.config.app_name,
-                    request_id: request_id.to_string(),
-                    correlation_id: correlation_id.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
                 }),
             )
                 .into_response()
         }
+    }
+}
+
+async fn recent_events(
+    State(state): State<AppState>,
+    Query(query): Query<RecentEventsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let limit = bounded_limit(query.limit);
+
+    match list_recent_system_events(&state.db_pool, limit).await {
+        Ok(events) => (
+            StatusCode::OK,
+            Json(RecentEventsResponse {
+                events,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query recent system events"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_events",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn event_by_id(
+    State(state): State<AppState>,
+    Path(event_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match get_system_event(&state.db_pool, event_id).await {
+        Ok(Some(event)) => (
+            StatusCode::OK,
+            Json(EventResponse {
+                event,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "event_not_found",
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                event_id = %event_id,
+                error = %err,
+                "failed to query system event"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_event",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bounded_limit, DEFAULT_RECENT_EVENTS_LIMIT, MAX_RECENT_EVENTS_LIMIT};
+
+    #[test]
+    fn recent_events_limit_defaults_when_missing_or_invalid() {
+        assert_eq!(bounded_limit(None), DEFAULT_RECENT_EVENTS_LIMIT);
+        assert_eq!(bounded_limit(Some(0)), DEFAULT_RECENT_EVENTS_LIMIT);
+        assert_eq!(bounded_limit(Some(-1)), DEFAULT_RECENT_EVENTS_LIMIT);
+    }
+
+    #[test]
+    fn recent_events_limit_is_capped() {
+        assert_eq!(bounded_limit(Some(25)), 25);
+        assert_eq!(bounded_limit(Some(10_000)), MAX_RECENT_EVENTS_LIMIT);
     }
 }
