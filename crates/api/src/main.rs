@@ -6,13 +6,14 @@ use axum::{
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Extension, Json, Router,
 };
 use chrono::Utc;
 use db::{
-    check_health, connect_pool, get_system_event, list_recent_system_events, DbConfig, PgPool,
-    SystemEventRecord,
+    check_health, connect_pool, ensure_system_state, get_system_event, get_system_state,
+    list_recent_system_events, set_kill_switch_state, DbConfig, PgPool, StateActor,
+    SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use serde::{Deserialize, Serialize};
@@ -145,9 +146,62 @@ struct EventResponse {
 #[derive(Serialize)]
 struct ErrorResponse {
     error: &'static str,
+    message: &'static str,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ActorResponse {
+    actor: String,
+    actor_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct KillSwitchResponse {
+    enabled: bool,
+    reason: Option<String>,
+    updated_at: chrono::DateTime<Utc>,
+    updated_by: ActorResponse,
+    last_correlation_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct RiskStatusResponse {
+    status: &'static str,
+    market_mode: MarketMode,
+    paper_trading_allowed: bool,
+    live_trading_allowed: bool,
+    resume_confirmation_required: &'static str,
+    kill_switch: KillSwitchResponse,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskActionResponse {
+    status: &'static str,
+    message: String,
+    market_mode: MarketMode,
+    paper_trading_allowed: bool,
+    live_trading_allowed: bool,
+    kill_switch: KillSwitchResponse,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct KillSwitchRequest {
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResumeRequest {
+    confirmation_text: String,
+    reason: Option<String>,
 }
 
 #[tokio::main]
@@ -161,6 +215,9 @@ async fn main() {
     })
     .await
     .expect("failed to connect to Postgres");
+    ensure_system_state(&db_pool)
+        .await
+        .expect("failed to initialize persistent system state");
 
     let event_publisher = PostgresEventPublisher::new(db_pool.clone());
     let started_at = Utc::now();
@@ -192,6 +249,9 @@ async fn main() {
         .route("/system/db-health", get(db_health))
         .route("/events/recent", get(recent_events))
         .route("/events/:id", get(event_by_id))
+        .route("/risk/status", get(risk_status))
+        .route("/risk/kill-switch", post(enable_kill_switch))
+        .route("/risk/resume", post(resume_trading))
         .layer(middleware::from_fn(request_context_middleware))
         .with_state(state);
 
@@ -284,6 +344,68 @@ fn bounded_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(value) if value > 0 => value.min(MAX_RECENT_EVENTS_LIMIT),
         _ => DEFAULT_RECENT_EVENTS_LIMIT,
+    }
+}
+
+fn is_valid_resume_confirmation(value: &str) -> bool {
+    value.trim() == "RESUME TRADING"
+}
+
+fn default_actor() -> StateActor {
+    StateActor::system("anonymous")
+}
+
+fn map_kill_switch(state: SystemStateRecord) -> KillSwitchResponse {
+    KillSwitchResponse {
+        enabled: state.kill_switch_enabled,
+        reason: state.kill_switch_reason,
+        updated_at: state.updated_at,
+        updated_by: ActorResponse {
+            actor: state.updated_by_actor,
+            actor_id: state.updated_by_actor_id,
+        },
+        last_correlation_id: state.last_correlation_id,
+    }
+}
+
+fn risk_status_response(
+    state: &AppState,
+    request: RequestContext,
+    system_state: SystemStateRecord,
+) -> RiskStatusResponse {
+    let kill_switch = map_kill_switch(system_state);
+
+    RiskStatusResponse {
+        status: "ok",
+        market_mode: state.market_mode,
+        paper_trading_allowed: !kill_switch.enabled,
+        live_trading_allowed: false,
+        resume_confirmation_required: "RESUME TRADING",
+        kill_switch,
+        request_id: request.request_id,
+        correlation_id: request.correlation_id,
+        timestamp: Utc::now(),
+    }
+}
+
+fn risk_action_response(
+    state: &AppState,
+    request: RequestContext,
+    message: String,
+    system_state: SystemStateRecord,
+) -> RiskActionResponse {
+    let kill_switch = map_kill_switch(system_state);
+
+    RiskActionResponse {
+        status: "ok",
+        message,
+        market_mode: state.market_mode,
+        paper_trading_allowed: !kill_switch.enabled,
+        live_trading_allowed: false,
+        kill_switch,
+        request_id: request.request_id,
+        correlation_id: request.correlation_id,
+        timestamp: Utc::now(),
     }
 }
 
@@ -401,6 +523,7 @@ async fn recent_events(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_query_events",
+                    message: "Failed to query recent system events.",
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -433,6 +556,7 @@ async fn event_by_id(
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "event_not_found",
+                message: "System event was not found.",
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
@@ -452,6 +576,7 @@ async fn event_by_id(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_query_event",
+                    message: "Failed to query the requested system event.",
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -462,9 +587,169 @@ async fn event_by_id(
     }
 }
 
+async fn risk_status(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match get_system_state(&state.db_pool).await {
+        Ok(system_state) => (
+            StatusCode::OK,
+            Json(risk_status_response(&state, request, system_state)),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query risk status"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_risk_status",
+                    message: "Failed to load persistent risk status from the database.",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn enable_kill_switch(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<KillSwitchRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+
+    match set_kill_switch_state(
+        &state.db_pool,
+        &default_actor(),
+        correlation_id,
+        &state.config.app_name,
+        true,
+        payload.reason,
+    )
+    .await
+    {
+        Ok(system_state) => (
+            StatusCode::OK,
+            Json(risk_action_response(
+                &state,
+                request,
+                "Kill switch is active. Paper order execution must remain stopped.".to_string(),
+                system_state,
+            )),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to activate kill switch"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_activate_kill_switch",
+                    message: "Kill switch activation failed because the database is unavailable or the write could not be completed.",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn resume_trading(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<ResumeRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    if !is_valid_resume_confirmation(&payload.confirmation_text) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_resume_confirmation",
+                message: "Resume requires confirmation_text exactly equal to \"RESUME TRADING\".",
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+
+    match set_kill_switch_state(
+        &state.db_pool,
+        &default_actor(),
+        correlation_id,
+        &state.config.app_name,
+        false,
+        payload.reason,
+    )
+    .await
+    {
+        Ok(system_state) => (
+            StatusCode::OK,
+            Json(risk_action_response(
+                &state,
+                request,
+                "Kill switch is disabled. Paper trading may resume through the normal risk pipeline."
+                    .to_string(),
+                system_state,
+            )),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to resume trading"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_resume_trading",
+                    message: "Resume failed because the database is unavailable or the write could not be completed.",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn parse_correlation_id(value: &str) -> Uuid {
+    Uuid::parse_str(value).unwrap_or_else(|_| Uuid::new_v4())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{bounded_limit, DEFAULT_RECENT_EVENTS_LIMIT, MAX_RECENT_EVENTS_LIMIT};
+    use super::{
+        bounded_limit, is_valid_resume_confirmation, DEFAULT_RECENT_EVENTS_LIMIT,
+        MAX_RECENT_EVENTS_LIMIT,
+    };
 
     #[test]
     fn recent_events_limit_defaults_when_missing_or_invalid() {
@@ -477,5 +762,12 @@ mod tests {
     fn recent_events_limit_is_capped() {
         assert_eq!(bounded_limit(Some(25)), 25);
         assert_eq!(bounded_limit(Some(10_000)), MAX_RECENT_EVENTS_LIMIT);
+    }
+
+    #[test]
+    fn resume_confirmation_must_match_exact_phrase() {
+        assert!(is_valid_resume_confirmation("RESUME TRADING"));
+        assert!(!is_valid_resume_confirmation("resume trading"));
+        assert!(!is_valid_resume_confirmation("RESUME"));
     }
 }
