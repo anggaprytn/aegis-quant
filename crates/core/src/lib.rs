@@ -177,23 +177,176 @@ pub enum RiskDecision {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
-    Created,
-    Accepted,
+    Open,
     Rejected,
     Filled,
     Cancelled,
+    Expired,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionState {
-    PendingRisk,
+    IntentCreated,
     RiskApproved,
-    RiskRejected,
-    ReadyForPaperExecution,
-    SubmittedToPaperBroker,
-    Completed,
-    Failed,
+    OrderPrepared,
+    PaperSubmitted,
+    PaperFilled,
+    PaperCancelled,
+    Rejected,
+    Expired,
+}
+
+impl ExecutionState {
+    pub fn can_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::IntentCreated, Self::RiskApproved)
+                | (Self::IntentCreated, Self::Rejected)
+                | (Self::IntentCreated, Self::Expired)
+                | (Self::RiskApproved, Self::OrderPrepared)
+                | (Self::RiskApproved, Self::Rejected)
+                | (Self::RiskApproved, Self::Expired)
+                | (Self::OrderPrepared, Self::PaperSubmitted)
+                | (Self::OrderPrepared, Self::PaperCancelled)
+                | (Self::OrderPrepared, Self::Rejected)
+                | (Self::OrderPrepared, Self::Expired)
+                | (Self::PaperSubmitted, Self::PaperFilled)
+                | (Self::PaperSubmitted, Self::PaperCancelled)
+                | (Self::PaperSubmitted, Self::Expired)
+        )
+    }
+
+    pub fn transition(self, next: Self) -> Result<Self, CoreError> {
+        if self.can_transition_to(next) {
+            Ok(next)
+        } else {
+            Err(CoreError::InvalidExecutionTransition {
+                from: self,
+                to: next,
+            })
+        }
+    }
+
+    pub fn as_event_name(self) -> &'static str {
+        match self {
+            Self::IntentCreated => "INTENT_CREATED",
+            Self::RiskApproved => "RISK_APPROVED",
+            Self::OrderPrepared => "ORDER_PREPARED",
+            Self::PaperSubmitted => "PAPER_SUBMITTED",
+            Self::PaperFilled => "PAPER_FILLED",
+            Self::PaperCancelled => "PAPER_CANCELLED",
+            Self::Rejected => "REJECTED",
+            Self::Expired => "EXPIRED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderIntent {
+    pub order_id: Uuid,
+    pub correlation_id: Uuid,
+    pub risk_decision_id: Uuid,
+    pub idempotency_key: String,
+    pub symbol: Symbol,
+    pub side: Side,
+    pub quantity: Quantity,
+    pub limit_price: Option<Price>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl OrderIntent {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.idempotency_key.trim().is_empty() {
+            return Err(CoreError::EmptyIdempotencyKey);
+        }
+        if self.quantity <= Decimal::ZERO {
+            return Err(CoreError::InvalidOrderQuantity);
+        }
+        if let Some(limit_price) = self.limit_price {
+            if limit_price <= Decimal::ZERO {
+                return Err(CoreError::InvalidLimitPrice);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperOrder {
+    pub intent: OrderIntent,
+    pub status: OrderStatus,
+    pub execution_state: ExecutionState,
+    pub filled_price: Option<Price>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub filled_at: Option<DateTime<Utc>>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+    pub rejected_at: Option<DateTime<Utc>>,
+    pub expired_at: Option<DateTime<Utc>>,
+    pub status_reason: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl PaperOrder {
+    pub fn new(intent: OrderIntent) -> Result<Self, CoreError> {
+        intent.validate()?;
+
+        Ok(Self {
+            intent,
+            status: OrderStatus::Open,
+            execution_state: ExecutionState::IntentCreated,
+            filled_price: None,
+            submitted_at: None,
+            filled_at: None,
+            cancelled_at: None,
+            rejected_at: None,
+            expired_at: None,
+            status_reason: None,
+            updated_at: Utc::now(),
+        })
+    }
+
+    pub fn transition_to(
+        &mut self,
+        next: ExecutionState,
+        occurred_at: DateTime<Utc>,
+        status_reason: Option<String>,
+    ) -> Result<(), CoreError> {
+        self.execution_state = self.execution_state.transition(next)?;
+        self.updated_at = occurred_at;
+
+        match next {
+            ExecutionState::IntentCreated
+            | ExecutionState::RiskApproved
+            | ExecutionState::OrderPrepared => {
+                self.status = OrderStatus::Open;
+            }
+            ExecutionState::PaperSubmitted => {
+                self.status = OrderStatus::Open;
+                self.submitted_at = Some(occurred_at);
+            }
+            ExecutionState::PaperFilled => {
+                self.status = OrderStatus::Filled;
+                self.filled_at = Some(occurred_at);
+            }
+            ExecutionState::PaperCancelled => {
+                self.status = OrderStatus::Cancelled;
+                self.cancelled_at = Some(occurred_at);
+            }
+            ExecutionState::Rejected => {
+                self.status = OrderStatus::Rejected;
+                self.rejected_at = Some(occurred_at);
+            }
+            ExecutionState::Expired => {
+                self.status = OrderStatus::Expired;
+                self.expired_at = Some(occurred_at);
+            }
+        }
+
+        self.status_reason = status_reason;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,4 +381,74 @@ impl EventEnvelope {
 pub enum CoreError {
     #[error("symbol cannot be empty")]
     EmptySymbol,
+    #[error("idempotency_key cannot be empty")]
+    EmptyIdempotencyKey,
+    #[error("quantity must be greater than zero")]
+    InvalidOrderQuantity,
+    #[error("limit_price must be greater than zero")]
+    InvalidLimitPrice,
+    #[error("invalid execution transition from {from:?} to {to:?}")]
+    InvalidExecutionTransition {
+        from: ExecutionState,
+        to: ExecutionState,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExecutionState, OrderIntent, PaperOrder, Side, Symbol};
+    use chrono::Utc;
+    use rust_decimal::Decimal;
+    use uuid::Uuid;
+
+    fn sample_intent() -> OrderIntent {
+        OrderIntent {
+            order_id: Uuid::new_v4(),
+            correlation_id: Uuid::new_v4(),
+            risk_decision_id: Uuid::new_v4(),
+            idempotency_key: "paper-order-1".to_string(),
+            symbol: Symbol::new("btcusdt").expect("valid symbol"),
+            side: Side::Buy,
+            quantity: Decimal::new(1, 0),
+            limit_price: Some(Decimal::new(100_000, 0)),
+            created_at: Utc::now(),
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn valid_execution_transitions_are_allowed() {
+        let mut order = PaperOrder::new(sample_intent()).expect("order should be valid");
+        let at = Utc::now();
+
+        order
+            .transition_to(ExecutionState::RiskApproved, at, None)
+            .expect("intent -> approved");
+        order
+            .transition_to(ExecutionState::OrderPrepared, at, None)
+            .expect("approved -> prepared");
+        order
+            .transition_to(ExecutionState::PaperSubmitted, at, None)
+            .expect("prepared -> submitted");
+        order
+            .transition_to(ExecutionState::PaperFilled, at, None)
+            .expect("submitted -> filled");
+    }
+
+    #[test]
+    fn invalid_execution_transitions_are_rejected() {
+        let mut order = PaperOrder::new(sample_intent()).expect("order should be valid");
+
+        let err = order
+            .transition_to(ExecutionState::PaperFilled, Utc::now(), None)
+            .expect_err("intent cannot jump to filled");
+
+        assert!(matches!(
+            err,
+            super::CoreError::InvalidExecutionTransition {
+                from: ExecutionState::IntentCreated,
+                to: ExecutionState::PaperFilled,
+            }
+        ));
+    }
 }

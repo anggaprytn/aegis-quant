@@ -1,9 +1,13 @@
-use aegis_core::{EventEnvelope, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult};
+use aegis_core::{
+    EventEnvelope, ExecutionState, OrderIntent, OrderStatus, PaperOrder, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, Side,
+};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, Row};
+use thiserror::Error;
 use uuid::Uuid;
 
 pub const MIGRATIONS_DIR: &str = "crates/db/migrations";
@@ -55,6 +59,51 @@ pub struct RiskDecisionRecord {
     pub decision: String,
     pub rationale: String,
     pub decided_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderRecord {
+    pub order_id: Uuid,
+    pub correlation_id: Uuid,
+    pub risk_decision_id: Uuid,
+    pub idempotency_key: String,
+    pub symbol: String,
+    pub side: String,
+    pub quantity: sqlx::types::Decimal,
+    pub limit_price: Option<sqlx::types::Decimal>,
+    pub market_mode: String,
+    pub status: String,
+    pub execution_state: String,
+    pub status_reason: Option<String>,
+    pub filled_price: Option<sqlx::types::Decimal>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub filled_at: Option<DateTime<Utc>>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+    pub rejected_at: Option<DateTime<Utc>>,
+    pub expired_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Error)]
+pub enum CreateOrderError {
+    #[error("risk decision was not found")]
+    RiskDecisionNotFound,
+    #[error("risk decision is not approved")]
+    RiskDecisionNotApproved,
+    #[error("duplicate idempotency key")]
+    DuplicateIdempotencyKey,
+    #[error("order intent is invalid: {0}")]
+    InvalidIntent(String),
+    #[error(transparent)]
+    Unexpected(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderCreateOutcome {
+    pub order: OrderRecord,
+    pub transitions: Vec<ExecutionState>,
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +420,244 @@ pub async fn insert_risk_evaluation(
     Ok(map_risk_decision(&row))
 }
 
+pub async fn create_paper_order(
+    pool: &PgPool,
+    source: &str,
+    actor: &StateActor,
+    intent: OrderIntent,
+) -> std::result::Result<OrderCreateOutcome, CreateOrderError> {
+    intent
+        .validate()
+        .map_err(|err| CreateOrderError::InvalidIntent(err.to_string()))?;
+
+    let mut order = PaperOrder::new(intent.clone())
+        .map_err(|err| CreateOrderError::InvalidIntent(err.to_string()))?;
+    let mut tx = pool.begin().await.map_err(anyhow::Error::from)?;
+
+    let risk_row = sqlx::query(
+        r#"
+        SELECT id, decision
+        FROM risk_decisions
+        WHERE id = $1
+        "#,
+    )
+    .bind(intent.risk_decision_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(anyhow::Error::from)?;
+
+    let Some(risk_row) = risk_row else {
+        return Err(CreateOrderError::RiskDecisionNotFound);
+    };
+
+    let decision: String = risk_row.get("decision");
+    if decision != "APPROVED" {
+        return Err(CreateOrderError::RiskDecisionNotApproved);
+    }
+
+    let insert_result = sqlx::query(
+        r#"
+        INSERT INTO orders (
+            id,
+            correlation_id,
+            risk_decision_id,
+            idempotency_key,
+            symbol,
+            side,
+            quantity,
+            limit_price,
+            market_mode,
+            status,
+            execution_state,
+            status_reason,
+            filled_price,
+            submitted_at,
+            filled_at,
+            cancelled_at,
+            rejected_at,
+            expired_at,
+            expires_at,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, 'PAPER', $9, $10, NULL, NULL, NULL, NULL, NULL, NULL, NULL, $11, $12, $12
+        )
+        "#,
+    )
+    .bind(intent.order_id)
+    .bind(intent.correlation_id)
+    .bind(intent.risk_decision_id)
+    .bind(&intent.idempotency_key)
+    .bind(intent.symbol.as_str())
+    .bind(match intent.side {
+        Side::Buy => "BUY",
+        Side::Sell => "SELL",
+    })
+    .bind(intent.quantity)
+    .bind(intent.limit_price)
+    .bind(order_status_as_str(order.status))
+    .bind(execution_state_as_str(order.execution_state))
+    .bind(intent.expires_at)
+    .bind(intent.created_at)
+    .execute(&mut *tx)
+    .await;
+
+    if let Err(err) = insert_result {
+        if is_unique_violation(&err) {
+            return Err(CreateOrderError::DuplicateIdempotencyKey);
+        }
+        return Err(CreateOrderError::Unexpected(anyhow::Error::from(err)));
+    }
+
+    let mut transitions = vec![ExecutionState::IntentCreated];
+    insert_order_event(&mut tx, source, &order, ExecutionState::IntentCreated).await?;
+
+    let risk_approved_at = Utc::now();
+    order
+        .transition_to(ExecutionState::RiskApproved, risk_approved_at, None)
+        .map_err(|err| CreateOrderError::InvalidIntent(err.to_string()))?;
+    update_order_state(&mut tx, &order).await?;
+    insert_order_event(&mut tx, source, &order, ExecutionState::RiskApproved).await?;
+    transitions.push(ExecutionState::RiskApproved);
+
+    let prepared_at = Utc::now();
+    order
+        .transition_to(ExecutionState::OrderPrepared, prepared_at, None)
+        .map_err(|err| CreateOrderError::InvalidIntent(err.to_string()))?;
+    update_order_state(&mut tx, &order).await?;
+    insert_order_event(&mut tx, source, &order, ExecutionState::OrderPrepared).await?;
+    transitions.push(ExecutionState::OrderPrepared);
+
+    if let Some(expires_at) = order.intent.expires_at {
+        if expires_at <= Utc::now() {
+            order
+                .transition_to(
+                    ExecutionState::Expired,
+                    Utc::now(),
+                    Some("order intent expired before paper submission".to_string()),
+                )
+                .map_err(|err| CreateOrderError::InvalidIntent(err.to_string()))?;
+            update_order_state(&mut tx, &order).await?;
+            insert_order_event(&mut tx, source, &order, ExecutionState::Expired).await?;
+            insert_order_audit_log(&mut tx, actor, &order, "paper_order.create").await?;
+            tx.commit().await.map_err(anyhow::Error::from)?;
+
+            return Ok(OrderCreateOutcome {
+                order: get_order_by_id(pool, order.intent.order_id)
+                    .await
+                    .map_err(CreateOrderError::Unexpected)?
+                    .expect("order must exist after commit"),
+                transitions: {
+                    transitions.push(ExecutionState::Expired);
+                    transitions
+                },
+            });
+        }
+    }
+
+    let submitted_at = Utc::now();
+    order
+        .transition_to(ExecutionState::PaperSubmitted, submitted_at, None)
+        .map_err(|err| CreateOrderError::InvalidIntent(err.to_string()))?;
+    update_order_state(&mut tx, &order).await?;
+    insert_order_event(&mut tx, source, &order, ExecutionState::PaperSubmitted).await?;
+    transitions.push(ExecutionState::PaperSubmitted);
+
+    let filled_at = Utc::now();
+    order.filled_price = order.intent.limit_price;
+    order
+        .transition_to(ExecutionState::PaperFilled, filled_at, None)
+        .map_err(|err| CreateOrderError::InvalidIntent(err.to_string()))?;
+    update_order_state(&mut tx, &order).await?;
+    insert_order_event(&mut tx, source, &order, ExecutionState::PaperFilled).await?;
+    transitions.push(ExecutionState::PaperFilled);
+
+    insert_order_audit_log(&mut tx, actor, &order, "paper_order.create").await?;
+    tx.commit().await.map_err(anyhow::Error::from)?;
+
+    let persisted = get_order_by_id(pool, order.intent.order_id)
+        .await
+        .map_err(CreateOrderError::Unexpected)?
+        .expect("order must exist after commit");
+
+    Ok(OrderCreateOutcome {
+        order: persisted,
+        transitions,
+    })
+}
+
+pub async fn list_orders(pool: &PgPool) -> Result<Vec<OrderRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            correlation_id,
+            risk_decision_id,
+            idempotency_key,
+            symbol,
+            side,
+            quantity,
+            limit_price,
+            market_mode,
+            status,
+            execution_state,
+            status_reason,
+            filled_price,
+            submitted_at,
+            filled_at,
+            cancelled_at,
+            rejected_at,
+            expired_at,
+            expires_at,
+            created_at,
+            updated_at
+        FROM orders
+        ORDER BY created_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_order).collect())
+}
+
+pub async fn get_order_by_id(pool: &PgPool, order_id: Uuid) -> Result<Option<OrderRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            correlation_id,
+            risk_decision_id,
+            idempotency_key,
+            symbol,
+            side,
+            quantity,
+            limit_price,
+            market_mode,
+            status,
+            execution_state,
+            status_reason,
+            filled_price,
+            submitted_at,
+            filled_at,
+            cancelled_at,
+            rejected_at,
+            expired_at,
+            expires_at,
+            created_at,
+            updated_at
+        FROM orders
+        WHERE id = $1
+        "#,
+    )
+    .bind(order_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_order))
+}
+
 pub async fn list_recent_system_events(
     pool: &PgPool,
     limit: i64,
@@ -452,4 +739,180 @@ fn map_system_state(row: &sqlx::postgres::PgRow) -> SystemStateRecord {
         last_correlation_id: row.get("last_correlation_id"),
         updated_at: row.get("updated_at"),
     }
+}
+
+fn map_order(row: &sqlx::postgres::PgRow) -> OrderRecord {
+    OrderRecord {
+        order_id: row.get("id"),
+        correlation_id: row.get("correlation_id"),
+        risk_decision_id: row.get("risk_decision_id"),
+        idempotency_key: row.get("idempotency_key"),
+        symbol: row.get("symbol"),
+        side: row.get("side"),
+        quantity: row.get("quantity"),
+        limit_price: row.get("limit_price"),
+        market_mode: row.get("market_mode"),
+        status: row.get("status"),
+        execution_state: row.get("execution_state"),
+        status_reason: row.get("status_reason"),
+        filled_price: row.get("filled_price"),
+        submitted_at: row.get("submitted_at"),
+        filled_at: row.get("filled_at"),
+        cancelled_at: row.get("cancelled_at"),
+        rejected_at: row.get("rejected_at"),
+        expired_at: row.get("expired_at"),
+        expires_at: row.get("expires_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn order_status_as_str(status: OrderStatus) -> &'static str {
+    match status {
+        OrderStatus::Open => "OPEN",
+        OrderStatus::Rejected => "REJECTED",
+        OrderStatus::Filled => "FILLED",
+        OrderStatus::Cancelled => "CANCELLED",
+        OrderStatus::Expired => "EXPIRED",
+    }
+}
+
+fn execution_state_as_str(state: ExecutionState) -> &'static str {
+    match state {
+        ExecutionState::IntentCreated => "INTENT_CREATED",
+        ExecutionState::RiskApproved => "RISK_APPROVED",
+        ExecutionState::OrderPrepared => "ORDER_PREPARED",
+        ExecutionState::PaperSubmitted => "PAPER_SUBMITTED",
+        ExecutionState::PaperFilled => "PAPER_FILLED",
+        ExecutionState::PaperCancelled => "PAPER_CANCELLED",
+        ExecutionState::Rejected => "REJECTED",
+        ExecutionState::Expired => "EXPIRED",
+    }
+}
+
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    match error {
+        sqlx::Error::Database(db_error) => db_error.code().as_deref() == Some("23505"),
+        _ => false,
+    }
+}
+
+async fn update_order_state(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    order: &PaperOrder,
+) -> std::result::Result<(), CreateOrderError> {
+    sqlx::query(
+        r#"
+        UPDATE orders
+        SET
+            status = $2,
+            execution_state = $3,
+            status_reason = $4,
+            filled_price = $5,
+            submitted_at = $6,
+            filled_at = $7,
+            cancelled_at = $8,
+            rejected_at = $9,
+            expired_at = $10,
+            updated_at = $11
+        WHERE id = $1
+        "#,
+    )
+    .bind(order.intent.order_id)
+    .bind(order_status_as_str(order.status))
+    .bind(execution_state_as_str(order.execution_state))
+    .bind(order.status_reason.as_deref())
+    .bind(order.filled_price)
+    .bind(order.submitted_at)
+    .bind(order.filled_at)
+    .bind(order.cancelled_at)
+    .bind(order.rejected_at)
+    .bind(order.expired_at)
+    .bind(order.updated_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(anyhow::Error::from)
+    .map_err(CreateOrderError::Unexpected)?;
+
+    Ok(())
+}
+
+async fn insert_order_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    source: &str,
+    order: &PaperOrder,
+    transition: ExecutionState,
+) -> std::result::Result<(), CreateOrderError> {
+    let payload = json!({
+        "order_id": order.intent.order_id,
+        "correlation_id": order.intent.correlation_id,
+        "risk_decision_id": order.intent.risk_decision_id,
+        "idempotency_key": order.intent.idempotency_key,
+        "symbol": order.intent.symbol.as_str(),
+        "side": order.intent.side,
+        "quantity": order.intent.quantity,
+        "limit_price": order.intent.limit_price,
+        "filled_price": order.filled_price,
+        "status": order_status_as_str(order.status),
+        "execution_state": execution_state_as_str(order.execution_state),
+        "transition": transition.as_event_name(),
+        "status_reason": order.status_reason,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO system_events (id, correlation_id, event_type, source, payload, occurred_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(order.intent.correlation_id)
+    .bind(format!(
+        "order.{}",
+        transition.as_event_name().to_ascii_lowercase()
+    ))
+    .bind(source)
+    .bind(payload)
+    .bind(order.updated_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(anyhow::Error::from)
+    .map_err(CreateOrderError::Unexpected)?;
+
+    Ok(())
+}
+
+async fn insert_order_audit_log(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor: &StateActor,
+    order: &PaperOrder,
+    action: &str,
+) -> std::result::Result<(), CreateOrderError> {
+    let metadata = json!({
+        "order_id": order.intent.order_id,
+        "risk_decision_id": order.intent.risk_decision_id,
+        "idempotency_key": order.intent.idempotency_key,
+        "execution_state": execution_state_as_str(order.execution_state),
+        "status": order_status_as_str(order.status),
+        "status_reason": order.status_reason,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO audit_logs (id, correlation_id, actor, action, target, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(order.intent.correlation_id)
+    .bind(&actor.actor)
+    .bind(action)
+    .bind(format!("orders/{}", order.intent.order_id))
+    .bind(metadata)
+    .execute(&mut **tx)
+    .await
+    .map_err(anyhow::Error::from)
+    .map_err(CreateOrderError::Unexpected)?;
+
+    Ok(())
 }

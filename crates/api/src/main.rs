@@ -1,7 +1,7 @@
 use std::{env, net::SocketAddr, time::Instant};
 
 use aegis_core::{
-    MarketMode, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    MarketMode, OrderIntent, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
     RiskRejectionReason, Side, Symbol,
 };
 use axum::{
@@ -14,9 +14,10 @@ use axum::{
 };
 use chrono::Utc;
 use db::{
-    check_health, connect_pool, ensure_system_state, get_system_event, get_system_state,
-    insert_risk_evaluation, list_recent_system_events, load_risk_state_snapshot,
-    set_kill_switch_state, DbConfig, PgPool, StateActor, SystemEventRecord, SystemStateRecord,
+    check_health, connect_pool, create_paper_order, ensure_system_state, get_order_by_id,
+    get_system_event, get_system_state, insert_risk_evaluation, list_orders,
+    list_recent_system_events, load_risk_state_snapshot, set_kill_switch_state, CreateOrderError,
+    DbConfig, OrderRecord, PgPool, StateActor, SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use risk_engine::RiskEvaluator;
@@ -151,7 +152,7 @@ struct EventResponse {
 #[derive(Serialize)]
 struct ErrorResponse {
     error: &'static str,
-    message: &'static str,
+    message: String,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -229,6 +230,34 @@ struct RiskEvaluateResponse {
     correlation_id: Uuid,
 }
 
+#[derive(Deserialize)]
+struct CreatePaperOrderRequest {
+    risk_decision_id: Uuid,
+    idempotency_key: String,
+    symbol: String,
+    side: Side,
+    quantity: String,
+    limit_price: Option<String>,
+    correlation_id: Option<Uuid>,
+    expires_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
+struct OrderResponse {
+    order: OrderRecord,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct OrdersResponse {
+    orders: Vec<OrderRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[tokio::main]
 async fn main() {
     init_tracing();
@@ -278,6 +307,9 @@ async fn main() {
         .route("/risk/kill-switch", post(enable_kill_switch))
         .route("/risk/resume", post(resume_trading))
         .route("/risk/evaluate", post(evaluate_risk))
+        .route("/paper/orders", post(create_order))
+        .route("/orders", get(get_orders))
+        .route("/orders/:id", get(get_order))
         .layer(middleware::from_fn(request_context_middleware))
         .with_state(state);
 
@@ -549,7 +581,7 @@ async fn recent_events(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_query_events",
-                    message: "Failed to query recent system events.",
+                    message: "Failed to query recent system events.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -582,7 +614,7 @@ async fn event_by_id(
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "event_not_found",
-                message: "System event was not found.",
+                message: "System event was not found.".to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
@@ -602,7 +634,7 @@ async fn event_by_id(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_query_event",
-                    message: "Failed to query the requested system event.",
+                    message: "Failed to query the requested system event.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -637,7 +669,7 @@ async fn risk_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_query_risk_status",
-                    message: "Failed to load persistent risk status from the database.",
+                    message: "Failed to load persistent risk status from the database.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -688,7 +720,7 @@ async fn enable_kill_switch(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_activate_kill_switch",
-                    message: "Kill switch activation failed because the database is unavailable or the write could not be completed.",
+                    message: "Kill switch activation failed because the database is unavailable or the write could not be completed.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -711,7 +743,8 @@ async fn resume_trading(
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: "invalid_resume_confirmation",
-                message: "Resume requires confirmation_text exactly equal to \"RESUME TRADING\".",
+                message: "Resume requires confirmation_text exactly equal to \"RESUME TRADING\"."
+                    .to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
@@ -755,7 +788,7 @@ async fn resume_trading(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_resume_trading",
-                    message: "Resume failed because the database is unavailable or the write could not be completed.",
+                    message: "Resume failed because the database is unavailable or the write could not be completed.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -835,7 +868,7 @@ async fn evaluate_risk(
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: "invalid_suggested_notional",
-                    message: "suggested_notional must be a valid decimal string.",
+                    message: "suggested_notional must be a valid decimal string.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -848,7 +881,7 @@ async fn evaluate_risk(
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: "invalid_symbol",
-                    message: "symbol must be a non-empty market symbol.",
+                    message: "symbol must be a non-empty market symbol.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -861,7 +894,7 @@ async fn evaluate_risk(
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
                     error: "invalid_risk_request",
-                    message: "Risk evaluation request is invalid.",
+                    message: "Risk evaluation request is invalid.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -885,7 +918,7 @@ async fn evaluate_risk(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: "failed_to_load_risk_state",
-                    message: "Failed to load risk state from the database.",
+                    message: "Failed to load risk state from the database.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -918,7 +951,7 @@ async fn evaluate_risk(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_persist_risk_evaluation",
-                message: "Risk evaluation could not be persisted transactionally.",
+                message: "Risk evaluation could not be persisted transactionally.".to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
@@ -930,13 +963,283 @@ async fn evaluate_risk(
     (StatusCode::OK, Json(risk_evaluate_response(&evaluation))).into_response()
 }
 
+fn parse_order_intent(
+    payload: CreatePaperOrderRequest,
+    request_correlation_id: &str,
+) -> Result<OrderIntent, &'static str> {
+    let quantity = Decimal::from_str_exact(&payload.quantity).map_err(|_| "invalid_quantity")?;
+    let limit_price = match payload.limit_price {
+        Some(value) => Some(Decimal::from_str_exact(&value).map_err(|_| "invalid_limit_price")?),
+        None => None,
+    };
+    let symbol = Symbol::new(payload.symbol).map_err(|_| "invalid_symbol")?;
+
+    Ok(OrderIntent {
+        order_id: Uuid::new_v4(),
+        correlation_id: payload
+            .correlation_id
+            .unwrap_or_else(|| parse_correlation_id(request_correlation_id)),
+        risk_decision_id: payload.risk_decision_id,
+        idempotency_key: payload.idempotency_key,
+        symbol,
+        side: payload.side,
+        quantity,
+        limit_price,
+        created_at: Utc::now(),
+        expires_at: payload.expires_at,
+    })
+}
+
+async fn create_order(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<CreatePaperOrderRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let intent = match parse_order_intent(payload, &request.correlation_id) {
+        Ok(intent) => intent,
+        Err("invalid_quantity") => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_quantity",
+                    message: "quantity must be a valid decimal string greater than zero."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        Err("invalid_limit_price") => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_limit_price",
+                    message: "limit_price must be a valid decimal string greater than zero."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        Err("invalid_symbol") => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: "symbol must be a non-empty market symbol.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_order_request",
+                    message: "Paper order request is invalid.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match create_paper_order(
+        &state.db_pool,
+        &state.config.app_name,
+        &default_actor(),
+        intent,
+    )
+    .await
+    {
+        Ok(outcome) => (
+            StatusCode::CREATED,
+            Json(OrderResponse {
+                order: outcome.order,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(CreateOrderError::RiskDecisionNotFound) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "risk_decision_not_found",
+                message: "risk_decision_id must reference an existing persisted risk decision."
+                    .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(CreateOrderError::RiskDecisionNotApproved) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "risk_decision_not_approved",
+                message: "Only APPROVED risk decisions may create paper orders.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(CreateOrderError::DuplicateIdempotencyKey) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "duplicate_idempotency_key",
+                message: "idempotency_key must be unique for each paper order.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(CreateOrderError::InvalidIntent(message)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_order_intent",
+                message,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(CreateOrderError::Unexpected(err)) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to create paper order"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_create_order",
+                    message: "Paper order could not be persisted transactionally.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_orders(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match list_orders(&state.db_pool).await {
+        Ok(orders) => (
+            StatusCode::OK,
+            Json(OrdersResponse {
+                orders,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list orders"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_orders",
+                    message: "Failed to query persisted orders.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_order(
+    State(state): State<AppState>,
+    Path(order_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match get_order_by_id(&state.db_pool, order_id).await {
+        Ok(Some(order)) => (
+            StatusCode::OK,
+            Json(OrderResponse {
+                order,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "order_not_found",
+                message: "Order was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                order_id = %order_id,
+                error = %err,
+                "failed to query order"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_order",
+                    message: "Failed to query the requested order.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_limit, is_valid_resume_confirmation, parse_risk_check_context,
+        bounded_limit, is_valid_resume_confirmation, parse_order_intent, parse_risk_check_context,
         DEFAULT_RECENT_EVENTS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
     };
-    use crate::RiskEvaluateRequest;
+    use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::Side;
     use chrono::Utc;
     use uuid::Uuid;
@@ -978,6 +1281,28 @@ mod tests {
 
         assert_eq!(
             context.correlation_id,
+            Uuid::parse_str("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0").expect("valid uuid")
+        );
+    }
+
+    #[test]
+    fn order_request_defaults_to_request_correlation_id() {
+        let request = CreatePaperOrderRequest {
+            risk_decision_id: Uuid::new_v4(),
+            idempotency_key: "order-1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Buy,
+            quantity: "1.25".to_string(),
+            limit_price: Some("100000".to_string()),
+            correlation_id: None,
+            expires_at: None,
+        };
+
+        let intent = parse_order_intent(request, "2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0")
+            .expect("request should parse");
+
+        assert_eq!(
+            intent.correlation_id,
             Uuid::parse_str("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0").expect("valid uuid")
         );
     }
