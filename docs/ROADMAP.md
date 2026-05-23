@@ -10,14 +10,16 @@
 6. Binance public market ingest and deterministic 1m candles
 7. Persistent market feed status and market data read APIs
 8. Deterministic candle-only strategy signal generation on stored candles
+9. Deterministic paper pipeline: closed candles -> signal -> risk decision -> paper order lifecycle
+10. Persistent kill switch and paper-only order lifecycle APIs
 
 ## Next implementation steps
 
 1. Expand replay/backfill primitives for market data
 2. Add richer risk rules using data freshness and position state
-3. Connect signals into risk evaluation workflows without bypass paths
-4. Add paper trading reconciliation and lifecycle extensions
-5. Add kill switch operator workflows and monitoring polish
+3. Add paper trading reconciliation and lifecycle extensions
+4. Add kill switch operator workflows and monitoring polish
+5. Add strategy scheduling and bounded automation around the existing pipeline
 
 ## Explicitly deferred
 

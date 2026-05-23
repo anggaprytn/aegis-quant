@@ -53,14 +53,15 @@ Notes:
 
 ## Strategy evaluation flow
 
-Current strategy evaluation follows this path:
+Current deterministic paper flow follows this path:
 
 ```txt
 closed candles from Postgres
 -> deterministic strategy evaluation
--> persisted signal
--> signal.generated event
--> risk evaluation later
+-> persisted signal or deduped existing signal
+-> persisted risk_decision
+-> order intent with deterministic idempotency key
+-> paper order lifecycle
 ```
 
 Notes:
@@ -68,7 +69,12 @@ Notes:
 - Strategy evaluation reads stored candles only and ignores open candles.
 - `momentum_v1` and `volatility_breakout_v1` are deterministic library strategies with explicit config.
 - Duplicate signals for the same strategy, symbol, timeframe, side, reason, and closed candle are deduped in Postgres.
-- Signal generation is intentionally separated from risk evaluation and paper order creation. Strategy logic cannot submit orders directly.
+- Every signal passed into the pipeline reaches an explicit `APPROVED` or `REJECTED` risk decision in `risk_decisions`.
+- Risk rejection is machine-readable and emits `risk.approved` or `risk.rejected` system events.
+- Strategy logic cannot submit orders directly. Paper orders are created only through the persisted approved `risk_decision_id`.
+- Order idempotency is deterministic from `strategy_id + signal_id + risk_decision_id + symbol + side + source_candle_open_time`.
+- Duplicate pipeline runs reuse the existing paper order instead of creating a second active order for the same idempotency key.
+- If the strategy is disabled, the market feed is stale/degraded, the kill switch is active, or the signal is stale, the pipeline stops safely without creating a paper order.
 
 ## Deployment shape
 

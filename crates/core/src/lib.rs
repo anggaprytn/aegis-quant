@@ -552,6 +552,99 @@ pub enum RiskDecision {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PipelineDecision {
+    NoSignal,
+    RiskRejected,
+    PaperOrderCreated,
+    PaperOrderReused,
+    StrategyDisabled,
+    SafetyStopped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineStepStatus {
+    NotStarted,
+    Completed,
+    Skipped,
+    Rejected,
+    Reused,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineRejectionReason {
+    ConditionsNotMet,
+    InsufficientHistory,
+    StrategyDisabled,
+    KillSwitchActive,
+    SignalTooOld,
+    DataStale,
+    MarketFeedUnavailable,
+    MarketFeedDegraded,
+    UnsupportedTimeframe,
+    UnsupportedState,
+}
+
+impl PipelineRejectionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ConditionsNotMet => "conditions_not_met",
+            Self::InsufficientHistory => "insufficient_history",
+            Self::StrategyDisabled => "strategy_disabled",
+            Self::KillSwitchActive => "kill_switch_active",
+            Self::SignalTooOld => "signal_too_old",
+            Self::DataStale => "data_stale",
+            Self::MarketFeedUnavailable => "market_feed_unavailable",
+            Self::MarketFeedDegraded => "market_feed_degraded",
+            Self::UnsupportedTimeframe => "unsupported_timeframe",
+            Self::UnsupportedState => "unsupported_state",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderIntentSource {
+    StrategySignal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrategyRiskExecutionTrace {
+    pub strategy_evaluation: PipelineStepStatus,
+    pub signal: PipelineStepStatus,
+    pub risk_evaluation: PipelineStepStatus,
+    pub paper_order: PipelineStepStatus,
+    pub order_intent_source: Option<OrderIntentSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PaperTradingPipelineRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperTradingPipelineResult {
+    pub pipeline_decision: PipelineDecision,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub signal_generated: bool,
+    pub signal_reused: bool,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub paper_order_id: Option<Uuid>,
+    pub execution_state: Option<String>,
+    pub reasons: Vec<String>,
+    pub correlation_id: Uuid,
+    pub trace: StrategyRiskExecutionTrace,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
     Open,

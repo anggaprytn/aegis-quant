@@ -1,9 +1,11 @@
+mod pipeline;
+
 use std::{env, net::SocketAddr, time::Instant};
 
 use aegis_core::{
-    CandleInterval, MarketMode, OrderIntent, RiskCheckContext, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason, StrategyConfig,
-    StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    CandleInterval, MarketMode, OrderIntent, PaperTradingPipelineRequest, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyConfig, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
 };
 use axum::{
     extract::{Path, Query, Request, State},
@@ -442,6 +444,8 @@ struct EvaluateStrategyResponse {
     correlation_id: Uuid,
 }
 
+type RunPaperPipelineRequest = PaperTradingPipelineRequest;
+
 #[tokio::main]
 async fn main() {
     init_tracing();
@@ -498,6 +502,7 @@ async fn main() {
         .route("/risk/resume", post(resume_trading))
         .route("/risk/evaluate", post(evaluate_risk))
         .route("/paper/orders", post(create_order))
+        .route("/paper/pipeline/run", post(run_paper_pipeline_handler))
         .route("/orders", get(get_orders))
         .route("/orders/:id", get(get_order))
         .route("/market/symbols", get(get_market_symbols))
@@ -1431,6 +1436,57 @@ async fn create_order(
                 Json(ErrorResponse {
                     error: "failed_to_create_order",
                     message: "Paper order could not be persisted transactionally.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn run_paper_pipeline_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(mut payload): Json<RunPaperPipelineRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+
+    match pipeline::run_paper_pipeline(&state, payload).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            let error_code = if message.contains("invalid strategy_id") {
+                "invalid_strategy_id"
+            } else if message.contains("invalid symbol") {
+                "invalid_symbol"
+            } else if message.contains("invalid timeframe") {
+                "invalid_timeframe"
+            } else {
+                "failed_to_run_paper_pipeline"
+            };
+            let status = if error_code == "failed_to_run_paper_pipeline" {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to run paper trading pipeline"
+            );
+
+            (
+                status,
+                Json(ErrorResponse {
+                    error: error_code,
+                    message,
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),

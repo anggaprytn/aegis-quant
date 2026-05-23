@@ -11,6 +11,7 @@ This repository foundation includes:
 - Minimal Axum API for health and system status
 - Binance public WebSocket market ingest with deterministic 1m candle building
 - Deterministic candle-only strategy evaluation for `momentum_v1` and `volatility_breakout_v1`
+- Deterministic paper trading pipeline from closed candles to risk-gated paper order lifecycle
 - Event model and publisher trait skeleton
 - Postgres migration baseline
 - Local development Docker Compose setup
@@ -22,7 +23,7 @@ This repository foundation includes:
 - Real exchange order execution
 - Exchange secrets
 - Frontend/dashboard implementation
-- Automatic strategy scheduling and automatic paper order creation
+- Automatic strategy scheduling
 
 ## Quick start
 
@@ -89,6 +90,48 @@ curl -X POST http://127.0.0.1:3000/strategy/momentum_v1/evaluate \
   "reason": "three_consecutive_higher_closes",
   "source_candle_open_time": "2026-01-01T00:03:00Z",
   "correlation_id": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+## Paper pipeline example
+
+`/paper/pipeline/run` executes the deterministic paper-only path:
+
+```txt
+closed candles -> strategy evaluation -> signal -> risk decision -> paper order intent -> paper order lifecycle
+```
+
+It never uses live trading, private exchange APIs, API keys, or any bypass around risk.
+
+```bash
+curl -X POST http://127.0.0.1:3000/paper/pipeline/run \
+  -H 'content-type: application/json' \
+  -d '{"strategy_id":"momentum_v1","symbol":"BTCUSDT","timeframe":"1m"}'
+```
+
+Example no-signal response:
+
+```json
+{
+  "pipeline_decision": "NO_SIGNAL",
+  "strategy_id": "momentum_v1",
+  "symbol": "BTCUSDT",
+  "timeframe": "1m",
+  "signal_generated": false,
+  "signal_reused": false,
+  "signal_id": null,
+  "risk_decision_id": null,
+  "paper_order_id": null,
+  "execution_state": null,
+  "reasons": ["conditions_not_met"],
+  "correlation_id": "00000000-0000-0000-0000-000000000000",
+  "trace": {
+    "strategy_evaluation": "completed",
+    "signal": "skipped",
+    "risk_evaluation": "skipped",
+    "paper_order": "skipped",
+    "order_intent_source": null
+  }
 }
 ```
 

@@ -532,6 +532,64 @@ pub async fn insert_risk_evaluation(
     Ok(map_risk_decision(&row))
 }
 
+pub async fn insert_risk_decision(
+    pool: &PgPool,
+    source: &str,
+    context: &RiskCheckContext,
+    evaluation: &RiskEvaluationResult,
+) -> Result<RiskDecisionRecord> {
+    insert_risk_evaluation(pool, source, context, evaluation).await
+}
+
+pub async fn get_risk_decision(
+    pool: &PgPool,
+    risk_decision_id: Uuid,
+) -> Result<Option<RiskDecisionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            correlation_id,
+            signal_id,
+            decision,
+            rationale,
+            decided_at
+        FROM risk_decisions
+        WHERE id = $1
+        "#,
+    )
+    .bind(risk_decision_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_risk_decision))
+}
+
+pub async fn list_recent_risk_decisions(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<RiskDecisionRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            correlation_id,
+            signal_id,
+            decision,
+            rationale,
+            decided_at
+        FROM risk_decisions
+        ORDER BY decided_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_risk_decision).collect())
+}
+
 pub async fn create_paper_order(
     pool: &PgPool,
     source: &str,
@@ -764,6 +822,45 @@ pub async fn get_order_by_id(pool: &PgPool, order_id: Uuid) -> Result<Option<Ord
         "#,
     )
     .bind(order_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_order))
+}
+
+pub async fn get_order_by_idempotency_key(
+    pool: &PgPool,
+    idempotency_key: &str,
+) -> Result<Option<OrderRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            correlation_id,
+            risk_decision_id,
+            idempotency_key,
+            symbol,
+            side,
+            quantity,
+            limit_price,
+            market_mode,
+            status,
+            execution_state,
+            status_reason,
+            filled_price,
+            submitted_at,
+            filled_at,
+            cancelled_at,
+            rejected_at,
+            expired_at,
+            expires_at,
+            created_at,
+            updated_at
+        FROM orders
+        WHERE idempotency_key = $1
+        "#,
+    )
+    .bind(idempotency_key)
     .fetch_optional(pool)
     .await?;
 
