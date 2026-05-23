@@ -24,9 +24,27 @@ This repository foundation includes:
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` if needed for local overrides.
-2. Run `cargo check`.
-3. Start local infrastructure with `docker compose -f infra/docker-compose.yml up --build`.
+1. Copy `.env.example` to `.env`.
+2. Start Postgres with `docker compose -f infra/docker-compose.yml up -d postgres`.
+3. Load the local environment with `set -a; source .env; set +a`.
+4. Run `cargo fmt` and `cargo check`.
+5. Start the API with `cargo run -p api`.
+6. Verify JSON endpoints:
+   `curl http://127.0.0.1:3000/system/health`
+   `curl http://127.0.0.1:3000/system/status`
+   `curl http://127.0.0.1:3000/system/db-health`
+
+Required environment variables:
+
+- `DATABASE_URL`
+
+Optional environment variables:
+
+- `APP_NAME`
+- `APP_ENV`
+- `API_BIND_ADDR`
+- `DATABASE_MAX_CONNECTIONS`
+- `RUST_LOG`
 
 ## Workspace layout
 

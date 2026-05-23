@@ -1,7 +1,8 @@
 use anyhow::Result;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::postgres::PgPoolOptions;
 
 pub const MIGRATIONS_DIR: &str = "crates/db/migrations";
+pub use sqlx::PgPool;
 
 #[derive(Debug, Clone)]
 pub struct DbConfig {
@@ -25,4 +26,12 @@ pub async fn connect_pool(config: &DbConfig) -> Result<PgPool> {
         .await?;
 
     Ok(pool)
+}
+
+pub async fn check_health(pool: &PgPool) -> Result<()> {
+    sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(pool)
+        .await?;
+
+    Ok(())
 }
