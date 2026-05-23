@@ -80,6 +80,84 @@ pub struct Signal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskCheckContext {
+    pub signal_id: Uuid,
+    pub correlation_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: Symbol,
+    pub side: Side,
+    pub suggested_notional: Decimal,
+    pub signal_created_at: DateTime<Utc>,
+    pub evaluated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RiskRuleDecision {
+    Pass,
+    Reject,
+    Warn,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskRejectionReason {
+    KillSwitchActive,
+    MaxOpenPositionsExceeded,
+    MaxDailyLossExceeded,
+    SignalTooOld,
+    DuplicateOrderDetected,
+    DataStale,
+    PositionNotionalExceeded,
+    UnsupportedState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RiskRuleResult {
+    pub rule_name: String,
+    pub decision: RiskRuleDecision,
+    pub reason: Option<RiskRejectionReason>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskConfig {
+    pub max_open_positions: u32,
+    pub max_daily_loss: Decimal,
+    pub max_signal_age_secs: i64,
+    pub max_position_notional: Decimal,
+}
+
+impl Default for RiskConfig {
+    fn default() -> Self {
+        Self {
+            max_open_positions: 2,
+            max_daily_loss: Decimal::new(20_000, 0),
+            max_signal_age_secs: 30,
+            max_position_notional: Decimal::new(150_000, 0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RiskEvaluationDecision {
+    Approved,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskEvaluationResult {
+    pub risk_decision_id: Uuid,
+    pub decision: RiskEvaluationDecision,
+    pub approved_notional: Option<Decimal>,
+    pub risk_score: Decimal,
+    pub reasons: Vec<RiskRejectionReason>,
+    pub rule_results: Vec<RiskRuleResult>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskDecision {
     Approved {

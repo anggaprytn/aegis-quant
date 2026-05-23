@@ -1,6 +1,9 @@
 use std::{env, net::SocketAddr, time::Instant};
 
-use aegis_core::MarketMode;
+use aegis_core::{
+    MarketMode, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, Symbol,
+};
 use axum::{
     extract::{Path, Query, Request, State},
     http::{HeaderName, HeaderValue, StatusCode},
@@ -12,10 +15,12 @@ use axum::{
 use chrono::Utc;
 use db::{
     check_health, connect_pool, ensure_system_state, get_system_event, get_system_state,
-    list_recent_system_events, set_kill_switch_state, DbConfig, PgPool, StateActor,
-    SystemEventRecord, SystemStateRecord,
+    insert_risk_evaluation, list_recent_system_events, load_risk_state_snapshot,
+    set_kill_switch_state, DbConfig, PgPool, StateActor, SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
+use risk_engine::RiskEvaluator;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{error, info};
@@ -204,6 +209,26 @@ struct ResumeRequest {
     reason: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct RiskEvaluateRequest {
+    signal_id: Uuid,
+    strategy_id: String,
+    symbol: String,
+    side: Side,
+    suggested_notional: String,
+    signal_created_at: chrono::DateTime<Utc>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct RiskEvaluateResponse {
+    decision: &'static str,
+    approved_notional: Option<String>,
+    risk_score: String,
+    reasons: Vec<String>,
+    correlation_id: Uuid,
+}
+
 #[tokio::main]
 async fn main() {
     init_tracing();
@@ -252,6 +277,7 @@ async fn main() {
         .route("/risk/status", get(risk_status))
         .route("/risk/kill-switch", post(enable_kill_switch))
         .route("/risk/resume", post(resume_trading))
+        .route("/risk/evaluate", post(evaluate_risk))
         .layer(middleware::from_fn(request_context_middleware))
         .with_state(state);
 
@@ -744,12 +770,176 @@ fn parse_correlation_id(value: &str) -> Uuid {
     Uuid::parse_str(value).unwrap_or_else(|_| Uuid::new_v4())
 }
 
+fn reason_code(reason: RiskRejectionReason) -> &'static str {
+    match reason {
+        RiskRejectionReason::KillSwitchActive => "kill_switch_active",
+        RiskRejectionReason::MaxOpenPositionsExceeded => "max_open_positions_exceeded",
+        RiskRejectionReason::MaxDailyLossExceeded => "max_daily_loss_exceeded",
+        RiskRejectionReason::SignalTooOld => "signal_too_old",
+        RiskRejectionReason::DuplicateOrderDetected => "duplicate_order_detected",
+        RiskRejectionReason::DataStale => "data_stale",
+        RiskRejectionReason::PositionNotionalExceeded => "position_notional_exceeded",
+        RiskRejectionReason::UnsupportedState => "unsupported_state",
+    }
+}
+
+fn risk_evaluate_response(result: &RiskEvaluationResult) -> RiskEvaluateResponse {
+    RiskEvaluateResponse {
+        decision: match result.decision {
+            RiskEvaluationDecision::Approved => "APPROVED",
+            RiskEvaluationDecision::Rejected => "REJECTED",
+        },
+        approved_notional: result.approved_notional.map(|value| value.to_string()),
+        risk_score: result.risk_score.to_string(),
+        reasons: result
+            .reasons
+            .iter()
+            .map(|reason| reason_code(*reason).to_string())
+            .collect(),
+        correlation_id: result.correlation_id,
+    }
+}
+
+fn parse_risk_check_context(
+    payload: RiskEvaluateRequest,
+    request_correlation_id: &str,
+) -> Result<RiskCheckContext, &'static str> {
+    let suggested_notional = Decimal::from_str_exact(&payload.suggested_notional)
+        .map_err(|_| "invalid_suggested_notional")?;
+    let symbol = Symbol::new(payload.symbol).map_err(|_| "invalid_symbol")?;
+
+    Ok(RiskCheckContext {
+        signal_id: payload.signal_id,
+        correlation_id: payload
+            .correlation_id
+            .unwrap_or_else(|| parse_correlation_id(request_correlation_id)),
+        strategy_id: payload.strategy_id,
+        symbol,
+        side: payload.side,
+        suggested_notional,
+        signal_created_at: payload.signal_created_at,
+        evaluated_at: Utc::now(),
+    })
+}
+
+async fn evaluate_risk(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<RiskEvaluateRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let context = match parse_risk_check_context(payload, &request.correlation_id) {
+        Ok(context) => context,
+        Err("invalid_suggested_notional") => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_suggested_notional",
+                    message: "suggested_notional must be a valid decimal string.",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        Err("invalid_symbol") => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: "symbol must be a non-empty market symbol.",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_risk_request",
+                    message: "Risk evaluation request is invalid.",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let snapshot = match load_risk_state_snapshot(&state.db_pool).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load risk state snapshot"
+            );
+
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_risk_state",
+                    message: "Failed to load risk state from the database.",
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let evaluator = RiskEvaluator::new(aegis_core::RiskConfig::default());
+    let evaluation = evaluator.evaluate(&context, &snapshot);
+
+    if let Err(err) = insert_risk_evaluation(
+        &state.db_pool,
+        &state.config.app_name,
+        &context,
+        &evaluation,
+    )
+    .await
+    {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            signal_id = %context.signal_id,
+            error = %err,
+            "failed to persist risk evaluation"
+        );
+
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_risk_evaluation",
+                message: "Risk evaluation could not be persisted transactionally.",
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    (StatusCode::OK, Json(risk_evaluate_response(&evaluation))).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_limit, is_valid_resume_confirmation, DEFAULT_RECENT_EVENTS_LIMIT,
-        MAX_RECENT_EVENTS_LIMIT,
+        bounded_limit, is_valid_resume_confirmation, parse_risk_check_context,
+        DEFAULT_RECENT_EVENTS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
     };
+    use crate::RiskEvaluateRequest;
+    use aegis_core::Side;
+    use chrono::Utc;
+    use uuid::Uuid;
 
     #[test]
     fn recent_events_limit_defaults_when_missing_or_invalid() {
@@ -769,5 +959,26 @@ mod tests {
         assert!(is_valid_resume_confirmation("RESUME TRADING"));
         assert!(!is_valid_resume_confirmation("resume trading"));
         assert!(!is_valid_resume_confirmation("RESUME"));
+    }
+
+    #[test]
+    fn risk_request_defaults_to_request_correlation_id() {
+        let request = RiskEvaluateRequest {
+            signal_id: Uuid::new_v4(),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            side: Side::Buy,
+            suggested_notional: "100000".to_string(),
+            signal_created_at: Utc::now(),
+            correlation_id: None,
+        };
+
+        let context = parse_risk_check_context(request, "2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0")
+            .expect("request should parse");
+
+        assert_eq!(
+            context.correlation_id,
+            Uuid::parse_str("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0").expect("valid uuid")
+        );
     }
 }

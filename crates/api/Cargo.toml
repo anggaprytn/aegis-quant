@@ -9,8 +9,10 @@ authors.workspace = true
 aegis-core = { path = "../core" }
 db = { path = "../db" }
 events = { path = "../events" }
+risk-engine = { path = "../risk-engine" }
 axum.workspace = true
 chrono.workspace = true
+rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

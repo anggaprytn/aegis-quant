@@ -1,4 +1,4 @@
-use aegis_core::EventEnvelope;
+use aegis_core::{EventEnvelope, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,16 @@ pub struct SystemStateRecord {
     pub updated_by_actor_id: Option<Uuid>,
     pub last_correlation_id: Uuid,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskDecisionRecord {
+    pub risk_decision_id: Uuid,
+    pub correlation_id: Uuid,
+    pub signal_id: Option<Uuid>,
+    pub decision: String,
+    pub rationale: String,
+    pub decided_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -271,6 +281,96 @@ pub async fn insert_system_event(
     Ok(map_system_event(&row))
 }
 
+pub async fn load_risk_state_snapshot(pool: &PgPool) -> Result<risk_engine::RiskStateSnapshot> {
+    let system_state = get_system_state(pool).await?;
+
+    Ok(risk_engine::RiskStateSnapshot {
+        kill_switch_enabled: system_state.kill_switch_enabled,
+        kill_switch_reason: system_state.kill_switch_reason,
+        open_positions_count: None,
+        daily_loss: None,
+        latest_market_data_at: None,
+    })
+}
+
+pub async fn insert_risk_evaluation(
+    pool: &PgPool,
+    source: &str,
+    context: &RiskCheckContext,
+    evaluation: &RiskEvaluationResult,
+) -> Result<RiskDecisionRecord> {
+    let mut tx = pool.begin().await?;
+    let rationale = serde_json::to_string(&json!({
+        "approved_notional": evaluation.approved_notional,
+        "risk_score": evaluation.risk_score,
+        "reasons": evaluation.reasons,
+        "rule_results": evaluation.rule_results,
+        "strategy_id": context.strategy_id,
+        "symbol": context.symbol.as_str(),
+        "side": context.side,
+        "suggested_notional": context.suggested_notional,
+    }))?;
+
+    let row = sqlx::query(
+        r#"
+        INSERT INTO risk_decisions (id, correlation_id, signal_id, decision, rationale, decided_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING
+            id,
+            correlation_id,
+            signal_id,
+            decision,
+            rationale,
+            decided_at
+        "#,
+    )
+    .bind(evaluation.risk_decision_id)
+    .bind(evaluation.correlation_id)
+    .bind(context.signal_id)
+    .bind(match evaluation.decision {
+        RiskEvaluationDecision::Approved => "APPROVED",
+        RiskEvaluationDecision::Rejected => "REJECTED",
+    })
+    .bind(&rationale)
+    .bind(Utc::now())
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let event_type = match evaluation.decision {
+        RiskEvaluationDecision::Approved => "risk.approved",
+        RiskEvaluationDecision::Rejected => "risk.rejected",
+    };
+
+    let payload = json!({
+        "risk_decision_id": evaluation.risk_decision_id,
+        "signal_id": context.signal_id,
+        "decision": event_type.strip_prefix("risk.").unwrap_or(event_type).to_ascii_uppercase(),
+        "approved_notional": evaluation.approved_notional,
+        "risk_score": evaluation.risk_score,
+        "reasons": evaluation.reasons,
+        "correlation_id": evaluation.correlation_id,
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO system_events (id, correlation_id, event_type, source, payload, occurred_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(evaluation.correlation_id)
+    .bind(event_type)
+    .bind(source)
+    .bind(&payload)
+    .bind(Utc::now())
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(map_risk_decision(&row))
+}
+
 pub async fn list_recent_system_events(
     pool: &PgPool,
     limit: i64,
@@ -328,6 +428,17 @@ fn map_system_event(row: &sqlx::postgres::PgRow) -> SystemEventRecord {
         payload: row.get("payload"),
         occurred_at: row.get("occurred_at"),
         created_at: row.get("created_at"),
+    }
+}
+
+fn map_risk_decision(row: &sqlx::postgres::PgRow) -> RiskDecisionRecord {
+    RiskDecisionRecord {
+        risk_decision_id: row.get("id"),
+        correlation_id: row.get("correlation_id"),
+        signal_id: row.get("signal_id"),
+        decision: row.get("decision"),
+        rationale: row.get("rationale"),
+        decided_at: row.get("decided_at"),
     }
 }
 
