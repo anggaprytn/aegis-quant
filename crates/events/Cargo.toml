@@ -1,0 +1,12 @@
+[package]
+name = "events"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+aegis-core = { path = "../core" }
+serde.workspace = true

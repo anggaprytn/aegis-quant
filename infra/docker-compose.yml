@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: aegis-quant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aegis_quant
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: aegis
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis -d aegis_quant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: aegis-quant-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../.env.example
+    environment:
+      API_BIND_ADDR: 0.0.0.0:3000
+      DATABASE_URL: postgres://aegis:aegis@postgres:5432/aegis_quant
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
