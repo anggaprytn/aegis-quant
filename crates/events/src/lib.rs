@@ -15,6 +15,8 @@ pub enum SystemEventType {
     MarketFeedConnected,
     MarketFeedDisconnected,
     MarketFeedStale,
+    MarketTradeReceived,
+    MarketCandleClosed,
     SignalGenerated,
     RiskApproved,
     RiskRejected,
@@ -32,6 +34,8 @@ impl SystemEventType {
             Self::MarketFeedConnected => "market.feed.connected",
             Self::MarketFeedDisconnected => "market.feed.disconnected",
             Self::MarketFeedStale => "market.feed.stale",
+            Self::MarketTradeReceived => "market.trade.received",
+            Self::MarketCandleClosed => "market.candle.closed",
             Self::SignalGenerated => "signal.generated",
             Self::RiskApproved => "risk.approved",
             Self::RiskRejected => "risk.rejected",
@@ -96,6 +100,10 @@ mod tests {
         assert_eq!(
             SystemEventType::MarketFeedConnected.as_str(),
             "market.feed.connected"
+        );
+        assert_eq!(
+            SystemEventType::MarketTradeReceived.as_str(),
+            "market.trade.received"
         );
         assert_eq!(SystemEventType::RiskRejected.as_str(), "risk.rejected");
         assert_eq!(

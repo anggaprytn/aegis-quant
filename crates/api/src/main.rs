@@ -1,8 +1,8 @@
 use std::{env, net::SocketAddr, time::Instant};
 
 use aegis_core::{
-    MarketMode, OrderIntent, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, Symbol,
+    CandleInterval, MarketMode, OrderIntent, RiskCheckContext, RiskEvaluationDecision,
+    RiskEvaluationResult, RiskRejectionReason, Side, Symbol,
 };
 use axum::{
     extract::{Path, Query, Request, State},
@@ -14,12 +14,14 @@ use axum::{
 };
 use chrono::Utc;
 use db::{
-    check_health, connect_pool, create_paper_order, ensure_system_state, get_order_by_id,
-    get_system_event, get_system_state, insert_risk_evaluation, list_orders,
-    list_recent_system_events, load_risk_state_snapshot, set_kill_switch_state, CreateOrderError,
-    DbConfig, OrderRecord, PgPool, StateActor, SystemEventRecord, SystemStateRecord,
+    check_health, connect_pool, create_paper_order, ensure_system_state, get_latest_market_tick,
+    get_order_by_id, get_system_event, get_system_state, insert_risk_evaluation, list_candles,
+    list_market_feed_statuses, list_orders, list_recent_system_events, load_risk_state_snapshot,
+    set_kill_switch_state, CandleRecord, CreateOrderError, DbConfig, MarketFeedStatusRecord,
+    MarketTickRecord, OrderRecord, PgPool, StateActor, SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
+use market_ingest::MarketIngestConfig;
 use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,8 @@ const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const CORRELATION_ID_HEADER: HeaderName = HeaderName::from_static("x-correlation-id");
 const DEFAULT_RECENT_EVENTS_LIMIT: i64 = 50;
 const MAX_RECENT_EVENTS_LIMIT: i64 = 200;
+const DEFAULT_CANDLE_LIMIT: i64 = 100;
+const MAX_CANDLE_LIMIT: i64 = 1_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -38,6 +42,7 @@ struct AppState {
     db_pool: PgPool,
     started_at: chrono::DateTime<Utc>,
     market_mode: MarketMode,
+    market_config: MarketIngestConfig,
 }
 
 #[derive(Clone)]
@@ -258,6 +263,51 @@ struct OrdersResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Serialize)]
+struct MarketSymbolsResponse {
+    exchange: String,
+    symbols: Vec<String>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct LatestTickQuery {
+    symbol: String,
+}
+
+#[derive(Serialize)]
+struct MarketTickResponse {
+    tick: MarketTickRecord,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct CandlesQuery {
+    symbol: String,
+    interval: String,
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct CandlesResponse {
+    candles: Vec<CandleRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct FeedStatusResponse {
+    feeds: Vec<MarketFeedStatusRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[tokio::main]
 async fn main() {
     init_tracing();
@@ -276,6 +326,8 @@ async fn main() {
     let event_publisher = PostgresEventPublisher::new(db_pool.clone());
     let started_at = Utc::now();
     let startup_correlation_id = Uuid::new_v4();
+    let market_config =
+        MarketIngestConfig::from_env().expect("invalid market ingest configuration");
 
     event_publisher
         .publish(SystemEventType::SystemStarted.into_event(
@@ -295,6 +347,7 @@ async fn main() {
         db_pool,
         started_at,
         market_mode: MarketMode::Paper,
+        market_config,
     };
 
     let app = Router::new()
@@ -310,6 +363,10 @@ async fn main() {
         .route("/paper/orders", post(create_order))
         .route("/orders", get(get_orders))
         .route("/orders/:id", get(get_order))
+        .route("/market/symbols", get(get_market_symbols))
+        .route("/market/ticks/latest", get(get_latest_tick))
+        .route("/market/candles", get(get_market_candles))
+        .route("/market/feed-status", get(get_market_feed_status))
         .layer(middleware::from_fn(request_context_middleware))
         .with_state(state);
 
@@ -402,6 +459,13 @@ fn bounded_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(value) if value > 0 => value.min(MAX_RECENT_EVENTS_LIMIT),
         _ => DEFAULT_RECENT_EVENTS_LIMIT,
+    }
+}
+
+fn bounded_candle_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_CANDLE_LIMIT),
+        _ => DEFAULT_CANDLE_LIMIT,
     }
 }
 
@@ -1223,6 +1287,213 @@ async fn get_order(
                 Json(ErrorResponse {
                     error: "failed_to_query_order",
                     message: "Failed to query the requested order.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_market_symbols(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> Json<MarketSymbolsResponse> {
+    let request = request_context(request);
+
+    Json(MarketSymbolsResponse {
+        exchange: state.market_config.exchange.as_str().to_string(),
+        symbols: state.market_config.symbols_as_strings(),
+        request_id: request.request_id,
+        correlation_id: request.correlation_id,
+        timestamp: Utc::now(),
+    })
+}
+
+async fn get_latest_tick(
+    State(state): State<AppState>,
+    Query(query): Query<LatestTickQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let symbol = match Symbol::new(query.symbol) {
+        Ok(symbol) => symbol,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match get_latest_market_tick(&state.db_pool, state.market_config.exchange, &symbol).await {
+        Ok(Some(tick)) => (
+            StatusCode::OK,
+            Json(MarketTickResponse {
+                tick,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "tick_not_found",
+                message: "No market tick found for symbol.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                symbol = %symbol,
+                "failed to query latest market tick"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_market_tick",
+                    message: "Failed to query latest market tick.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_market_candles(
+    State(state): State<AppState>,
+    Query(query): Query<CandlesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let symbol = match Symbol::new(query.symbol) {
+        Ok(symbol) => symbol,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let interval = match query.interval.parse::<CandleInterval>() {
+        Ok(interval) => interval,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_interval",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match list_candles(
+        &state.db_pool,
+        state.market_config.exchange,
+        &symbol,
+        interval,
+        bounded_candle_limit(query.limit),
+    )
+    .await
+    {
+        Ok(candles) => (
+            StatusCode::OK,
+            Json(CandlesResponse {
+                candles,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                symbol = %symbol,
+                interval = %interval.as_str(),
+                "failed to query market candles"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_market_candles",
+                    message: "Failed to query market candles.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_market_feed_status(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match list_market_feed_statuses(&state.db_pool).await {
+        Ok(feeds) => (
+            StatusCode::OK,
+            Json(FeedStatusResponse {
+                feeds,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query market feed status"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_market_feed_status",
+                    message: "Failed to query market feed status.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),

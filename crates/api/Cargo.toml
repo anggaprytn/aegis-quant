@@ -9,6 +9,7 @@ authors.workspace = true
 aegis-core = { path = "../core" }
 db = { path = "../db" }
 events = { path = "../events" }
+market-ingest = { path = "../market-ingest" }
 risk-engine = { path = "../risk-engine" }
 axum.workspace = true
 chrono.workspace = true

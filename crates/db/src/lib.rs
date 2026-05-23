@@ -1,12 +1,14 @@
 use aegis_core::{
-    EventEnvelope, ExecutionState, OrderIntent, OrderStatus, PaperOrder, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, Side,
+    Candle, CandleInterval, DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus,
+    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperOrder, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, Side, Symbol,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{postgres::PgPoolOptions, Row};
+use sqlx::{postgres::PgPoolOptions, Postgres, Row, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -83,6 +85,50 @@ pub struct OrderRecord {
     pub expired_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketTickRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub symbol: String,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub trade_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub raw_payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandleRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub symbol: String,
+    pub interval: String,
+    pub open_time: DateTime<Utc>,
+    pub close_time: DateTime<Utc>,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+    pub quote_volume: Option<Decimal>,
+    pub trade_count: i32,
+    pub is_closed: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketFeedStatusRecord {
+    pub exchange: String,
+    pub symbol: String,
+    pub status: String,
+    pub freshness_status: DataFreshnessStatus,
+    pub last_event_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub reconnect_count: i32,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -332,13 +378,23 @@ pub async fn insert_system_event(
 
 pub async fn load_risk_state_snapshot(pool: &PgPool) -> Result<risk_engine::RiskStateSnapshot> {
     let system_state = get_system_state(pool).await?;
+    let latest_market_data_at = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        r#"
+        SELECT MAX(last_event_at)
+        FROM market_feed_status
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten();
 
     Ok(risk_engine::RiskStateSnapshot {
         kill_switch_enabled: system_state.kill_switch_enabled,
         kill_switch_reason: system_state.kill_switch_reason,
         open_positions_count: None,
         daily_loss: None,
-        latest_market_data_at: None,
+        latest_market_data_at,
     })
 }
 
@@ -658,6 +714,354 @@ pub async fn get_order_by_id(pool: &PgPool, order_id: Uuid) -> Result<Option<Ord
     Ok(row.as_ref().map(map_order))
 }
 
+pub async fn insert_market_tick(pool: &PgPool, tick: &MarketTick) -> Result<MarketTickRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO market_ticks (
+            id,
+            exchange,
+            symbol,
+            price,
+            quantity,
+            trade_time,
+            received_at,
+            raw_payload
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            price,
+            quantity,
+            trade_time,
+            received_at,
+            raw_payload
+        "#,
+    )
+    .bind(tick.id)
+    .bind(tick.exchange.as_str())
+    .bind(tick.symbol.as_str())
+    .bind(tick.price)
+    .bind(tick.quantity)
+    .bind(tick.trade_time)
+    .bind(tick.received_at)
+    .bind(&tick.raw_payload)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_market_tick(&row))
+}
+
+pub async fn get_latest_market_tick(
+    pool: &PgPool,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+) -> Result<Option<MarketTickRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            price,
+            quantity,
+            trade_time,
+            received_at,
+            raw_payload
+        FROM market_ticks
+        WHERE exchange = $1 AND symbol = $2
+        ORDER BY trade_time DESC, received_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(exchange.as_str())
+    .bind(symbol.as_str())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_market_tick))
+}
+
+pub async fn upsert_candle(pool: &PgPool, candle: &Candle) -> Result<CandleRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO candles (
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+        )
+        ON CONFLICT (exchange, symbol, interval, open_time) DO UPDATE
+        SET
+            close_time = EXCLUDED.close_time,
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume,
+            quote_volume = EXCLUDED.quote_volume,
+            trade_count = EXCLUDED.trade_count,
+            is_closed = EXCLUDED.is_closed,
+            updated_at = EXCLUDED.updated_at
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(candle.id)
+    .bind(candle.exchange.as_str())
+    .bind(candle.symbol.as_str())
+    .bind(candle.interval.as_str())
+    .bind(candle.open_time)
+    .bind(candle.close_time)
+    .bind(candle.open)
+    .bind(candle.high)
+    .bind(candle.low)
+    .bind(candle.close)
+    .bind(candle.volume)
+    .bind(candle.quote_volume)
+    .bind(candle.trade_count)
+    .bind(candle.is_closed)
+    .bind(candle.created_at)
+    .bind(candle.updated_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candle(&row))
+}
+
+pub async fn list_candles(
+    pool: &PgPool,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    interval: CandleInterval,
+    limit: i64,
+) -> Result<Vec<CandleRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        FROM candles
+        WHERE exchange = $1 AND symbol = $2 AND interval = $3
+        ORDER BY open_time DESC
+        LIMIT $4
+        "#,
+    )
+    .bind(exchange.as_str())
+    .bind(symbol.as_str())
+    .bind(interval.as_str())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_candle).collect())
+}
+
+pub async fn upsert_market_feed_status(
+    pool: &PgPool,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    status: FeedStatus,
+    freshness_status: DataFreshnessStatus,
+    last_event_at: Option<DateTime<Utc>>,
+    last_error: Option<&str>,
+    reconnect_count: i32,
+) -> Result<MarketFeedStatusRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO market_feed_status (
+            exchange,
+            symbol,
+            status,
+            freshness_status,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT (exchange, symbol) DO UPDATE
+        SET
+            status = EXCLUDED.status,
+            freshness_status = EXCLUDED.freshness_status,
+            last_event_at = EXCLUDED.last_event_at,
+            last_error = EXCLUDED.last_error,
+            reconnect_count = EXCLUDED.reconnect_count,
+            updated_at = NOW()
+        RETURNING
+            exchange,
+            symbol,
+            status,
+            freshness_status,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        "#,
+    )
+    .bind(exchange.as_str())
+    .bind(symbol.as_str())
+    .bind(status.as_str())
+    .bind(match freshness_status {
+        DataFreshnessStatus::Fresh => "fresh",
+        DataFreshnessStatus::Stale => "stale",
+        DataFreshnessStatus::Unknown => "unknown",
+    })
+    .bind(last_event_at)
+    .bind(last_error)
+    .bind(reconnect_count)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_market_feed_status(&row))
+}
+
+pub async fn list_market_feed_statuses(pool: &PgPool) -> Result<Vec<MarketFeedStatusRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            exchange,
+            symbol,
+            status,
+            freshness_status,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        FROM market_feed_status
+        ORDER BY exchange, symbol
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_market_feed_status).collect())
+}
+
+pub async fn process_market_trade(
+    pool: &PgPool,
+    source: &str,
+    tick: &MarketTick,
+    active_candle: &Candle,
+    closed_candle: Option<&Candle>,
+    reconnect_count: i32,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    insert_market_tick_tx(&mut tx, tick).await?;
+    upsert_candle_tx(&mut tx, active_candle).await?;
+
+    if let Some(closed_candle) = closed_candle {
+        upsert_candle_tx(&mut tx, closed_candle).await?;
+    }
+
+    upsert_market_feed_status_tx(
+        &mut tx,
+        tick.exchange,
+        &tick.symbol,
+        FeedStatus::Connected,
+        DataFreshnessStatus::Fresh,
+        Some(tick.trade_time),
+        None,
+        reconnect_count,
+    )
+    .await?;
+
+    let trade_payload = json!({
+        "exchange": tick.exchange.as_str(),
+        "symbol": tick.symbol.as_str(),
+        "price": tick.price,
+        "quantity": tick.quantity,
+        "trade_time": tick.trade_time,
+        "received_at": tick.received_at,
+    });
+    insert_system_event_tx(
+        &mut tx,
+        &EventEnvelope::new(
+            "market.trade.received",
+            Uuid::new_v4(),
+            source,
+            trade_payload,
+        ),
+    )
+    .await?;
+
+    if let Some(closed_candle) = closed_candle {
+        let candle_payload = json!({
+            "exchange": closed_candle.exchange.as_str(),
+            "symbol": closed_candle.symbol.as_str(),
+            "interval": closed_candle.interval.as_str(),
+            "open_time": closed_candle.open_time,
+            "close_time": closed_candle.close_time,
+            "open": closed_candle.open,
+            "high": closed_candle.high,
+            "low": closed_candle.low,
+            "close": closed_candle.close,
+            "volume": closed_candle.volume,
+            "quote_volume": closed_candle.quote_volume,
+            "trade_count": closed_candle.trade_count,
+        });
+        insert_system_event_tx(
+            &mut tx,
+            &EventEnvelope::new(
+                "market.candle.closed",
+                Uuid::new_v4(),
+                source,
+                candle_payload,
+            ),
+        )
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn list_recent_system_events(
     pool: &PgPool,
     limit: i64,
@@ -718,6 +1122,53 @@ fn map_system_event(row: &sqlx::postgres::PgRow) -> SystemEventRecord {
     }
 }
 
+fn map_market_tick(row: &sqlx::postgres::PgRow) -> MarketTickRecord {
+    MarketTickRecord {
+        id: row.get("id"),
+        exchange: row.get("exchange"),
+        symbol: row.get("symbol"),
+        price: row.get("price"),
+        quantity: row.get("quantity"),
+        trade_time: row.get("trade_time"),
+        received_at: row.get("received_at"),
+        raw_payload: row.get("raw_payload"),
+    }
+}
+
+fn map_candle(row: &sqlx::postgres::PgRow) -> CandleRecord {
+    CandleRecord {
+        id: row.get("id"),
+        exchange: row.get("exchange"),
+        symbol: row.get("symbol"),
+        interval: row.get("interval"),
+        open_time: row.get("open_time"),
+        close_time: row.get("close_time"),
+        open: row.get("open"),
+        high: row.get("high"),
+        low: row.get("low"),
+        close: row.get("close"),
+        volume: row.get("volume"),
+        quote_volume: row.get("quote_volume"),
+        trade_count: row.get("trade_count"),
+        is_closed: row.get("is_closed"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_market_feed_status(row: &sqlx::postgres::PgRow) -> MarketFeedStatusRecord {
+    MarketFeedStatusRecord {
+        exchange: row.get("exchange"),
+        symbol: row.get("symbol"),
+        status: row.get("status"),
+        freshness_status: freshness_status_from_str(row.get("freshness_status")),
+        last_event_at: row.get("last_event_at"),
+        last_error: row.get("last_error"),
+        reconnect_count: row.get("reconnect_count"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
 fn map_risk_decision(row: &sqlx::postgres::PgRow) -> RiskDecisionRecord {
     RiskDecisionRecord {
         risk_decision_id: row.get("id"),
@@ -764,6 +1215,225 @@ fn map_order(row: &sqlx::postgres::PgRow) -> OrderRecord {
         expires_at: row.get("expires_at"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+async fn insert_system_event_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &EventEnvelope,
+) -> Result<SystemEventRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO system_events (id, correlation_id, event_type, source, payload, occurred_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING
+            id,
+            correlation_id,
+            event_type,
+            source,
+            payload,
+            occurred_at,
+            created_at
+        "#,
+    )
+    .bind(event.event_id)
+    .bind(event.correlation_id)
+    .bind(&event.event_type)
+    .bind(&event.source)
+    .bind(&event.payload)
+    .bind(event.occurred_at)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(map_system_event(&row))
+}
+
+async fn insert_market_tick_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tick: &MarketTick,
+) -> Result<MarketTickRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO market_ticks (
+            id,
+            exchange,
+            symbol,
+            price,
+            quantity,
+            trade_time,
+            received_at,
+            raw_payload
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            price,
+            quantity,
+            trade_time,
+            received_at,
+            raw_payload
+        "#,
+    )
+    .bind(tick.id)
+    .bind(tick.exchange.as_str())
+    .bind(tick.symbol.as_str())
+    .bind(tick.price)
+    .bind(tick.quantity)
+    .bind(tick.trade_time)
+    .bind(tick.received_at)
+    .bind(&tick.raw_payload)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(map_market_tick(&row))
+}
+
+async fn upsert_candle_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    candle: &Candle,
+) -> Result<CandleRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO candles (
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+        )
+        ON CONFLICT (exchange, symbol, interval, open_time) DO UPDATE
+        SET
+            close_time = EXCLUDED.close_time,
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume,
+            quote_volume = EXCLUDED.quote_volume,
+            trade_count = EXCLUDED.trade_count,
+            is_closed = EXCLUDED.is_closed,
+            updated_at = EXCLUDED.updated_at
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(candle.id)
+    .bind(candle.exchange.as_str())
+    .bind(candle.symbol.as_str())
+    .bind(candle.interval.as_str())
+    .bind(candle.open_time)
+    .bind(candle.close_time)
+    .bind(candle.open)
+    .bind(candle.high)
+    .bind(candle.low)
+    .bind(candle.close)
+    .bind(candle.volume)
+    .bind(candle.quote_volume)
+    .bind(candle.trade_count)
+    .bind(candle.is_closed)
+    .bind(candle.created_at)
+    .bind(candle.updated_at)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(map_candle(&row))
+}
+
+async fn upsert_market_feed_status_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    status: FeedStatus,
+    freshness_status: DataFreshnessStatus,
+    last_event_at: Option<DateTime<Utc>>,
+    last_error: Option<&str>,
+    reconnect_count: i32,
+) -> Result<MarketFeedStatusRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO market_feed_status (
+            exchange,
+            symbol,
+            status,
+            freshness_status,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT (exchange, symbol) DO UPDATE
+        SET
+            status = EXCLUDED.status,
+            freshness_status = EXCLUDED.freshness_status,
+            last_event_at = EXCLUDED.last_event_at,
+            last_error = EXCLUDED.last_error,
+            reconnect_count = EXCLUDED.reconnect_count,
+            updated_at = NOW()
+        RETURNING
+            exchange,
+            symbol,
+            status,
+            freshness_status,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        "#,
+    )
+    .bind(exchange.as_str())
+    .bind(symbol.as_str())
+    .bind(status.as_str())
+    .bind(match freshness_status {
+        DataFreshnessStatus::Fresh => "fresh",
+        DataFreshnessStatus::Stale => "stale",
+        DataFreshnessStatus::Unknown => "unknown",
+    })
+    .bind(last_event_at)
+    .bind(last_error)
+    .bind(reconnect_count)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(map_market_feed_status(&row))
+}
+
+fn freshness_status_from_str(value: String) -> DataFreshnessStatus {
+    match value.as_str() {
+        "fresh" => DataFreshnessStatus::Fresh,
+        "stale" => DataFreshnessStatus::Stale,
+        _ => DataFreshnessStatus::Unknown,
     }
 }
 

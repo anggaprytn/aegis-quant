@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 pub type Quantity = Decimal;
 pub type Price = Decimal;
+pub type Volume = Decimal;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Symbol(String);
@@ -37,6 +38,149 @@ impl std::fmt::Display for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketDataSource {
+    Binance,
+}
+
+impl MarketDataSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Binance => "binance",
+        }
+    }
+}
+
+impl std::str::FromStr for MarketDataSource {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "binance" => Ok(Self::Binance),
+            other => Err(CoreError::UnsupportedMarketDataSource(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedStatus {
+    Connecting,
+    Connected,
+    Disconnected,
+    Stale,
+    Error,
+}
+
+impl FeedStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Disconnected => "disconnected",
+            Self::Stale => "stale",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataFreshnessStatus {
+    Fresh,
+    Stale,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CandleInterval {
+    OneMinute,
+}
+
+impl CandleInterval {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OneMinute => "1m",
+        }
+    }
+
+    pub fn duration(self) -> chrono::Duration {
+        match self {
+            Self::OneMinute => chrono::Duration::minutes(1),
+        }
+    }
+}
+
+impl std::str::FromStr for CandleInterval {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1m" => Ok(Self::OneMinute),
+            other => Err(CoreError::UnsupportedCandleInterval(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketTrade {
+    pub trade_id: String,
+    pub exchange: MarketDataSource,
+    pub symbol: Symbol,
+    pub price: Price,
+    pub quantity: Quantity,
+    pub trade_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub is_buyer_maker: Option<bool>,
+    pub raw_payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketTick {
+    pub id: Uuid,
+    pub exchange: MarketDataSource,
+    pub symbol: Symbol,
+    pub price: Price,
+    pub quantity: Quantity,
+    pub trade_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub raw_payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Candle {
+    pub id: Uuid,
+    pub exchange: MarketDataSource,
+    pub symbol: Symbol,
+    pub interval: CandleInterval,
+    pub open_time: DateTime<Utc>,
+    pub close_time: DateTime<Utc>,
+    pub open: Price,
+    pub high: Price,
+    pub low: Price,
+    pub close: Price,
+    pub volume: Volume,
+    pub quote_volume: Option<Volume>,
+    pub trade_count: i32,
+    pub is_closed: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketFeedStatus {
+    pub exchange: MarketDataSource,
+    pub symbol: Symbol,
+    pub status: FeedStatus,
+    pub freshness_status: DataFreshnessStatus,
+    pub last_event_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub reconnect_count: i32,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -381,12 +525,20 @@ impl EventEnvelope {
 pub enum CoreError {
     #[error("symbol cannot be empty")]
     EmptySymbol,
+    #[error("unsupported market data source: {0}")]
+    UnsupportedMarketDataSource(String),
+    #[error("unsupported candle interval: {0}")]
+    UnsupportedCandleInterval(String),
     #[error("idempotency_key cannot be empty")]
     EmptyIdempotencyKey,
     #[error("quantity must be greater than zero")]
     InvalidOrderQuantity,
     #[error("limit_price must be greater than zero")]
     InvalidLimitPrice,
+    #[error("market trade price must be greater than zero")]
+    InvalidMarketTradePrice,
+    #[error("market trade quantity must be greater than zero")]
+    InvalidMarketTradeQuantity,
     #[error("invalid execution transition from {from:?} to {to:?}")]
     InvalidExecutionTransition {
         from: ExecutionState,

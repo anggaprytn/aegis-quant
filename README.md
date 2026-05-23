@@ -9,6 +9,7 @@ This repository foundation includes:
 - Rust workspace with bounded service and engine crates
 - Shared core domain types using `rust_decimal`
 - Minimal Axum API for health and system status
+- Binance public WebSocket market ingest with deterministic 1m candle building
 - Event model and publisher trait skeleton
 - Postgres migration baseline
 - Local development Docker Compose setup
@@ -29,10 +30,15 @@ This repository foundation includes:
 3. Load the local environment with `set -a; source .env; set +a`.
 4. Run `cargo fmt` and `cargo check`.
 5. Start the API with `cargo run -p api`.
-6. Verify JSON endpoints:
+6. Start market ingest with `cargo run -p market-ingest`.
+7. Verify JSON endpoints:
    `curl http://127.0.0.1:3000/system/health`
    `curl http://127.0.0.1:3000/system/status`
    `curl http://127.0.0.1:3000/system/db-health`
+   `curl 'http://127.0.0.1:3000/market/symbols'`
+   `curl 'http://127.0.0.1:3000/market/ticks/latest?symbol=BTCUSDT'`
+   `curl 'http://127.0.0.1:3000/market/candles?symbol=BTCUSDT&interval=1m&limit=100'`
+   `curl 'http://127.0.0.1:3000/market/feed-status'`
 
 Required environment variables:
 
@@ -44,7 +50,15 @@ Optional environment variables:
 - `APP_ENV`
 - `API_BIND_ADDR`
 - `DATABASE_MAX_CONNECTIONS`
+- `MARKET_EXCHANGE`
+- `MARKET_SYMBOLS`
+- `MARKET_STALE_THRESHOLD_SECONDS`
+- `BINANCE_WS_BASE_URL`
 - `RUST_LOG`
+
+## Market ingest local flow
+
+`market-ingest` connects only to Binance public trade streams for configured symbols. Each trade is persisted to `market_ticks`, fed through a deterministic 1m candle builder, upserted into `candles`, and reflected in `market_feed_status`. The service emits `market.feed.connected`, `market.feed.disconnected`, `market.feed.stale`, `market.trade.received`, and `market.candle.closed` into `system_events`.
 
 ## Workspace layout
 
