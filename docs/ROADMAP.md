@@ -9,12 +9,13 @@
 5. Health and status API
 6. Binance public market ingest and deterministic 1m candles
 7. Persistent market feed status and market data read APIs
+8. Deterministic candle-only strategy signal generation on stored candles
 
 ## Next implementation steps
 
-1. Add strategy signal generation on stored candles
-2. Expand replay/backfill primitives for market data
-3. Add richer risk rules using data freshness and position state
+1. Expand replay/backfill primitives for market data
+2. Add richer risk rules using data freshness and position state
+3. Connect signals into risk evaluation workflows without bypass paths
 4. Add paper trading reconciliation and lifecycle extensions
 5. Add kill switch operator workflows and monitoring polish
 

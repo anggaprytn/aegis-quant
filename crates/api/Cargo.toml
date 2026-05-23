@@ -11,6 +11,8 @@ db = { path = "../db" }
 events = { path = "../events" }
 market-ingest = { path = "../market-ingest" }
 risk-engine = { path = "../risk-engine" }
+strategy-engine = { path = "../strategy-engine" }
+anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
 rust_decimal.workspace = true

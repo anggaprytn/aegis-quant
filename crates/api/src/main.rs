@@ -2,7 +2,8 @@ use std::{env, net::SocketAddr, time::Instant};
 
 use aegis_core::{
     CandleInterval, MarketMode, OrderIntent, RiskCheckContext, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRejectionReason, Side, Symbol,
+    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason, StrategyConfig,
+    StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
 };
 use axum::{
     extract::{Path, Query, Request, State},
@@ -15,10 +16,14 @@ use axum::{
 use chrono::Utc;
 use db::{
     check_health, connect_pool, create_paper_order, ensure_system_state, get_latest_market_tick,
-    get_order_by_id, get_system_event, get_system_state, insert_risk_evaluation, list_candles,
-    list_market_feed_statuses, list_orders, list_recent_system_events, load_risk_state_snapshot,
-    set_kill_switch_state, CandleRecord, CreateOrderError, DbConfig, MarketFeedStatusRecord,
-    MarketTickRecord, OrderRecord, PgPool, StateActor, SystemEventRecord, SystemStateRecord,
+    get_order_by_id, get_recent_closed_candles, get_strategy_status, get_system_event,
+    get_system_state, insert_risk_evaluation, insert_signal_deduped, list_candles,
+    list_market_feed_statuses, list_orders, list_recent_signals, list_recent_system_events,
+    list_strategy_status, load_risk_state_snapshot, set_kill_switch_state,
+    strategy_config_from_record, update_strategy_state, upsert_strategy_config, CandleRecord,
+    CreateOrderError, DbConfig, InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord,
+    OrderRecord, PgPool, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
+    SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use market_ingest::MarketIngestConfig;
@@ -26,6 +31,7 @@ use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use strategy_engine::{build_default_strategy_configs, evaluate as evaluate_strategy};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -43,6 +49,7 @@ struct AppState {
     started_at: chrono::DateTime<Utc>,
     market_mode: MarketMode,
     market_config: MarketIngestConfig,
+    strategy_runtime: StrategyRuntimeConfig,
 }
 
 #[derive(Clone)]
@@ -52,6 +59,60 @@ struct AppConfig {
     bind_addr: SocketAddr,
     database_url: String,
     database_max_connections: u32,
+}
+
+#[derive(Clone)]
+struct StrategyRuntimeConfig {
+    default_symbols: Vec<Symbol>,
+    default_timeframe: CandleInterval,
+    default_notional: Decimal,
+    momentum_lookback_candles: u32,
+    breakout_lookback_candles: u32,
+}
+
+impl StrategyRuntimeConfig {
+    fn from_env() -> Result<Self, String> {
+        let default_symbols = env::var("STRATEGY_DEFAULT_SYMBOLS")
+            .unwrap_or_else(|_| "BTCUSDT,ETHUSDT".to_string())
+            .split(',')
+            .map(Symbol::new)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| err.to_string())?;
+        let default_timeframe = env::var("STRATEGY_DEFAULT_TIMEFRAME")
+            .unwrap_or_else(|_| "1m".to_string())
+            .parse()
+            .map_err(|err: aegis_core::CoreError| err.to_string())?;
+        let default_notional = env::var("STRATEGY_DEFAULT_NOTIONAL")
+            .unwrap_or_else(|_| "100000".to_string())
+            .parse::<Decimal>()
+            .map_err(|err| format!("invalid STRATEGY_DEFAULT_NOTIONAL: {err}"))?;
+        let momentum_lookback_candles = env::var("MOMENTUM_LOOKBACK_CANDLES")
+            .unwrap_or_else(|_| "3".to_string())
+            .parse::<u32>()
+            .map_err(|err| format!("invalid MOMENTUM_LOOKBACK_CANDLES: {err}"))?;
+        let breakout_lookback_candles = env::var("BREAKOUT_LOOKBACK_CANDLES")
+            .unwrap_or_else(|_| "20".to_string())
+            .parse::<u32>()
+            .map_err(|err| format!("invalid BREAKOUT_LOOKBACK_CANDLES: {err}"))?;
+
+        Ok(Self {
+            default_symbols,
+            default_timeframe,
+            default_notional,
+            momentum_lookback_candles,
+            breakout_lookback_candles,
+        })
+    }
+
+    fn default_configs(&self) -> Vec<StrategyConfig> {
+        build_default_strategy_configs(
+            self.default_symbols.clone(),
+            self.default_timeframe,
+            self.default_notional,
+            self.momentum_lookback_candles,
+            self.breakout_lookback_candles,
+        )
+    }
 }
 
 impl AppConfig {
@@ -308,6 +369,79 @@ struct FeedStatusResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Deserialize)]
+struct RecentSignalsQuery {
+    symbol: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct RecentSignalsResponse {
+    signals: Vec<SignalRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyListResponse {
+    strategies: Vec<StrategyStatusView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyStatusResponse {
+    strategy: StrategyStatusView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyToggleResponse {
+    strategy: StrategyStatusView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyStatusView {
+    strategy_id: String,
+    status: String,
+    mode: String,
+    symbols: Vec<String>,
+    timeframe: String,
+    suggested_notional: String,
+    momentum_lookback_candles: i32,
+    breakout_lookback_candles: i32,
+    last_evaluated_at: Option<chrono::DateTime<Utc>>,
+    last_evaluation_reason: Option<String>,
+    last_signal_id: Option<Uuid>,
+    last_signal_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+struct EvaluateStrategyRequest {
+    symbol: Option<String>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct EvaluateStrategyResponse {
+    strategy_id: String,
+    symbol: String,
+    generated: bool,
+    signal_id: Option<Uuid>,
+    side: Option<String>,
+    confidence: Option<String>,
+    reason: String,
+    source_candle_open_time: Option<chrono::DateTime<Utc>>,
+    correlation_id: Uuid,
+}
+
 #[tokio::main]
 async fn main() {
     init_tracing();
@@ -328,6 +462,8 @@ async fn main() {
     let startup_correlation_id = Uuid::new_v4();
     let market_config =
         MarketIngestConfig::from_env().expect("invalid market ingest configuration");
+    let strategy_runtime =
+        StrategyRuntimeConfig::from_env().expect("invalid strategy configuration");
 
     event_publisher
         .publish(SystemEventType::SystemStarted.into_event(
@@ -348,6 +484,7 @@ async fn main() {
         started_at,
         market_mode: MarketMode::Paper,
         market_config,
+        strategy_runtime,
     };
 
     let app = Router::new()
@@ -367,6 +504,12 @@ async fn main() {
         .route("/market/ticks/latest", get(get_latest_tick))
         .route("/market/candles", get(get_market_candles))
         .route("/market/feed-status", get(get_market_feed_status))
+        .route("/strategy/list", get(get_strategy_list))
+        .route("/strategy/:id/status", get(get_strategy_by_id))
+        .route("/strategy/:id/enable", post(enable_strategy))
+        .route("/strategy/:id/disable", post(disable_strategy))
+        .route("/strategy/:id/evaluate", post(evaluate_strategy_handler))
+        .route("/signals/recent", get(get_recent_signals))
         .layer(middleware::from_fn(request_context_middleware))
         .with_state(state);
 
@@ -466,6 +609,100 @@ fn bounded_candle_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(value) if value > 0 => value.min(MAX_CANDLE_LIMIT),
         _ => DEFAULT_CANDLE_LIMIT,
+    }
+}
+
+fn parse_strategy_id(value: &str) -> Result<StrategyId, aegis_core::CoreError> {
+    value.parse()
+}
+
+fn default_strategy_symbol(config: &StrategyConfig) -> Symbol {
+    config
+        .symbols
+        .first()
+        .cloned()
+        .expect("strategy default symbols must not be empty")
+}
+
+async fn ensure_strategy_configs(state: &AppState) -> Result<Vec<StrategyConfig>, anyhow::Error> {
+    let mut configs = Vec::new();
+    for config in state.strategy_runtime.default_configs() {
+        let record = upsert_strategy_config(&state.db_pool, &config).await?;
+        configs.push(strategy_config_from_record(&record)?);
+    }
+
+    Ok(configs)
+}
+
+async fn ensure_strategy_config(
+    state: &AppState,
+    strategy_id: StrategyId,
+) -> Result<StrategyConfig, anyhow::Error> {
+    let _ = ensure_strategy_configs(state).await?;
+    let record = get_strategy_status(&state.db_pool, strategy_id)
+        .await?
+        .map(|status| status.config)
+        .ok_or_else(|| anyhow::anyhow!("strategy config not found after initialization"))?;
+    Ok(strategy_config_from_record(&record)?)
+}
+
+fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
+    let state = record.state;
+    StrategyStatusView {
+        strategy_id: record.config.strategy_id,
+        status: record.config.status,
+        mode: record.config.mode,
+        symbols: record
+            .config
+            .symbols
+            .split(',')
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        timeframe: record.config.timeframe,
+        suggested_notional: record.config.suggested_notional.to_string(),
+        momentum_lookback_candles: record.config.momentum_lookback_candles,
+        breakout_lookback_candles: record.config.breakout_lookback_candles,
+        last_evaluated_at: state.as_ref().and_then(|state| state.last_evaluated_at),
+        last_evaluation_reason: state
+            .as_ref()
+            .and_then(|state| state.last_evaluation_reason.clone()),
+        last_signal_id: state.as_ref().and_then(|state| state.last_signal_id),
+        last_signal_at: state.as_ref().and_then(|state| state.last_signal_at),
+    }
+}
+
+fn evaluate_strategy_response(
+    strategy_id: StrategyId,
+    symbol: &Symbol,
+    outcome: Option<&InsertSignalOutcome>,
+    generated: bool,
+    reason: SignalReason,
+    correlation_id: Uuid,
+) -> EvaluateStrategyResponse {
+    match outcome {
+        Some(outcome) => EvaluateStrategyResponse {
+            strategy_id: strategy_id.to_string(),
+            symbol: symbol.as_str().to_string(),
+            generated,
+            signal_id: Some(outcome.signal.id),
+            side: Some(outcome.signal.side.clone()),
+            confidence: Some(outcome.signal.confidence.to_string()),
+            reason: outcome.signal.reason.clone(),
+            source_candle_open_time: Some(outcome.signal.source_candle_open_time),
+            correlation_id,
+        },
+        None => EvaluateStrategyResponse {
+            strategy_id: strategy_id.to_string(),
+            symbol: symbol.as_str().to_string(),
+            generated: false,
+            signal_id: None,
+            side: None,
+            confidence: None,
+            reason: reason.as_str().to_string(),
+            source_candle_open_time: None,
+            correlation_id,
+        },
     }
 }
 
@@ -1502,6 +1739,643 @@ async fn get_market_feed_status(
                 .into_response()
         }
     }
+}
+
+async fn get_strategy_list(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    if let Err(err) = ensure_strategy_configs(&state).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            "failed to ensure strategy configs"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_initialize_strategy_configs",
+                message: "Failed to initialize strategy configs.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match list_strategy_status(&state.db_pool).await {
+        Ok(strategies) => (
+            StatusCode::OK,
+            Json(StrategyListResponse {
+                strategies: strategies.into_iter().map(strategy_status_view).collect(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list strategy status"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_strategy_status",
+                    message: "Failed to query strategy status.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_strategy_by_id(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(err) = ensure_strategy_config(&state, strategy_id).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            strategy_id = %strategy_id,
+            "failed to ensure strategy config"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_initialize_strategy_config",
+                message: "Failed to initialize strategy config.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match get_strategy_status(&state.db_pool, strategy_id).await {
+        Ok(Some(strategy)) => (
+            StatusCode::OK,
+            Json(StrategyStatusResponse {
+                strategy: strategy_status_view(strategy),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "strategy_not_found",
+                message: "Strategy configuration was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                strategy_id = %strategy_id,
+                "failed to query strategy status"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_strategy_status",
+                    message: "Failed to query strategy status.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn enable_strategy(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    toggle_strategy_status(state, id, StrategyStatus::Enabled, request).await
+}
+
+async fn disable_strategy(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    toggle_strategy_status(state, id, StrategyStatus::Disabled, request).await
+}
+
+async fn toggle_strategy_status(
+    state: AppState,
+    id: String,
+    status: StrategyStatus,
+    request: Option<Extension<RequestContext>>,
+) -> Response {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let mut config = match ensure_strategy_config(&state, strategy_id).await {
+        Ok(config) => config,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                strategy_id = %strategy_id,
+                "failed to load strategy config"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_strategy_config",
+                    message: "Failed to load strategy config.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    config.status = status;
+
+    match upsert_strategy_config(&state.db_pool, &config).await {
+        Ok(_) => match get_strategy_status(&state.db_pool, strategy_id).await {
+            Ok(Some(strategy)) => (
+                StatusCode::OK,
+                Json(StrategyToggleResponse {
+                    strategy: strategy_status_view(strategy),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Ok(None) => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "strategy_not_found",
+                    message: "Strategy configuration was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    strategy_id = %strategy_id,
+                    "failed to read toggled strategy status"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_strategy_status",
+                        message: "Failed to query updated strategy status.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                strategy_id = %strategy_id,
+                "failed to persist strategy status"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_update_strategy_status",
+                    message: "Failed to update strategy status.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_recent_signals(
+    State(state): State<AppState>,
+    Query(query): Query<RecentSignalsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let symbol = match query.symbol {
+        Some(symbol) => match Symbol::new(symbol) {
+            Ok(symbol) => Some(symbol),
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_symbol",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    match list_recent_signals(&state.db_pool, symbol.as_ref(), bounded_limit(query.limit)).await {
+        Ok(signals) => (
+            StatusCode::OK,
+            Json(RecentSignalsResponse {
+                signals,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query recent signals"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_recent_signals",
+                    message: "Failed to query recent signals.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn evaluate_strategy_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<EvaluateStrategyRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let config = match ensure_strategy_config(&state, strategy_id).await {
+        Ok(config) => config,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                strategy_id = %strategy_id,
+                "failed to load strategy config"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_strategy_config",
+                    message: "Failed to load strategy config.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let symbol = match payload.symbol {
+        Some(symbol) => match Symbol::new(symbol) {
+            Ok(symbol) => symbol,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_symbol",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => default_strategy_symbol(&config),
+    };
+
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let required_candles = match strategy_id {
+        StrategyId::MomentumV1 => config.momentum_lookback_candles as i64 + 1,
+        StrategyId::VolatilityBreakoutV1 => config.breakout_lookback_candles as i64 + 1,
+    };
+    let candles = match get_recent_closed_candles(
+        &state.db_pool,
+        &symbol,
+        config.timeframe,
+        required_candles.max(2),
+    )
+    .await
+    {
+        Ok(candles) => candles,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                strategy_id = %strategy_id,
+                symbol = %symbol,
+                "failed to load recent closed candles"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_closed_candles",
+                    message: "Failed to query recent closed candles.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let evaluation_context = StrategyEvaluationContext {
+        correlation_id,
+        strategy_id,
+        symbol: symbol.clone(),
+        config,
+        candles,
+        evaluated_at: Utc::now(),
+    };
+
+    let evaluation = match evaluate_strategy(evaluation_context) {
+        Ok(evaluation) => evaluation,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                strategy_id = %strategy_id,
+                symbol = %symbol,
+                "failed to evaluate strategy"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_evaluate_strategy",
+                    message: "Strategy evaluation failed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(signal) = evaluation.signal.clone() {
+        let insert_outcome = match insert_signal_deduped(&state.db_pool, &signal).await {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    strategy_id = %strategy_id,
+                    symbol = %symbol,
+                    "failed to persist signal"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_persist_signal",
+                        message: "Signal could not be persisted.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        if let Err(err) = update_strategy_state(
+            &state.db_pool,
+            strategy_id,
+            evaluation.evaluated_at,
+            evaluation.reason,
+            Some(insert_outcome.signal.id),
+            Some(insert_outcome.signal.created_at),
+        )
+        .await
+        {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                strategy_id = %strategy_id,
+                symbol = %symbol,
+                "failed to update strategy state after signal generation"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_update_strategy_state",
+                    message: "Strategy state could not be updated.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+
+        if insert_outcome.inserted {
+            let event_publisher = PostgresEventPublisher::new(state.db_pool.clone());
+            let event = SystemEventType::SignalGenerated.into_event(
+                insert_outcome.signal.correlation_id,
+                state.config.app_name.clone(),
+                json!({
+                    "signal_id": insert_outcome.signal.id,
+                    "strategy_id": insert_outcome.signal.strategy_id,
+                    "symbol": insert_outcome.signal.symbol,
+                    "side": insert_outcome.signal.side,
+                    "confidence": insert_outcome.signal.confidence,
+                    "timeframe": insert_outcome.signal.timeframe,
+                    "reason": insert_outcome.signal.reason,
+                    "suggested_notional": insert_outcome.signal.suggested_notional,
+                    "source_candle_open_time": insert_outcome.signal.source_candle_open_time,
+                    "correlation_id": insert_outcome.signal.correlation_id,
+                }),
+            );
+            if let Err(err) = event_publisher.publish(event).await {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    strategy_id = %strategy_id,
+                    symbol = %symbol,
+                    "failed to publish signal.generated event"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_publish_signal_event",
+                        message: "signal.generated event could not be published.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+
+        return (
+            StatusCode::OK,
+            Json(evaluate_strategy_response(
+                strategy_id,
+                &symbol,
+                Some(&insert_outcome),
+                true,
+                evaluation.reason,
+                correlation_id,
+            )),
+        )
+            .into_response();
+    }
+
+    if let Err(err) = update_strategy_state(
+        &state.db_pool,
+        strategy_id,
+        evaluation.evaluated_at,
+        evaluation.reason,
+        None,
+        None,
+    )
+    .await
+    {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            strategy_id = %strategy_id,
+            symbol = %symbol,
+            "failed to update strategy state after no-signal evaluation"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_update_strategy_state",
+                message: "Strategy state could not be updated.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(evaluate_strategy_response(
+            strategy_id,
+            &symbol,
+            None,
+            false,
+            evaluation.reason,
+            correlation_id,
+        )),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

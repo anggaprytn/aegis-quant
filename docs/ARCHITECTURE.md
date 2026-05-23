@@ -51,6 +51,25 @@ Notes:
 - Out-of-order trades are rejected explicitly rather than rewriting historical candles.
 - The ingest boundary is public market data only. No API keys, private streams, or exchange execution are introduced here.
 
+## Strategy evaluation flow
+
+Current strategy evaluation follows this path:
+
+```txt
+closed candles from Postgres
+-> deterministic strategy evaluation
+-> persisted signal
+-> signal.generated event
+-> risk evaluation later
+```
+
+Notes:
+
+- Strategy evaluation reads stored candles only and ignores open candles.
+- `momentum_v1` and `volatility_breakout_v1` are deterministic library strategies with explicit config.
+- Duplicate signals for the same strategy, symbol, timeframe, side, reason, and closed candle are deduped in Postgres.
+- Signal generation is intentionally separated from risk evaluation and paper order creation. Strategy logic cannot submit orders directly.
+
 ## Deployment shape
 
 For MVP local development:

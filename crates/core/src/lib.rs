@@ -190,6 +190,248 @@ pub enum Side {
     Sell,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyId {
+    MomentumV1,
+    VolatilityBreakoutV1,
+}
+
+impl StrategyId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MomentumV1 => "momentum_v1",
+            Self::VolatilityBreakoutV1 => "volatility_breakout_v1",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyId {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "momentum_v1" => Ok(Self::MomentumV1),
+            "volatility_breakout_v1" => Ok(Self::VolatilityBreakoutV1),
+            other => Err(CoreError::UnsupportedStrategyId(other.to_string())),
+        }
+    }
+}
+
+impl std::fmt::Display for StrategyId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyStatus {
+    Enabled,
+    Disabled,
+}
+
+impl StrategyStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "enabled" => Ok(Self::Enabled),
+            "disabled" => Ok(Self::Disabled),
+            other => Err(CoreError::UnsupportedStrategyStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyMode {
+    SignalOnly,
+}
+
+impl StrategyMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SignalOnly => "signal_only",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "signal_only" => Ok(Self::SignalOnly),
+            other => Err(CoreError::UnsupportedStrategyMode(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SignalSide {
+    Buy,
+    Sell,
+}
+
+impl SignalSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        }
+    }
+}
+
+impl std::str::FromStr for SignalSide {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "BUY" => Ok(Self::Buy),
+            "SELL" => Ok(Self::Sell),
+            other => Err(CoreError::UnsupportedSignalSide(other.to_string())),
+        }
+    }
+}
+
+impl From<SignalSide> for Side {
+    fn from(value: SignalSide) -> Self {
+        match value {
+            SignalSide::Buy => Side::Buy,
+            SignalSide::Sell => Side::Sell,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalReason {
+    ThreeConsecutiveHigherCloses,
+    MomentumHigherCloses,
+    BreakoutAboveRecentHigh,
+    ConditionsNotMet,
+    InsufficientHistory,
+    StrategyDisabled,
+}
+
+impl SignalReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ThreeConsecutiveHigherCloses => "three_consecutive_higher_closes",
+            Self::MomentumHigherCloses => "momentum_higher_closes",
+            Self::BreakoutAboveRecentHigh => "breakout_above_recent_high",
+            Self::ConditionsNotMet => "conditions_not_met",
+            Self::InsufficientHistory => "insufficient_history",
+            Self::StrategyDisabled => "strategy_disabled",
+        }
+    }
+}
+
+impl std::str::FromStr for SignalReason {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "three_consecutive_higher_closes" => Ok(Self::ThreeConsecutiveHigherCloses),
+            "momentum_higher_closes" => Ok(Self::MomentumHigherCloses),
+            "breakout_above_recent_high" => Ok(Self::BreakoutAboveRecentHigh),
+            "conditions_not_met" => Ok(Self::ConditionsNotMet),
+            "insufficient_history" => Ok(Self::InsufficientHistory),
+            "strategy_disabled" => Ok(Self::StrategyDisabled),
+            other => Err(CoreError::UnsupportedSignalReason(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalConfidence {
+    pub value: Decimal,
+}
+
+impl SignalConfidence {
+    pub fn new(value: Decimal) -> Result<Self, CoreError> {
+        if value < Decimal::ZERO || value > Decimal::ONE {
+            return Err(CoreError::InvalidSignalConfidence(value.to_string()));
+        }
+
+        Ok(Self { value })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyConfig {
+    pub strategy_id: StrategyId,
+    pub status: StrategyStatus,
+    pub mode: StrategyMode,
+    pub symbols: Vec<Symbol>,
+    pub timeframe: CandleInterval,
+    pub suggested_notional: Decimal,
+    pub momentum_lookback_candles: u32,
+    pub breakout_lookback_candles: u32,
+    pub stop_loss_pct: Option<Decimal>,
+    pub take_profit_pct: Option<Decimal>,
+}
+
+impl StrategyConfig {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.suggested_notional <= Decimal::ZERO {
+            return Err(CoreError::InvalidStrategyNotional);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategySignal {
+    pub signal_id: Uuid,
+    pub strategy_id: StrategyId,
+    pub symbol: Symbol,
+    pub side: SignalSide,
+    pub confidence: SignalConfidence,
+    pub timeframe: CandleInterval,
+    pub reason: SignalReason,
+    pub suggested_notional: Decimal,
+    pub stop_loss_pct: Option<Decimal>,
+    pub take_profit_pct: Option<Decimal>,
+    pub source_candle_open_time: DateTime<Utc>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyEvaluationContext {
+    pub correlation_id: Uuid,
+    pub strategy_id: StrategyId,
+    pub symbol: Symbol,
+    pub config: StrategyConfig,
+    pub candles: Vec<Candle>,
+    pub evaluated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyEvaluationResult {
+    pub strategy_id: StrategyId,
+    pub symbol: Symbol,
+    pub timeframe: CandleInterval,
+    pub generated: bool,
+    pub reason: SignalReason,
+    pub signal: Option<StrategySignal>,
+    pub correlation_id: Uuid,
+    pub evaluated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MarketMode {
@@ -212,16 +454,7 @@ impl Money {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Signal {
-    pub signal_id: Uuid,
-    pub correlation_id: Uuid,
-    pub symbol: Symbol,
-    pub side: Side,
-    pub strength: Decimal,
-    pub strategy_name: String,
-    pub generated_at: DateTime<Utc>,
-}
+pub type Signal = StrategySignal;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RiskCheckContext {
@@ -529,12 +762,26 @@ pub enum CoreError {
     UnsupportedMarketDataSource(String),
     #[error("unsupported candle interval: {0}")]
     UnsupportedCandleInterval(String),
+    #[error("unsupported strategy id: {0}")]
+    UnsupportedStrategyId(String),
+    #[error("unsupported strategy status: {0}")]
+    UnsupportedStrategyStatus(String),
+    #[error("unsupported strategy mode: {0}")]
+    UnsupportedStrategyMode(String),
+    #[error("unsupported signal side: {0}")]
+    UnsupportedSignalSide(String),
+    #[error("unsupported signal reason: {0}")]
+    UnsupportedSignalReason(String),
     #[error("idempotency_key cannot be empty")]
     EmptyIdempotencyKey,
     #[error("quantity must be greater than zero")]
     InvalidOrderQuantity,
     #[error("limit_price must be greater than zero")]
     InvalidLimitPrice,
+    #[error("strategy suggested notional must be greater than zero")]
+    InvalidStrategyNotional,
+    #[error("signal confidence must be between 0 and 1: {0}")]
+    InvalidSignalConfidence(String),
     #[error("market trade price must be greater than zero")]
     InvalidMarketTradePrice,
     #[error("market trade quantity must be greater than zero")]

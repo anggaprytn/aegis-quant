@@ -1,7 +1,8 @@
 use aegis_core::{
     Candle, CandleInterval, DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus,
     MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperOrder, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, Side, Symbol,
+    RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig, StrategyId,
+    StrategySignal, Symbol,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -130,6 +131,61 @@ pub struct MarketFeedStatusRecord {
     pub last_error: Option<String>,
     pub reconnect_count: i32,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyConfigRecord {
+    pub strategy_id: String,
+    pub status: String,
+    pub mode: String,
+    pub symbols: String,
+    pub timeframe: String,
+    pub suggested_notional: Decimal,
+    pub momentum_lookback_candles: i32,
+    pub breakout_lookback_candles: i32,
+    pub stop_loss_pct: Option<Decimal>,
+    pub take_profit_pct: Option<Decimal>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyStateRecord {
+    pub strategy_id: String,
+    pub last_evaluated_at: Option<DateTime<Utc>>,
+    pub last_evaluation_reason: Option<String>,
+    pub last_signal_id: Option<Uuid>,
+    pub last_signal_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub side: String,
+    pub confidence: Decimal,
+    pub timeframe: String,
+    pub reason: String,
+    pub suggested_notional: Decimal,
+    pub stop_loss_pct: Option<Decimal>,
+    pub take_profit_pct: Option<Decimal>,
+    pub source_candle_open_time: DateTime<Utc>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyStatusRecord {
+    pub config: StrategyConfigRecord,
+    pub state: Option<StrategyStateRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InsertSignalOutcome {
+    pub signal: SignalRecord,
+    pub inserted: bool,
 }
 
 #[derive(Debug, Error)]
@@ -902,6 +958,484 @@ pub async fn list_candles(
     Ok(rows.iter().map(map_candle).collect())
 }
 
+pub async fn get_recent_closed_candles(
+    pool: &PgPool,
+    symbol: &Symbol,
+    interval: CandleInterval,
+    limit: i64,
+) -> Result<Vec<Candle>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        FROM candles
+        WHERE symbol = $1 AND interval = $2 AND is_closed = TRUE
+        ORDER BY open_time DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(symbol.as_str())
+    .bind(interval.as_str())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut candles = rows.iter().map(map_candle_domain).collect::<Vec<_>>();
+    candles.sort_by_key(|candle| candle.open_time);
+    Ok(candles)
+}
+
+pub async fn upsert_strategy_config(
+    pool: &PgPool,
+    config: &StrategyConfig,
+) -> Result<StrategyConfigRecord> {
+    let symbols = config
+        .symbols
+        .iter()
+        .map(|symbol| symbol.as_str().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_configs (
+            strategy_id,
+            status,
+            mode,
+            symbols,
+            timeframe,
+            suggested_notional,
+            momentum_lookback_candles,
+            breakout_lookback_candles,
+            stop_loss_pct,
+            take_profit_pct,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+        ON CONFLICT (strategy_id) DO UPDATE
+        SET
+            status = EXCLUDED.status,
+            mode = EXCLUDED.mode,
+            symbols = EXCLUDED.symbols,
+            timeframe = EXCLUDED.timeframe,
+            suggested_notional = EXCLUDED.suggested_notional,
+            momentum_lookback_candles = EXCLUDED.momentum_lookback_candles,
+            breakout_lookback_candles = EXCLUDED.breakout_lookback_candles,
+            stop_loss_pct = EXCLUDED.stop_loss_pct,
+            take_profit_pct = EXCLUDED.take_profit_pct,
+            updated_at = NOW()
+        RETURNING
+            strategy_id,
+            status,
+            mode,
+            symbols,
+            timeframe,
+            suggested_notional,
+            momentum_lookback_candles,
+            breakout_lookback_candles,
+            stop_loss_pct,
+            take_profit_pct,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(config.strategy_id.as_str())
+    .bind(config.status.as_str())
+    .bind(config.mode.as_str())
+    .bind(symbols)
+    .bind(config.timeframe.as_str())
+    .bind(config.suggested_notional)
+    .bind(config.momentum_lookback_candles as i32)
+    .bind(config.breakout_lookback_candles as i32)
+    .bind(config.stop_loss_pct)
+    .bind(config.take_profit_pct)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_config(&row))
+}
+
+pub async fn get_strategy_config(
+    pool: &PgPool,
+    strategy_id: StrategyId,
+) -> Result<Option<StrategyConfigRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            strategy_id,
+            status,
+            mode,
+            symbols,
+            timeframe,
+            suggested_notional,
+            momentum_lookback_candles,
+            breakout_lookback_candles,
+            stop_loss_pct,
+            take_profit_pct,
+            created_at,
+            updated_at
+        FROM strategy_configs
+        WHERE strategy_id = $1
+        "#,
+    )
+    .bind(strategy_id.as_str())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_strategy_config))
+}
+
+pub async fn update_strategy_state(
+    pool: &PgPool,
+    strategy_id: StrategyId,
+    last_evaluated_at: DateTime<Utc>,
+    last_evaluation_reason: SignalReason,
+    last_signal_id: Option<Uuid>,
+    last_signal_at: Option<DateTime<Utc>>,
+) -> Result<StrategyStateRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_state (
+            strategy_id,
+            last_evaluated_at,
+            last_evaluation_reason,
+            last_signal_id,
+            last_signal_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (strategy_id) DO UPDATE
+        SET
+            last_evaluated_at = EXCLUDED.last_evaluated_at,
+            last_evaluation_reason = EXCLUDED.last_evaluation_reason,
+            last_signal_id = EXCLUDED.last_signal_id,
+            last_signal_at = EXCLUDED.last_signal_at,
+            updated_at = NOW()
+        RETURNING
+            strategy_id,
+            last_evaluated_at,
+            last_evaluation_reason,
+            last_signal_id,
+            last_signal_at,
+            updated_at
+        "#,
+    )
+    .bind(strategy_id.as_str())
+    .bind(last_evaluated_at)
+    .bind(last_evaluation_reason.as_str())
+    .bind(last_signal_id)
+    .bind(last_signal_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_state(&row))
+}
+
+pub async fn insert_signal_deduped(
+    pool: &PgPool,
+    signal: &StrategySignal,
+) -> Result<InsertSignalOutcome> {
+    let inserted_row = sqlx::query(
+        r#"
+        INSERT INTO signals (
+            id,
+            correlation_id,
+            symbol,
+            side,
+            confidence,
+            strategy_id,
+            timeframe,
+            reason,
+            suggested_notional,
+            stop_loss_pct,
+            take_profit_pct,
+            source_candle_open_time,
+            generated_at,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+        ON CONFLICT (
+            strategy_id,
+            symbol,
+            timeframe,
+            source_candle_open_time,
+            side,
+            reason
+        ) DO NOTHING
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            side,
+            confidence,
+            timeframe,
+            reason,
+            suggested_notional,
+            stop_loss_pct,
+            take_profit_pct,
+            source_candle_open_time,
+            correlation_id,
+            created_at
+        "#,
+    )
+    .bind(signal.signal_id)
+    .bind(signal.correlation_id)
+    .bind(signal.symbol.as_str())
+    .bind(signal.side.as_str())
+    .bind(signal.confidence.value)
+    .bind(signal.strategy_id.as_str())
+    .bind(signal.timeframe.as_str())
+    .bind(signal.reason.as_str())
+    .bind(signal.suggested_notional)
+    .bind(signal.stop_loss_pct)
+    .bind(signal.take_profit_pct)
+    .bind(signal.source_candle_open_time)
+    .bind(signal.created_at)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(row) = inserted_row {
+        return Ok(InsertSignalOutcome {
+            signal: map_signal(&row),
+            inserted: true,
+        });
+    }
+
+    let existing_row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            side,
+            confidence,
+            timeframe,
+            reason,
+            suggested_notional,
+            stop_loss_pct,
+            take_profit_pct,
+            source_candle_open_time,
+            correlation_id,
+            created_at
+        FROM signals
+        WHERE strategy_id = $1
+          AND symbol = $2
+          AND timeframe = $3
+          AND source_candle_open_time = $4
+          AND side = $5
+          AND reason = $6
+        "#,
+    )
+    .bind(signal.strategy_id.as_str())
+    .bind(signal.symbol.as_str())
+    .bind(signal.timeframe.as_str())
+    .bind(signal.source_candle_open_time)
+    .bind(signal.side.as_str())
+    .bind(signal.reason.as_str())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(InsertSignalOutcome {
+        signal: map_signal(&existing_row),
+        inserted: false,
+    })
+}
+
+pub async fn list_recent_signals(
+    pool: &PgPool,
+    symbol: Option<&Symbol>,
+    limit: i64,
+) -> Result<Vec<SignalRecord>> {
+    let rows = if let Some(symbol) = symbol {
+        sqlx::query(
+            r#"
+            SELECT
+                id,
+                strategy_id,
+                symbol,
+                side,
+                confidence,
+                timeframe,
+                reason,
+                suggested_notional,
+                stop_loss_pct,
+                take_profit_pct,
+                source_candle_open_time,
+                correlation_id,
+                created_at
+            FROM signals
+            WHERE symbol = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(symbol.as_str())
+        .bind(limit)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT
+                id,
+                strategy_id,
+                symbol,
+                side,
+                confidence,
+                timeframe,
+                reason,
+                suggested_notional,
+                stop_loss_pct,
+                take_profit_pct,
+                source_candle_open_time,
+                correlation_id,
+                created_at
+            FROM signals
+            ORDER BY created_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(rows.iter().map(map_signal).collect())
+}
+
+pub async fn get_strategy_status(
+    pool: &PgPool,
+    strategy_id: StrategyId,
+) -> Result<Option<StrategyStatusRecord>> {
+    let config = match get_strategy_config(pool, strategy_id).await? {
+        Some(config) => config,
+        None => return Ok(None),
+    };
+
+    let state = sqlx::query(
+        r#"
+        SELECT
+            strategy_id,
+            last_evaluated_at,
+            last_evaluation_reason,
+            last_signal_id,
+            last_signal_at,
+            updated_at
+        FROM strategy_state
+        WHERE strategy_id = $1
+        "#,
+    )
+    .bind(strategy_id.as_str())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(Some(StrategyStatusRecord {
+        config,
+        state: state.as_ref().map(map_strategy_state),
+    }))
+}
+
+pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            c.strategy_id AS config_strategy_id,
+            c.status,
+            c.mode,
+            c.symbols,
+            c.timeframe,
+            c.suggested_notional,
+            c.momentum_lookback_candles,
+            c.breakout_lookback_candles,
+            c.stop_loss_pct,
+            c.take_profit_pct,
+            c.created_at AS config_created_at,
+            c.updated_at AS config_updated_at,
+            s.strategy_id AS state_strategy_id,
+            s.last_evaluated_at,
+            s.last_evaluation_reason,
+            s.last_signal_id,
+            s.last_signal_at,
+            s.updated_at AS state_updated_at
+        FROM strategy_configs c
+        LEFT JOIN strategy_state s
+            ON s.strategy_id = c.strategy_id
+        ORDER BY c.strategy_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| StrategyStatusRecord {
+            config: StrategyConfigRecord {
+                strategy_id: row.get("config_strategy_id"),
+                status: row.get("status"),
+                mode: row.get("mode"),
+                symbols: row.get("symbols"),
+                timeframe: row.get("timeframe"),
+                suggested_notional: row.get("suggested_notional"),
+                momentum_lookback_candles: row.get("momentum_lookback_candles"),
+                breakout_lookback_candles: row.get("breakout_lookback_candles"),
+                stop_loss_pct: row.get("stop_loss_pct"),
+                take_profit_pct: row.get("take_profit_pct"),
+                created_at: row.get("config_created_at"),
+                updated_at: row.get("config_updated_at"),
+            },
+            state: row
+                .get::<Option<String>, _>("state_strategy_id")
+                .map(|strategy_id| StrategyStateRecord {
+                    strategy_id,
+                    last_evaluated_at: row.get("last_evaluated_at"),
+                    last_evaluation_reason: row.get("last_evaluation_reason"),
+                    last_signal_id: row.get("last_signal_id"),
+                    last_signal_at: row.get("last_signal_at"),
+                    updated_at: row.get("state_updated_at"),
+                }),
+        })
+        .collect())
+}
+
+pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<StrategyConfig> {
+    let symbols = record
+        .symbols
+        .split(',')
+        .filter(|value| !value.trim().is_empty())
+        .map(Symbol::new)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let config = StrategyConfig {
+        strategy_id: record.strategy_id.parse()?,
+        status: record.status.parse()?,
+        mode: record.mode.parse()?,
+        symbols,
+        timeframe: record.timeframe.parse()?,
+        suggested_notional: record.suggested_notional,
+        momentum_lookback_candles: record.momentum_lookback_candles as u32,
+        breakout_lookback_candles: record.breakout_lookback_candles as u32,
+        stop_loss_pct: record.stop_loss_pct,
+        take_profit_pct: record.take_profit_pct,
+    };
+    config.validate()?;
+    Ok(config)
+}
+
 pub async fn upsert_market_feed_status(
     pool: &PgPool,
     exchange: MarketDataSource,
@@ -1156,6 +1690,33 @@ fn map_candle(row: &sqlx::postgres::PgRow) -> CandleRecord {
     }
 }
 
+fn map_candle_domain(row: &sqlx::postgres::PgRow) -> Candle {
+    Candle {
+        id: row.get("id"),
+        exchange: row
+            .get::<String, _>("exchange")
+            .parse()
+            .expect("database exchange must be supported"),
+        symbol: Symbol::new(row.get::<String, _>("symbol")).expect("database symbol must be valid"),
+        interval: row
+            .get::<String, _>("interval")
+            .parse()
+            .expect("database interval must be supported"),
+        open_time: row.get("open_time"),
+        close_time: row.get("close_time"),
+        open: row.get("open"),
+        high: row.get("high"),
+        low: row.get("low"),
+        close: row.get("close"),
+        volume: row.get("volume"),
+        quote_volume: row.get("quote_volume"),
+        trade_count: row.get("trade_count"),
+        is_closed: row.get("is_closed"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
 fn map_market_feed_status(row: &sqlx::postgres::PgRow) -> MarketFeedStatusRecord {
     MarketFeedStatusRecord {
         exchange: row.get("exchange"),
@@ -1166,6 +1727,52 @@ fn map_market_feed_status(row: &sqlx::postgres::PgRow) -> MarketFeedStatusRecord
         last_error: row.get("last_error"),
         reconnect_count: row.get("reconnect_count"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
+    StrategyConfigRecord {
+        strategy_id: row.get("strategy_id"),
+        status: row.get("status"),
+        mode: row.get("mode"),
+        symbols: row.get("symbols"),
+        timeframe: row.get("timeframe"),
+        suggested_notional: row.get("suggested_notional"),
+        momentum_lookback_candles: row.get("momentum_lookback_candles"),
+        breakout_lookback_candles: row.get("breakout_lookback_candles"),
+        stop_loss_pct: row.get("stop_loss_pct"),
+        take_profit_pct: row.get("take_profit_pct"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_strategy_state(row: &sqlx::postgres::PgRow) -> StrategyStateRecord {
+    StrategyStateRecord {
+        strategy_id: row.get("strategy_id"),
+        last_evaluated_at: row.get("last_evaluated_at"),
+        last_evaluation_reason: row.get("last_evaluation_reason"),
+        last_signal_id: row.get("last_signal_id"),
+        last_signal_at: row.get("last_signal_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
+    SignalRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        side: row.get("side"),
+        confidence: row.get("confidence"),
+        timeframe: row.get("timeframe"),
+        reason: row.get("reason"),
+        suggested_notional: row.get("suggested_notional"),
+        stop_loss_pct: row.get("stop_loss_pct"),
+        take_profit_pct: row.get("take_profit_pct"),
+        source_candle_open_time: row.get("source_candle_open_time"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
     }
 }
 
