@@ -22,19 +22,25 @@ services:
       retries: 5
 
   migrate:
-    image: ghcr.io/kawamuray/sqlx-cli:0.8.6
+    image: postgres:16
     container_name: aegis-quant-migrate
+    profiles: ["migrate"]
     depends_on:
       postgres:
         condition: service_healthy
     env_file:
       - ../.env
     environment:
-      DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis_quant
+      PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - ../crates/db/migrations:/migrations:ro
-    entrypoint: ["sqlx"]
-    command: ["migrate", "run", "--source", "/migrations"]
+      - ..:/app:ro
+    working_dir: /app
+    command:
+      [
+        "sh",
+        "-ec",
+        "find crates/db/migrations -maxdepth 1 -type f -name '*.sql' | sort | while IFS= read -r f; do echo \"==> applying $$f\"; psql -h postgres -U ${POSTGRES_USER:-aegis} -d ${POSTGRES_DB:-aegis_quant} -v ON_ERROR_STOP=1 -f \"$$f\"; done",
+      ]
 
   api:
     build:
@@ -45,8 +51,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
@@ -64,8 +68,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
@@ -82,8 +84,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:

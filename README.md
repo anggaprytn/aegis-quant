@@ -120,9 +120,10 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 1. Copy `.env.example` to `.env`.
 2. Review `.env` and set a real local `AEGIS_JWT_SECRET`.
 3. Apply database migrations:
-   `docker compose -f infra/docker-compose.yml --env-file .env run --rm migrate`
+   `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres`
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
 4. Start core services:
-   `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres api`
+   `docker compose -f infra/docker-compose.yml --env-file .env up -d api`
 5. Bootstrap the owner:
    `curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner`
 6. Log in:
@@ -146,7 +147,10 @@ Core API + DB:
 `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres api`
 
 Migrations:
-`docker compose -f infra/docker-compose.yml --env-file .env run --rm migrate`
+`docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
+
+Migration note:
+The `migrate` service currently applies raw SQL files from `crates/db/migrations` in sorted order with `psql`. This is acceptable for current VPS bootstrap, but rerunning raw SQL may fail if any migration is non-idempotent. Treat this path as intended for fresh/bootstrap VPS databases until a proper `sqlx migrate` image is added.
 
 Dashboard:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
@@ -171,14 +175,16 @@ For VPS or any fresh environment, run migrations before starting API or DB-backe
 
 ```bash
 docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
-docker compose -f infra/docker-compose.yml --env-file .env run --rm migrate
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 docker compose -f infra/docker-compose.yml --env-file .env up -d api
 docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
 docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
 docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
 ```
 
-`api`, `market-ingest`, and `testnet-shadow-runner` also depend on the `migrate` service completing successfully, so Compose will not start them against an unmigrated database.
+If your VPS bootstrap script is `/usr/local/bin/syncaegis`, it should run the exact migration command below after Postgres is healthy and before starting `api`, `dashboard`, or any workers:
+
+`docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
 
 Optional workers:
 
