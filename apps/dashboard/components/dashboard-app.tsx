@@ -305,6 +305,10 @@ function AuthenticatedDashboard({
   const [resumeReason, setResumeReason] = useState("");
   const [resumeConfirmation, setResumeConfirmation] = useState("");
   const [testnetConfirmation, setTestnetConfirmation] = useState("");
+  const [testnetRepairAction, setTestnetRepairAction] = useState("MANUAL_RECHECK");
+  const [testnetRepairConfirmation, setTestnetRepairConfirmation] = useState("");
+  const [testnetRepairReason, setTestnetRepairReason] = useState("");
+  const [testnetRepairForce, setTestnetRepairForce] = useState(false);
   const [testnetSymbol, setTestnetSymbol] = useState("BTCUSDT");
   const [testnetSide, setTestnetSide] = useState("BUY");
   const [testnetOrderType, setTestnetOrderType] = useState("MARKET");
@@ -393,6 +397,12 @@ function AuthenticatedDashboard({
     enabled:
       (user.role === "OWNER" || user.role === "OPERATOR") &&
       Boolean(selectedTestnetOrderId),
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetRepairsQuery = useQuery({
+    queryKey: ["exchange-testnet-order-repairs", selectedTestnetOrderId],
+    queryFn: () => api.getExchangeTestnetOrderRepairs(selectedTestnetOrderId ?? ""),
+    enabled: Boolean(selectedTestnetOrderId),
     refetchInterval: 10_000,
   });
   const exchangeReconciliationRunsQuery = useQuery({
@@ -675,6 +685,8 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-symbols"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-balances"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-orders"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-order-lifecycle"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-order-repairs"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-runs"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-run"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-mismatches"] }),
@@ -685,6 +697,25 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["strategies"] }),
     ]);
   };
+
+  const selectedTestnetOrder =
+    (exchangeTestnetOrdersQuery.data?.orders ?? []).find(
+      (item) => item.client_order_id === selectedTestnetOrderId,
+    ) ?? null;
+  const selectedTestnetOrderRepairable =
+    selectedTestnetOrder !== null &&
+    [
+      "RECONCILIATION_REQUIRED",
+      "UNKNOWN_EXCHANGE_STATE",
+      "CANCEL_REQUESTED",
+      "FAILED",
+    ].includes(selectedTestnetOrder.execution_state);
+  const repairConfirmationText =
+    selectedTestnetOrder === null
+      ? ""
+      : testnetRepairAction === "SAFE_CANCEL_REQUEST"
+        ? `CANCEL TESTNET ${selectedTestnetOrder.client_order_id}`
+        : `REPAIR TESTNET ${selectedTestnetOrder.client_order_id}`;
 
   const killSwitchMutation = useMutation({
     mutationFn: () => api.activateKillSwitch(killSwitchReason || undefined),
@@ -846,6 +877,21 @@ function AuthenticatedDashboard({
       api.cancelExchangeTestnetOrder(clientOrderId, testnetConfirmation),
     onSuccess: async () => {
       setTestnetConfirmation("");
+      await refreshOperationalData();
+    },
+  });
+  const exchangeTestnetRepairMutation = useMutation({
+    mutationFn: (clientOrderId: string) =>
+      api.repairExchangeTestnetOrder(clientOrderId, {
+        action: testnetRepairAction,
+        confirmation_text: testnetRepairConfirmation,
+        reason: testnetRepairReason || undefined,
+        force: testnetRepairForce,
+      }),
+    onSuccess: async () => {
+      setTestnetRepairConfirmation("");
+      setTestnetRepairReason("");
+      setTestnetRepairForce(false);
       await refreshOperationalData();
     },
   });
@@ -2425,6 +2471,105 @@ function AuthenticatedDashboard({
                           </div>
                           <div className="text-slate-400">
                             {event.transition_source} {event.reason ?? "-"} {formatDateTime(event.created_at)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {selectedTestnetOrderRepairable ? (
+                  <div className="mt-4 rounded-xl border border-border bg-surface/40 px-3 py-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Repair Controls</div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <Field
+                        label="Action"
+                        value={testnetRepairAction}
+                        onChange={setTestnetRepairAction}
+                        as="select"
+                        options={
+                          user.role === "OWNER"
+                            ? [
+                                "MANUAL_RECHECK",
+                                "MARK_RECONCILIATION_REQUIRED",
+                                "MARK_ACKED",
+                                "MARK_CANCELLED",
+                                "MARK_REJECTED",
+                                "MARK_FAILED",
+                                "SAFE_CANCEL_REQUEST",
+                              ]
+                            : ["MANUAL_RECHECK", "MARK_RECONCILIATION_REQUIRED"]
+                        }
+                      />
+                      <Field
+                        label="Reason"
+                        value={testnetRepairReason}
+                        onChange={setTestnetRepairReason}
+                        placeholder="operator_requested_recheck"
+                      />
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <Field
+                        label={`Type "${repairConfirmationText}"`}
+                        value={testnetRepairConfirmation}
+                        onChange={setTestnetRepairConfirmation}
+                      />
+                      <label className="block text-sm">
+                        <span className="text-xs uppercase tracking-[0.18em] text-muted">Force</span>
+                        <button
+                          className={cn(
+                            "mt-1 w-full rounded-lg border px-3 py-2 text-left text-sm",
+                            testnetRepairForce
+                              ? "border-rose-400/50 bg-rose-400/10 text-rose-100"
+                              : "border-border bg-surface text-slate-200",
+                          )}
+                          onClick={() => setTestnetRepairForce((value) => !value)}
+                          type="button"
+                        >
+                          {testnetRepairForce ? "Dangerous force enabled" : "Force disabled"}
+                        </button>
+                      </label>
+                    </div>
+                    {testnetRepairForce ? (
+                      <div className="mt-3 rounded-lg border border-rose-400/40 bg-rose-400/10 px-3 py-2 text-rose-100">
+                        Force actions are owner-only and may override missing cancellation evidence.
+                      </div>
+                    ) : null}
+                    <button
+                      className="mt-3 rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm"
+                      onClick={() =>
+                        selectedTestnetOrder &&
+                        exchangeTestnetRepairMutation.mutate(selectedTestnetOrder.client_order_id)
+                      }
+                      disabled={
+                        !selectedTestnetOrder ||
+                        exchangeTestnetRepairMutation.isPending ||
+                        testnetRepairConfirmation !== repairConfirmationText
+                      }
+                    >
+                      Apply Repair
+                    </button>
+                    <InlineStatus
+                      error={getErrorMessage(exchangeTestnetRepairMutation.error)}
+                      success={
+                        exchangeTestnetRepairMutation.data
+                          ? `${exchangeTestnetRepairMutation.data.action} ${exchangeTestnetRepairMutation.data.status.toLowerCase()}`
+                          : undefined
+                      }
+                    />
+                  </div>
+                ) : null}
+                {exchangeTestnetRepairsQuery.data ? (
+                  <div className="mt-4 rounded-xl border border-border bg-surface/40 px-3 py-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Repair History</div>
+                    <div className="mt-2 space-y-2">
+                      {exchangeTestnetRepairsQuery.data.repairs.map((repair) => (
+                        <div key={repair.id} className="rounded-lg border border-border/60 px-2 py-2">
+                          <div>
+                            {repair.action} {repair.status} {repair.previous_state ?? "-"} to{" "}
+                            {repair.next_state ?? "-"}
+                          </div>
+                          <div className="text-slate-400">
+                            {repair.reason ?? "-"} {formatDateTime(repair.created_at)}
                           </div>
                         </div>
                       ))}

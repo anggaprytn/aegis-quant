@@ -685,6 +685,45 @@ export type ExchangeTestnetOrderLifecycleResponse = {
   timestamp: string;
 };
 
+export type ExchangeTestnetRepairValidationIssue = {
+  code: string;
+  message: string;
+};
+
+export type ExchangeTestnetRepairActionRecord = {
+  id: string;
+  client_order_id: string;
+  action: string;
+  status: string;
+  previous_state: string | null;
+  next_state: string | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  actor_id: string | null;
+  created_at: string;
+  correlation_id: string | null;
+};
+
+export type ExchangeTestnetRepairResponse = {
+  client_order_id: string;
+  action: string;
+  status: string;
+  previous_state: string | null;
+  next_state: string | null;
+  correlation_id: string;
+  issues: ExchangeTestnetRepairValidationIssue[];
+  request_id: string;
+  timestamp: string;
+};
+
+export type ExchangeTestnetRepairsResponse = {
+  client_order_id: string;
+  repairs: ExchangeTestnetRepairActionRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ExchangePrivateStreamStateRecord = {
   exchange: string;
   environment: string;

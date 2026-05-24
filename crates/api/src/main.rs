@@ -8,22 +8,24 @@ use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
 };
 use aegis_core::{
-    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-    AuthenticatedActor, BacktestRequest, CandleBackfillRequest, CandleBackfillResult,
-    CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
-    ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
-    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
-    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
-    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
-    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo, MarketMode, OrderIntent,
-    PaperCloseMode, PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, UserRole, UserStatus,
+    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
+    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
+    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
+    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
+    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
+    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
+    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
+    ExchangeSymbolInfo, MarketMode, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
+    PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyEvaluationContext, StrategyId,
+    StrategyStatus, Symbol, TestnetExecutionState, TestnetExecutionTransitionSource,
+    TestnetRepairAction, TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
+    TestnetRepairValidationIssue, UserRole, UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
@@ -50,31 +52,32 @@ use db::{
     get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
     get_strategy_status, get_system_event, get_system_state, get_user_by_email, get_user_by_id,
-    insert_audit_log, insert_exchange_testnet_order, insert_paper_account,
-    insert_paper_equity_snapshot, insert_risk_config_audit, insert_risk_evaluation, insert_session,
-    insert_signal_deduped, insert_strategy_config_audit, insert_system_event, insert_user,
-    list_backtest_runs, list_candle_backfill_runs, list_candles,
+    insert_audit_log, insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
+    insert_paper_account, insert_paper_equity_snapshot, insert_risk_config_audit,
+    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
+    insert_system_event, insert_user, list_backtest_runs, list_candle_backfill_runs, list_candles,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
-    list_exchange_testnet_orders, list_market_feed_statuses, list_open_paper_positions,
-    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
-    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_risk_config_audit, list_risk_config_versions, list_strategy_config_audit,
-    list_strategy_config_versions, list_strategy_status, load_risk_state_snapshot,
-    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
-    persist_risk_config_version, persist_strategy_config_version, revoke_session,
-    risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
-    rotate_session_refresh_token, set_kill_switch_state, strategy_config_audit_from_record,
-    strategy_config_from_record, strategy_config_version_from_record, update_strategy_state,
-    update_user_last_login, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
-    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
+    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
+    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
+    list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
+    list_strategy_config_audit, list_strategy_config_versions, list_strategy_status,
+    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
+    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
+    revoke_session, risk_config_audit_from_record, risk_config_from_record,
+    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
+    strategy_config_audit_from_record, strategy_config_from_record,
+    strategy_config_version_from_record, update_strategy_state, update_user_last_login,
+    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
+    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
+    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
-    ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, InsertSignalOutcome,
-    MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
-    PaperEquitySnapshotRecord, PaperPositionRecord, PaperTradeJournalRecord, PgPool,
-    RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
-    SystemStateRecord,
+    ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
+    ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
+    MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
+    PaperPositionRecord, PaperTradeJournalRecord, PgPool, RiskDecisionRecord, SignalRecord,
+    StateActor, StrategyStatusRecord, SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
@@ -623,6 +626,28 @@ struct ExchangeTestnetOrdersResponse {
 }
 
 #[derive(Serialize)]
+struct ExchangeTestnetRepairResponse {
+    client_order_id: String,
+    action: TestnetRepairAction,
+    status: TestnetRepairActionStatus,
+    previous_state: Option<String>,
+    next_state: Option<String>,
+    correlation_id: Uuid,
+    issues: Vec<TestnetRepairValidationIssue>,
+    request_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetRepairsResponse {
+    client_order_id: String,
+    repairs: Vec<ExchangeTestnetRepairActionView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ExchangeReconciliationRunResponse {
     run: ExchangeReconciliationRun,
     request_id: String,
@@ -694,6 +719,21 @@ struct TestnetExecutionLifecycleEventView {
     transition_source: String,
     reason: Option<String>,
     created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetRepairActionView {
+    id: Uuid,
+    client_order_id: String,
+    action: String,
+    status: String,
+    previous_state: Option<String>,
+    next_state: Option<String>,
+    reason: Option<String>,
+    payload: Option<Value>,
+    actor_id: Option<Uuid>,
+    created_at: chrono::DateTime<Utc>,
+    correlation_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -778,6 +818,16 @@ struct CancelExchangeTestnetOrderRequest {
     confirmation_text: String,
     recv_window_ms: Option<u64>,
     correlation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+struct RepairExchangeTestnetOrderRequest {
+    action: TestnetRepairAction,
+    confirmation_text: String,
+    reason: Option<String>,
+    force: Option<bool>,
+    correlation_id: Option<Uuid>,
+    recv_window_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -1317,6 +1367,14 @@ async fn main() {
             post(cancel_exchange_testnet_order),
         )
         .route(
+            "/exchange/testnet/orders/:client_order_id/repair",
+            post(repair_exchange_testnet_order),
+        )
+        .route(
+            "/exchange/testnet/orders/:client_order_id/repairs",
+            get(list_exchange_testnet_order_repairs),
+        )
+        .route(
             "/exchange/testnet/reconcile",
             post(reconcile_exchange_testnet_orders_handler),
         )
@@ -1692,6 +1750,12 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     if method == axum::http::Method::GET && path == "/exchange/testnet/balances" {
         return RouteAccess::Operator;
     }
+    if method == axum::http::Method::GET
+        && path.starts_with("/exchange/testnet/orders/")
+        && path.ends_with("/repairs")
+    {
+        return RouteAccess::Authenticated;
+    }
     if method == axum::http::Method::GET && path.starts_with("/exchange/testnet/orders/") {
         return RouteAccess::Operator;
     }
@@ -1699,6 +1763,12 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/reconcile" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST
+        && path.starts_with("/exchange/testnet/orders/")
+        && path.ends_with("/repair")
+    {
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::GET {
@@ -2328,6 +2398,24 @@ fn lifecycle_event_view(
     }
 }
 
+fn repair_action_view(
+    record: ExchangeTestnetRepairActionRecord,
+) -> ExchangeTestnetRepairActionView {
+    ExchangeTestnetRepairActionView {
+        id: record.id,
+        client_order_id: record.client_order_id,
+        action: record.action,
+        status: record.status,
+        previous_state: record.previous_state,
+        next_state: record.next_state,
+        reason: record.reason,
+        payload: record.payload,
+        actor_id: record.actor_id,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
+    }
+}
+
 fn parse_testnet_execution_state(value: &str) -> TestnetExecutionState {
     value.parse().unwrap_or(TestnetExecutionState::Failed)
 }
@@ -2407,6 +2495,134 @@ async fn append_testnet_lifecycle_transition(
         } else {
             None
         },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+fn owner_required_for_repair(action: TestnetRepairAction, force: bool) -> bool {
+    force || action.requires_owner()
+}
+
+fn operator_can_repair(action: TestnetRepairAction) -> bool {
+    action.allows_operator()
+}
+
+fn is_testnet_repair_authorized(role: UserRole, action: TestnetRepairAction, force: bool) -> bool {
+    if owner_required_for_repair(action, force) {
+        role == UserRole::Owner
+    } else {
+        role == UserRole::Owner || (role == UserRole::Operator && operator_can_repair(action))
+    }
+}
+
+fn order_has_cancelled_exchange_evidence(order: &ExchangeTestnetOrderRecord) -> bool {
+    if order.status.eq_ignore_ascii_case("CANCELLED") {
+        return true;
+    }
+
+    let has_cancel_status = |payload: &Value| {
+        payload
+            .get("status")
+            .and_then(Value::as_str)
+            .map(|value| {
+                value.eq_ignore_ascii_case("CANCELED") || value.eq_ignore_ascii_case("CANCELLED")
+            })
+            .unwrap_or(false)
+            || payload
+                .get("X")
+                .and_then(Value::as_str)
+                .map(|value| {
+                    value.eq_ignore_ascii_case("CANCELED")
+                        || value.eq_ignore_ascii_case("CANCELLED")
+                })
+                .unwrap_or(false)
+    };
+
+    order
+        .latest_status_payload
+        .as_ref()
+        .map(has_cancel_status)
+        .unwrap_or(false)
+        || order
+            .ack_payload
+            .as_ref()
+            .map(has_cancel_status)
+            .unwrap_or(false)
+}
+
+async fn persist_testnet_repair_action(
+    pool: &PgPool,
+    actor: &StateActor,
+    client_order_id: &str,
+    request: &TestnetRepairRequest,
+    status: TestnetRepairActionStatus,
+    previous_state: Option<TestnetExecutionState>,
+    next_state: Option<TestnetExecutionState>,
+    payload: Option<Value>,
+    correlation_id: Uuid,
+) -> anyhow::Result<ExchangeTestnetRepairActionRecord> {
+    insert_exchange_testnet_repair_action(
+        pool,
+        &ExchangeTestnetRepairActionRecord {
+            id: Uuid::new_v4(),
+            client_order_id: client_order_id.to_string(),
+            action: request.action.as_str().to_string(),
+            status: status.as_str().to_string(),
+            previous_state: previous_state.map(|value| value.as_str().to_string()),
+            next_state: next_state.map(|value| value.as_str().to_string()),
+            reason: request.reason.clone(),
+            payload,
+            actor_id: actor.actor_id,
+            created_at: Utc::now(),
+            correlation_id: Some(correlation_id),
+        },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+async fn append_explicit_testnet_repair_transition(
+    pool: &PgPool,
+    order: &ExchangeTestnetOrderRecord,
+    action: TestnetRepairAction,
+    next_state: TestnetExecutionState,
+    source: TestnetExecutionTransitionSource,
+    status: Option<&str>,
+    exchange_order_id: Option<&str>,
+    reason: Option<String>,
+    payload: Option<Value>,
+    created_by: Option<Uuid>,
+    correlation_id: Uuid,
+    force: bool,
+) -> anyhow::Result<Option<ExchangeTestnetOrderRecord>> {
+    let previous_state = parse_testnet_execution_state(&order.execution_state);
+    validate_testnet_repair_transition(action, previous_state, Some(next_state), force)?;
+    telemetry().inc_exchange_testnet_lifecycle_transition(source.as_str(), next_state.as_str());
+    telemetry().apply_exchange_testnet_order_state_transition(
+        Some(previous_state.as_str()),
+        next_state.as_str(),
+    );
+    append_exchange_testnet_lifecycle_event_and_update_order(
+        pool,
+        &ExchangeTestnetOrderLifecycleEventRecord {
+            id: Uuid::new_v4(),
+            order_id: Some(order.id),
+            client_order_id: order.client_order_id.clone(),
+            previous_state: Some(previous_state.as_str().to_string()),
+            next_state: next_state.as_str().to_string(),
+            transition_source: source.as_str().to_string(),
+            reason,
+            payload: payload.clone(),
+            created_by,
+            created_at: Utc::now(),
+            correlation_id: Some(correlation_id),
+        },
+        exchange_order_id,
+        status,
+        next_state,
+        payload.as_ref(),
+        None,
     )
     .await
     .map_err(Into::into)
@@ -4830,6 +5046,634 @@ async fn get_exchange_testnet_order_lifecycle(
         )
             .into_response(),
     }
+}
+
+async fn list_exchange_testnet_order_repairs(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Path(client_order_id): Path<String>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_exchange_testnet_repair_actions(&state.db_pool, &client_order_id).await {
+        Ok(repairs) => (
+            StatusCode::OK,
+            Json(ExchangeTestnetRepairsResponse {
+                client_order_id,
+                repairs: repairs.into_iter().map(repair_action_view).collect(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_exchange_testnet_repairs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn repair_exchange_testnet_order(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Path(client_order_id): Path<String>,
+    Json(payload): Json<RepairExchangeTestnetOrderRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let authenticated_actor = current_actor(actor.clone());
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let repair_request = TestnetRepairRequest {
+        action: payload.action,
+        confirmation_text: payload.confirmation_text,
+        reason: payload.reason,
+        force: payload.force.unwrap_or(false),
+        correlation_id: Some(correlation_id),
+    };
+
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &actor,
+        "exchange.testnet.repair.requested",
+        &client_order_id,
+        &json!({
+            "action": repair_request.action.as_str(),
+            "force": repair_request.force,
+        }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.repair.requested",
+            correlation_id,
+            &state.config.app_name,
+            json!({
+                "client_order_id": client_order_id,
+                "action": repair_request.action.as_str(),
+                "force": repair_request.force,
+            }),
+        ),
+    )
+    .await;
+
+    let Some(authenticated_actor) = authenticated_actor else {
+        telemetry()
+            .inc_exchange_testnet_repair_rejection(repair_request.action.as_str(), "missing_actor");
+        return unauthorized_response(
+            request.clone(),
+            "unauthorized",
+            "Authentication is required.",
+        );
+    };
+
+    let permitted = is_testnet_repair_authorized(
+        authenticated_actor.role,
+        repair_request.action,
+        repair_request.force,
+    );
+    if !permitted {
+        let _ = persist_testnet_repair_action(
+            &state.db_pool,
+            &actor,
+            &client_order_id,
+            &repair_request,
+            TestnetRepairActionStatus::Rejected,
+            None,
+            None,
+            Some(json!({ "reason": "forbidden" })),
+            correlation_id,
+        )
+        .await;
+        telemetry().inc_exchange_testnet_repair(
+            repair_request.action.as_str(),
+            TestnetRepairActionStatus::Rejected.as_str(),
+        );
+        telemetry()
+            .inc_exchange_testnet_repair_rejection(repair_request.action.as_str(), "forbidden");
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "exchange.testnet.repair.rejected",
+                correlation_id,
+                &state.config.app_name,
+                json!({ "client_order_id": client_order_id, "action": repair_request.action.as_str(), "reason": "forbidden" }),
+            ),
+        )
+        .await;
+        return unauthorized_response(
+            request.clone(),
+            "forbidden",
+            "You do not have permission to perform this repair action.",
+        );
+    }
+
+    if let Err(err) = repair_request.validate_confirmation(&client_order_id) {
+        let issues = vec![TestnetRepairValidationIssue {
+            code: "invalid_confirmation".to_string(),
+            message: err.to_string(),
+        }];
+        let _ = persist_testnet_repair_action(
+            &state.db_pool,
+            &actor,
+            &client_order_id,
+            &repair_request,
+            TestnetRepairActionStatus::Rejected,
+            None,
+            None,
+            Some(json!({ "issues": issues })),
+            correlation_id,
+        )
+        .await;
+        telemetry().inc_exchange_testnet_repair(
+            repair_request.action.as_str(),
+            TestnetRepairActionStatus::Rejected.as_str(),
+        );
+        telemetry().inc_exchange_testnet_repair_rejection(
+            repair_request.action.as_str(),
+            "invalid_confirmation",
+        );
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "exchange.testnet.repair.rejected",
+                correlation_id,
+                &state.config.app_name,
+                json!({ "client_order_id": client_order_id, "action": repair_request.action.as_str(), "reason": "invalid_confirmation" }),
+            ),
+        )
+        .await;
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_testnet_repair_confirmation",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let order =
+        match get_exchange_testnet_order_by_client_order_id(&state.db_pool, &client_order_id).await
+        {
+            Ok(Some(order)) => order,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "exchange_testnet_order_not_found",
+                        message: "Exchange testnet order was not found.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_exchange_testnet_order",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let previous_state = parse_testnet_execution_state(&order.execution_state);
+    let mut issues = Vec::new();
+    let mut next_state = None;
+    let mut repair_status = TestnetRepairActionStatus::Applied;
+
+    let updated_order = match repair_request.action {
+        TestnetRepairAction::MarkReconciliationRequired => {
+            next_state = Some(TestnetExecutionState::ReconciliationRequired);
+            match append_explicit_testnet_repair_transition(
+                &state.db_pool,
+                &order,
+                repair_request.action,
+                TestnetExecutionState::ReconciliationRequired,
+                TestnetExecutionTransitionSource::OperatorMarkReconciliationRequired,
+                None,
+                order.exchange_order_id.as_deref(),
+                repair_request
+                    .reason
+                    .clone()
+                    .or_else(|| Some("operator_marked_reconciliation_required".to_string())),
+                None,
+                actor.actor_id,
+                correlation_id,
+                repair_request.force,
+            )
+            .await
+            {
+                Ok(updated) => updated,
+                Err(err) => {
+                    issues.push(TestnetRepairValidationIssue {
+                        code: "invalid_repair_transition".to_string(),
+                        message: err.to_string(),
+                    });
+                    repair_status = TestnetRepairActionStatus::Rejected;
+                    None
+                }
+            }
+        }
+        TestnetRepairAction::ManualRecheck => {
+            match state
+                .exchange_testnet
+                .get_order_status(&client_order_id)
+                .await
+            {
+                Ok(status) => {
+                    let payload = status.raw_payload.clone();
+                    let (mapped_next_state, mapped_reason) =
+                        map_rest_reconciliation_status_to_transition(&status);
+                    next_state = Some(mapped_next_state);
+                    match append_testnet_lifecycle_transition(
+                        &state.db_pool,
+                        &order,
+                        mapped_next_state,
+                        TestnetExecutionTransitionSource::RestReconciliation,
+                        local_testnet_status_from_exchange_state(status.status),
+                        status.exchange_order_id.as_deref(),
+                        repair_request
+                            .reason
+                            .clone()
+                            .or_else(|| mapped_reason.map(ToString::to_string)),
+                        Some(payload),
+                        actor.actor_id,
+                        Some(correlation_id),
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(updated) => updated,
+                        Err(err) => {
+                            issues.push(TestnetRepairValidationIssue {
+                                code: "invalid_repair_transition".to_string(),
+                                message: err.to_string(),
+                            });
+                            repair_status = TestnetRepairActionStatus::Rejected;
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    issues.push(TestnetRepairValidationIssue {
+                        code: "manual_recheck_failed".to_string(),
+                        message: err.to_string(),
+                    });
+                    repair_status = TestnetRepairActionStatus::Rejected;
+                    None
+                }
+            }
+        }
+        TestnetRepairAction::MarkAcked => {
+            next_state = Some(TestnetExecutionState::ExchangeAcked);
+            match append_explicit_testnet_repair_transition(
+                &state.db_pool,
+                &order,
+                repair_request.action,
+                TestnetExecutionState::ExchangeAcked,
+                TestnetExecutionTransitionSource::RestReconciliation,
+                Some("ACKED"),
+                order.exchange_order_id.as_deref(),
+                repair_request
+                    .reason
+                    .clone()
+                    .or_else(|| Some("operator_marked_acked".to_string())),
+                Some(json!({ "force": repair_request.force })),
+                actor.actor_id,
+                correlation_id,
+                repair_request.force,
+            )
+            .await
+            {
+                Ok(updated) => updated,
+                Err(err) => {
+                    issues.push(TestnetRepairValidationIssue {
+                        code: "invalid_repair_transition".to_string(),
+                        message: err.to_string(),
+                    });
+                    repair_status = TestnetRepairActionStatus::Rejected;
+                    None
+                }
+            }
+        }
+        TestnetRepairAction::MarkCancelled => {
+            next_state = Some(TestnetExecutionState::Cancelled);
+            if !repair_request.force && !order_has_cancelled_exchange_evidence(&order) {
+                issues.push(TestnetRepairValidationIssue {
+                    code: "cancel_evidence_required".to_string(),
+                    message: "MARK_CANCELLED requires exchange evidence or force=true.".to_string(),
+                });
+                repair_status = TestnetRepairActionStatus::Rejected;
+                None
+            } else {
+                match append_explicit_testnet_repair_transition(
+                    &state.db_pool,
+                    &order,
+                    repair_request.action,
+                    TestnetExecutionState::Cancelled,
+                    TestnetExecutionTransitionSource::RestReconciliation,
+                    Some("CANCELLED"),
+                    order.exchange_order_id.as_deref(),
+                    repair_request
+                        .reason
+                        .clone()
+                        .or_else(|| Some("operator_marked_cancelled".to_string())),
+                    Some(json!({ "force": repair_request.force })),
+                    actor.actor_id,
+                    correlation_id,
+                    repair_request.force,
+                )
+                .await
+                {
+                    Ok(updated) => updated,
+                    Err(err) => {
+                        issues.push(TestnetRepairValidationIssue {
+                            code: "invalid_repair_transition".to_string(),
+                            message: err.to_string(),
+                        });
+                        repair_status = TestnetRepairActionStatus::Rejected;
+                        None
+                    }
+                }
+            }
+        }
+        TestnetRepairAction::MarkRejected => {
+            next_state = Some(TestnetExecutionState::Rejected);
+            match append_explicit_testnet_repair_transition(
+                &state.db_pool,
+                &order,
+                repair_request.action,
+                TestnetExecutionState::Rejected,
+                TestnetExecutionTransitionSource::RestReconciliation,
+                Some("REJECTED"),
+                order.exchange_order_id.as_deref(),
+                repair_request
+                    .reason
+                    .clone()
+                    .or_else(|| Some("operator_marked_rejected".to_string())),
+                Some(json!({ "force": repair_request.force })),
+                actor.actor_id,
+                correlation_id,
+                repair_request.force,
+            )
+            .await
+            {
+                Ok(updated) => updated,
+                Err(err) => {
+                    issues.push(TestnetRepairValidationIssue {
+                        code: "invalid_repair_transition".to_string(),
+                        message: err.to_string(),
+                    });
+                    repair_status = TestnetRepairActionStatus::Rejected;
+                    None
+                }
+            }
+        }
+        TestnetRepairAction::MarkFailed => {
+            next_state = Some(TestnetExecutionState::Failed);
+            match append_explicit_testnet_repair_transition(
+                &state.db_pool,
+                &order,
+                repair_request.action,
+                TestnetExecutionState::Failed,
+                TestnetExecutionTransitionSource::RestReconciliation,
+                Some("FAILED"),
+                order.exchange_order_id.as_deref(),
+                repair_request
+                    .reason
+                    .clone()
+                    .or_else(|| Some("operator_marked_failed".to_string())),
+                Some(json!({ "force": repair_request.force })),
+                actor.actor_id,
+                correlation_id,
+                repair_request.force,
+            )
+            .await
+            {
+                Ok(updated) => updated,
+                Err(err) => {
+                    issues.push(TestnetRepairValidationIssue {
+                        code: "invalid_repair_transition".to_string(),
+                        message: err.to_string(),
+                    });
+                    repair_status = TestnetRepairActionStatus::Rejected;
+                    None
+                }
+            }
+        }
+        TestnetRepairAction::SafeCancelRequest => {
+            let cancel_request =
+                Symbol::new(order.symbol.clone())
+                    .ok()
+                    .map(|symbol| ExchangeCancelRequest {
+                        exchange: ExchangeName::Binance,
+                        environment: ExchangeEnvironment::Testnet,
+                        symbol,
+                        client_order_id: client_order_id.clone(),
+                        recv_window_ms: payload.recv_window_ms,
+                    });
+            if cancel_request.is_none() {
+                issues.push(TestnetRepairValidationIssue {
+                    code: "invalid_symbol".to_string(),
+                    message: "Persisted exchange testnet order has an invalid symbol.".to_string(),
+                });
+                repair_status = TestnetRepairActionStatus::Rejected;
+            }
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "exchange.testnet.repair.cancel_requested",
+                    correlation_id,
+                    &state.config.app_name,
+                    json!({ "client_order_id": client_order_id, "action": repair_request.action.as_str() }),
+                ),
+            )
+            .await;
+            let pre_updated = match append_explicit_testnet_repair_transition(
+                &state.db_pool,
+                &order,
+                repair_request.action,
+                TestnetExecutionState::CancelRequested,
+                TestnetExecutionTransitionSource::ApiCancel,
+                None,
+                order.exchange_order_id.as_deref(),
+                repair_request
+                    .reason
+                    .clone()
+                    .or_else(|| Some("safe_cancel_requested".to_string())),
+                Some(json!({ "force": repair_request.force })),
+                actor.actor_id,
+                correlation_id,
+                repair_request.force,
+            )
+            .await
+            {
+                Ok(Some(updated)) => updated,
+                Ok(None) => order.clone(),
+                Err(err) => {
+                    issues.push(TestnetRepairValidationIssue {
+                        code: "invalid_repair_transition".to_string(),
+                        message: err.to_string(),
+                    });
+                    repair_status = TestnetRepairActionStatus::Rejected;
+                    order.clone()
+                }
+            };
+            next_state = Some(TestnetExecutionState::CancelRequested);
+            if repair_status == TestnetRepairActionStatus::Rejected {
+                None
+            } else {
+                match state
+                    .exchange_testnet
+                    .cancel_order(cancel_request.expect("cancel request should be present"))
+                    .await
+                {
+                    Ok(ack) => {
+                        let local_status = local_testnet_status_from_exchange_state(ack.status)
+                            .unwrap_or(ack.status.as_str());
+                        let (ack_next_state, ack_reason) = map_cancel_ack_to_transition(&ack);
+                        next_state = Some(ack_next_state);
+                        match append_testnet_lifecycle_transition(
+                            &state.db_pool,
+                            &pre_updated,
+                            ack_next_state,
+                            TestnetExecutionTransitionSource::ExchangeCancelAck,
+                            Some(local_status),
+                            ack.exchange_order_id.as_deref(),
+                            repair_request
+                                .reason
+                                .clone()
+                                .or_else(|| ack_reason.map(ToString::to_string)),
+                            Some(ack.raw_payload.clone()),
+                            actor.actor_id,
+                            Some(correlation_id),
+                            false,
+                        )
+                        .await
+                        {
+                            Ok(updated) => updated,
+                            Err(err) => {
+                                issues.push(TestnetRepairValidationIssue {
+                                    code: "cancel_ack_transition_failed".to_string(),
+                                    message: err.to_string(),
+                                });
+                                repair_status = TestnetRepairActionStatus::Rejected;
+                                Some(pre_updated)
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        issues.push(TestnetRepairValidationIssue {
+                            code: "safe_cancel_failed".to_string(),
+                            message: err.to_string(),
+                        });
+                        repair_status = TestnetRepairActionStatus::Rejected;
+                        Some(pre_updated)
+                    }
+                }
+            }
+        }
+    };
+
+    let repair_payload = if issues.is_empty() {
+        Some(json!({ "force": repair_request.force }))
+    } else {
+        Some(json!({ "force": repair_request.force, "issues": issues }))
+    };
+    let _ = persist_testnet_repair_action(
+        &state.db_pool,
+        &actor,
+        &client_order_id,
+        &repair_request,
+        repair_status,
+        Some(previous_state),
+        next_state,
+        repair_payload,
+        correlation_id,
+    )
+    .await;
+    telemetry().inc_exchange_testnet_repair(repair_request.action.as_str(), repair_status.as_str());
+    if repair_status == TestnetRepairActionStatus::Rejected {
+        let reason = issues
+            .first()
+            .map(|value| value.code.as_str())
+            .unwrap_or("rejected");
+        telemetry().inc_exchange_testnet_repair_rejection(repair_request.action.as_str(), reason);
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "exchange.testnet.repair.rejected",
+                correlation_id,
+                &state.config.app_name,
+                json!({ "client_order_id": client_order_id, "action": repair_request.action.as_str(), "reason": reason }),
+            ),
+        )
+        .await;
+    } else {
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "exchange.testnet.repair.applied",
+                correlation_id,
+                &state.config.app_name,
+                json!({ "client_order_id": client_order_id, "action": repair_request.action.as_str(), "next_state": next_state.map(|value| value.as_str()) }),
+            ),
+        )
+        .await;
+    }
+
+    let result = TestnetRepairResult {
+        client_order_id,
+        action: repair_request.action,
+        status: repair_status,
+        previous_state: Some(previous_state),
+        next_state,
+        correlation_id,
+        issues,
+    };
+    let http_status = if repair_status == TestnetRepairActionStatus::Applied {
+        StatusCode::OK
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    let response = ExchangeTestnetRepairResponse {
+        client_order_id: result.client_order_id,
+        action: result.action,
+        status: result.status,
+        previous_state: result
+            .previous_state
+            .map(|value| value.as_str().to_string()),
+        next_state: result.next_state.map(|value| value.as_str().to_string()),
+        correlation_id: result.correlation_id,
+        issues: result.issues,
+        request_id: request.request_id,
+        timestamp: Utc::now(),
+    };
+    let _ = updated_order;
+    (http_status, Json(response)).into_response()
 }
 
 async fn submit_exchange_testnet_order(
@@ -8964,8 +9808,8 @@ mod tests {
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
         AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-        CandleInterval, ExchangeEnvironment, MarketDataSource, MarketMode, Side, Symbol, UserRole,
-        UserStatus,
+        CandleInterval, ExchangeEnvironment, MarketDataSource, MarketMode, Side, Symbol,
+        TestnetRepairAction, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -9099,6 +9943,51 @@ mod tests {
                 false
             ),
             super::RouteAccess::Operator
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/exchange/testnet/orders/client-1/repair",
+                false
+            ),
+            super::RouteAccess::Operator
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::GET,
+                "/exchange/testnet/orders/client-1/repairs",
+                false
+            ),
+            super::RouteAccess::Authenticated
+        ));
+    }
+
+    #[test]
+    fn testnet_repair_authorization_matches_role_expectations() {
+        assert!(super::is_testnet_repair_authorized(
+            UserRole::Operator,
+            TestnetRepairAction::ManualRecheck,
+            false
+        ));
+        assert!(super::is_testnet_repair_authorized(
+            UserRole::Operator,
+            TestnetRepairAction::MarkReconciliationRequired,
+            false
+        ));
+        assert!(!super::is_testnet_repair_authorized(
+            UserRole::Operator,
+            TestnetRepairAction::MarkFailed,
+            false
+        ));
+        assert!(!super::is_testnet_repair_authorized(
+            UserRole::Operator,
+            TestnetRepairAction::MarkCancelled,
+            true
+        ));
+        assert!(super::is_testnet_repair_authorized(
+            UserRole::Owner,
+            TestnetRepairAction::SafeCancelRequest,
+            true
         ));
     }
 

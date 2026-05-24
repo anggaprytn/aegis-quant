@@ -9,6 +9,7 @@ use crate::api::{
     ExchangePrivateStreamListenKeyResponse, ExchangePrivateStreamStatusResponse,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationResult,
     ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
+    ExchangeTestnetRepairActionRecord, ExchangeTestnetRepairResponse,
     ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse, FeedStatusResponse,
     HealthResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
     PaperEquityResponse, PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse,
@@ -224,6 +225,38 @@ pub fn print_exchange_testnet_order_lifecycle(
             event.next_state,
             event.transition_source,
             event.reason.as_deref().unwrap_or("-")
+        );
+    }
+}
+
+pub fn print_exchange_testnet_repair(response: &ExchangeTestnetRepairResponse) {
+    println!("Client order ID: {}", response.client_order_id);
+    println!("Action: {}", response.action);
+    println!("Status: {}", response.status);
+    println!(
+        "Previous state: {}",
+        response.previous_state.as_deref().unwrap_or("-")
+    );
+    println!(
+        "Next state: {}",
+        response.next_state.as_deref().unwrap_or("-")
+    );
+    println!("Correlation ID: {}", response.correlation_id);
+    for issue in &response.issues {
+        println!("Issue: {} {}", issue.code, issue.message);
+    }
+}
+
+pub fn print_exchange_testnet_repairs(repairs: &[ExchangeTestnetRepairActionRecord]) {
+    for repair in repairs {
+        println!(
+            "{} action={} status={} {} -> {} reason={}",
+            repair.created_at,
+            repair.action,
+            repair.status,
+            repair.previous_state.as_deref().unwrap_or("-"),
+            repair.next_state.as_deref().unwrap_or("-"),
+            repair.reason.as_deref().unwrap_or("-")
         );
     }
 }

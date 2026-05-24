@@ -538,6 +538,35 @@ async fn main() -> anyhow::Result<()> {
                         output::print_exchange_testnet_order(&response);
                     }
                 }
+                ExchangeTestnetCommands::OrderRepair(args) => {
+                    let response = client
+                        .exchange_testnet_order_repair(
+                            &args.client_order_id,
+                            &cli::api::ExchangeTestnetOrderRepairRequest {
+                                action: args.action,
+                                confirmation_text: args.confirm.unwrap_or_default(),
+                                reason: args.reason,
+                                force: args.force,
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_repair(&response);
+                    }
+                }
+                ExchangeTestnetCommands::OrderRepairs { client_order_id } => {
+                    let response = client
+                        .exchange_testnet_order_repairs(&client_order_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_repairs(&response.repairs);
+                    }
+                }
                 ExchangeTestnetCommands::Reconcile(args) => {
                     let response = client
                         .exchange_testnet_reconcile(&cli::api::ExchangeTestnetReconcileRequest {

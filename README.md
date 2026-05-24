@@ -205,6 +205,7 @@ Guardrails:
 - Unknown exchange state or missing exchange orders are surfaced as explicit mismatches and alerts, not treated as success
 - Testnet execution now has an isolated internal lifecycle in `exchange_testnet_order_lifecycle_events` and `exchange_testnet_orders.execution_state`
 - Exchange ACK is recorded as `EXCHANGE_ACKED` only; fills must come from private stream or reconciliation evidence
+- Testnet repair controls are explicit operator actions only; there is no automatic repair and no production Binance endpoint usage
 
 Required env when using the adapter:
 
@@ -229,6 +230,14 @@ cargo run -p cli -- exchange testnet order-submit \
 cargo run -p cli -- exchange testnet order-get aegis-testnet-<correlationid>
 cargo run -p cli -- exchange testnet order-lifecycle aegis-testnet-<correlationid>
 cargo run -p cli -- exchange testnet order-cancel aegis-testnet-<correlationid> --confirm "TESTNET ORDER"
+cargo run -p cli -- exchange testnet order-repair aegis-testnet-<correlationid> \
+  --action MANUAL_RECHECK \
+  --confirm "REPAIR TESTNET aegis-testnet-<correlationid>" \
+  --reason "operator_requested_recheck"
+cargo run -p cli -- exchange testnet order-repair aegis-testnet-<correlationid> \
+  --action SAFE_CANCEL_REQUEST \
+  --confirm "CANCEL TESTNET aegis-testnet-<correlationid>"
+cargo run -p cli -- exchange testnet order-repairs aegis-testnet-<correlationid>
 cargo run -p cli -- exchange testnet reconcile --limit 50
 cargo run -p cli -- exchange testnet reconciliation-runs
 cargo run -p cli -- exchange testnet reconciliation-get <run_id>
@@ -247,6 +256,7 @@ Private stream notes:
 - Raw private events are persisted in `exchange_private_stream_events`; stream lifecycle state is persisted in `exchange_private_stream_state`.
 - Normalized `executionReport` events append deterministic lifecycle transitions and update only isolated `exchange_testnet_orders` when `client_order_id` matches.
 - `GET /exchange/testnet/orders/:client_order_id/lifecycle` returns the ordered transition history for operator inspection.
+- `POST /exchange/testnet/orders/:client_order_id/repair` requires typed per-order confirmation and records repair history in `exchange_testnet_repair_actions`.
 - Listen keys are hashed in Postgres; the API, CLI, logs, and dashboard use masked values only.
 - The dashboard Settings page now exposes a private-stream status card, recent private events, and operator lifecycle controls.
 

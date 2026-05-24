@@ -736,6 +736,29 @@ impl ApiClient {
         .await
     }
 
+    pub async fn exchange_testnet_order_repair(
+        &self,
+        client_order_id: &str,
+        request: &ExchangeTestnetOrderRepairRequest,
+    ) -> Result<ExchangeTestnetRepairResponse, ApiClientError> {
+        self.post(
+            &format!("/exchange/testnet/orders/{client_order_id}/repair"),
+            request,
+        )
+        .await
+    }
+
+    pub async fn exchange_testnet_order_repairs(
+        &self,
+        client_order_id: &str,
+    ) -> Result<ExchangeTestnetRepairsResponse, ApiClientError> {
+        self.get(
+            &format!("/exchange/testnet/orders/{client_order_id}/repairs"),
+            &[],
+        )
+        .await
+    }
+
     pub async fn exchange_testnet_reconcile(
         &self,
         request: &ExchangeTestnetReconcileRequest,
@@ -1412,6 +1435,58 @@ pub struct ExchangeTestnetOrderLifecycleResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExchangeTestnetOrderResponse {
     pub order: ExchangeTestnetOrderRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetOrderRepairRequest {
+    pub action: String,
+    pub confirmation_text: String,
+    pub reason: Option<String>,
+    pub force: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetRepairValidationIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetRepairResponse {
+    pub client_order_id: String,
+    pub action: String,
+    pub status: String,
+    pub previous_state: Option<String>,
+    pub next_state: Option<String>,
+    pub correlation_id: Uuid,
+    pub issues: Vec<ExchangeTestnetRepairValidationIssue>,
+    pub request_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetRepairActionRecord {
+    pub id: Uuid,
+    pub client_order_id: String,
+    pub action: String,
+    pub status: String,
+    pub previous_state: Option<String>,
+    pub next_state: Option<String>,
+    pub reason: Option<String>,
+    pub payload: Option<Value>,
+    pub actor_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetRepairsResponse {
+    pub client_order_id: String,
+    pub repairs: Vec<ExchangeTestnetRepairActionRecord>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

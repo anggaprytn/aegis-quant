@@ -1503,6 +1503,257 @@ pub enum TestnetExecutionStateError {
     },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetRepairAction {
+    MarkReconciliationRequired,
+    ManualRecheck,
+    MarkAcked,
+    MarkCancelled,
+    MarkRejected,
+    MarkFailed,
+    SafeCancelRequest,
+}
+
+impl TestnetRepairAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MarkReconciliationRequired => "MARK_RECONCILIATION_REQUIRED",
+            Self::ManualRecheck => "MANUAL_RECHECK",
+            Self::MarkAcked => "MARK_ACKED",
+            Self::MarkCancelled => "MARK_CANCELLED",
+            Self::MarkRejected => "MARK_REJECTED",
+            Self::MarkFailed => "MARK_FAILED",
+            Self::SafeCancelRequest => "SAFE_CANCEL_REQUEST",
+        }
+    }
+
+    pub fn required_confirmation_text(self, client_order_id: &str) -> String {
+        match self {
+            Self::SafeCancelRequest => format!("CANCEL TESTNET {client_order_id}"),
+            _ => format!("REPAIR TESTNET {client_order_id}"),
+        }
+    }
+
+    pub fn requires_owner(self) -> bool {
+        matches!(
+            self,
+            Self::MarkAcked
+                | Self::MarkCancelled
+                | Self::MarkRejected
+                | Self::MarkFailed
+                | Self::SafeCancelRequest
+        )
+    }
+
+    pub fn allows_operator(self) -> bool {
+        matches!(self, Self::MarkReconciliationRequired | Self::ManualRecheck)
+    }
+
+    pub fn is_dangerous(self) -> bool {
+        !self.allows_operator()
+    }
+}
+
+impl std::str::FromStr for TestnetRepairAction {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "MARK_RECONCILIATION_REQUIRED" => Ok(Self::MarkReconciliationRequired),
+            "MANUAL_RECHECK" => Ok(Self::ManualRecheck),
+            "MARK_ACKED" => Ok(Self::MarkAcked),
+            "MARK_CANCELLED" => Ok(Self::MarkCancelled),
+            "MARK_REJECTED" => Ok(Self::MarkRejected),
+            "MARK_FAILED" => Ok(Self::MarkFailed),
+            "SAFE_CANCEL_REQUEST" => Ok(Self::SafeCancelRequest),
+            other => Err(CoreError::UnsupportedTestnetRepairAction(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetRepairActionStatus {
+    Applied,
+    Rejected,
+    Failed,
+}
+
+impl TestnetRepairActionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "APPLIED",
+            Self::Rejected => "REJECTED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetRepairActionStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "APPLIED" => Ok(Self::Applied),
+            "REJECTED" => Ok(Self::Rejected),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedTestnetRepairActionStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetRepairValidationIssue {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetRepairRequest {
+    pub action: TestnetRepairAction,
+    pub confirmation_text: String,
+    pub reason: Option<String>,
+    pub force: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl TestnetRepairRequest {
+    pub fn validate_confirmation(&self, client_order_id: &str) -> Result<(), CoreError> {
+        let expected = self.action.required_confirmation_text(client_order_id);
+        if self.confirmation_text == expected {
+            return Ok(());
+        }
+        Err(CoreError::InvalidTestnetRepairConfirmation {
+            expected,
+            actual: self.confirmation_text.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetRepairResult {
+    pub client_order_id: String,
+    pub action: TestnetRepairAction,
+    pub status: TestnetRepairActionStatus,
+    pub previous_state: Option<TestnetExecutionState>,
+    pub next_state: Option<TestnetExecutionState>,
+    pub correlation_id: Uuid,
+    pub issues: Vec<TestnetRepairValidationIssue>,
+}
+
+pub fn validate_testnet_repair_transition(
+    action: TestnetRepairAction,
+    previous: TestnetExecutionState,
+    next: Option<TestnetExecutionState>,
+    force: bool,
+) -> Result<(), CoreError> {
+    if previous == TestnetExecutionState::Filled {
+        match next {
+            Some(TestnetExecutionState::Filled) | None => {}
+            _ => {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+    }
+
+    match action {
+        TestnetRepairAction::MarkReconciliationRequired => {
+            if previous.is_terminal() && previous != TestnetExecutionState::Failed {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+            if next != Some(TestnetExecutionState::ReconciliationRequired) {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+        TestnetRepairAction::ManualRecheck => {
+            if next.is_none() {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+        TestnetRepairAction::MarkAcked => {
+            let allowed = matches!(
+                previous,
+                TestnetExecutionState::OrderSubmitRequested
+                    | TestnetExecutionState::New
+                    | TestnetExecutionState::ReconciliationRequired
+                    | TestnetExecutionState::UnknownExchangeState
+                    | TestnetExecutionState::Failed
+            );
+            if !allowed || next != Some(TestnetExecutionState::ExchangeAcked) {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+        TestnetRepairAction::MarkCancelled => {
+            if next != Some(TestnetExecutionState::Cancelled) {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+            if previous == TestnetExecutionState::Filled && !force {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+        TestnetRepairAction::MarkRejected => {
+            if next != Some(TestnetExecutionState::Rejected) {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+        TestnetRepairAction::MarkFailed => {
+            if next != Some(TestnetExecutionState::Failed) {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+        TestnetRepairAction::SafeCancelRequest => {
+            if next != Some(TestnetExecutionState::CancelRequested) {
+                return Err(CoreError::InvalidTestnetRepairTransition {
+                    action,
+                    previous_state: previous,
+                    next_state: next,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ExchangePrivateStreamStatus {
@@ -3101,6 +3352,10 @@ pub enum CoreError {
     UnsupportedExchangePrivateStreamSource(String),
     #[error("unsupported testnet execution state: {0}")]
     UnsupportedTestnetExecutionState(String),
+    #[error("unsupported testnet repair action: {0}")]
+    UnsupportedTestnetRepairAction(String),
+    #[error("unsupported testnet repair action status: {0}")]
+    UnsupportedTestnetRepairActionStatus(String),
     #[error("unsupported testnet execution transition source: {0}")]
     UnsupportedTestnetExecutionTransitionSource(String),
     #[error("unsupported exchange reconciliation mismatch kind: {0}")]
@@ -3171,6 +3426,14 @@ pub enum CoreError {
         next_state: TestnetExecutionState,
         transition_source: TestnetExecutionTransitionSource,
     },
+    #[error("invalid testnet repair confirmation: expected {expected:?}, got {actual:?}")]
+    InvalidTestnetRepairConfirmation { expected: String, actual: String },
+    #[error("invalid testnet repair transition for {action:?} from {previous_state:?} to {next_state:?}")]
+    InvalidTestnetRepairTransition {
+        action: TestnetRepairAction,
+        previous_state: TestnetExecutionState,
+        next_state: Option<TestnetExecutionState>,
+    },
     #[error("candle backfill estimate exceeds supported bounds")]
     InvalidCandleBackfillEstimate,
     #[error("holding_candles must be greater than zero")]
@@ -3221,11 +3484,13 @@ pub enum CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_password_length, ExchangeEnvironment, ExchangeExecutionReport,
-        ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName, ExchangeOrderRequest,
-        ExchangeOrderSide, ExchangeOrderState, ExchangeOrderType, ExchangePrivateStreamEvent,
-        ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
-        ExecutionState, OrderIntent, PaperOrder, Permission, Side, Symbol, UserRole,
+        validate_password_length, validate_testnet_repair_transition, ExchangeEnvironment,
+        ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
+        ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
+        ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
+        ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionState, OrderIntent,
+        PaperOrder, Permission, Side, Symbol, TestnetExecutionState, TestnetRepairAction,
+        TestnetRepairRequest, UserRole,
     };
     use chrono::Utc;
     use rust_decimal::Decimal;
@@ -3468,5 +3733,75 @@ mod tests {
             err,
             super::CoreError::InvalidExchangePrivateStreamEventType
         ));
+    }
+
+    #[test]
+    fn testnet_repair_confirmation_must_match_exact_phrase() {
+        let request = TestnetRepairRequest {
+            action: TestnetRepairAction::ManualRecheck,
+            confirmation_text: "REPAIR TESTNET client-1".to_string(),
+            reason: None,
+            force: false,
+            correlation_id: None,
+        };
+        assert!(request.validate_confirmation("client-1").is_ok());
+
+        let invalid = TestnetRepairRequest {
+            confirmation_text: "repair testnet client-1".to_string(),
+            ..request
+        };
+        assert!(invalid.validate_confirmation("client-1").is_err());
+    }
+
+    #[test]
+    fn safe_cancel_requires_cancel_confirmation() {
+        let request = TestnetRepairRequest {
+            action: TestnetRepairAction::SafeCancelRequest,
+            confirmation_text: "REPAIR TESTNET client-1".to_string(),
+            reason: None,
+            force: false,
+            correlation_id: None,
+        };
+        assert!(request.validate_confirmation("client-1").is_err());
+    }
+
+    #[test]
+    fn repair_cannot_move_filled_back_to_active() {
+        assert!(validate_testnet_repair_transition(
+            TestnetRepairAction::MarkAcked,
+            TestnetExecutionState::Filled,
+            Some(TestnetExecutionState::ExchangeAcked),
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mark_reconciliation_required_is_allowed_for_failed_state() {
+        assert!(validate_testnet_repair_transition(
+            TestnetRepairAction::MarkReconciliationRequired,
+            TestnetExecutionState::Failed,
+            Some(TestnetExecutionState::ReconciliationRequired),
+            false,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn mark_acked_is_limited_to_allowed_states() {
+        assert!(validate_testnet_repair_transition(
+            TestnetRepairAction::MarkAcked,
+            TestnetExecutionState::ReconciliationRequired,
+            Some(TestnetExecutionState::ExchangeAcked),
+            false,
+        )
+        .is_ok());
+        assert!(validate_testnet_repair_transition(
+            TestnetRepairAction::MarkAcked,
+            TestnetExecutionState::CancelRequested,
+            Some(TestnetExecutionState::ExchangeAcked),
+            false,
+        )
+        .is_err());
     }
 }

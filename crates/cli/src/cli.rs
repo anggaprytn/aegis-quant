@@ -47,6 +47,19 @@ impl Cli {
                         );
                     }
                 }
+                ExchangeTestnetCommands::OrderRepair(args) => {
+                    let expected = if args.action.eq_ignore_ascii_case("SAFE_CANCEL_REQUEST") {
+                        format!("CANCEL TESTNET {}", args.client_order_id)
+                    } else {
+                        format!("REPAIR TESTNET {}", args.client_order_id)
+                    };
+                    if args.confirm.as_deref() != Some(expected.as_str()) {
+                        anyhow::bail!(
+                            "exchange testnet order-repair requires --confirm {:?} exactly",
+                            expected
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -107,6 +120,10 @@ pub enum ExchangeTestnetCommands {
         client_order_id: String,
     },
     OrderCancel(ExchangeTestnetOrderCancelArgs),
+    OrderRepair(ExchangeTestnetOrderRepairArgs),
+    OrderRepairs {
+        client_order_id: String,
+    },
     Reconcile(ExchangeTestnetReconcileArgs),
     ReconciliationRuns(ExchangeReconciliationRunsArgs),
     ReconciliationGet {
@@ -169,6 +186,19 @@ pub struct ExchangeTestnetOrderCancelArgs {
     pub client_order_id: String,
     #[arg(long)]
     pub confirm: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetOrderRepairArgs {
+    pub client_order_id: String,
+    #[arg(long)]
+    pub action: String,
+    #[arg(long)]
+    pub confirm: Option<String>,
+    #[arg(long)]
+    pub reason: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -536,6 +566,42 @@ mod tests {
             "client-1",
             "--confirm",
             "wrong",
+        ])
+        .expect("cli parses");
+
+        assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn exchange_testnet_repair_requires_exact_confirmation() {
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "exchange",
+            "testnet",
+            "order-repair",
+            "client-1",
+            "--action",
+            "MANUAL_RECHECK",
+            "--confirm",
+            "REPAIR TESTNET client-1",
+        ])
+        .expect("cli parses");
+
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn exchange_testnet_safe_cancel_requires_cancel_confirmation() {
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "exchange",
+            "testnet",
+            "order-repair",
+            "client-1",
+            "--action",
+            "SAFE_CANCEL_REQUEST",
+            "--confirm",
+            "REPAIR TESTNET client-1",
         ])
         .expect("cli parses");
 

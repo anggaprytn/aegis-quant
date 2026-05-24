@@ -13,6 +13,7 @@ const TEST_TABLES: &[&str] = &[
     "exchange_private_stream_state",
     "exchange_reconciliation_mismatches",
     "exchange_reconciliation_runs",
+    "exchange_testnet_repair_actions",
     "exchange_testnet_orders",
     "paper_trade_journal",
     "paper_equity_snapshots",

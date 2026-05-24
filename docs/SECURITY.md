@@ -25,13 +25,16 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Strategy config changes are audited, versioned, and emitted as system events; live mode remains blocked even in config validation/update paths
 - `/metrics` exposes operational state only, not secrets, but it should still be restricted at the network boundary in production
 - Testnet submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
+- Testnet repair actions require per-order typed confirmation: `REPAIR TESTNET <CLIENT_ORDER_ID>` or `CANCEL TESTNET <CLIENT_ORDER_ID>` for safe cancel
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
 - Testnet lifecycle history is isolated in `exchange_testnet_order_lifecycle_events` and must not mutate paper accounting, backtest, or live execution tables
+- Testnet repair history is isolated in `exchange_testnet_repair_actions` and must not mutate paper accounting, backtest, or live execution tables
 - Testnet reconciliation is isolated in `exchange_reconciliation_runs` and `exchange_reconciliation_mismatches`, is operator-triggered, and never reads secrets from the CLI or dashboard
 - Testnet private stream events are isolated in `exchange_private_stream_events`, update only isolated `exchange_testnet_orders`, and never mutate paper/backtest/live tables
 - Invalid private-stream or reconciliation transitions must remain visible as reconciliation-required lifecycle events; they must not be silently coerced into success
 - Spot Testnet listen keys must not be persisted in plaintext; only masked values leave the backend and only hashed values are stored in Postgres
 - Private stream runtime, API, CLI, metrics, and dashboard are testnet-only and must not use production Binance websocket endpoints
+- `SAFE_CANCEL_REQUEST` is testnet-only, uses Binance Spot Testnet REST cancel only, and must never call production Binance endpoints
 - Reconciliation mismatches and failure events must not include API secrets or high-cardinality metric labels
 - Binance private REST support is testnet-only, signs requests with HMAC SHA256, and does not log API secrets
 - Production Binance env vars and withdrawal endpoints are intentionally absent

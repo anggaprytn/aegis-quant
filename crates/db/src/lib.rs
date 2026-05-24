@@ -178,6 +178,21 @@ pub struct ExchangeTestnetOrderLifecycleEventRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeTestnetRepairActionRecord {
+    pub id: Uuid,
+    pub client_order_id: String,
+    pub action: String,
+    pub status: String,
+    pub previous_state: Option<String>,
+    pub next_state: Option<String>,
+    pub reason: Option<String>,
+    pub payload: Option<Value>,
+    pub actor_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangePrivateStreamEventRecord {
     pub id: Uuid,
     pub exchange: String,
@@ -2114,6 +2129,90 @@ pub async fn list_exchange_testnet_order_lifecycle_events(
     Ok(rows
         .iter()
         .map(map_exchange_testnet_order_lifecycle_event)
+        .collect())
+}
+
+pub async fn insert_exchange_testnet_repair_action(
+    pool: &PgPool,
+    record: &ExchangeTestnetRepairActionRecord,
+) -> Result<ExchangeTestnetRepairActionRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO exchange_testnet_repair_actions (
+            id,
+            client_order_id,
+            action,
+            status,
+            previous_state,
+            next_state,
+            reason,
+            payload,
+            actor_id,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING
+            id,
+            client_order_id,
+            action,
+            status,
+            previous_state,
+            next_state,
+            reason,
+            payload,
+            actor_id,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(record.id)
+    .bind(&record.client_order_id)
+    .bind(&record.action)
+    .bind(&record.status)
+    .bind(&record.previous_state)
+    .bind(&record.next_state)
+    .bind(&record.reason)
+    .bind(&record.payload)
+    .bind(record.actor_id)
+    .bind(record.created_at)
+    .bind(record.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_exchange_testnet_repair_action(&row))
+}
+
+pub async fn list_exchange_testnet_repair_actions(
+    pool: &PgPool,
+    client_order_id: &str,
+) -> Result<Vec<ExchangeTestnetRepairActionRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            client_order_id,
+            action,
+            status,
+            previous_state,
+            next_state,
+            reason,
+            payload,
+            actor_id,
+            created_at,
+            correlation_id
+        FROM exchange_testnet_repair_actions
+        WHERE client_order_id = $1
+        ORDER BY created_at DESC, id DESC
+        "#,
+    )
+    .bind(client_order_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(map_exchange_testnet_repair_action)
         .collect())
 }
 
@@ -6653,6 +6752,24 @@ fn map_exchange_testnet_order_lifecycle_event(
         reason: row.get("reason"),
         payload: row.get("payload"),
         created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_exchange_testnet_repair_action(
+    row: &sqlx::postgres::PgRow,
+) -> ExchangeTestnetRepairActionRecord {
+    ExchangeTestnetRepairActionRecord {
+        id: row.get("id"),
+        client_order_id: row.get("client_order_id"),
+        action: row.get("action"),
+        status: row.get("status"),
+        previous_state: row.get("previous_state"),
+        next_state: row.get("next_state"),
+        reason: row.get("reason"),
+        payload: row.get("payload"),
+        actor_id: row.get("actor_id"),
         created_at: row.get("created_at"),
         correlation_id: row.get("correlation_id"),
     }

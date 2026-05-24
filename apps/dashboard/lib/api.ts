@@ -29,6 +29,8 @@ import type {
   ExchangeTestnetOrderLifecycleResponse,
   ExchangeTestnetOrderResponse,
   ExchangeTestnetOrdersResponse,
+  ExchangeTestnetRepairResponse,
+  ExchangeTestnetRepairsResponse,
   ExchangeTestnetStatusResponse,
   ExchangeTestnetSymbolsResponse,
   FeedStatusResponse,
@@ -310,6 +312,26 @@ export const api = {
   getExchangeTestnetOrderLifecycle: (clientOrderId: string) =>
     request<ExchangeTestnetOrderLifecycleResponse>(
       `/exchange/testnet/orders/${clientOrderId}/lifecycle`,
+    ),
+  repairExchangeTestnetOrder: (
+    clientOrderId: string,
+    payload: {
+      action: string;
+      confirmation_text: string;
+      reason?: string;
+      force?: boolean;
+    },
+  ) =>
+    request<ExchangeTestnetRepairResponse>(
+      `/exchange/testnet/orders/${clientOrderId}/repair`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  getExchangeTestnetOrderRepairs: (clientOrderId: string) =>
+    request<ExchangeTestnetRepairsResponse>(
+      `/exchange/testnet/orders/${clientOrderId}/repairs`,
     ),
   reconcileExchangeTestnetOrders: (payload: ExchangeReconciliationRequest) =>
     request<ExchangeReconciliationResultResponse>("/exchange/testnet/reconcile", {

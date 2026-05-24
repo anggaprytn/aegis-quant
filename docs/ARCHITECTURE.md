@@ -193,6 +193,7 @@ Notes:
 - Private testnet orders do not mutate `orders`, `paper_positions`, `paper_fills`, or paper PnL tables.
 - The adapter now also manages Spot Testnet listen-key lifecycle and testnet-only user-data stream URL construction.
 - Reconciliation runs against isolated `exchange_testnet_orders`, persists `exchange_reconciliation_runs` plus `exchange_reconciliation_mismatches`, and updates local testnet status only through safe exchange-to-local mappings.
+- Manual repair actions persist separately in `exchange_testnet_repair_actions`, remain testnet-only, and must be operator-triggered one command at a time.
 - Unknown exchange states or missing exchange orders emit explicit mismatch events and remain operator-visible; they do not automatically toggle the global kill switch.
 - Private user-data events persist into `exchange_private_stream_events`, stream connectivity persists into `exchange_private_stream_state`, and normalized `executionReport` handling updates only the isolated `exchange_testnet_orders` table.
 - Private stream confirmation stops at isolated testnet order status. It must not auto-bridge into paper orders, paper positions, paper PnL, replay tables, or any live execution path.
@@ -216,6 +217,9 @@ Rules:
 - `FILLED`, `CANCELLED`, `REJECTED`, and `EXPIRED` are terminal.
 - Private stream and REST reconciliation share the same transition validator.
 - Every accepted transition appends an event into `exchange_testnet_order_lifecycle_events`.
+- Repair controls may only touch isolated `exchange_testnet_orders`, `exchange_testnet_order_lifecycle_events`, and `exchange_testnet_repair_actions`.
+- `MANUAL_RECHECK` uses the shared REST reconciliation validator; explicit mark actions use a dedicated repair validator and never reactivate a terminal `FILLED` order.
+- `SAFE_CANCEL_REQUEST` is Binance Spot Testnet only and must never call live Binance endpoints.
 
 ## Frontend cockpit overview
 
@@ -223,6 +227,7 @@ The dashboard is intentionally dense and operational:
 
 - Sidebar sections: Command Center, Market Data, Strategies, Risk, Orders, Backtests, Logs / Events, Settings placeholder
 - Settings now includes a minimal Testnet Exchange surface for status, symbols, balances, recent isolated testnet orders, and owner-gated submit/cancel controls
+- Settings now includes typed-confirmation repair controls and isolated repair history for stuck testnet orders
 - Settings now also includes manual testnet reconciliation, recent reconciliation runs, mismatch counts, and mismatch detail inspection
 - Settings now includes private-stream status, recent private events, and operator listen-key lifecycle controls with a clear testnet-only warning
 - Sticky header: mode, kill switch state, feed state, data age, daily PnL placeholder, API health
