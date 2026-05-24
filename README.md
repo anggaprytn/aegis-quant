@@ -200,6 +200,8 @@ Guardrails:
 - `ExchangeEnvironment::Live` is hard-rejected everywhere
 - Production Binance endpoints are not configured or used
 - Testnet submission is isolated from paper accounting and paper orders
+- Testnet pipeline preview is operator-visible only and never submits an exchange order or persists `exchange_testnet_orders`
+- Testnet pipeline submit is owner-only, requires an existing approved `risk_decision_id`, and requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`
 - Submit/cancel require `OWNER`, typed confirmation `TESTNET ORDER`, an inactive kill switch, and a preapproved `risk_decision_id`
 - Reconciliation is testnet-only, persists runs plus mismatches, and never mutates paper/backtest/live tables
 - Unknown exchange state or missing exchange orders are surfaced as explicit mismatches and alerts, not treated as success
@@ -220,6 +222,11 @@ Operator examples:
 cargo run -p cli -- exchange testnet status
 cargo run -p cli -- exchange testnet symbols
 cargo run -p cli -- exchange testnet balances
+cargo run -p cli -- exchange testnet pipeline-preview \
+  --risk-decision-id 00000000-0000-0000-0000-000000000000
+cargo run -p cli -- exchange testnet pipeline-submit \
+  --risk-decision-id 00000000-0000-0000-0000-000000000000 \
+  --confirm "SUBMIT TESTNET BTCUSDT"
 cargo run -p cli -- exchange testnet order-submit \
   --symbol BTCUSDT \
   --side BUY \
@@ -250,6 +257,20 @@ cargo run -p cli -- exchange testnet private-stream close --listen-key <testnet-
 rtk cargo run -p exchange --bin testnet-private-stream
 ```
 
+API examples:
+
+```bash
+curl -X POST http://127.0.0.1:3000/exchange/testnet/pipeline/preview \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AEGIS_ACCESS_TOKEN" \
+  -d '{"risk_decision_id":"00000000-0000-0000-0000-000000000000"}'
+
+curl -X POST http://127.0.0.1:3000/exchange/testnet/pipeline/submit \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AEGIS_ACCESS_TOKEN" \
+  -d '{"risk_decision_id":"00000000-0000-0000-0000-000000000000","confirmation_text":"SUBMIT TESTNET BTCUSDT"}'
+```
+
 Private stream notes:
 
 - The worker is testnet-only and uses only `wss://stream.testnet.binance.vision/ws`.
@@ -259,6 +280,7 @@ Private stream notes:
 - `POST /exchange/testnet/orders/:client_order_id/repair` requires typed per-order confirmation and records repair history in `exchange_testnet_repair_actions`.
 - Listen keys are hashed in Postgres; the API, CLI, logs, and dashboard use masked values only.
 - The dashboard Settings page now exposes a private-stream status card, recent private events, and operator lifecycle controls.
+- Preview and submit both require an existing approved `risk_decision_id`, block on an active kill switch, and require fresh local market pricing from the stored tick/candle path.
 
 ## Auth MVP
 
@@ -266,6 +288,7 @@ Private stream notes:
 - All other `GET` endpoints require an authenticated `VIEWER` or above
 - Mutating paper/backfill/backtest endpoints require `OPERATOR` or `OWNER`
 - `POST /risk/resume`, `POST /risk/config/update`, and `POST /strategy/:id/config/update` require `OWNER`
+- `POST /exchange/testnet/pipeline/preview` requires `OPERATOR` or `OWNER`; `POST /exchange/testnet/pipeline/submit` requires `OWNER`
 - Dashboard access requires login unless `AEGIS_AUTH_DISABLED=true`
 - `AEGIS_AUTH_DISABLED=true` injects a synthetic local `OWNER` actor for development only and logs a startup warning
 

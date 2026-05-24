@@ -179,6 +179,8 @@ The exchange crate now models a testnet-only private execution boundary:
 
 ```txt
 approved risk_decision_id
+-> preview with fresh local tick/candle
+-> operator review
 -> owner-confirmed testnet order request
 -> exchange adapter trait
 -> Binance Spot Testnet REST boundary
@@ -190,6 +192,8 @@ Notes:
 
 - `ExchangeEnvironment::Live` is hard-rejected in core validation and adapter config checks.
 - Binance Spot Testnet uses only `https://testnet.binance.vision`.
+- `POST /exchange/testnet/pipeline/preview` is an operator-visible dry run only: it requires an existing approved `risk_decision_id`, blocks on the persistent kill switch, requires fresh local price context from stored tick/candle data, and must not create `exchange_testnet_orders` or lifecycle rows.
+- `POST /exchange/testnet/pipeline/submit` is owner-only: it revalidates the preview boundary, requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`, persists only isolated testnet-order state, and must never touch paper or backtest tables.
 - Private testnet orders do not mutate `orders`, `paper_positions`, `paper_fills`, or paper PnL tables.
 - The adapter now also manages Spot Testnet listen-key lifecycle and testnet-only user-data stream URL construction.
 - Reconciliation runs against isolated `exchange_testnet_orders`, persists `exchange_reconciliation_runs` plus `exchange_reconciliation_mismatches`, and updates local testnet status only through safe exchange-to-local mappings.
@@ -216,6 +220,7 @@ Rules:
 - `EXCHANGE_ACKED` is not a fill.
 - `FILLED`, `CANCELLED`, `REJECTED`, and `EXPIRED` are terminal.
 - Private stream and REST reconciliation share the same transition validator.
+- Preview audit/system events are allowed, but preview must remain non-submitting and non-persistent with respect to exchange order lifecycle state.
 - Every accepted transition appends an event into `exchange_testnet_order_lifecycle_events`.
 - Repair controls may only touch isolated `exchange_testnet_orders`, `exchange_testnet_order_lifecycle_events`, and `exchange_testnet_repair_actions`.
 - `MANUAL_RECHECK` uses the shared REST reconciliation validator; explicit mark actions use a dedicated repair validator and never reactivate a terminal `FILLED` order.

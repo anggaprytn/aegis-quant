@@ -6696,33 +6696,6 @@ async fn submit_exchange_testnet_order_request(
     }
 }
 
-async fn response_json_payload<T: for<'de> Deserialize<'de>>(
-    response: Response,
-) -> std::result::Result<T, Response> {
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "failed_to_read_response_body",
-                    message: "Response body could not be read.".to_string(),
-                    request_id: String::new(),
-                    correlation_id: String::new(),
-                    timestamp: Utc::now(),
-                }),
-            )
-                .into_response()
-        })?;
-    serde_json::from_slice::<T>(&body).map_err(|_| {
-        Response::builder()
-            .status(status)
-            .body(axum::body::Body::from(body))
-            .expect("response rebuild")
-    })
-}
-
 async fn build_exchange_testnet_pipeline_preview(
     state: &AppState,
     risk_decision_id: Uuid,
@@ -6840,41 +6813,11 @@ async fn build_exchange_testnet_pipeline_preview(
             "risk_decision_id resolved to an invalid symbol.",
         )
     })?;
-    let latest_tick = get_latest_market_tick(&state.db_pool, state.market_config.exchange, &symbol_model)
-        .await
-        .map_err(|err| {
-            error!(error = %err, symbol = %symbol, "failed to load latest tick for testnet pipeline preview");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "failed_to_load_market_tick",
-                    message: "Latest market tick could not be loaded.".to_string(),
-                    request_id: correlation_id.to_string(),
-                    correlation_id: correlation_id.to_string(),
-                    timestamp: Utc::now(),
-                }),
-            )
-                .into_response()
-        })?
-        .ok_or_else(|| {
-            telemetry().inc_exchange_testnet_pipeline_run("preview_market_tick_missing");
-            exchange_testnet_pipeline_rejected_response_sync(
-                correlation_id,
-                "market_tick_missing",
-                "A latest market tick is required before testnet pipeline preview.",
-            )
-        })?;
+    let (reference_price, reference_price_received_at) =
+        load_testnet_pipeline_reference_price(state, &symbol_model, correlation_id, &symbol)
+            .await?;
 
-    if latest_tick.price <= Decimal::ZERO {
-        telemetry().inc_exchange_testnet_pipeline_run("preview_market_tick_invalid");
-        return Err(exchange_testnet_pipeline_rejected_response_sync(
-            correlation_id,
-            "invalid_market_tick",
-            "Latest market tick price must be positive.",
-        ));
-    }
-
-    let quantity = (approved_notional / latest_tick.price).round_dp(8);
+    let quantity = (approved_notional / reference_price).round_dp(8);
     if quantity <= Decimal::ZERO {
         telemetry().inc_exchange_testnet_pipeline_run("preview_quantity_invalid");
         return Err(exchange_testnet_pipeline_rejected_response_sync(
@@ -6893,8 +6836,8 @@ async fn build_exchange_testnet_pipeline_preview(
         order_type: ExchangeOrderType::Market,
         quantity,
         quote_notional: approved_notional,
-        reference_price: latest_tick.price,
-        reference_price_received_at: latest_tick.received_at,
+        reference_price,
+        reference_price_received_at,
         confirmation_text: expected_testnet_pipeline_confirmation(&symbol),
         execution_state_preview: TestnetExecutionState::OrderPrepared,
         correlation_id,
@@ -6924,6 +6867,140 @@ async fn build_exchange_testnet_pipeline_preview(
     })?;
 
     Ok(PreparedExchangeTestnetPipelinePreview { preview, order })
+}
+
+async fn load_testnet_pipeline_reference_price(
+    state: &AppState,
+    symbol: &Symbol,
+    correlation_id: Uuid,
+    symbol_text: &str,
+) -> std::result::Result<(Decimal, chrono::DateTime<Utc>), Response> {
+    let latest_tick = get_latest_market_tick(&state.db_pool, state.market_config.exchange, symbol)
+        .await
+        .map_err(|err| {
+            error!(
+                error = %err,
+                symbol = %symbol_text,
+                "failed to load latest tick for testnet pipeline preview"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_market_tick",
+                    message: "Latest market tick could not be loaded.".to_string(),
+                    request_id: correlation_id.to_string(),
+                    correlation_id: correlation_id.to_string(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        })?;
+
+    let had_tick = latest_tick.is_some();
+    if let Some(tick) = latest_tick.as_ref() {
+        if tick.price <= Decimal::ZERO {
+            telemetry().inc_exchange_testnet_pipeline_run("preview_market_tick_invalid");
+            return Err(exchange_testnet_pipeline_rejected_response_sync(
+                correlation_id,
+                "invalid_market_tick",
+                "Latest market tick price must be positive.",
+            ));
+        }
+
+        if !is_testnet_pipeline_price_stale(
+            tick.received_at,
+            Utc::now(),
+            state.market_config.stale_threshold,
+        ) {
+            return Ok((tick.price, tick.received_at));
+        }
+    }
+
+    let latest_candle = list_candles(
+        &state.db_pool,
+        state.market_config.exchange,
+        symbol,
+        CandleInterval::OneMinute,
+        1,
+    )
+    .await
+    .map_err(|err| {
+        error!(
+            error = %err,
+            symbol = %symbol_text,
+            "failed to load fallback candle for testnet pipeline preview"
+        );
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_market_candle",
+                message: "Latest fallback candle could not be loaded.".to_string(),
+                request_id: correlation_id.to_string(),
+                correlation_id: correlation_id.to_string(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response()
+    })?
+    .into_iter()
+    .find(|candle| candle.is_closed);
+
+    let latest_candle = latest_candle.ok_or_else(|| {
+        let result_label = if had_tick {
+            "preview_market_price_stale"
+        } else {
+            "preview_market_price_missing"
+        };
+        telemetry().inc_exchange_testnet_pipeline_run(result_label);
+        exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            if had_tick {
+                "stale_market_price"
+            } else {
+                "market_price_missing"
+            },
+            if had_tick {
+                "Latest local market price is stale; a fresh tick or candle is required before testnet pipeline preview."
+            } else {
+                "A fresh local market tick or closed candle is required before testnet pipeline preview."
+            },
+        )
+    })?;
+
+    if latest_candle.close <= Decimal::ZERO {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_market_candle_invalid");
+        return Err(exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "invalid_market_candle",
+            "Latest closed candle price must be positive.",
+        ));
+    }
+
+    if is_testnet_pipeline_price_stale(
+        latest_candle.close_time,
+        Utc::now(),
+        state.market_config.stale_threshold,
+    ) {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_market_price_stale");
+        return Err(exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "stale_market_price",
+            "Latest local market price is stale; a fresh tick or candle is required before testnet pipeline preview.",
+        ));
+    }
+
+    Ok((latest_candle.close, latest_candle.close_time))
+}
+
+fn is_testnet_pipeline_price_stale(
+    priced_at: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+    stale_threshold: std::time::Duration,
+) -> bool {
+    now.signed_duration_since(priced_at)
+        .to_std()
+        .map(|age| age > stale_threshold)
+        .unwrap_or(false)
 }
 
 fn exchange_testnet_pipeline_rejected_response_sync(
@@ -10316,7 +10393,7 @@ mod tests {
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
         expected_testnet_pipeline_confirmation, AuthLoginResponse, AuthLogoutResponse,
-        AuthRefreshResponse, AuthUserResponse, CandleInterval, ExchangeEnvironment,
+        AuthRefreshResponse, AuthUserResponse, Candle, CandleInterval, ExchangeEnvironment,
         MarketDataSource, MarketMode, MarketTick, Side, Symbol, TestnetExecutionState,
         TestnetRepairAction, UserRole, UserStatus,
     };
@@ -10336,8 +10413,8 @@ mod tests {
         get_user_by_email, insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
         insert_market_tick, insert_user, list_exchange_testnet_order_lifecycle_events,
         list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_orders,
-        set_kill_switch_state, test_support::TestDatabase, ExchangeTestnetOrderRecord, OrderRecord,
-        PgPool, StateActor,
+        set_kill_switch_state, test_support::TestDatabase, upsert_candle,
+        ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor,
     };
     use exchange::{BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig};
     use market_ingest::MarketIngestConfig;
@@ -11011,6 +11088,59 @@ mod tests {
             .get::<i64, _>("count")
     }
 
+    async fn count_exchange_testnet_lifecycle_events(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM exchange_testnet_order_lifecycle_events")
+            .fetch_one(pool)
+            .await
+            .expect("lifecycle event count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_backtest_runs(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM backtest_runs")
+            .fetch_one(pool)
+            .await
+            .expect("backtest run count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_system_events_for_target(pool: &PgPool, event_type: &str, target: &str) -> i64 {
+        sqlx::query(
+            "SELECT COUNT(*) AS count FROM system_events WHERE event_type = $1 AND payload ->> 'symbol' = $2",
+        )
+        .bind(event_type)
+        .bind(target)
+        .fetch_one(pool)
+        .await
+        .expect("system event count for target")
+        .get::<i64, _>("count")
+    }
+
+    async fn insert_recent_closed_candle(pool: &PgPool, symbol: &str, close: Decimal) {
+        let now = Utc::now();
+        let candle = Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new(symbol).expect("symbol"),
+            interval: CandleInterval::OneMinute,
+            open_time: now - chrono::Duration::minutes(1),
+            close_time: now - chrono::Duration::seconds(1),
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: Decimal::ONE,
+            quote_volume: Some(close),
+            trade_count: 1,
+            is_closed: true,
+            created_at: now,
+            updated_at: now,
+        };
+        upsert_candle(pool, &candle)
+            .await
+            .expect("recent candle should persist");
+    }
+
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
     async fn testnet_pipeline_preview_does_not_submit_orders() {
@@ -11061,10 +11191,32 @@ mod tests {
             payload.preview.confirmation_text,
             expected_testnet_pipeline_confirmation("BTCUSDT")
         );
+        assert_eq!(
+            count_audit_logs(&test_db.pool, "exchange.testnet.pipeline.previewed").await,
+            1
+        );
+        assert_eq!(
+            count_system_events_for_target(
+                &test_db.pool,
+                "exchange.testnet.pipeline.previewed",
+                "BTCUSDT",
+            )
+            .await,
+            1
+        );
         assert!(list_exchange_testnet_orders(&test_db.pool, 20)
             .await
             .expect("list testnet orders")
             .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert!(list_orders(&test_db.pool)
+            .await
+            .expect("list paper orders")
+            .is_empty());
+        assert_eq!(count_backtest_runs(&test_db.pool).await, 0);
     }
 
     #[tokio::test]
@@ -11150,7 +11302,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
-    async fn testnet_pipeline_kill_switch_and_rejected_risk_block_preview() {
+    async fn testnet_pipeline_kill_switch_and_rejected_risk_block_preview_and_submit() {
         let test_db = TestDatabase::setup().await.expect("test db");
         let state = auth_test_state(test_db.pool.clone(), None, None);
         let app = pipeline_test_router(state);
@@ -11212,6 +11364,24 @@ mod tests {
             .await
             .expect("kill switch preview");
         assert_eq!(kill_switch_response.status(), StatusCode::CONFLICT);
+        let kill_switch_submit_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/submit",
+                &owner_login.access_token,
+                json!({
+                    "risk_decision_id": approved_risk,
+                    "confirmation_text": expected_testnet_pipeline_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("kill switch submit");
+        assert_eq!(kill_switch_submit_response.status(), StatusCode::CONFLICT);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders")
+            .is_empty());
 
         set_kill_switch_state(
             &test_db.pool,
@@ -11225,6 +11395,7 @@ mod tests {
         .expect("kill switch reset");
 
         let rejected_risk_response = app
+            .clone()
             .oneshot(bearer_request(
                 "POST",
                 "/exchange/testnet/pipeline/preview",
@@ -11234,6 +11405,23 @@ mod tests {
             .await
             .expect("rejected risk preview");
         assert_eq!(rejected_risk_response.status(), StatusCode::CONFLICT);
+        let rejected_risk_submit_response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/submit",
+                &owner_login.access_token,
+                json!({
+                    "risk_decision_id": rejected_risk,
+                    "confirmation_text": expected_testnet_pipeline_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("rejected risk submit");
+        assert_eq!(rejected_risk_submit_response.status(), StatusCode::CONFLICT);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders")
+            .is_empty());
     }
 
     #[tokio::test]
@@ -11291,15 +11479,124 @@ mod tests {
         let order = &orders[0];
         assert_eq!(order.symbol, "BTCUSDT");
         assert_eq!(order.risk_decision_id, Some(risk_decision_id));
+        assert_eq!(order.execution_state, "ORDER_SUBMIT_REQUESTED");
         let lifecycle =
             list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
                 .await
                 .expect("lifecycle events");
-        assert!(!lifecycle.is_empty());
+        assert_eq!(lifecycle.len(), 1);
         assert_eq!(lifecycle[0].next_state, "ORDER_SUBMIT_REQUESTED");
+        assert!(lifecycle
+            .iter()
+            .all(|event| event.next_state != "EXCHANGE_ACKED"));
         assert!(list_orders(&test_db.pool)
             .await
             .expect("list paper orders")
+            .is_empty());
+        assert_eq!(count_backtest_runs(&test_db.pool).await, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_pipeline_preview_rejects_stale_price_without_persistence() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = pipeline_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let risk_decision_id = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        let stale_received_at = Utc::now() - chrono::Duration::seconds(30);
+        let stale_tick = MarketTick {
+            received_at: stale_received_at,
+            trade_time: stale_received_at,
+            ..sample_market_tick("BTCUSDT", Decimal::new(100_000, 0))
+        };
+        insert_market_tick(&test_db.pool, &stale_tick)
+            .await
+            .expect("stale market tick");
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/preview",
+                &owner_login.access_token,
+                json!({ "risk_decision_id": risk_decision_id }),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_pipeline_preview_uses_recent_closed_candle_when_tick_missing() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = pipeline_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let risk_decision_id = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        insert_recent_closed_candle(&test_db.pool, "BTCUSDT", Decimal::new(99_500, 0)).await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/preview",
+                &owner_login.access_token,
+                json!({ "risk_decision_id": risk_decision_id }),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<ExchangeTestnetPipelinePreviewResponse>(response).await;
+        assert_eq!(payload.preview.reference_price, Decimal::new(99_500, 0));
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders")
             .is_empty());
     }
 

@@ -24,7 +24,9 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Paper position close is simulated only, requires typed confirmation `CLOSE <SYMBOL>`, and rejects missing/stale public mark prices by default
 - Strategy config changes are audited, versioned, and emitted as system events; live mode remains blocked even in config validation/update paths
 - `/metrics` exposes operational state only, not secrets, but it should still be restricted at the network boundary in production
-- Testnet submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
+- Testnet direct submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
+- Testnet pipeline preview requires operator-or-owner auth, an approved persisted `risk_decision_id`, an inactive kill switch, and fresh local stored pricing; it must not submit exchange orders or persist isolated order lifecycle state
+- Testnet pipeline submit requires owner authorization, exact typed confirmation `SUBMIT TESTNET <SYMBOL>`, an approved persisted `risk_decision_id`, an inactive kill switch, and persists only isolated testnet execution state
 - Testnet repair actions require per-order typed confirmation: `REPAIR TESTNET <CLIENT_ORDER_ID>` or `CANCEL TESTNET <CLIENT_ORDER_ID>` for safe cancel
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
 - Testnet lifecycle history is isolated in `exchange_testnet_order_lifecycle_events` and must not mutate paper accounting, backtest, or live execution tables
@@ -38,6 +40,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Reconciliation mismatches and failure events must not include API secrets or high-cardinality metric labels
 - Binance private REST support is testnet-only, signs requests with HMAC SHA256, and does not log API secrets
 - Production Binance env vars and withdrawal endpoints are intentionally absent
+- No live execution path is enabled in this repository; Binance production endpoints remain intentionally unsupported
 
 ## TODO boundaries
 
