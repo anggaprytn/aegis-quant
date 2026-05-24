@@ -120,15 +120,19 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 1. Copy `.env.example` to `.env`.
 2. Review `.env` and set a real local `AEGIS_JWT_SECRET`.
 3. Start core services:
-   `docker compose -f infra/docker-compose.yml up -d postgres api`
+   `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres api`
 4. Bootstrap the owner:
    `curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner`
 5. Log in:
    `cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"`
 6. Optional dashboard:
-   `docker compose -f infra/docker-compose.yml --profile dashboard up -d dashboard`
-7. Optional Prometheus:
-   `docker compose -f infra/docker-compose.yml --profile prometheus up -d prometheus`
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
+7. Optional market ingest:
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
+8. Optional shadow runner:
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
+9. Optional Prometheus:
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
 
 Local dashboard auth note:
 `AEGIS_CORS_ALLOWED_ORIGINS` defaults to `http://localhost:3001,http://127.0.0.1:3001` so the dashboard can call the API at `http://localhost:3000` and receive the refresh-token cookie on `/auth/login` and `/auth/refresh`. For production, add explicit origins such as `https://aegis.anggaprytn.com` via env instead of using `*`.
@@ -136,22 +140,34 @@ Local dashboard auth note:
 ## Compose profiles
 
 Core API + DB:
-`docker compose -f infra/docker-compose.yml up -d postgres api`
+`docker compose -f infra/docker-compose.yml --env-file .env up -d postgres api`
 
 Dashboard:
-`docker compose -f infra/docker-compose.yml --profile dashboard up -d dashboard`
+`docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
 
 If you run the dashboard outside Compose on `http://localhost:3001`, keep `AEGIS_CORS_ALLOWED_ORIGINS` aligned with the browser origin. Example:
 `AEGIS_CORS_ALLOWED_ORIGINS=http://localhost:3001,http://127.0.0.1:3001,https://aegis.anggaprytn.com`
 
+Market ingest:
+`docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
+
+Shadow runner:
+`docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
+
 Prometheus:
-`docker compose -f infra/docker-compose.yml --profile prometheus up -d prometheus`
+`docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
 
 Optional workers:
 
-- `market-ingest` is not wired into Compose today; run it directly with `cargo run -p market-ingest`.
-- The testnet private-stream worker is not wired into Compose today; run the existing Rust binary directly when needed.
-- The testnet shadow runner is not wired into Compose today; run it directly with `cargo run -p api --bin testnet-shadow-runner`.
+- `market-ingest` uses public Binance market data only.
+- `testnet-shadow-runner` never submits orders.
+- No live trading is implemented.
+- No production Binance endpoints are used.
+
+Worker logs:
+`docker logs -f aegis-quant-market-ingest`
+
+`docker logs -f aegis-quant-shadow-runner`
 
 ## Verification
 

@@ -39,6 +39,38 @@ services:
     ports:
       - "3000:3000"
 
+  market-ingest:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: aegis-quant-market-ingest
+    profiles: ["ingest"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis_quant
+    command: ["market-ingest"]
+
+  testnet-shadow-runner:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: aegis-quant-shadow-runner
+    profiles: ["shadow"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis_quant
+    command: ["testnet-shadow-runner"]
+
   dashboard:
     image: node:20-alpine
     container_name: aegis-quant-dashboard
