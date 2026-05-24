@@ -1,5 +1,5 @@
-use aegis_core::PaperTradingPipelineResult;
 use aegis_core::User;
+use aegis_core::{ExchangeTestnetPipelinePreview, PaperTradingPipelineResult};
 use colored::Colorize;
 use serde::Serialize;
 
@@ -9,15 +9,15 @@ use crate::api::{
     ExchangePrivateStreamListenKeyResponse, ExchangePrivateStreamStatusResponse,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationResult,
     ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
-    ExchangeTestnetRepairActionRecord, ExchangeTestnetRepairResponse,
-    ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse, FeedStatusResponse,
-    HealthResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
-    PaperEquityResponse, PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse,
-    PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse, RiskConfigAuditResponse,
-    RiskConfigResponse, RiskConfigValidationResponse, RiskConfigVersionsResponse,
-    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
-    StrategyConfigValidationResponse, StrategyConfigVersionsResponse, StrategyDryRunResponse,
-    StrategyListResponse, StrategyStatusResponse,
+    ExchangeTestnetPipelineSubmitResponse, ExchangeTestnetRepairActionRecord,
+    ExchangeTestnetRepairResponse, ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse,
+    FeedStatusResponse, HealthResponse, OrderRecord, PaperAccountResponse,
+    PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse, PaperPositionRecord,
+    PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse,
+    RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
+    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
+    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
+    StrategyDryRunResponse, StrategyListResponse, StrategyStatusResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -210,6 +210,41 @@ pub fn print_exchange_testnet_order(response: &ExchangeTestnetOrderResponse) {
         "Requested quote notional: {}",
         order.requested_notional.as_deref().unwrap_or("-")
     );
+}
+
+pub fn print_exchange_testnet_pipeline_preview(preview: &ExchangeTestnetPipelinePreview) {
+    println!("Risk decision ID: {}", preview.risk_decision_id);
+    println!(
+        "Signal ID: {}",
+        preview
+            .signal_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Strategy ID: {}",
+        preview.strategy_id.as_deref().unwrap_or("-")
+    );
+    println!("Symbol: {}", preview.symbol);
+    println!("Side: {}", preview.side.as_str());
+    println!("Order type: {}", preview.order_type.as_str());
+    println!("Quantity: {}", preview.quantity);
+    println!("Quote notional: {}", preview.quote_notional);
+    println!("Reference price: {}", preview.reference_price);
+    println!("Confirmation: {}", preview.confirmation_text);
+}
+
+pub fn print_exchange_testnet_pipeline_submit(response: &ExchangeTestnetPipelineSubmitResponse) {
+    print_exchange_testnet_pipeline_preview(&response.preview);
+    println!();
+    println!("Submitted order:");
+    println!("Client order ID: {}", response.order.client_order_id);
+    println!(
+        "Exchange order ID: {}",
+        response.order.exchange_order_id.as_deref().unwrap_or("-")
+    );
+    println!("Status: {}", response.order.status);
+    println!("Execution state: {}", response.order.execution_state);
 }
 
 pub fn print_exchange_testnet_order_lifecycle(

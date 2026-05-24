@@ -1,11 +1,12 @@
 use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
-    PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
-    RiskConfigVersion, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
-    StrategyDryRunResult,
+    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, ExchangeTestnetPipelinePreview,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDryRunRequest, StrategyDryRunResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -721,6 +722,22 @@ impl ApiClient {
         self.post("/exchange/testnet/orders", request).await
     }
 
+    pub async fn exchange_testnet_pipeline_preview(
+        &self,
+        request: &ExchangeTestnetPipelinePreviewRequest,
+    ) -> Result<ExchangeTestnetPipelinePreviewResponse, ApiClientError> {
+        self.post("/exchange/testnet/pipeline/preview", request)
+            .await
+    }
+
+    pub async fn exchange_testnet_pipeline_submit(
+        &self,
+        request: &ExchangeTestnetPipelineSubmitRequest,
+    ) -> Result<ExchangeTestnetPipelineSubmitResponse, ApiClientError> {
+        self.post("/exchange/testnet/pipeline/submit", request)
+            .await
+    }
+
     pub async fn exchange_testnet_order_cancel(
         &self,
         client_order_id: &str,
@@ -1434,6 +1451,23 @@ pub struct ExchangeTestnetOrderLifecycleResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExchangeTestnetOrderResponse {
+    pub order: ExchangeTestnetOrderRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetPipelinePreviewResponse {
+    pub preview: ExchangeTestnetPipelinePreview,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetPipelineSubmitResponse {
+    pub preview: ExchangeTestnetPipelinePreview,
     pub order: ExchangeTestnetOrderRecord,
     pub request_id: String,
     pub correlation_id: String,

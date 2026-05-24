@@ -1644,6 +1644,14 @@ pub struct TestnetRepairResult {
     pub issues: Vec<TestnetRepairValidationIssue>,
 }
 
+pub fn expected_testnet_pipeline_confirmation(symbol: &str) -> String {
+    format!("SUBMIT TESTNET {}", symbol.trim().to_ascii_uppercase())
+}
+
+pub fn is_valid_testnet_pipeline_confirmation(symbol: &str, confirmation_text: &str) -> bool {
+    confirmation_text == expected_testnet_pipeline_confirmation(symbol)
+}
+
 pub fn validate_testnet_repair_transition(
     action: TestnetRepairAction,
     previous: TestnetExecutionState,
@@ -2083,6 +2091,37 @@ impl ExchangeOrderRequest {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangeTestnetPipelinePreviewRequest {
+    pub risk_decision_id: Uuid,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangeTestnetPipelineSubmitRequest {
+    pub risk_decision_id: Uuid,
+    pub confirmation_text: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeTestnetPipelinePreview {
+    pub strategy_id: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Uuid,
+    pub symbol: String,
+    pub side: ExchangeOrderSide,
+    pub order_type: ExchangeOrderType,
+    pub quantity: Decimal,
+    pub quote_notional: Decimal,
+    pub reference_price: Decimal,
+    pub reference_price_received_at: DateTime<Utc>,
+    pub confirmation_text: String,
+    pub execution_state_preview: TestnetExecutionState,
+    pub correlation_id: Uuid,
+    pub previewed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

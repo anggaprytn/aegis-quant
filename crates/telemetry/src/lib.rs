@@ -49,6 +49,7 @@ pub struct Telemetry {
     exchange_testnet_requests_total: IntCounterVec,
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
+    exchange_testnet_pipeline_runs_total: IntCounterVec,
     exchange_testnet_lifecycle_transitions_total: IntCounterVec,
     exchange_testnet_lifecycle_invalid_transitions_total: IntCounterVec,
     exchange_testnet_orders_by_state: IntGaugeVec,
@@ -304,6 +305,13 @@ impl Telemetry {
             registry
         )
         .expect("exchange_testnet_errors_total should register");
+        let exchange_testnet_pipeline_runs_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_pipeline_runs_total",
+            "Exchange testnet pipeline runs by result.",
+            &["result"],
+            registry
+        )
+        .expect("exchange_testnet_pipeline_runs_total should register");
         let exchange_testnet_lifecycle_transitions_total = register_int_counter_vec_with_registry!(
             "exchange_testnet_lifecycle_transitions_total",
             "Testnet lifecycle transitions by source and next_state.",
@@ -439,6 +447,7 @@ impl Telemetry {
             exchange_testnet_requests_total,
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
+            exchange_testnet_pipeline_runs_total,
             exchange_testnet_lifecycle_transitions_total,
             exchange_testnet_lifecycle_invalid_transitions_total,
             exchange_testnet_orders_by_state,
@@ -691,6 +700,12 @@ impl Telemetry {
     pub fn inc_exchange_testnet_error(&self, operation: &str, kind: &str) {
         self.exchange_testnet_errors_total
             .with_label_values(&[operation, kind])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_pipeline_run(&self, result: &str) {
+        self.exchange_testnet_pipeline_runs_total
+            .with_label_values(&[result])
             .inc();
     }
 

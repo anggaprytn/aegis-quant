@@ -476,6 +476,37 @@ async fn main() -> anyhow::Result<()> {
                         output::print_exchange_testnet_symbols(&response);
                     }
                 }
+                ExchangeTestnetCommands::PipelinePreview(args) => {
+                    let response = client
+                        .exchange_testnet_pipeline_preview(
+                            &aegis_core::ExchangeTestnetPipelinePreviewRequest {
+                                risk_decision_id: args.risk_decision_id,
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_pipeline_preview(&response.preview);
+                    }
+                }
+                ExchangeTestnetCommands::PipelineSubmit(args) => {
+                    let response = client
+                        .exchange_testnet_pipeline_submit(
+                            &aegis_core::ExchangeTestnetPipelineSubmitRequest {
+                                risk_decision_id: args.risk_decision_id,
+                                confirmation_text: args.confirm.expect("validated confirm"),
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_pipeline_submit(&response);
+                    }
+                }
                 ExchangeTestnetCommands::Balances => {
                     let response = client.exchange_testnet_balances().await?;
                     if cli.json {

@@ -316,6 +316,8 @@ function AuthenticatedDashboard({
   const [testnetQuantity, setTestnetQuantity] = useState("");
   const [testnetLimitPrice, setTestnetLimitPrice] = useState("");
   const [testnetRiskDecisionId, setTestnetRiskDecisionId] = useState("");
+  const [testnetPipelineRiskDecisionId, setTestnetPipelineRiskDecisionId] = useState("");
+  const [testnetPipelineConfirmation, setTestnetPipelineConfirmation] = useState("");
   const [selectedTestnetOrderId, setSelectedTestnetOrderId] = useState<string | null>(null);
   const [privateStreamListenKey, setPrivateStreamListenKey] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
@@ -869,6 +871,26 @@ function AuthenticatedDashboard({
       }),
     onSuccess: async () => {
       setTestnetConfirmation("");
+      await refreshOperationalData();
+    },
+  });
+  const exchangeTestnetPipelinePreviewMutation = useMutation({
+    mutationFn: () =>
+      api.previewExchangeTestnetPipeline({
+        risk_decision_id: testnetPipelineRiskDecisionId,
+      }),
+    onSuccess: (response) => {
+      setTestnetPipelineConfirmation(response.preview.confirmation_text);
+    },
+  });
+  const exchangeTestnetPipelineSubmitMutation = useMutation({
+    mutationFn: () =>
+      api.submitExchangeTestnetPipeline({
+        risk_decision_id: testnetPipelineRiskDecisionId,
+        confirmation_text: testnetPipelineConfirmation,
+      }),
+    onSuccess: async () => {
+      setTestnetPipelineConfirmation("");
       await refreshOperationalData();
     },
   });
@@ -2666,7 +2688,93 @@ function AuthenticatedDashboard({
                 </div>
               </Panel>
               {user.role === "OWNER" ? (
-                <Panel title="Submit Testnet Order">
+                <Panel title="Testnet Pipeline Preview">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field
+                      label="Risk Decision ID"
+                      value={testnetPipelineRiskDecisionId}
+                      onChange={setTestnetPipelineRiskDecisionId}
+                      placeholder="approved UUID"
+                    />
+                    <Field
+                      label="Confirmation"
+                      value={testnetPipelineConfirmation}
+                      onChange={setTestnetPipelineConfirmation}
+                      placeholder='SUBMIT TESTNET BTCUSDT'
+                    />
+                  </div>
+                  <div className="mt-4 flex gap-3">
+                    <button
+                      className="rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 py-2 text-sm"
+                      onClick={() => exchangeTestnetPipelinePreviewMutation.mutate()}
+                      disabled={
+                        exchangeTestnetPipelinePreviewMutation.isPending ||
+                        testnetPipelineRiskDecisionId.trim().length === 0
+                      }
+                    >
+                      Preview Testnet Pipeline
+                    </button>
+                    <button
+                      className="rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm"
+                      onClick={() => exchangeTestnetPipelineSubmitMutation.mutate()}
+                      disabled={
+                        exchangeTestnetPipelineSubmitMutation.isPending ||
+                        !exchangeTestnetPipelinePreviewMutation.data ||
+                        testnetPipelineConfirmation !==
+                          exchangeTestnetPipelinePreviewMutation.data.preview.confirmation_text
+                      }
+                    >
+                      Submit Previewed Testnet Order
+                    </button>
+                  </div>
+                  {exchangeTestnetPipelinePreviewMutation.data ? (
+                    <div className="mt-4 rounded-xl border border-border bg-surface/40 px-3 py-3 text-sm text-slate-200">
+                      <div className="font-medium text-slate-100">
+                        {exchangeTestnetPipelinePreviewMutation.data.preview.symbol}{" "}
+                        {exchangeTestnetPipelinePreviewMutation.data.preview.side}
+                      </div>
+                      <div className="mt-2 grid gap-2 md:grid-cols-2">
+                        <div>
+                          Strategy {exchangeTestnetPipelinePreviewMutation.data.preview.strategy_id ?? "N/A"}
+                        </div>
+                        <div>
+                          Signal {exchangeTestnetPipelinePreviewMutation.data.preview.signal_id ?? "N/A"}
+                        </div>
+                        <div>
+                          Quantity {exchangeTestnetPipelinePreviewMutation.data.preview.quantity}
+                        </div>
+                        <div>
+                          Quote notional {exchangeTestnetPipelinePreviewMutation.data.preview.quote_notional}
+                        </div>
+                        <div>
+                          Reference price {exchangeTestnetPipelinePreviewMutation.data.preview.reference_price}
+                        </div>
+                        <div>
+                          Type {exchangeTestnetPipelinePreviewMutation.data.preview.order_type}
+                        </div>
+                      </div>
+                      <div className="mt-2 text-xs text-slate-400">
+                        Owner confirmation required exactly:
+                        {" "}
+                        {exchangeTestnetPipelinePreviewMutation.data.preview.confirmation_text}
+                      </div>
+                    </div>
+                  ) : null}
+                  <InlineStatus
+                    error={
+                      getErrorMessage(exchangeTestnetPipelinePreviewMutation.error) ??
+                      getErrorMessage(exchangeTestnetPipelineSubmitMutation.error)
+                    }
+                    success={
+                      exchangeTestnetPipelineSubmitMutation.data
+                        ? `${exchangeTestnetPipelineSubmitMutation.data.order.client_order_id} submitted`
+                        : undefined
+                    }
+                  />
+                </Panel>
+              ) : null}
+              {user.role === "OWNER" ? (
+                <Panel title="Manual Testnet Order">
                   <div className="grid gap-3 md:grid-cols-2">
                     <Field label="Symbol" value={testnetSymbol} onChange={setTestnetSymbol} />
                     <Field label="Side" value={testnetSide} onChange={setTestnetSide} />

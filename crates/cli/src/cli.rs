@@ -1,6 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
+use aegis_core::expected_testnet_pipeline_confirmation;
+
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
 pub const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
 
@@ -60,6 +62,15 @@ impl Cli {
                         );
                     }
                 }
+                ExchangeTestnetCommands::PipelineSubmit(args) => {
+                    let expected = expected_testnet_pipeline_confirmation(&args.symbol);
+                    if args.confirm.as_deref() != Some(expected.as_str()) {
+                        anyhow::bail!(
+                            "exchange testnet pipeline-submit requires --confirm {:?} exactly",
+                            expected
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -108,6 +119,8 @@ pub enum ExchangeCommands {
 #[derive(Debug, Subcommand)]
 pub enum ExchangeTestnetCommands {
     Status,
+    PipelinePreview(ExchangeTestnetPipelinePreviewArgs),
+    PipelineSubmit(ExchangeTestnetPipelineSubmitArgs),
     #[command(subcommand)]
     PrivateStream(ExchangeTestnetPrivateStreamCommands),
     Symbols,
@@ -132,6 +145,22 @@ pub enum ExchangeTestnetCommands {
     ReconciliationMismatches {
         run_id: Uuid,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetPipelinePreviewArgs {
+    #[arg(long = "risk-decision-id")]
+    pub risk_decision_id: Uuid,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetPipelineSubmitArgs {
+    #[arg(long = "risk-decision-id")]
+    pub risk_decision_id: Uuid,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub confirm: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -501,6 +530,7 @@ pub struct BacktestListArgs {
 #[cfg(test)]
 mod tests {
     use super::{Cli, Commands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT};
+    use aegis_core::expected_testnet_pipeline_confirmation;
     use clap::Parser;
 
     #[test]
@@ -606,5 +636,25 @@ mod tests {
         .expect("cli parses");
 
         assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn exchange_testnet_pipeline_submit_requires_symbol_confirmation() {
+        let expected = expected_testnet_pipeline_confirmation("BTCUSDT");
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "exchange",
+            "testnet",
+            "pipeline-submit",
+            "--risk-decision-id",
+            "00000000-0000-0000-0000-000000000123",
+            "--symbol",
+            "BTCUSDT",
+            "--confirm",
+            &expected,
+        ])
+        .expect("cli parses");
+
+        assert!(cli.validate().is_ok());
     }
 }

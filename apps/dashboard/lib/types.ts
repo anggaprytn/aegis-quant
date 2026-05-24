@@ -668,6 +668,38 @@ export type ExchangeTestnetOrderResponse = {
   timestamp: string;
 };
 
+export type ExchangeTestnetPipelinePreview = {
+  strategy_id: string | null;
+  signal_id: string | null;
+  risk_decision_id: string;
+  symbol: string;
+  side: string;
+  order_type: string;
+  quantity: string;
+  quote_notional: string;
+  reference_price: string;
+  reference_price_received_at: string;
+  confirmation_text: string;
+  execution_state_preview: string;
+  correlation_id: string;
+  previewed_at: string;
+};
+
+export type ExchangeTestnetPipelinePreviewResponse = {
+  preview: ExchangeTestnetPipelinePreview;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeTestnetPipelineSubmitResponse = {
+  preview: ExchangeTestnetPipelinePreview;
+  order: ExchangeTestnetOrderRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ExchangeTestnetOrderLifecycleEvent = {
   previous_state: string | null;
   next_state: string;

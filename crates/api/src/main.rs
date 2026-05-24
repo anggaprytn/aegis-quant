@@ -8,6 +8,7 @@ use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
 };
 use aegis_core::{
+    expected_testnet_pipeline_confirmation, is_valid_testnet_pipeline_confirmation,
     validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
     AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
     CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
@@ -16,15 +17,17 @@ use aegis_core::{
     ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
     ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
     ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
-    ExchangeSymbolInfo, MarketMode, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
-    PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDryRunRequest, StrategyDryRunResult, StrategyEvaluationContext, StrategyId,
-    StrategyStatus, Symbol, TestnetExecutionState, TestnetExecutionTransitionSource,
-    TestnetRepairAction, TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
+    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    ExchangeTestnetPipelineSubmitRequest, MarketMode, OrderIntent, PaperCloseMode,
+    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetRepairAction,
+    TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
     TestnetRepairValidationIssue, UserRole, UserStatus,
 };
 use api::{
@@ -129,6 +132,12 @@ const MAX_EXCHANGE_TESTNET_LIMIT: i64 = 200;
 const CLI_AUTH_MODE_HEADER: &str = "x-aegis-auth-mode";
 const CLI_AUTH_MODE_VALUE: &str = "cli";
 const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
+
+#[derive(Debug, Clone)]
+struct PreparedExchangeTestnetPipelinePreview {
+    preview: ExchangeTestnetPipelinePreview,
+    order: ExchangeOrderRequest,
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -601,6 +610,23 @@ struct ExchangeTestnetBalancesResponse {
 
 #[derive(Serialize)]
 struct ExchangeTestnetOrderResponse {
+    order: ExchangeTestnetOrderView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExchangeTestnetPipelinePreviewResponse {
+    preview: ExchangeTestnetPipelinePreview,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetPipelineSubmitResponse {
+    preview: ExchangeTestnetPipelinePreview,
     order: ExchangeTestnetOrderView,
     request_id: String,
     correlation_id: String,
@@ -1319,6 +1345,14 @@ async fn main() {
         .route("/risk/evaluate", post(evaluate_risk))
         .route("/exchange/testnet/status", get(get_exchange_testnet_status))
         .route(
+            "/exchange/testnet/pipeline/preview",
+            post(preview_exchange_testnet_pipeline),
+        )
+        .route(
+            "/exchange/testnet/pipeline/submit",
+            post(submit_exchange_testnet_pipeline),
+        )
+        .route(
             "/exchange/testnet/private-stream/status",
             get(get_exchange_testnet_private_stream_status),
         )
@@ -1761,6 +1795,12 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     }
     if method == axum::http::Method::GET && path == "/exchange/testnet/orders" {
         return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/exchange/testnet/pipeline/preview" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/exchange/testnet/pipeline/submit" {
+        return RouteAccess::Owner;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/reconcile" {
         return RouteAccess::Operator;
@@ -5818,7 +5858,7 @@ async fn submit_exchange_testnet_order(
         quantity,
         quote_notional,
         limit_price,
-        client_order_id: client_order_id.clone(),
+        client_order_id,
         recv_window_ms: payload.recv_window_ms,
         risk_decision_id: Some(risk_decision_id),
     };
@@ -5834,126 +5874,172 @@ async fn submit_exchange_testnet_order(
         )
         .await;
     }
+    submit_exchange_testnet_order_request(&state, &actor, &request, correlation_id, order).await
+}
 
-    let persisted = ExchangeTestnetOrderRecord {
-        id: Uuid::new_v4(),
-        exchange: ExchangeName::Binance.as_str().to_string(),
-        environment: ExchangeEnvironment::Testnet.as_str().to_string(),
-        client_order_id: client_order_id.clone(),
-        exchange_order_id: None,
-        symbol: symbol.to_string(),
-        side: payload.side.as_str().to_string(),
-        order_type: payload.order_type.as_str().to_string(),
-        time_in_force: payload
-            .time_in_force
-            .map(|value| value.as_str().to_string()),
-        requested_qty: quantity,
-        requested_notional: quote_notional,
-        limit_price,
-        status: "SUBMIT_REQUESTED".to_string(),
-        execution_state: TestnetExecutionState::OrderSubmitRequested
-            .as_str()
-            .to_string(),
-        ack_payload: None,
-        latest_status_payload: None,
-        risk_decision_id: Some(risk_decision_id),
-        created_by: actor.actor_id,
-        last_transition_at: Some(Utc::now()),
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+async fn preview_exchange_testnet_pipeline(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ExchangeTestnetPipelinePreviewRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    match build_exchange_testnet_pipeline_preview(&state, payload.risk_decision_id, correlation_id)
+        .await
+    {
+        Ok(prepared) => {
+            let _ = insert_audit_log(
+                &state.db_pool,
+                correlation_id,
+                &actor,
+                "exchange.testnet.pipeline.previewed",
+                &prepared.preview.symbol,
+                &json!({
+                    "risk_decision_id": prepared.preview.risk_decision_id,
+                    "signal_id": prepared.preview.signal_id,
+                    "strategy_id": prepared.preview.strategy_id,
+                }),
+            )
+            .await;
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "exchange.testnet.pipeline.previewed",
+                    correlation_id,
+                    &state.config.app_name,
+                    json!({
+                        "symbol": prepared.preview.symbol,
+                        "risk_decision_id": prepared.preview.risk_decision_id,
+                    }),
+                ),
+            )
+            .await;
+            telemetry().inc_exchange_testnet_pipeline_run("preview_ok");
+            (
+                StatusCode::OK,
+                Json(ExchangeTestnetPipelinePreviewResponse {
+                    preview: prepared.preview,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(response) => response,
+    }
+}
+
+async fn submit_exchange_testnet_pipeline(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ExchangeTestnetPipelineSubmitRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    let prepared = match build_exchange_testnet_pipeline_preview(
+        &state,
+        payload.risk_decision_id,
+        correlation_id,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(response) => return response,
     };
+
+    if !is_valid_testnet_pipeline_confirmation(&prepared.preview.symbol, &payload.confirmation_text)
+    {
+        telemetry().inc_exchange_testnet_pipeline_run("submit_confirmation_invalid");
+        return exchange_testnet_pipeline_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            "invalid_testnet_pipeline_confirmation",
+            &format!(
+                "Testnet pipeline submit requires confirmation_text exactly equal to {:?}.",
+                expected_testnet_pipeline_confirmation(&prepared.preview.symbol)
+            ),
+            prepared.preview.symbol.clone(),
+        )
+        .await;
+    }
+
     let _ = insert_audit_log(
         &state.db_pool,
         correlation_id,
         &actor,
-        "exchange.testnet.order.submit_requested",
-        &client_order_id,
-        &json!({ "symbol": persisted.symbol, "risk_decision_id": risk_decision_id }),
+        "exchange.testnet.pipeline.submit_requested",
+        &prepared.preview.symbol,
+        &json!({
+            "risk_decision_id": prepared.preview.risk_decision_id,
+            "signal_id": prepared.preview.signal_id,
+        }),
     )
     .await;
     let _ = insert_system_event(
         &state.db_pool,
         &EventEnvelope::new(
-            "exchange.testnet.order.submit_requested",
+            "exchange.testnet.pipeline.submit_requested",
             correlation_id,
             &state.config.app_name,
-            json!({ "client_order_id": client_order_id, "symbol": persisted.symbol }),
+            json!({
+                "symbol": prepared.preview.symbol,
+                "risk_decision_id": prepared.preview.risk_decision_id,
+            }),
         ),
     )
     .await;
+    telemetry().inc_exchange_testnet_pipeline_run("submit_attempt");
 
-    if let Err(err) = insert_exchange_testnet_order(&state.db_pool, &persisted).await {
-        error!(
-            request_id = %request.request_id,
-            correlation_id = %request.correlation_id,
-            error = %err,
-            "failed to persist exchange testnet order request"
-        );
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "failed_to_persist_exchange_testnet_order",
-                message: "Exchange testnet order could not be persisted.".to_string(),
-                request_id: request.request_id,
-                correlation_id: request.correlation_id,
-                timestamp: Utc::now(),
-            }),
-        )
-            .into_response();
-    }
-
-    let _ = append_exchange_testnet_lifecycle_event_and_update_order(
-        &state.db_pool,
-        &ExchangeTestnetOrderLifecycleEventRecord {
-            id: Uuid::new_v4(),
-            order_id: Some(persisted.id),
-            client_order_id: persisted.client_order_id.clone(),
-            previous_state: None,
-            next_state: TestnetExecutionState::OrderSubmitRequested
-                .as_str()
-                .to_string(),
-            transition_source: TestnetExecutionTransitionSource::ApiSubmit
-                .as_str()
-                .to_string(),
-            reason: Some("submit_requested".to_string()),
-            payload: None,
-            created_by: actor.actor_id,
-            created_at: Utc::now(),
-            correlation_id: Some(correlation_id),
-        },
-        None,
-        Some("SUBMIT_REQUESTED"),
-        TestnetExecutionState::OrderSubmitRequested,
-        None,
-        None,
+    let response = submit_exchange_testnet_order_request(
+        &state,
+        &actor,
+        &request,
+        correlation_id,
+        prepared.order,
     )
     .await;
 
-    telemetry().inc_exchange_testnet_request("submit_order", "attempt");
-    match state.exchange_testnet.submit_order(order).await {
-        Ok(ack) => {
-            submit_exchange_testnet_order_success(
-                &state,
-                &actor,
-                &request,
-                correlation_id,
-                persisted,
-                ack,
-            )
-            .await
+    if response.status().is_success() {
+        let client_order_id = generate_testnet_client_order_id(correlation_id);
+        match get_exchange_testnet_order_by_client_order_id(&state.db_pool, &client_order_id).await
+        {
+            Ok(Some(order_record)) => {
+                match build_exchange_testnet_order_view(&state.db_pool, order_record).await {
+                    Ok(order) => {
+                        telemetry().inc_exchange_testnet_pipeline_run("submit_ok");
+                        (
+                            StatusCode::CREATED,
+                            Json(ExchangeTestnetPipelineSubmitResponse {
+                                preview: prepared.preview,
+                                order,
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response()
+                    }
+                    Err(_) => response,
+                }
+            }
+            _ => response,
         }
-        Err(err) => {
-            exchange_testnet_adapter_rejected_response(
-                &state,
-                &actor,
-                &request,
-                correlation_id,
-                "submit_order",
-                err,
-                symbol.to_string(),
-            )
-            .await
-        }
+    } else {
+        telemetry().inc_exchange_testnet_pipeline_run("submit_rejected");
+        response
     }
 }
 
@@ -6480,6 +6566,405 @@ async fn submit_exchange_testnet_order_success(
     }
 }
 
+async fn submit_exchange_testnet_order_request(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    order: ExchangeOrderRequest,
+) -> Response {
+    let client_order_id = generate_testnet_client_order_id(correlation_id);
+    let persisted = ExchangeTestnetOrderRecord {
+        id: Uuid::new_v4(),
+        exchange: ExchangeName::Binance.as_str().to_string(),
+        environment: ExchangeEnvironment::Testnet.as_str().to_string(),
+        client_order_id: client_order_id.clone(),
+        exchange_order_id: None,
+        symbol: order.symbol.to_string(),
+        side: order.side.as_str().to_string(),
+        order_type: order.order_type.as_str().to_string(),
+        time_in_force: order.time_in_force.map(|value| value.as_str().to_string()),
+        requested_qty: order.quantity,
+        requested_notional: order.quote_notional,
+        limit_price: order.limit_price,
+        status: "SUBMIT_REQUESTED".to_string(),
+        execution_state: TestnetExecutionState::OrderSubmitRequested
+            .as_str()
+            .to_string(),
+        ack_payload: None,
+        latest_status_payload: None,
+        risk_decision_id: order.risk_decision_id,
+        created_by: actor.actor_id,
+        last_transition_at: Some(Utc::now()),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        actor,
+        "exchange.testnet.order.submit_requested",
+        &client_order_id,
+        &json!({ "symbol": persisted.symbol, "risk_decision_id": order.risk_decision_id }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.order.submit_requested",
+            correlation_id,
+            &state.config.app_name,
+            json!({ "client_order_id": client_order_id, "symbol": persisted.symbol }),
+        ),
+    )
+    .await;
+
+    if let Err(err) = insert_exchange_testnet_order(&state.db_pool, &persisted).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            "failed to persist exchange testnet order request"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_exchange_testnet_order",
+                message: "Exchange testnet order could not be persisted.".to_string(),
+                request_id: request.request_id.clone(),
+                correlation_id: request.correlation_id.clone(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let _ = append_exchange_testnet_lifecycle_event_and_update_order(
+        &state.db_pool,
+        &ExchangeTestnetOrderLifecycleEventRecord {
+            id: Uuid::new_v4(),
+            order_id: Some(persisted.id),
+            client_order_id: persisted.client_order_id.clone(),
+            previous_state: None,
+            next_state: TestnetExecutionState::OrderSubmitRequested
+                .as_str()
+                .to_string(),
+            transition_source: TestnetExecutionTransitionSource::ApiSubmit
+                .as_str()
+                .to_string(),
+            reason: Some("submit_requested".to_string()),
+            payload: None,
+            created_by: actor.actor_id,
+            created_at: Utc::now(),
+            correlation_id: Some(correlation_id),
+        },
+        None,
+        Some("SUBMIT_REQUESTED"),
+        TestnetExecutionState::OrderSubmitRequested,
+        None,
+        None,
+    )
+    .await;
+
+    let mut exchange_order = order;
+    exchange_order.client_order_id = client_order_id.clone();
+    telemetry().inc_exchange_testnet_request("submit_order", "attempt");
+    match state.exchange_testnet.submit_order(exchange_order).await {
+        Ok(ack) => {
+            submit_exchange_testnet_order_success(
+                state,
+                actor,
+                request,
+                correlation_id,
+                persisted,
+                ack,
+            )
+            .await
+        }
+        Err(err) => {
+            exchange_testnet_adapter_rejected_response(
+                state,
+                actor,
+                request,
+                correlation_id,
+                "submit_order",
+                err,
+                persisted.symbol,
+            )
+            .await
+        }
+    }
+}
+
+async fn response_json_payload<T: for<'de> Deserialize<'de>>(
+    response: Response,
+) -> std::result::Result<T, Response> {
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_read_response_body",
+                    message: "Response body could not be read.".to_string(),
+                    request_id: String::new(),
+                    correlation_id: String::new(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        })?;
+    serde_json::from_slice::<T>(&body).map_err(|_| {
+        Response::builder()
+            .status(status)
+            .body(axum::body::Body::from(body))
+            .expect("response rebuild")
+    })
+}
+
+async fn build_exchange_testnet_pipeline_preview(
+    state: &AppState,
+    risk_decision_id: Uuid,
+    correlation_id: Uuid,
+) -> std::result::Result<PreparedExchangeTestnetPipelinePreview, Response> {
+    if state.exchange_testnet.config().environment != ExchangeEnvironment::Testnet {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_invalid_environment");
+        return Err(exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "invalid_exchange_environment",
+            "Only testnet environment is allowed.",
+        ));
+    }
+
+    match get_system_state(&state.db_pool).await {
+        Ok(system_state) if system_state.kill_switch_enabled => {
+            telemetry().inc_exchange_testnet_pipeline_run("preview_kill_switch_active");
+            return Err(exchange_testnet_pipeline_rejected_response_sync(
+                correlation_id,
+                "kill_switch_active",
+                "Global kill switch is active.",
+            ));
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(error = %err, "failed to load system state for testnet pipeline preview");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_read_system_state",
+                    message: "System state could not be loaded.".to_string(),
+                    request_id: correlation_id.to_string(),
+                    correlation_id: correlation_id.to_string(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response());
+        }
+    }
+
+    let risk_decision = get_risk_decision_by_id(&state.db_pool, risk_decision_id)
+        .await
+        .map_err(|err| {
+            error!(error = %err, "failed to query risk decision for testnet pipeline preview");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_risk_decision",
+                    message: "Risk decision could not be loaded.".to_string(),
+                    request_id: correlation_id.to_string(),
+                    correlation_id: correlation_id.to_string(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        })?
+        .ok_or_else(|| {
+            telemetry().inc_exchange_testnet_pipeline_run("preview_risk_decision_not_found");
+            exchange_testnet_pipeline_rejected_response_sync(
+                correlation_id,
+                "risk_decision_not_found",
+                "risk_decision_id must reference an existing persisted risk decision.",
+            )
+        })?;
+
+    if risk_decision.decision != "APPROVED" {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_risk_decision_not_approved");
+        return Err(exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "risk_decision_not_approved",
+            "risk_decision_id must reference an APPROVED risk decision.",
+        ));
+    }
+
+    let rationale = serde_json::from_str::<Value>(&risk_decision.rationale).unwrap_or(Value::Null);
+    let symbol = risk_decision
+        .symbol
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| json_string_field(&rationale, "symbol"))
+        .ok_or_else(|| {
+            telemetry().inc_exchange_testnet_pipeline_run("preview_invalid_risk_context");
+            exchange_testnet_pipeline_rejected_response_sync(
+                correlation_id,
+                "invalid_risk_decision_context",
+                "risk_decision_id is missing symbol context.",
+            )
+        })?;
+    let side = json_string_field(&rationale, "side")
+        .and_then(|value| parse_side_to_exchange_order_side(&value))
+        .ok_or_else(|| {
+            telemetry().inc_exchange_testnet_pipeline_run("preview_invalid_risk_context");
+            exchange_testnet_pipeline_rejected_response_sync(
+                correlation_id,
+                "invalid_risk_decision_context",
+                "risk_decision_id is missing side context.",
+            )
+        })?;
+    let approved_notional = risk_decision
+        .approved_notional
+        .or_else(|| json_decimal_field(&rationale, "suggested_notional"))
+        .ok_or_else(|| {
+            telemetry().inc_exchange_testnet_pipeline_run("preview_invalid_risk_context");
+            exchange_testnet_pipeline_rejected_response_sync(
+                correlation_id,
+                "invalid_risk_decision_context",
+                "risk_decision_id is missing approved notional context.",
+            )
+        })?;
+    let symbol_model = Symbol::new(symbol.clone()).map_err(|_| {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_invalid_symbol");
+        exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "invalid_symbol",
+            "risk_decision_id resolved to an invalid symbol.",
+        )
+    })?;
+    let latest_tick = get_latest_market_tick(&state.db_pool, state.market_config.exchange, &symbol_model)
+        .await
+        .map_err(|err| {
+            error!(error = %err, symbol = %symbol, "failed to load latest tick for testnet pipeline preview");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_market_tick",
+                    message: "Latest market tick could not be loaded.".to_string(),
+                    request_id: correlation_id.to_string(),
+                    correlation_id: correlation_id.to_string(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        })?
+        .ok_or_else(|| {
+            telemetry().inc_exchange_testnet_pipeline_run("preview_market_tick_missing");
+            exchange_testnet_pipeline_rejected_response_sync(
+                correlation_id,
+                "market_tick_missing",
+                "A latest market tick is required before testnet pipeline preview.",
+            )
+        })?;
+
+    if latest_tick.price <= Decimal::ZERO {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_market_tick_invalid");
+        return Err(exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "invalid_market_tick",
+            "Latest market tick price must be positive.",
+        ));
+    }
+
+    let quantity = (approved_notional / latest_tick.price).round_dp(8);
+    if quantity <= Decimal::ZERO {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_quantity_invalid");
+        return Err(exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "invalid_preview_quantity",
+            "Derived preview quantity must be positive.",
+        ));
+    }
+
+    let preview = ExchangeTestnetPipelinePreview {
+        strategy_id: risk_decision.strategy_id.clone(),
+        signal_id: risk_decision.signal_id,
+        risk_decision_id,
+        symbol: symbol.clone(),
+        side,
+        order_type: ExchangeOrderType::Market,
+        quantity,
+        quote_notional: approved_notional,
+        reference_price: latest_tick.price,
+        reference_price_received_at: latest_tick.received_at,
+        confirmation_text: expected_testnet_pipeline_confirmation(&symbol),
+        execution_state_preview: TestnetExecutionState::OrderPrepared,
+        correlation_id,
+        previewed_at: Utc::now(),
+    };
+    let order = ExchangeOrderRequest {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        symbol: symbol_model,
+        side,
+        order_type: ExchangeOrderType::Market,
+        time_in_force: None,
+        quantity: Some(quantity),
+        quote_notional: Some(approved_notional),
+        limit_price: None,
+        client_order_id: generate_testnet_client_order_id(correlation_id),
+        recv_window_ms: None,
+        risk_decision_id: Some(risk_decision_id),
+    };
+    order.validate().map_err(|err| {
+        telemetry().inc_exchange_testnet_pipeline_run("preview_invalid_order");
+        exchange_testnet_pipeline_rejected_response_sync(
+            correlation_id,
+            "invalid_exchange_order_request",
+            &err.to_string(),
+        )
+    })?;
+
+    Ok(PreparedExchangeTestnetPipelinePreview { preview, order })
+}
+
+fn exchange_testnet_pipeline_rejected_response_sync(
+    correlation_id: Uuid,
+    error: &'static str,
+    message: &str,
+) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error,
+            message: message.to_string(),
+            request_id: correlation_id.to_string(),
+            correlation_id: correlation_id.to_string(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+fn json_string_field(value: &Value, key: &str) -> Option<String> {
+    value.get(key)?.as_str().map(ToOwned::to_owned)
+}
+
+fn json_decimal_field(value: &Value, key: &str) -> Option<Decimal> {
+    let field = value.get(key)?;
+    match field {
+        Value::String(inner) => Decimal::from_str_exact(inner).ok(),
+        Value::Number(inner) => Decimal::from_str_exact(&inner.to_string()).ok(),
+        _ => None,
+    }
+}
+
+fn parse_side_to_exchange_order_side(value: &str) -> Option<ExchangeOrderSide> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "buy" => Some(ExchangeOrderSide::Buy),
+        "sell" => Some(ExchangeOrderSide::Sell),
+        _ => None,
+    }
+}
+
 async fn cancel_exchange_testnet_order_success(
     state: &AppState,
     actor: &StateActor,
@@ -6664,6 +7149,27 @@ async fn ensure_testnet_submission_allowed(
                 .into_response())
         }
     }
+}
+
+async fn exchange_testnet_pipeline_rejected_response(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    error_code: &'static str,
+    message: &str,
+    symbol: String,
+) -> Response {
+    exchange_testnet_rejected_response(
+        state,
+        actor,
+        request,
+        correlation_id,
+        error_code,
+        message,
+        symbol,
+    )
+    .await
 }
 
 async fn exchange_testnet_rejected_response(
@@ -9799,18 +10305,20 @@ mod tests {
         generate_testnet_client_order_id, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs, login, logout,
         metrics, normalize_route_label, order_view, parse_correlation_id_filter,
-        parse_order_intent, parse_risk_check_context, refresh, repair_exchange_testnet_order,
-        request_context_middleware, risk_decision_not_found_error, route_access, AppConfig,
-        AppState, RequestContext, StrategyRuntimeConfig, CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
-        DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
-        MAX_RISK_DECISIONS_LIMIT,
+        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline, refresh,
+        repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
+        route_access, submit_exchange_testnet_pipeline, AppConfig, AppState,
+        ExchangeTestnetPipelinePreviewResponse, RequestContext, StrategyRuntimeConfig,
+        CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT,
+        DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
     };
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
-        AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-        CandleInterval, ExchangeEnvironment, MarketDataSource, MarketMode, Side, Symbol,
-        TestnetExecutionState, TestnetRepairAction, UserRole, UserStatus,
+        expected_testnet_pipeline_confirmation, AuthLoginResponse, AuthLogoutResponse,
+        AuthRefreshResponse, AuthUserResponse, CandleInterval, ExchangeEnvironment,
+        MarketDataSource, MarketMode, MarketTick, Side, Symbol, TestnetExecutionState,
+        TestnetRepairAction, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -9826,9 +10334,10 @@ mod tests {
     use db::{
         count_users, get_exchange_testnet_order_by_client_order_id, get_session_by_id,
         get_user_by_email, insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-        insert_user, list_exchange_testnet_order_lifecycle_events,
-        list_exchange_testnet_repair_actions, test_support::TestDatabase,
-        ExchangeTestnetOrderRecord, OrderRecord, PgPool,
+        insert_market_tick, insert_user, list_exchange_testnet_order_lifecycle_events,
+        list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_orders,
+        set_kill_switch_state, test_support::TestDatabase, ExchangeTestnetOrderRecord, OrderRecord,
+        PgPool, StateActor,
     };
     use exchange::{BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig};
     use market_ingest::MarketIngestConfig;
@@ -9930,6 +10439,22 @@ mod tests {
         ));
         assert!(matches!(
             route_access(&axum::http::Method::POST, "/exchange/testnet/orders", false),
+            super::RouteAccess::Owner
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/exchange/testnet/pipeline/preview",
+                false
+            ),
+            super::RouteAccess::Operator
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/exchange/testnet/pipeline/submit",
+                false
+            ),
             super::RouteAccess::Owner
         ));
         assert!(matches!(
@@ -10260,6 +10785,24 @@ mod tests {
             .with_state(state)
     }
 
+    fn pipeline_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/auth/login", post(login))
+            .route(
+                "/exchange/testnet/pipeline/preview",
+                post(preview_exchange_testnet_pipeline),
+            )
+            .route(
+                "/exchange/testnet/pipeline/submit",
+                post(submit_exchange_testnet_pipeline),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
     async fn response_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -10355,6 +10898,54 @@ mod tests {
         }
     }
 
+    fn sample_market_tick(symbol: &str, price: Decimal) -> MarketTick {
+        MarketTick {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new(symbol).expect("symbol"),
+            price,
+            quantity: Decimal::ONE,
+            trade_time: Utc::now(),
+            received_at: Utc::now(),
+            raw_payload: None,
+        }
+    }
+
+    async fn insert_test_risk_decision(
+        pool: &PgPool,
+        decision: &str,
+        symbol: &str,
+        side: &str,
+        approved_notional: Decimal,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        let rationale = json!({
+            "strategy_id": "momentum_v1",
+            "symbol": symbol,
+            "side": side,
+            "suggested_notional": approved_notional.to_string(),
+            "approved_notional": approved_notional.to_string(),
+            "risk_score": "1",
+            "reasons": [],
+            "rule_results": [],
+        });
+        sqlx::query(
+            r#"
+            INSERT INTO risk_decisions (id, correlation_id, signal_id, decision, rationale, decided_at)
+            VALUES ($1, $2, NULL, $3, $4, $5)
+            "#,
+        )
+        .bind(id)
+        .bind(Uuid::new_v4())
+        .bind(decision)
+        .bind(rationale.to_string())
+        .bind(Utc::now())
+        .execute(pool)
+        .await
+        .expect("risk decision insert");
+        id
+    }
+
     async fn latest_audit_log_for_target(
         pool: &PgPool,
         action: &str,
@@ -10418,6 +11009,298 @@ mod tests {
             .await
             .expect("audit log count")
             .get::<i64, _>("count")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_pipeline_preview_does_not_submit_orders() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = pipeline_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let risk_decision_id = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(100_000, 0)),
+        )
+        .await
+        .expect("market tick");
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/preview",
+                &owner_login.access_token,
+                json!({ "risk_decision_id": risk_decision_id }),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<ExchangeTestnetPipelinePreviewResponse>(response).await;
+        assert_eq!(payload.preview.risk_decision_id, risk_decision_id);
+        assert_eq!(
+            payload.preview.confirmation_text,
+            expected_testnet_pipeline_confirmation("BTCUSDT")
+        );
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_pipeline_submit_requires_owner_and_confirmation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = pipeline_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let risk_decision_id = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(100_000, 0)),
+        )
+        .await
+        .expect("market tick");
+
+        let operator_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/submit",
+                &operator_login.access_token,
+                json!({
+                    "risk_decision_id": risk_decision_id,
+                    "confirmation_text": expected_testnet_pipeline_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("operator submit response");
+        assert_eq!(operator_response.status(), StatusCode::FORBIDDEN);
+
+        let wrong_confirmation = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/submit",
+                &owner_login.access_token,
+                json!({
+                    "risk_decision_id": risk_decision_id,
+                    "confirmation_text": "SUBMIT TESTNET ETHUSDT"
+                }),
+            ))
+            .await
+            .expect("owner submit response");
+        assert_eq!(wrong_confirmation.status(), StatusCode::CONFLICT);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_pipeline_kill_switch_and_rejected_risk_block_preview() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = pipeline_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(100_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let approved_risk = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        let rejected_risk = insert_test_risk_decision(
+            &test_db.pool,
+            "REJECTED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+
+        set_kill_switch_state(
+            &test_db.pool,
+            &StateActor::system("test"),
+            Uuid::new_v4(),
+            "testnet_pipeline",
+            true,
+            Some("manual test block".to_string()),
+        )
+        .await
+        .expect("kill switch update");
+
+        let kill_switch_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/preview",
+                &owner_login.access_token,
+                json!({ "risk_decision_id": approved_risk }),
+            ))
+            .await
+            .expect("kill switch preview");
+        assert_eq!(kill_switch_response.status(), StatusCode::CONFLICT);
+
+        set_kill_switch_state(
+            &test_db.pool,
+            &StateActor::system("test"),
+            Uuid::new_v4(),
+            "testnet_pipeline",
+            false,
+            Some("manual test resume".to_string()),
+        )
+        .await
+        .expect("kill switch reset");
+
+        let rejected_risk_response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/preview",
+                &owner_login.access_token,
+                json!({ "risk_decision_id": rejected_risk }),
+            ))
+            .await
+            .expect("rejected risk preview");
+        assert_eq!(rejected_risk_response.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_pipeline_submit_creates_isolated_order_and_lifecycle_events() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = pipeline_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let risk_decision_id = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(100_000, 0)),
+        )
+        .await
+        .expect("market tick");
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/submit",
+                &owner_login.access_token,
+                json!({
+                    "risk_decision_id": risk_decision_id,
+                    "confirmation_text": expected_testnet_pipeline_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let orders = list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders");
+        assert_eq!(orders.len(), 1);
+        let order = &orders[0];
+        assert_eq!(order.symbol, "BTCUSDT");
+        assert_eq!(order.risk_decision_id, Some(risk_decision_id));
+        let lifecycle =
+            list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
+                .await
+                .expect("lifecycle events");
+        assert!(!lifecycle.is_empty());
+        assert_eq!(lifecycle[0].next_state, "ORDER_SUBMIT_REQUESTED");
+        assert!(list_orders(&test_db.pool)
+            .await
+            .expect("list paper orders")
+            .is_empty());
     }
 
     #[tokio::test]

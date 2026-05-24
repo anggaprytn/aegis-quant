@@ -29,6 +29,8 @@ import type {
   ExchangeTestnetOrderLifecycleResponse,
   ExchangeTestnetOrderResponse,
   ExchangeTestnetOrdersResponse,
+  ExchangeTestnetPipelinePreviewResponse,
+  ExchangeTestnetPipelineSubmitResponse,
   ExchangeTestnetRepairResponse,
   ExchangeTestnetRepairsResponse,
   ExchangeTestnetStatusResponse,
@@ -333,6 +335,16 @@ export const api = {
     request<ExchangeTestnetRepairsResponse>(
       `/exchange/testnet/orders/${clientOrderId}/repairs`,
     ),
+  previewExchangeTestnetPipeline: (payload: Record<string, unknown>) =>
+    request<ExchangeTestnetPipelinePreviewResponse>("/exchange/testnet/pipeline/preview", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  submitExchangeTestnetPipeline: (payload: Record<string, unknown>) =>
+    request<ExchangeTestnetPipelineSubmitResponse>("/exchange/testnet/pipeline/submit", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   reconcileExchangeTestnetOrders: (payload: ExchangeReconciliationRequest) =>
     request<ExchangeReconciliationResultResponse>("/exchange/testnet/reconcile", {
       method: "POST",
