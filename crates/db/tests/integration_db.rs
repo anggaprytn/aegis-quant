@@ -1,27 +1,37 @@
 use aegis_core::{
     BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle,
-    CandleBackfillRequest, CandleBackfillStatus, CandleInterval, ExchangeReconciliationSummary,
-    MarketDataSource, OrderIntent, ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason,
-    SignalSide, StrategyId, StrategySignal, Symbol,
+    CandleBackfillRequest, CandleBackfillStatus, CandleInterval, ExchangeEnvironment,
+    ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName,
+    ExchangeOrderSide, ExchangeOrderState, ExchangeOrderStatus, ExchangeOrderTimeInForce,
+    ExchangeOrderType, ExchangeReconciliationAction, ExchangeReconciliationMismatchKind,
+    ExchangeReconciliationSummary, MarketDataSource, OrderIntent, ReplayRunStatus,
+    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
+    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId, StrategySignal,
+    Symbol, TestnetExecutionState, TestnetExecutionTransitionSource,
 };
 use chrono::{TimeZone, Utc};
 use db::{
-    count_candles_range, create_paper_order, fail_exchange_reconciliation_run,
-    get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
-    get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
-    get_order_by_idempotency_key, get_risk_decision, get_system_state,
-    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
+    append_exchange_testnet_lifecycle_event_and_update_order, count_candles_range,
+    create_paper_order, fail_exchange_reconciliation_run, get_backtest_equity_curve,
+    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_closed_candles_range,
+    get_exchange_private_stream_state, get_exchange_reconciliation_run,
+    get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key, get_risk_decision,
+    get_system_state, insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
     insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_risk_decision, insert_signal_deduped,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches, list_orders,
-    list_recent_signals, set_kill_switch_state, test_support::TestDatabase,
-    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_candle,
-    upsert_candles_batch, upsert_exchange_private_stream_state, CreateOrderError,
-    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
-    ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
+    set_kill_switch_state, test_support::TestDatabase, update_backtest_run_completed,
+    update_exchange_testnet_order_status, upsert_candle, upsert_candles_batch,
+    upsert_exchange_private_stream_state, CreateOrderError, ExchangePrivateStreamEventRecord,
+    ExchangePrivateStreamStateRecord, ExchangeReconciliationMismatchRecord,
+    ExchangeReconciliationRunRecord, ExchangeTestnetOrderLifecycleEventRecord,
     ExchangeTestnetOrderRecord, StateActor,
+};
+use exchange::{
+    apply_testnet_transition, local_testnet_order_status_from_private_execution_report,
+    map_private_execution_report_to_transition, map_rest_reconciliation_status_to_transition,
 };
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
@@ -170,6 +180,265 @@ fn sample_exchange_testnet_order_record() -> ExchangeTestnetOrderRecord {
         last_transition_at: Some(fixed_time()),
         created_at: fixed_time(),
         updated_at: fixed_time(),
+    }
+}
+
+fn lifecycle_time(offset_seconds: i64) -> chrono::DateTime<Utc> {
+    fixed_time() + chrono::Duration::seconds(offset_seconds)
+}
+
+fn sample_exchange_testnet_order_record_with_state(
+    status: &str,
+    execution_state: TestnetExecutionState,
+) -> ExchangeTestnetOrderRecord {
+    let mut record = sample_exchange_testnet_order_record();
+    record.status = status.to_string();
+    record.execution_state = execution_state.as_str().to_string();
+    record.ack_payload = Some(json!({ "status": status }));
+    record.latest_status_payload = Some(json!({ "status": status }));
+    record.last_transition_at = Some(fixed_time());
+    record
+}
+
+fn lifecycle_event_record(
+    order: &ExchangeTestnetOrderRecord,
+    previous_state: Option<TestnetExecutionState>,
+    next_state: TestnetExecutionState,
+    source: TestnetExecutionTransitionSource,
+    reason: Option<&str>,
+    payload: Option<Value>,
+    created_at: chrono::DateTime<Utc>,
+) -> ExchangeTestnetOrderLifecycleEventRecord {
+    ExchangeTestnetOrderLifecycleEventRecord {
+        id: Uuid::new_v4(),
+        order_id: Some(order.id),
+        client_order_id: order.client_order_id.clone(),
+        previous_state: previous_state.map(|value| value.as_str().to_string()),
+        next_state: next_state.as_str().to_string(),
+        transition_source: source.as_str().to_string(),
+        reason: reason.map(ToString::to_string),
+        payload,
+        created_by: None,
+        created_at,
+        correlation_id: None,
+    }
+}
+
+async fn append_lifecycle_event(
+    pool: &db::PgPool,
+    event: &ExchangeTestnetOrderLifecycleEventRecord,
+    exchange_order_id: Option<&str>,
+    status: Option<&str>,
+    execution_state: TestnetExecutionState,
+    latest_status_payload: Option<&Value>,
+    ack_payload: Option<&Value>,
+) -> ExchangeTestnetOrderRecord {
+    append_exchange_testnet_lifecycle_event_and_update_order(
+        pool,
+        event,
+        exchange_order_id,
+        status,
+        execution_state,
+        latest_status_payload,
+        ack_payload,
+    )
+    .await
+    .expect("lifecycle event should persist")
+    .expect("testnet order should exist")
+}
+
+fn sample_private_execution_report(
+    order: &ExchangeTestnetOrderRecord,
+    order_status: ExchangeExecutionStatus,
+    execution_type: ExchangeExecutionReportType,
+    raw_payload: Value,
+) -> ExchangeExecutionReport {
+    ExchangeExecutionReport {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        symbol: order.symbol.clone(),
+        client_order_id: order.client_order_id.clone(),
+        exchange_order_id: order.exchange_order_id.clone(),
+        side: ExchangeOrderSide::Buy,
+        order_type: ExchangeOrderType::Limit,
+        time_in_force: Some(ExchangeOrderTimeInForce::Gtc),
+        order_status,
+        execution_type,
+        last_executed_qty: Decimal::new(2, 1),
+        cumulative_filled_qty: Decimal::new(5, 1),
+        last_executed_price: Decimal::new(100_500, 0),
+        commission_amount: None,
+        commission_asset: None,
+        event_time: lifecycle_time(10),
+        transaction_time: Some(lifecycle_time(10)),
+        raw_payload,
+    }
+}
+
+async fn apply_private_stream_report(
+    pool: &db::PgPool,
+    report: &ExchangeExecutionReport,
+) -> ExchangeTestnetOrderRecord {
+    let order = get_exchange_testnet_order_by_client_order_id(pool, &report.client_order_id)
+        .await
+        .expect("order query should succeed")
+        .expect("testnet order should exist");
+    let (next_state, reason) = map_private_execution_report_to_transition(report);
+    let payload = report.raw_payload.clone();
+    let transition = apply_testnet_transition(
+        &aegis_core::TestnetOrderLifecycleSnapshot {
+            order_id: Some(order.id),
+            client_order_id: order.client_order_id.clone(),
+            exchange_order_id: order.exchange_order_id.clone(),
+            current_state: order
+                .execution_state
+                .parse()
+                .expect("execution_state should parse"),
+            last_transition_at: order.last_transition_at,
+        },
+        next_state,
+        TestnetExecutionTransitionSource::PrivateStream,
+        reason.map(ToString::to_string),
+        Some(payload.clone()),
+    )
+    .expect("private stream transition should be valid");
+
+    append_lifecycle_event(
+        pool,
+        &ExchangeTestnetOrderLifecycleEventRecord {
+            id: Uuid::new_v4(),
+            order_id: Some(order.id),
+            client_order_id: order.client_order_id.clone(),
+            previous_state: transition
+                .previous_state
+                .map(|value| value.as_str().to_string()),
+            next_state: transition.next_state.as_str().to_string(),
+            transition_source: transition.source.as_str().to_string(),
+            reason: transition.reason,
+            payload: transition.payload.clone(),
+            created_by: None,
+            created_at: lifecycle_time(10),
+            correlation_id: None,
+        },
+        report.exchange_order_id.as_deref(),
+        Some(local_testnet_order_status_from_private_execution_report(
+            report,
+        )),
+        transition.next_state,
+        Some(&payload),
+        None,
+    )
+    .await
+}
+
+async fn apply_rest_reconciliation_status(
+    pool: &db::PgPool,
+    order: &ExchangeTestnetOrderRecord,
+    status: &ExchangeOrderStatus,
+) -> ExchangeTestnetOrderRecord {
+    let persisted_order =
+        get_exchange_testnet_order_by_client_order_id(pool, &order.client_order_id)
+            .await
+            .expect("order query should succeed")
+            .expect("testnet order should exist");
+    let persisted_status = match status.status {
+        ExchangeOrderState::New => "NEW",
+        ExchangeOrderState::PartiallyFilled => "PARTIALLY_FILLED",
+        ExchangeOrderState::Filled => "FILLED",
+        ExchangeOrderState::Canceled => "CANCELLED",
+        ExchangeOrderState::Rejected => "REJECTED",
+        ExchangeOrderState::Expired => "EXPIRED",
+        ExchangeOrderState::PendingCancel => "PENDING_CANCEL",
+    };
+    let (next_state, reason) = map_rest_reconciliation_status_to_transition(status);
+    let payload = status.raw_payload.clone();
+    let event = match apply_testnet_transition(
+        &aegis_core::TestnetOrderLifecycleSnapshot {
+            order_id: Some(persisted_order.id),
+            client_order_id: persisted_order.client_order_id.clone(),
+            exchange_order_id: persisted_order.exchange_order_id.clone(),
+            current_state: persisted_order
+                .execution_state
+                .parse()
+                .expect("execution_state should parse"),
+            last_transition_at: persisted_order.last_transition_at,
+        },
+        next_state,
+        TestnetExecutionTransitionSource::RestReconciliation,
+        reason.map(ToString::to_string),
+        Some(payload.clone()),
+    ) {
+        Ok(transition) => ExchangeTestnetOrderLifecycleEventRecord {
+            id: Uuid::new_v4(),
+            order_id: Some(persisted_order.id),
+            client_order_id: persisted_order.client_order_id.clone(),
+            previous_state: transition
+                .previous_state
+                .map(|value| value.as_str().to_string()),
+            next_state: transition.next_state.as_str().to_string(),
+            transition_source: transition.source.as_str().to_string(),
+            reason: transition.reason,
+            payload: transition.payload.clone(),
+            created_by: None,
+            created_at: lifecycle_time(20),
+            correlation_id: None,
+        },
+        Err(_) => ExchangeTestnetOrderLifecycleEventRecord {
+            id: Uuid::new_v4(),
+            order_id: Some(persisted_order.id),
+            client_order_id: persisted_order.client_order_id.clone(),
+            previous_state: Some(persisted_order.execution_state.clone()),
+            next_state: TestnetExecutionState::ReconciliationRequired
+                .as_str()
+                .to_string(),
+            transition_source: TestnetExecutionTransitionSource::RestReconciliation
+                .as_str()
+                .to_string(),
+            reason: Some("invalid_rest_reconciliation_transition".to_string()),
+            payload: Some(payload.clone()),
+            created_by: None,
+            created_at: lifecycle_time(20),
+            correlation_id: None,
+        },
+    };
+    let execution_state = event
+        .next_state
+        .parse()
+        .expect("lifecycle execution_state should parse");
+
+    append_lifecycle_event(
+        pool,
+        &event,
+        status.exchange_order_id.as_deref(),
+        Some(persisted_status),
+        execution_state,
+        Some(&payload),
+        None,
+    )
+    .await
+}
+
+fn sample_exchange_order_status(
+    order: &ExchangeTestnetOrderRecord,
+    status: ExchangeOrderState,
+    raw_payload: Value,
+) -> ExchangeOrderStatus {
+    ExchangeOrderStatus {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        symbol: order.symbol.clone(),
+        client_order_id: order.client_order_id.clone(),
+        exchange_order_id: order.exchange_order_id.clone(),
+        status,
+        side: ExchangeOrderSide::Buy,
+        order_type: ExchangeOrderType::Limit,
+        time_in_force: Some(ExchangeOrderTimeInForce::Gtc),
+        original_qty: order.requested_qty,
+        executed_qty: Decimal::new(5, 1),
+        cumulative_quote_qty: Decimal::new(50_250, 0),
+        limit_price: order.limit_price,
+        updated_at: lifecycle_time(20),
+        raw_payload,
     }
 }
 
@@ -723,4 +992,426 @@ async fn private_stream_state_updates_and_testnet_order_mapping_stays_isolated()
     .expect("testnet order should exist");
 
     assert_eq!(updated.status, "FILLED");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn exchange_testnet_submit_lifecycle_events_persist_in_order() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let order = sample_exchange_testnet_order_record_with_state(
+        "PREPARED",
+        TestnetExecutionState::OrderPrepared,
+    );
+    insert_exchange_testnet_order(&test_db.pool, &order)
+        .await
+        .expect("testnet order should persist");
+
+    let submit_event = lifecycle_event_record(
+        &order,
+        Some(TestnetExecutionState::OrderPrepared),
+        TestnetExecutionState::OrderSubmitRequested,
+        TestnetExecutionTransitionSource::ApiSubmit,
+        Some("submit_requested"),
+        Some(json!({"step":"submit"})),
+        lifecycle_time(1),
+    );
+    let ack_payload = json!({"status":"NEW","source":"ack"});
+    let ack_event = lifecycle_event_record(
+        &order,
+        Some(TestnetExecutionState::OrderSubmitRequested),
+        TestnetExecutionState::ExchangeAcked,
+        TestnetExecutionTransitionSource::ExchangeAck,
+        Some("exchange_ack"),
+        Some(ack_payload.clone()),
+        lifecycle_time(2),
+    );
+
+    let _submitted = append_lifecycle_event(
+        &test_db.pool,
+        &submit_event,
+        order.exchange_order_id.as_deref(),
+        Some("SUBMIT_REQUESTED"),
+        TestnetExecutionState::OrderSubmitRequested,
+        Some(&json!({"status":"SUBMIT_REQUESTED"})),
+        None,
+    )
+    .await;
+    let acked = append_lifecycle_event(
+        &test_db.pool,
+        &ack_event,
+        order.exchange_order_id.as_deref(),
+        Some("NEW"),
+        TestnetExecutionState::ExchangeAcked,
+        None,
+        Some(&ack_payload),
+    )
+    .await;
+
+    let events =
+        list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
+            .await
+            .expect("lifecycle events should list");
+
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].next_state, "ORDER_SUBMIT_REQUESTED");
+    assert_eq!(events[0].previous_state.as_deref(), Some("ORDER_PREPARED"));
+    assert_eq!(events[0].transition_source, "API_SUBMIT");
+    assert_eq!(events[1].next_state, "EXCHANGE_ACKED");
+    assert_eq!(
+        events[1].previous_state.as_deref(),
+        Some("ORDER_SUBMIT_REQUESTED")
+    );
+    assert_eq!(events[1].transition_source, "EXCHANGE_ACK");
+    assert!(events[0].created_at < events[1].created_at);
+    assert_eq!(acked.execution_state, "EXCHANGE_ACKED");
+    assert_eq!(acked.ack_payload, Some(ack_payload));
+    assert_eq!(acked.status, "NEW");
+    assert_eq!(acked.last_transition_at, Some(lifecycle_time(2)));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn private_stream_transition_appends_lifecycle_event_and_updates_order_state() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let order = sample_exchange_testnet_order_record_with_state(
+        "NEW",
+        TestnetExecutionState::ExchangeAcked,
+    );
+    insert_exchange_testnet_order(&test_db.pool, &order)
+        .await
+        .expect("testnet order should persist");
+
+    let report_payload = json!({
+        "e":"executionReport",
+        "X":"PARTIALLY_FILLED",
+        "x":"TRADE",
+        "c": order.client_order_id,
+        "i": order.exchange_order_id,
+        "s": order.symbol,
+    });
+    let report = sample_private_execution_report(
+        &order,
+        ExchangeExecutionStatus::PartiallyFilled,
+        ExchangeExecutionReportType::Trade,
+        report_payload.clone(),
+    );
+    insert_exchange_private_stream_event(
+        &test_db.pool,
+        &ExchangePrivateStreamEventRecord {
+            id: Uuid::new_v4(),
+            exchange: "binance".to_string(),
+            environment: "testnet".to_string(),
+            event_type: "executionReport".to_string(),
+            symbol: Some(order.symbol.clone()),
+            client_order_id: Some(order.client_order_id.clone()),
+            exchange_order_id: order.exchange_order_id.clone(),
+            execution_type: Some(report.execution_type.as_str().to_string()),
+            order_status: Some(report.order_status.as_str().to_string()),
+            payload: report_payload.clone(),
+            event_time: report.event_time,
+            received_at: report.event_time,
+            correlation_id: None,
+        },
+    )
+    .await
+    .expect("private stream event should persist");
+
+    let updated = apply_private_stream_report(&test_db.pool, &report).await;
+    let events =
+        list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
+            .await
+            .expect("lifecycle events should list");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].transition_source, "PRIVATE_STREAM");
+    assert_eq!(events[0].next_state, "PARTIALLY_FILLED");
+    assert_eq!(updated.execution_state, "PARTIALLY_FILLED");
+    assert_eq!(updated.status, "PARTIALLY_FILLED");
+    assert_eq!(updated.latest_status_payload, Some(report_payload));
+    assert!(list_orders(&test_db.pool)
+        .await
+        .expect("orders should list")
+        .is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn rest_reconciliation_transition_appends_lifecycle_event_and_updates_order_state() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let order = sample_exchange_testnet_order_record_with_state("NEW", TestnetExecutionState::New);
+    insert_exchange_testnet_order(&test_db.pool, &order)
+        .await
+        .expect("testnet order should persist");
+
+    let rest_status = sample_exchange_order_status(
+        &order,
+        ExchangeOrderState::Filled,
+        json!({"status":"FILLED","source":"rest_reconciliation"}),
+    );
+    let run = insert_exchange_reconciliation_run(
+        &test_db.pool,
+        &sample_exchange_reconciliation_run_record(),
+    )
+    .await
+    .expect("reconciliation run should persist");
+
+    let updated = apply_rest_reconciliation_status(&test_db.pool, &order, &rest_status).await;
+    let mismatch = insert_exchange_reconciliation_mismatch(
+        &test_db.pool,
+        &ExchangeReconciliationMismatchRecord {
+            id: Uuid::new_v4(),
+            run_id: run.id,
+            client_order_id: order.client_order_id.clone(),
+            local_status: Some("NEW".to_string()),
+            exchange_status: Some("FILLED".to_string()),
+            mismatch_kind: ExchangeReconciliationMismatchKind::StatusMismatch
+                .as_str()
+                .to_string(),
+            action: ExchangeReconciliationAction::UpdateLocalStatus
+                .as_str()
+                .to_string(),
+            payload: json!({
+                "reason": "local and exchange statuses differ",
+                "local_status": "NEW",
+                "exchange_status": "FILLED"
+            }),
+            created_at: lifecycle_time(21),
+        },
+    )
+    .await
+    .expect("reconciliation mismatch should persist");
+    let events =
+        list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
+            .await
+            .expect("lifecycle events should list");
+    let mismatches = list_exchange_reconciliation_mismatches(&test_db.pool, run.id)
+        .await
+        .expect("reconciliation mismatches should list");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].transition_source, "REST_RECONCILIATION");
+    assert_eq!(events[0].next_state, "FILLED");
+    assert_eq!(updated.execution_state, "FILLED");
+    assert_eq!(updated.status, "FILLED");
+    assert_eq!(
+        updated.latest_status_payload,
+        Some(json!({"status":"FILLED","source":"rest_reconciliation"}))
+    );
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(mismatches[0].id, mismatch.id);
+    assert_eq!(mismatches[0].mismatch_kind, "STATUS_MISMATCH");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn invalid_rest_reconciliation_transition_becomes_reconciliation_required() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let order =
+        sample_exchange_testnet_order_record_with_state("FILLED", TestnetExecutionState::Filled);
+    insert_exchange_testnet_order(&test_db.pool, &order)
+        .await
+        .expect("testnet order should persist");
+
+    let rest_status = sample_exchange_order_status(
+        &order,
+        ExchangeOrderState::New,
+        json!({"status":"NEW","source":"rest_reconciliation"}),
+    );
+
+    let updated = apply_rest_reconciliation_status(&test_db.pool, &order, &rest_status).await;
+    let events =
+        list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
+            .await
+            .expect("lifecycle events should list");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].transition_source, "REST_RECONCILIATION");
+    assert_eq!(events[0].previous_state.as_deref(), Some("FILLED"));
+    assert_eq!(events[0].next_state, "RECONCILIATION_REQUIRED");
+    assert_eq!(
+        events[0].reason.as_deref(),
+        Some("invalid_rest_reconciliation_transition")
+    );
+    assert_eq!(updated.execution_state, "RECONCILIATION_REQUIRED");
+    assert_eq!(updated.status, "NEW");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn cancel_lifecycle_path_persists_and_terminal_state_blocks_future_active_transition() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let order = sample_exchange_testnet_order_record_with_state("NEW", TestnetExecutionState::New);
+    insert_exchange_testnet_order(&test_db.pool, &order)
+        .await
+        .expect("testnet order should persist");
+
+    let cancel_requested = lifecycle_event_record(
+        &order,
+        Some(TestnetExecutionState::New),
+        TestnetExecutionState::CancelRequested,
+        TestnetExecutionTransitionSource::ApiCancel,
+        Some("api_cancel"),
+        Some(json!({"status":"PENDING_CANCEL"})),
+        lifecycle_time(30),
+    );
+    let cancelled_payload = json!({"status":"CANCELLED","source":"cancel_ack"});
+    let cancelled = lifecycle_event_record(
+        &order,
+        Some(TestnetExecutionState::CancelRequested),
+        TestnetExecutionState::Cancelled,
+        TestnetExecutionTransitionSource::ExchangeCancelAck,
+        Some("exchange_cancel_ack"),
+        Some(cancelled_payload.clone()),
+        lifecycle_time(31),
+    );
+
+    let _cancel_requested = append_lifecycle_event(
+        &test_db.pool,
+        &cancel_requested,
+        order.exchange_order_id.as_deref(),
+        Some("PENDING_CANCEL"),
+        TestnetExecutionState::CancelRequested,
+        Some(&json!({"status":"PENDING_CANCEL"})),
+        None,
+    )
+    .await;
+    let cancelled_order = append_lifecycle_event(
+        &test_db.pool,
+        &cancelled,
+        order.exchange_order_id.as_deref(),
+        Some("CANCELLED"),
+        TestnetExecutionState::Cancelled,
+        Some(&cancelled_payload),
+        None,
+    )
+    .await;
+    let events =
+        list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
+            .await
+            .expect("lifecycle events should list");
+    let invalid_transition = apply_testnet_transition(
+        &aegis_core::TestnetOrderLifecycleSnapshot {
+            order_id: Some(cancelled_order.id),
+            client_order_id: cancelled_order.client_order_id.clone(),
+            exchange_order_id: cancelled_order.exchange_order_id.clone(),
+            current_state: TestnetExecutionState::Cancelled,
+            last_transition_at: cancelled_order.last_transition_at,
+        },
+        TestnetExecutionState::New,
+        TestnetExecutionTransitionSource::PrivateStream,
+        Some("execution_report_new".to_string()),
+        Some(json!({"status":"NEW"})),
+    );
+
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].transition_source, "API_CANCEL");
+    assert_eq!(events[1].transition_source, "EXCHANGE_CANCEL_ACK");
+    assert_eq!(events[1].next_state, "CANCELLED");
+    assert_eq!(cancelled_order.execution_state, "CANCELLED");
+    assert!(invalid_transition.is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn lifecycle_event_listing_is_scoped_to_client_order_id_and_chronological() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let target_order = sample_exchange_testnet_order_record_with_state(
+        "NEW",
+        TestnetExecutionState::OrderSubmitRequested,
+    );
+    let other_order = sample_exchange_testnet_order_record_with_state(
+        "NEW",
+        TestnetExecutionState::OrderSubmitRequested,
+    );
+    insert_exchange_testnet_order(&test_db.pool, &target_order)
+        .await
+        .expect("target order should persist");
+    insert_exchange_testnet_order(&test_db.pool, &other_order)
+        .await
+        .expect("other order should persist");
+
+    let target_first = lifecycle_event_record(
+        &target_order,
+        Some(TestnetExecutionState::OrderSubmitRequested),
+        TestnetExecutionState::ExchangeAcked,
+        TestnetExecutionTransitionSource::ExchangeAck,
+        Some("exchange_ack"),
+        Some(json!({"status":"NEW"})),
+        lifecycle_time(40),
+    );
+    let target_second = lifecycle_event_record(
+        &target_order,
+        Some(TestnetExecutionState::ExchangeAcked),
+        TestnetExecutionState::PartiallyFilled,
+        TestnetExecutionTransitionSource::PrivateStream,
+        Some("execution_report_trade"),
+        Some(json!({"status":"PARTIALLY_FILLED"})),
+        lifecycle_time(41),
+    );
+    let other_event = lifecycle_event_record(
+        &other_order,
+        Some(TestnetExecutionState::OrderSubmitRequested),
+        TestnetExecutionState::ExchangeAcked,
+        TestnetExecutionTransitionSource::ExchangeAck,
+        Some("exchange_ack"),
+        Some(json!({"status":"NEW"})),
+        lifecycle_time(42),
+    );
+
+    let _ = append_lifecycle_event(
+        &test_db.pool,
+        &target_first,
+        target_order.exchange_order_id.as_deref(),
+        Some("NEW"),
+        TestnetExecutionState::ExchangeAcked,
+        None,
+        Some(&json!({"status":"NEW"})),
+    )
+    .await;
+    let _ = append_lifecycle_event(
+        &test_db.pool,
+        &target_second,
+        target_order.exchange_order_id.as_deref(),
+        Some("PARTIALLY_FILLED"),
+        TestnetExecutionState::PartiallyFilled,
+        Some(&json!({"status":"PARTIALLY_FILLED"})),
+        None,
+    )
+    .await;
+    let _ = append_lifecycle_event(
+        &test_db.pool,
+        &other_event,
+        other_order.exchange_order_id.as_deref(),
+        Some("NEW"),
+        TestnetExecutionState::ExchangeAcked,
+        None,
+        Some(&json!({"status":"NEW"})),
+    )
+    .await;
+
+    let target_events =
+        list_exchange_testnet_order_lifecycle_events(&test_db.pool, &target_order.client_order_id)
+            .await
+            .expect("target lifecycle events should list");
+
+    assert_eq!(target_events.len(), 2);
+    assert!(target_events
+        .iter()
+        .all(|event| event.client_order_id == target_order.client_order_id));
+    assert_eq!(target_events[0].created_at, lifecycle_time(40));
+    assert_eq!(target_events[1].created_at, lifecycle_time(41));
+    assert_eq!(target_events[0].next_state, "EXCHANGE_ACKED");
+    assert_eq!(target_events[1].next_state, "PARTIALLY_FILLED");
 }
