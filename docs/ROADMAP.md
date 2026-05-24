@@ -19,13 +19,14 @@
 
 - Completed: persistent kill switch, deterministic risk evaluation, Binance public ingest, deterministic candle building, strategy signal generation, paper-only order lifecycle, replay/backtest MVP, DB-backed integration harness, and minimal dashboard shell
 - Completed: cockpit inspection APIs for persisted risk decisions, enriched order inspection, and filtered recent events
-- Current focus: tighten operator visibility and truthful paper-state inspection before any new product surface area
+- Completed: local/operator CLI fallback over the existing HTTP API for status, kill switch control, paper pipeline runs, strategies, orders, events, risk decisions, and backtests
+- Current focus: tighten operator visibility, fallback ergonomics, and truthful paper-state inspection before any new product surface area
 
 ## Next implementation steps
 
 1. Add paper trading reconciliation and lifecycle extensions
 2. Add richer risk rules using data freshness and position state
-3. Add kill switch operator workflows and monitoring polish
+3. Add kill switch operator workflows and monitoring polish across dashboard and CLI
 4. Add strategy scheduling and bounded automation around the existing pipeline
 5. Extend replay/backtest with richer sizing, short/flat state, and research workflows
 6. Add simple charts only when the operational shell is already stable
@@ -37,5 +38,6 @@
 - Private exchange streams and API keys
 - Multi-exchange support
 - Complex dashboard UI or heavy charting
+- Complex terminal UI
 - AuthN/AuthZ
 - Production secrets management

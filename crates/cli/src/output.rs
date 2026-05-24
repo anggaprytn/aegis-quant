@@ -1,0 +1,361 @@
+use aegis_core::PaperTradingPipelineResult;
+use colored::Colorize;
+use serde::Serialize;
+
+use crate::api::{
+    BacktestResult, BacktestRunAcceptedResponse, FeedStatusResponse, HealthResponse, OrderRecord,
+    RecentEventsResponse, RiskActionResponse, RiskDecisionsResponse, RiskStatusResponse,
+    StatusResponse, StrategyListResponse, StrategyStatusResponse,
+};
+
+pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+pub fn print_status(
+    health: &HealthResponse,
+    status: &StatusResponse,
+    risk: &RiskStatusResponse,
+    feed: &FeedStatusResponse,
+) {
+    println!(
+        "API: {}  Service: {}  Env: {}",
+        paint_state(&health.status, health.status.eq_ignore_ascii_case("ok")),
+        health.service,
+        health.environment
+    );
+    println!(
+        "Mode: {}  Kill switch: {}  Paper allowed: {}  Live allowed: {}",
+        status.market_mode,
+        if risk.kill_switch.enabled {
+            "ACTIVE".red().bold().to_string()
+        } else {
+            "inactive".green().to_string()
+        },
+        bool_word(risk.paper_trading_allowed),
+        bool_word(risk.live_trading_allowed)
+    );
+    println!(
+        "Dependencies: db={} event_bus={} execution={}",
+        status.dependencies.database.status,
+        status.dependencies.event_bus.status,
+        status.dependencies.exchange_execution.status
+    );
+
+    if risk.kill_switch.enabled {
+        println!(
+            "{} {}",
+            "WARNING:".red().bold(),
+            risk.kill_switch
+                .reason
+                .as_deref()
+                .unwrap_or("kill switch active")
+        );
+    }
+
+    let degraded: Vec<_> = feed
+        .feeds
+        .iter()
+        .filter(|item| {
+            !item.freshness_status.eq_ignore_ascii_case("fresh")
+                || !item.status.eq_ignore_ascii_case("connected")
+        })
+        .collect();
+
+    println!("Feeds: {}", summarize_feeds(feed));
+    if degraded.is_empty() {
+        println!("Feed warnings: none");
+    } else {
+        println!(
+            "{} {}",
+            "WARNING:".red().bold(),
+            degraded
+                .iter()
+                .map(|item| {
+                    format!("{} {} {}", item.symbol, item.status, item.freshness_status)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+}
+
+pub fn print_risk_action(response: &RiskActionResponse) {
+    println!("Status: {}", paint_state(&response.status, true));
+    println!("Message: {}", response.message);
+    println!(
+        "Kill switch: {}",
+        if response.kill_switch.enabled {
+            "ACTIVE".red().bold().to_string()
+        } else {
+            "inactive".green().to_string()
+        }
+    );
+    println!("Correlation ID: {}", response.correlation_id);
+}
+
+pub fn print_pipeline_result(result: &PaperTradingPipelineResult) {
+    println!(
+        "Pipeline decision: {}",
+        if pipeline_decision_label(result) == "PAPER_ORDER_CREATED"
+            || pipeline_decision_label(result) == "PAPER_ORDER_REUSED"
+        {
+            pipeline_decision_label(result).green().bold().to_string()
+        } else {
+            format!("WARNING: {}", pipeline_decision_label(result))
+                .yellow()
+                .bold()
+                .to_string()
+        }
+    );
+    println!("Signal ID: {}", display_option(result.signal_id));
+    println!(
+        "Risk decision ID: {}",
+        display_option(result.risk_decision_id)
+    );
+    println!("Paper order ID: {}", display_option(result.paper_order_id));
+    println!("Reasons: {}", display_vec(&result.reasons));
+    println!("Correlation ID: {}", result.correlation_id);
+}
+
+pub fn print_strategy_list(response: &StrategyListResponse) {
+    for strategy in &response.strategies {
+        println!(
+            "{}  status={} mode={} timeframe={} symbols={} notional={}",
+            strategy.strategy_id,
+            strategy.status,
+            strategy.mode,
+            strategy.timeframe,
+            strategy.symbols.join(","),
+            strategy.suggested_notional
+        );
+    }
+}
+
+pub fn print_strategy_status(response: &StrategyStatusResponse) {
+    let strategy = &response.strategy;
+    println!("Strategy ID: {}", strategy.strategy_id);
+    println!("Status: {}", strategy.status);
+    println!("Mode: {}", strategy.mode);
+    println!("Timeframe: {}", strategy.timeframe);
+    println!("Symbols: {}", strategy.symbols.join(", "));
+    println!("Suggested notional: {}", strategy.suggested_notional);
+    println!(
+        "Last evaluated at: {}",
+        strategy
+            .last_evaluated_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Last signal ID: {}",
+        display_option(strategy.last_signal_id)
+    );
+}
+
+pub fn print_orders(orders: &[OrderRecord]) {
+    for order in orders {
+        println!(
+            "{}  {} {} qty={} status={} exec={} strategy={} signal={}",
+            order.order_id,
+            order.symbol,
+            order.side,
+            order.quantity,
+            paint_order_status(&order.status),
+            order.execution_state,
+            order.strategy_id.as_deref().unwrap_or("-"),
+            display_option(order.signal_id)
+        );
+    }
+}
+
+pub fn print_order_detail(order: &OrderRecord) {
+    println!("Order ID: {}", order.order_id);
+    println!("Client order ID: {}", order.client_order_id);
+    println!(
+        "Strategy ID: {}",
+        order.strategy_id.as_deref().unwrap_or("-")
+    );
+    println!("Signal ID: {}", display_option(order.signal_id));
+    println!("Risk decision ID: {}", order.risk_decision_id);
+    println!("Symbol: {}", order.symbol);
+    println!("Side: {}", order.side);
+    println!("Status: {}", paint_order_status(&order.status));
+    println!("Execution state: {}", order.execution_state);
+    println!(
+        "Requested notional: {}",
+        order.requested_notional.as_deref().unwrap_or("-")
+    );
+    println!("Quantity: {}", order.quantity);
+    println!("Filled quantity: {}", order.filled_qty);
+    println!(
+        "Filled price: {}",
+        order.filled_price.as_deref().unwrap_or("-")
+    );
+    println!(
+        "Average fill price: {}",
+        order.avg_fill_price.as_deref().unwrap_or("-")
+    );
+    println!(
+        "Status reason: {}",
+        order.status_reason.as_deref().unwrap_or("-")
+    );
+    println!("Correlation ID: {}", order.correlation_id);
+}
+
+pub fn print_events(response: &RecentEventsResponse) {
+    for event in &response.events {
+        println!(
+            "{}  {}  {}  corr={}  event_id={}",
+            event.occurred_at.to_rfc3339(),
+            event.event_type,
+            event.source,
+            event.correlation_id,
+            event.event_id
+        );
+    }
+}
+
+pub fn print_risk_decisions(response: &RiskDecisionsResponse) {
+    for decision in &response.decisions {
+        let label = if decision.decision.eq_ignore_ascii_case("rejected") {
+            format!("WARNING: {}", decision.decision)
+                .red()
+                .bold()
+                .to_string()
+        } else {
+            decision.decision.clone()
+        };
+        println!(
+            "{}  decision={} symbol={} strategy={} signal={} reasons={}",
+            decision.id,
+            label,
+            decision.symbol.as_deref().unwrap_or("-"),
+            decision.strategy_id.as_deref().unwrap_or("-"),
+            display_option(decision.signal_id),
+            display_vec(&decision.reasons)
+        );
+    }
+}
+
+pub fn print_backtest_accepted(response: &BacktestRunAcceptedResponse) {
+    println!("Run ID: {}", response.run_id);
+    println!("Status: {}", response.status);
+    println!("Strategy: {}", response.strategy_id);
+    println!("Symbol: {}", response.symbol);
+    println!("Trade count: {}", response.trade_count);
+    println!("PnL: {} ({}%)", response.pnl, response.pnl_pct);
+    println!("Max drawdown %: {}", response.max_drawdown_pct);
+    println!("Win rate: {}", response.win_rate);
+    println!("Fee paid: {}", response.fee_paid);
+    println!("Slippage cost: {}", response.slippage_cost);
+    println!(
+        "Correlation ID: {}",
+        response
+            .correlation_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+}
+
+pub fn print_backtest_runs(runs: &[BacktestResult]) {
+    for run in runs {
+        println!(
+            "{}  {} {} {} status={} pnl={} pnl_pct={} trades={}",
+            run.run_id,
+            run.strategy_id,
+            run.symbol,
+            run.timeframe,
+            run.status,
+            run.pnl,
+            run.pnl_pct,
+            run.trade_count
+        );
+    }
+}
+
+pub fn print_backtest_run(run: &BacktestResult) {
+    println!("Run ID: {}", run.run_id);
+    println!("Status: {}", run.status);
+    println!("Strategy: {}", run.strategy_id);
+    println!("Symbol: {}", run.symbol);
+    println!("Timeframe: {}", run.timeframe);
+    println!(
+        "Window: {} -> {}",
+        run.start_time.to_rfc3339(),
+        run.end_time.to_rfc3339()
+    );
+    println!("Initial capital: {}", run.initial_capital);
+    println!("Final equity: {}", run.final_equity);
+    println!("PnL: {} ({}%)", run.pnl, run.pnl_pct);
+    println!("Max drawdown %: {}", run.max_drawdown_pct);
+    println!("Win rate: {}", run.win_rate);
+    println!(
+        "Trade breakdown: total={} wins={} losses={}",
+        run.trade_count, run.winning_trades, run.losing_trades
+    );
+    println!("Fee paid: {}", run.fee_paid);
+    println!("Slippage cost: {}", run.slippage_cost);
+}
+
+fn summarize_feeds(feed: &FeedStatusResponse) -> String {
+    if feed.feeds.is_empty() {
+        return "none".to_string();
+    }
+
+    feed.feeds
+        .iter()
+        .map(|item| format!("{}:{}/{}", item.symbol, item.status, item.freshness_status))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn bool_word(value: bool) -> String {
+    if value {
+        "yes".green().to_string()
+    } else {
+        "no".red().to_string()
+    }
+}
+
+fn paint_state(value: &str, ok: bool) -> String {
+    if ok {
+        value.green().bold().to_string()
+    } else {
+        value.red().bold().to_string()
+    }
+}
+
+fn paint_order_status(value: &str) -> String {
+    if value.eq_ignore_ascii_case("rejected") || value.eq_ignore_ascii_case("cancelled") {
+        value.red().bold().to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn display_option<T: ToString>(value: Option<T>) -> String {
+    value
+        .map(|inner| inner.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn display_vec(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn pipeline_decision_label(result: &PaperTradingPipelineResult) -> &'static str {
+    match result.pipeline_decision {
+        aegis_core::PipelineDecision::NoSignal => "NO_SIGNAL",
+        aegis_core::PipelineDecision::RiskRejected => "RISK_REJECTED",
+        aegis_core::PipelineDecision::PaperOrderCreated => "PAPER_ORDER_CREATED",
+        aegis_core::PipelineDecision::PaperOrderReused => "PAPER_ORDER_REUSED",
+        aegis_core::PipelineDecision::StrategyDisabled => "STRATEGY_DISABLED",
+        aegis_core::PipelineDecision::SafetyStopped => "SAFETY_STOPPED",
+    }
+}

@@ -152,3 +152,27 @@ Operational intent:
 - The dashboard should show what the database recorded, not best-effort guesses from correlation IDs alone
 - Risk rejection review is read-only and does not mutate risk state
 - Event inspection remains append-only and filterable for operator triage
+
+## CLI fallback
+
+`crates/cli` adds an operator-local fallback path for the same paper-only operational surface area when the Next.js dashboard is unavailable.
+
+Design constraints:
+
+- The binary name is `aegis`
+- It uses the existing HTTP API only and does not connect to Postgres directly
+- It reads `AEGIS_API_BASE_URL` with fallback to `http://127.0.0.1:3000`
+- It does not add live trading, exchange private API usage, API key handling, auth bypasses, or a TUI layer
+- Dangerous actions remain bounded by the same backend rules as the dashboard
+
+Supported control and inspection flow:
+
+- `aegis status` aggregates `/system/health`, `/system/status`, `/risk/status`, and `/market/feed-status`
+- `aegis kill` and `aegis resume --confirm "RESUME TRADING"` call the existing risk endpoints and preserve typed confirmation
+- `aegis pipeline run`, `strategy list|enable|disable`, `orders list|get`, `events list`, `risk decisions`, and `backtest run|list|get` map directly onto the existing read and paper-only control APIs
+
+Operational intent:
+
+- Dashboard and CLI are parallel operator surfaces over the same API truth
+- The CLI is a fallback for local inspection and safe paper-only intervention, not a separate execution path
+- Output stays compact by default, with optional `--json` when operators need exact payloads

@@ -7,6 +7,7 @@ Aegis Quant is a Rust-first autonomous quant execution infrastructure focused on
 This repository foundation includes:
 
 - Rust workspace with bounded service and engine crates
+- Operator CLI fallback through the existing HTTP API
 - Shared core domain types using `rust_decimal`
 - Minimal Axum API for health and system status
 - Binance public WebSocket market ingest with deterministic 1m candle building
@@ -55,6 +56,8 @@ This repository foundation includes:
    `npm install`
    `npm run dev`
 9. Open `http://127.0.0.1:3001`.
+10. Use the local operator CLI fallback when needed:
+   `cargo run -p cli -- status`
 
 Required environment variables:
 
@@ -78,6 +81,49 @@ Optional environment variables:
 - `BREAKOUT_LOOKBACK_CANDLES`
 - `RUST_LOG`
 - `NEXT_PUBLIC_API_BASE_URL`
+- `AEGIS_API_BASE_URL`
+
+## CLI fallback
+
+`crates/cli` provides a local/operator fallback when the dashboard is unavailable. The `aegis` binary talks only to the existing HTTP API and never mutates the database directly.
+
+Base URL resolution:
+
+- `AEGIS_API_BASE_URL`
+- fallback: `http://127.0.0.1:3000`
+
+Examples:
+
+```bash
+cargo run -p cli -- status
+cargo run -p cli -- kill --reason "manual operator halt"
+cargo run -p cli -- resume --confirm "RESUME TRADING"
+cargo run -p cli -- pipeline run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m
+cargo run -p cli -- strategy list
+cargo run -p cli -- strategy disable momentum_v1
+cargo run -p cli -- orders list --limit 20
+cargo run -p cli -- orders get 00000000-0000-0000-0000-000000000000
+cargo run -p cli -- events list --limit 50 --event-type risk.rejected
+cargo run -p cli -- risk decisions --limit 50 --symbol BTCUSDT
+cargo run -p cli -- backtest run \
+  --strategy momentum_v1 \
+  --symbol BTCUSDT \
+  --timeframe 1m \
+  --start 2026-05-01T00:00:00Z \
+  --end 2026-05-02T00:00:00Z \
+  --initial-capital 1000000 \
+  --fee-bps 10 \
+  --slippage-bps 5 \
+  --holding-candles 3
+cargo run -p cli -- backtest list
+```
+
+Notes:
+
+- Add `--json` before the command for raw API-shaped output.
+- `resume` refuses locally unless `--confirm "RESUME TRADING"` matches exactly.
+- `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
+- The CLI does not implement live trading, exchange private APIs, auth, API keys, or any TUI layer.
 
 ## Dashboard shell
 
@@ -96,6 +142,7 @@ Safety constraints:
 - No live trading controls
 - No exchange private API usage
 - No API key entry
+- CLI fallback shares the same paper-only safety boundary through the HTTP API
 - Resume requires typed confirmation exactly equal to `RESUME TRADING`
 - Kill switch activation and resume both flow through the existing backend endpoints
 
