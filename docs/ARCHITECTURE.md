@@ -8,7 +8,7 @@ Aegis Quant is deterministic execution infrastructure, not an AI trading bot. Th
 market event -> signal -> risk decision -> order intent -> execution state
 ```
 
-LLM components are advisory only and do not have execution authority.
+No LLM-driven execution path is enabled in v0.1. Any future LLM component remains advisory-only and does not have execution authority.
 
 ## Initial components
 
@@ -22,7 +22,7 @@ LLM components are advisory only and do not have execution authority.
 - `crates/risk-engine`: risk gating boundary
 - `crates/execution-engine`: paper execution lifecycle boundary
 - `crates/exchange`: exchange adapter boundary, disabled for live execution in MVP
-- `crates/llm-analyst`: advisory-only market commentary boundary
+- `crates/llm-analyst`: dormant advisory-only boundary, not enabled in the v0.1 release flow
 - `apps/dashboard`: Next.js operational cockpit for paper-only inspection and operator actions
 
 ## Data boundaries

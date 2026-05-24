@@ -2,13 +2,14 @@
 
 ## Current posture
 
-This repository scaffold intentionally avoids live trading and real exchange credentials.
+This repository scaffold intentionally avoids live trading and real exchange credentials. v0.1 also keeps authenticated exchange actions on Binance Spot Testnet only and does not enable any LLM execution path.
 
 ## Rules
 
 - Do not commit real API keys or secrets
 - Use `.env.example` only for safe placeholders
-- Keep LLM components advisory only
+- No LLM execution path is enabled in v0.1
+- Keep any future LLM components advisory only
 - Require auditable state transitions for dangerous actions
 - Keep risk controls and kill switch persistent when implemented
 - Replay/backtest must stay isolated from live and paper execution tables
@@ -50,8 +51,8 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - `SAFE_CANCEL_REQUEST` is testnet-only, uses Binance Spot Testnet REST cancel only, and must never call production Binance endpoints
 - Reconciliation mismatches and failure events must not include API secrets or high-cardinality metric labels
 - Binance private REST support is testnet-only, signs requests with HMAC SHA256, and does not log API secrets
-- Production Binance env vars and withdrawal endpoints are intentionally absent
-- No live execution path is enabled in this repository; Binance production endpoints remain intentionally unsupported
+- Production Binance private-trading env vars and withdrawal endpoints are intentionally absent
+- No live execution path is enabled in this repository; Binance production private trading endpoints remain intentionally unsupported
 
 ## TODO boundaries
 

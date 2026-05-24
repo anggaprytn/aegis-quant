@@ -27,7 +27,7 @@ services:
       postgres:
         condition: service_healthy
     env_file:
-      - ../.env.example
+      - ../.env
     environment:
       API_BIND_ADDR: 0.0.0.0:3000
       DATABASE_URL: postgres://aegis:aegis@postgres:5432/aegis_quant
