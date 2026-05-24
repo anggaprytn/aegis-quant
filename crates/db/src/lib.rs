@@ -16,6 +16,7 @@ use uuid::Uuid;
 pub const MIGRATIONS_DIR: &str = "crates/db/migrations";
 const GLOBAL_SYSTEM_STATE_KEY: &str = "global";
 pub use sqlx::PgPool;
+pub mod test_support;
 
 #[derive(Debug, Clone)]
 pub struct DbConfig {

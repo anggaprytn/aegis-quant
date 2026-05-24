@@ -605,9 +605,8 @@ mod tests {
         terminal_result,
     };
     use aegis_core::{
-        Candle, CandleInterval, DataFreshnessStatus, MarketDataSource, OrderIntentSource,
-        PipelineDecision, PipelineRejectionReason, PipelineStepStatus, Side,
-        StrategyRiskExecutionTrace,
+        Candle, CandleInterval, MarketDataSource, PipelineDecision, PipelineRejectionReason,
+        PipelineStepStatus, Side, StrategyRiskExecutionTrace,
     };
     use chrono::Utc;
     use rust_decimal::Decimal;

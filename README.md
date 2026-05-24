@@ -53,6 +53,7 @@ Optional environment variables:
 - `APP_NAME`
 - `APP_ENV`
 - `API_BIND_ADDR`
+- `TEST_DATABASE_URL`
 - `DATABASE_MAX_CONNECTIONS`
 - `MARKET_EXCHANGE`
 - `MARKET_SYMBOLS`
@@ -64,6 +65,38 @@ Optional environment variables:
 - `MOMENTUM_LOOKBACK_CANDLES`
 - `BREAKOUT_LOOKBACK_CANDLES`
 - `RUST_LOG`
+
+## Running DB integration tests
+
+DB-backed persistence tests are ignored by default and only run when you explicitly opt in with a Postgres test database.
+
+Safety rules:
+
+- `TEST_DATABASE_URL` is preferred over `DATABASE_URL`
+- the target database name must contain `test`
+- if you intentionally need a different name, set `ALLOW_NON_TEST_DB=1`
+- the harness runs migrations, truncates known tables, and seeds baseline `system_state`
+
+Example:
+
+```bash
+TEST_DATABASE_URL=postgres://aegis:aegis@127.0.0.1:5432/aegis_quant_test \
+  cargo test -p db --test integration_db -- --ignored
+```
+
+Run the end-to-end pipeline persistence tests:
+
+```bash
+TEST_DATABASE_URL=postgres://aegis:aegis@127.0.0.1:5432/aegis_quant_test \
+  cargo test -p api --test pipeline_persistence -- --ignored
+```
+
+Or run both through the helper script:
+
+```bash
+TEST_DATABASE_URL=postgres://aegis:aegis@127.0.0.1:5432/aegis_quant_test \
+  ./scripts/test-integration.sh
+```
 
 ## Market ingest local flow
 
