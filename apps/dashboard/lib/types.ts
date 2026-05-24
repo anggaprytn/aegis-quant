@@ -154,6 +154,49 @@ export type CandlesResponse = {
   timestamp: string;
 };
 
+export type CandleBackfillRequest = {
+  exchange?: string;
+  symbol: string;
+  interval: string;
+  start_time: string;
+  end_time: string;
+  limit_per_request?: number;
+  correlation_id?: string;
+};
+
+export type CandleBackfillResult = {
+  run_id: string;
+  exchange: string;
+  symbol: string;
+  interval: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+  requested_candles_estimate: number;
+  fetched_candles: number;
+  inserted_candles: number;
+  updated_candles: number;
+  skipped_candles: number;
+  failed_reason: string | null;
+  correlation_id: string;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type CandleBackfillRunsResponse = {
+  runs: CandleBackfillResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type CandleBackfillRunResponse = {
+  run: CandleBackfillResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type MarketFeedStatusRecord = {
   exchange: string;
   symbol: string;

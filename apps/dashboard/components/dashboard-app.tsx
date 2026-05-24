@@ -13,6 +13,8 @@ import type {
   BacktestRequest,
   BacktestResult,
   BacktestRunAcceptedResponse,
+  CandleBackfillRequest,
+  CandleBackfillResult,
   MarketFeedStatusRecord,
   OrderRecord,
   RiskDecisionRecord,
@@ -63,6 +65,15 @@ const DEFAULT_BACKTEST_FORM: BacktestRequest = {
   holding_candles: 3,
 };
 
+const DEFAULT_BACKFILL_FORM: CandleBackfillRequest = {
+  exchange: "binance",
+  symbol: "BTCUSDT",
+  interval: "1m",
+  start_time: "2026-05-01T00:00:00Z",
+  end_time: "2026-05-02T00:00:00Z",
+  limit_per_request: 1000,
+};
+
 export function DashboardApp() {
   const queryClient = useQueryClient();
   const [section, setSection] = useState<SectionId>("command-center");
@@ -84,6 +95,11 @@ export function DashboardApp() {
     useState<BacktestRequest>(DEFAULT_BACKTEST_FORM);
   const [lastBacktestResult, setLastBacktestResult] =
     useState<BacktestRunAcceptedResponse | null>(null);
+  const [backfillForm, setBackfillForm] =
+    useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
+  const [selectedBackfillRunId, setSelectedBackfillRunId] = useState<string | null>(null);
+  const [lastBackfillResult, setLastBackfillResult] =
+    useState<CandleBackfillResult | null>(null);
 
   const healthQuery = useQuery({
     queryKey: ["system-health"],
@@ -165,6 +181,16 @@ export function DashboardApp() {
     queryFn: () => api.getMarketCandles(selectedSymbol, "1m", 25),
     refetchInterval: 10_000,
   });
+  const backfillRunsQuery = useQuery({
+    queryKey: ["backfill-runs"],
+    queryFn: () => api.getMarketBackfillRuns(20),
+    refetchInterval: 15_000,
+  });
+  const selectedBackfillRunQuery = useQuery({
+    queryKey: ["backfill-run", selectedBackfillRunId],
+    queryFn: () => api.getMarketBackfillRun(selectedBackfillRunId ?? ""),
+    enabled: Boolean(selectedBackfillRunId),
+  });
 
   const selectedStrategyStatusQuery = useQuery({
     queryKey: ["strategy-status", selectedStrategyId],
@@ -211,8 +237,11 @@ export function DashboardApp() {
       if (!symbols.includes(pipelineSymbol)) {
         setPipelineSymbol(symbols[0]);
       }
+      if (!symbols.includes(backfillForm.symbol)) {
+        setBackfillForm((current) => ({ ...current, symbol: symbols[0] }));
+      }
     }
-  }, [pipelineSymbol, selectedSymbol, symbolsQuery.data?.symbols]);
+  }, [backfillForm.symbol, pipelineSymbol, selectedSymbol, symbolsQuery.data?.symbols]);
 
   useEffect(() => {
     const strategies = strategiesQuery.data?.strategies;
@@ -248,6 +277,12 @@ export function DashboardApp() {
     }
   }, [backtestRunsQuery.data?.runs, selectedRunId]);
 
+  useEffect(() => {
+    if (!selectedBackfillRunId && backfillRunsQuery.data?.runs[0]) {
+      setSelectedBackfillRunId(backfillRunsQuery.data.runs[0].run_id);
+    }
+  }, [backfillRunsQuery.data?.runs, selectedBackfillRunId]);
+
   const refreshOperationalData = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["risk-status"] }),
@@ -257,6 +292,8 @@ export function DashboardApp() {
       queryClient.invalidateQueries({ queryKey: ["backtest-runs"] }),
       queryClient.invalidateQueries({ queryKey: ["events"] }),
       queryClient.invalidateQueries({ queryKey: ["feed-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["backfill-runs"] }),
+      queryClient.invalidateQueries({ queryKey: ["backfill-run"] }),
       queryClient.invalidateQueries({ queryKey: ["latest-tick"] }),
       queryClient.invalidateQueries({ queryKey: ["strategy-status"] }),
       queryClient.invalidateQueries({ queryKey: ["strategies"] }),
@@ -315,6 +352,16 @@ export function DashboardApp() {
       setLastBacktestResult(result);
       setSelectedRunId(result.run_id);
       await refreshOperationalData();
+    },
+  });
+
+  const backfillMutation = useMutation({
+    mutationFn: () => api.backfillMarketCandles(backfillForm),
+    onSuccess: async (result) => {
+      setLastBackfillResult(result);
+      setSelectedBackfillRunId(result.run_id);
+      await refreshOperationalData();
+      await queryClient.invalidateQueries({ queryKey: ["candles"] });
     },
   });
 
@@ -684,6 +731,100 @@ export function DashboardApp() {
                 </div>
                 <CandlesTable candles={candlesQuery.data?.candles ?? []} />
                 <InlineStatus error={getErrorMessage(candlesQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-5" title="Historical Backfill">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field
+                    label="Exchange"
+                    value={backfillForm.exchange ?? "binance"}
+                    onChange={(value) =>
+                      setBackfillForm((current) => ({ ...current, exchange: value }))
+                    }
+                    disabled
+                  />
+                  <Field
+                    label="Symbol"
+                    as="select"
+                    value={backfillForm.symbol}
+                    onChange={(value) =>
+                      setBackfillForm((current) => ({ ...current, symbol: value }))
+                    }
+                    options={dataSymbols}
+                  />
+                  <Field
+                    label="Interval"
+                    value={backfillForm.interval}
+                    onChange={(value) =>
+                      setBackfillForm((current) => ({ ...current, interval: value }))
+                    }
+                  />
+                  <Field
+                    label="Limit"
+                    value={String(backfillForm.limit_per_request ?? 1000)}
+                    onChange={(value) =>
+                      setBackfillForm((current) => ({
+                        ...current,
+                        limit_per_request: Number(value) || 1000,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Start"
+                    value={backfillForm.start_time}
+                    onChange={(value) =>
+                      setBackfillForm((current) => ({ ...current, start_time: value }))
+                    }
+                  />
+                  <Field
+                    label="End"
+                    value={backfillForm.end_time}
+                    onChange={(value) =>
+                      setBackfillForm((current) => ({ ...current, end_time: value }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex items-center gap-3">
+                  <ActionButton
+                    label="Run Candle Backfill"
+                    onClick={() => backfillMutation.mutate()}
+                    busy={backfillMutation.isPending}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(backfillMutation.error)}
+                    success={lastBackfillResult ? `Completed ${lastBackfillResult.inserted_candles} inserts` : undefined}
+                  />
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-7" title="Recent Backfill Runs">
+                <BackfillRunsTable
+                  runs={backfillRunsQuery.data?.runs ?? []}
+                  selectedRunId={selectedBackfillRunId}
+                  onSelect={setSelectedBackfillRunId}
+                />
+                <InlineStatus error={getErrorMessage(backfillRunsQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-12" title="Selected Backfill Run">
+                <KeyValue
+                  items={[
+                    ["Run ID", selectedBackfillRunQuery.data?.run.run_id ?? "N/A"],
+                    ["Status", selectedBackfillRunQuery.data?.run.status ?? "N/A"],
+                    ["Exchange", selectedBackfillRunQuery.data?.run.exchange ?? "N/A"],
+                    ["Symbol", selectedBackfillRunQuery.data?.run.symbol ?? "N/A"],
+                    ["Interval", selectedBackfillRunQuery.data?.run.interval ?? "N/A"],
+                    [
+                      "Counts",
+                      selectedBackfillRunQuery.data
+                        ? `${selectedBackfillRunQuery.data.run.inserted_candles} inserted / ${selectedBackfillRunQuery.data.run.updated_candles} updated / ${selectedBackfillRunQuery.data.run.skipped_candles} skipped`
+                        : "N/A",
+                    ],
+                    [
+                      "Failure Reason",
+                      selectedBackfillRunQuery.data?.run.failed_reason ?? "N/A",
+                    ],
+                  ]}
+                  loading={selectedBackfillRunQuery.isLoading}
+                  error={getErrorMessage(selectedBackfillRunQuery.error)}
+                />
               </Panel>
             </section>
           )}
@@ -1192,6 +1333,7 @@ function Field({
   placeholder,
   as,
   options,
+  disabled,
 }: {
   label: string;
   value: string;
@@ -1199,6 +1341,7 @@ function Field({
   placeholder?: string;
   as?: "input" | "select";
   options?: string[];
+  disabled?: boolean;
 }) {
   const commonClassName =
     "mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-accent";
@@ -1210,6 +1353,7 @@ function Field({
         <select
           className={commonClassName}
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
         >
           {(options ?? []).map((option) => (
@@ -1222,6 +1366,7 @@ function Field({
         <input
           className={commonClassName}
           value={value}
+          disabled={disabled}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
         />
@@ -1396,6 +1541,55 @@ function CandlesTable({
         candle.is_closed ? "closed" : "open",
       ])}
     />
+  );
+}
+
+function BackfillRunsTable({
+  runs,
+  selectedRunId,
+  onSelect,
+}: {
+  runs: CandleBackfillResult[];
+  selectedRunId: string | null;
+  onSelect: (runId: string) => void;
+}) {
+  if (!runs.length) {
+    return <EmptyState label="No backfill runs found." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {runs.map((run) => (
+        <button
+          key={run.run_id}
+          className={cn(
+            "w-full rounded-xl border p-3 text-left",
+            run.run_id === selectedRunId
+              ? "border-accent bg-accent/5"
+              : "border-border bg-surface/60",
+          )}
+          onClick={() => onSelect(run.run_id)}
+        >
+          <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <div className="font-medium">
+                {run.symbol} {run.interval}
+              </div>
+              <div className="mt-1 text-xs text-muted">
+                {formatDateTime(run.created_at)} | {run.status}
+              </div>
+            </div>
+            <div className="text-xs text-muted">
+              {run.inserted_candles} inserted / {run.updated_candles} updated /{" "}
+              {run.skipped_candles} skipped
+            </div>
+          </div>
+          {run.failed_reason ? (
+            <div className="mt-2 text-xs text-rose-200">{run.failed_reason}</div>
+          ) : null}
+        </button>
+      ))}
+    </div>
   );
 }
 

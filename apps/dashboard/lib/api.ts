@@ -6,6 +6,10 @@ import type {
   BacktestRunResponse,
   BacktestRunsResponse,
   BacktestTradesResponse,
+  CandleBackfillRequest,
+  CandleBackfillResult,
+  CandleBackfillRunResponse,
+  CandleBackfillRunsResponse,
   CandlesResponse,
   EvaluateStrategyResponse,
   FeedStatusResponse,
@@ -121,6 +125,15 @@ export const api = {
       interval,
       limit,
     }),
+  backfillMarketCandles: (payload: CandleBackfillRequest) =>
+    request<CandleBackfillResult>("/market/backfill/candles", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getMarketBackfillRuns: (limit = 20) =>
+    request<CandleBackfillRunsResponse>("/market/backfill/runs", undefined, { limit }),
+  getMarketBackfillRun: (id: string) =>
+    request<CandleBackfillRunResponse>(`/market/backfill/runs/${id}`),
   getMarketFeedStatus: () => request<FeedStatusResponse>("/market/feed-status"),
   getStrategyList: () => request<StrategyListResponse>("/strategy/list"),
   getStrategyStatus: (id: string) =>

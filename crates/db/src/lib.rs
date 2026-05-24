@@ -1,9 +1,10 @@
 use aegis_core::{
-    BacktestConfig, BacktestEquityPoint, BacktestResult, BacktestTrade, Candle, CandleInterval,
-    DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus, MarketDataSource, MarketTick,
-    OrderIntent, OrderStatus, PaperOrder, ReplayRunStatus, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig, StrategyId,
-    StrategySignal, Symbol,
+    BacktestConfig, BacktestEquityPoint, BacktestResult, BacktestTrade, Candle,
+    CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult, CandleBackfillStatus,
+    CandleInterval, DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus,
+    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperOrder, ReplayRunStatus,
+    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason,
+    StrategyConfig, StrategyId, StrategySignal, Symbol,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -11,6 +12,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, Postgres, Row, Transaction};
+use std::collections::BTreeMap;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -134,6 +136,34 @@ pub struct CandleRecord {
     pub is_closed: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandleBackfillRunRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub status: String,
+    pub requested_candles_estimate: i32,
+    pub fetched_candles: i32,
+    pub inserted_candles: i32,
+    pub updated_candles: i32,
+    pub skipped_candles: i32,
+    pub failed_reason: Option<String>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub config: Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CandleUpsertBatchResult {
+    pub inserted_candles: i32,
+    pub updated_candles: i32,
+    pub skipped_candles: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1122,6 +1152,90 @@ pub async fn upsert_candle(pool: &PgPool, candle: &Candle) -> Result<CandleRecor
     Ok(map_candle(&row))
 }
 
+pub async fn upsert_candles_batch(
+    pool: &PgPool,
+    candles: &[Candle],
+) -> Result<CandleUpsertBatchResult> {
+    let deduped = dedupe_candles_for_upsert(candles);
+    if deduped.is_empty() {
+        return Ok(CandleUpsertBatchResult::default());
+    }
+
+    let first = deduped
+        .first()
+        .expect("deduped candle batch must contain at least one item");
+    let open_times = deduped
+        .iter()
+        .map(|candle| candle.open_time)
+        .collect::<Vec<_>>();
+
+    let existing_rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        FROM candles
+        WHERE exchange = $1
+          AND symbol = $2
+          AND interval = $3
+          AND open_time = ANY($4)
+        "#,
+    )
+    .bind(first.exchange.as_str())
+    .bind(first.symbol.as_str())
+    .bind(first.interval.as_str())
+    .bind(&open_times)
+    .fetch_all(pool)
+    .await?;
+
+    let existing = existing_rows
+        .iter()
+        .map(map_candle)
+        .map(|record| (record.open_time, record))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut outcome = CandleUpsertBatchResult::default();
+    for candle in &deduped {
+        match existing.get(&candle.open_time) {
+            None => {
+                upsert_candle(pool, candle).await?;
+                outcome.inserted_candles += 1;
+            }
+            Some(record) if candle_matches_record(candle, record) => {
+                outcome.skipped_candles += 1;
+            }
+            Some(_) => {
+                upsert_candle(pool, candle).await?;
+                outcome.updated_candles += 1;
+            }
+        }
+    }
+
+    Ok(outcome)
+}
+
+pub fn dedupe_candles_for_upsert(candles: &[Candle]) -> Vec<Candle> {
+    let mut deduped = BTreeMap::new();
+    for candle in candles {
+        deduped.insert(candle.open_time, candle.clone());
+    }
+    deduped.into_values().collect()
+}
+
 pub async fn list_candles(
     pool: &PgPool,
     exchange: MarketDataSource,
@@ -1249,6 +1363,307 @@ pub async fn get_closed_candles_range(
     .await?;
 
     Ok(rows.iter().map(map_candle_domain).collect())
+}
+
+pub async fn count_candles_range(
+    pool: &PgPool,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    interval: CandleInterval,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) -> Result<i64> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM candles
+        WHERE exchange = $1
+          AND symbol = $2
+          AND interval = $3
+          AND is_closed = TRUE
+          AND open_time >= $4
+          AND close_time <= $5
+        "#,
+    )
+    .bind(exchange.as_str())
+    .bind(symbol.as_str())
+    .bind(interval.as_str())
+    .bind(start_time)
+    .bind(end_time)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(count)
+}
+
+pub async fn insert_candle_backfill_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    request: &CandleBackfillRequest,
+    correlation_id: Uuid,
+    created_at: DateTime<Utc>,
+    config: Value,
+) -> Result<CandleBackfillRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO candle_backfill_runs (
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, 0, NULL, $9, $10, NULL, $11
+        )
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        "#,
+    )
+    .bind(run_id)
+    .bind(request.exchange.as_str())
+    .bind(&request.symbol)
+    .bind(&request.interval)
+    .bind(request.start_time)
+    .bind(request.end_time)
+    .bind(CandleBackfillStatus::Running.as_str())
+    .bind(request.requested_candles_estimate()?)
+    .bind(correlation_id)
+    .bind(created_at)
+    .bind(config)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candle_backfill_run(&row))
+}
+
+pub async fn update_candle_backfill_progress(
+    pool: &PgPool,
+    run_id: Uuid,
+    progress: &CandleBackfillProgress,
+) -> Result<CandleBackfillRunRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE candle_backfill_runs
+        SET
+            fetched_candles = fetched_candles + $2,
+            inserted_candles = inserted_candles + $3,
+            updated_candles = updated_candles + $4,
+            skipped_candles = skipped_candles + $5
+        WHERE id = $1
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        "#,
+    )
+    .bind(run_id)
+    .bind(progress.fetched_candles)
+    .bind(progress.inserted_candles)
+    .bind(progress.updated_candles)
+    .bind(progress.skipped_candles)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candle_backfill_run(&row))
+}
+
+pub async fn complete_candle_backfill_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    completed_at: DateTime<Utc>,
+) -> Result<CandleBackfillRunRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE candle_backfill_runs
+        SET
+            status = $2,
+            completed_at = $3
+        WHERE id = $1
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        "#,
+    )
+    .bind(run_id)
+    .bind(CandleBackfillStatus::Completed.as_str())
+    .bind(completed_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candle_backfill_run(&row))
+}
+
+pub async fn fail_candle_backfill_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    failed_reason: &str,
+    completed_at: DateTime<Utc>,
+) -> Result<CandleBackfillRunRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE candle_backfill_runs
+        SET
+            status = $2,
+            failed_reason = $3,
+            completed_at = $4
+        WHERE id = $1
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        "#,
+    )
+    .bind(run_id)
+    .bind(CandleBackfillStatus::Failed.as_str())
+    .bind(failed_reason)
+    .bind(completed_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candle_backfill_run(&row))
+}
+
+pub async fn list_candle_backfill_runs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<CandleBackfillRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        FROM candle_backfill_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_candle_backfill_run).collect())
+}
+
+pub async fn get_candle_backfill_run(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<CandleBackfillRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        FROM candle_backfill_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_candle_backfill_run))
 }
 
 pub async fn insert_backtest_run(
@@ -2352,6 +2767,28 @@ fn map_candle(row: &sqlx::postgres::PgRow) -> CandleRecord {
     }
 }
 
+fn map_candle_backfill_run(row: &sqlx::postgres::PgRow) -> CandleBackfillRunRecord {
+    CandleBackfillRunRecord {
+        id: row.get("id"),
+        exchange: row.get("exchange"),
+        symbol: row.get("symbol"),
+        interval: row.get("interval"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        status: row.get("status"),
+        requested_candles_estimate: row.get("requested_candles_estimate"),
+        fetched_candles: row.get("fetched_candles"),
+        inserted_candles: row.get("inserted_candles"),
+        updated_candles: row.get("updated_candles"),
+        skipped_candles: row.get("skipped_candles"),
+        failed_reason: row.get("failed_reason"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+        config: row.get("config"),
+    }
+}
+
 fn map_candle_domain(row: &sqlx::postgres::PgRow) -> Candle {
     Candle {
         id: row.get("id"),
@@ -2377,6 +2814,22 @@ fn map_candle_domain(row: &sqlx::postgres::PgRow) -> Candle {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
+}
+
+fn candle_matches_record(candle: &Candle, record: &CandleRecord) -> bool {
+    candle.exchange.as_str() == record.exchange
+        && candle.symbol.as_str() == record.symbol
+        && candle.interval.as_str() == record.interval
+        && candle.open_time == record.open_time
+        && candle.close_time == record.close_time
+        && candle.open == record.open
+        && candle.high == record.high
+        && candle.low == record.low
+        && candle.close == record.close
+        && candle.volume == record.volume
+        && candle.quote_volume == record.quote_volume
+        && candle.trade_count == record.trade_count
+        && candle.is_closed == record.is_closed
 }
 
 fn map_market_feed_status(row: &sqlx::postgres::PgRow) -> MarketFeedStatusRecord {
@@ -2524,6 +2977,29 @@ pub fn backtest_result_from_record(record: &BacktestRunRecord) -> Result<Backtes
     })
 }
 
+pub fn candle_backfill_result_from_record(
+    record: &CandleBackfillRunRecord,
+) -> Result<CandleBackfillResult> {
+    Ok(CandleBackfillResult {
+        run_id: record.id,
+        exchange: record.exchange.parse()?,
+        symbol: record.symbol.clone(),
+        interval: record.interval.clone(),
+        start_time: record.start_time,
+        end_time: record.end_time,
+        status: record.status.parse()?,
+        requested_candles_estimate: record.requested_candles_estimate,
+        fetched_candles: record.fetched_candles,
+        inserted_candles: record.inserted_candles,
+        updated_candles: record.updated_candles,
+        skipped_candles: record.skipped_candles,
+        failed_reason: record.failed_reason.clone(),
+        correlation_id: record.correlation_id,
+        created_at: record.created_at,
+        completed_at: record.completed_at,
+    })
+}
+
 pub fn backtest_config_from_value(value: &Value) -> Result<BacktestConfig> {
     Ok(serde_json::from_value(value.clone())?)
 }
@@ -2634,6 +3110,52 @@ fn string_array_from_json_field(value: &Value, field: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dedupe_candles_for_upsert;
+    use aegis_core::{Candle, CandleInterval, MarketDataSource, Symbol};
+    use chrono::{TimeZone, Utc};
+    use rust_decimal::Decimal;
+    use uuid::Uuid;
+
+    fn candle(open_minute: i64, close: i64) -> Candle {
+        let open_time = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap()
+            + chrono::Duration::minutes(open_minute);
+        Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new("BTCUSDT").unwrap(),
+            interval: CandleInterval::OneMinute,
+            open_time,
+            close_time: open_time + chrono::Duration::minutes(1)
+                - chrono::Duration::milliseconds(1),
+            open: Decimal::new(close - 1, 0),
+            high: Decimal::new(close + 1, 0),
+            low: Decimal::new(close - 2, 0),
+            close: Decimal::new(close, 0),
+            volume: Decimal::new(10, 0),
+            quote_volume: Some(Decimal::new(1_000, 0)),
+            trade_count: 1,
+            is_closed: true,
+            created_at: open_time,
+            updated_at: open_time,
+        }
+    }
+
+    #[test]
+    fn dedupe_candles_keeps_latest_entry_per_open_time() {
+        let original = candle(0, 100);
+        let replacement = candle(0, 105);
+        let next = candle(1, 110);
+
+        let deduped = dedupe_candles_for_upsert(&[original, replacement.clone(), next.clone()]);
+
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].close, replacement.close);
+        assert_eq!(deduped[1].close, next.close);
+    }
 }
 
 async fn insert_system_event_tx(

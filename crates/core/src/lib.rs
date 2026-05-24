@@ -46,6 +46,12 @@ pub enum MarketDataSource {
     Binance,
 }
 
+impl Default for MarketDataSource {
+    fn default() -> Self {
+        Self::Binance
+    }
+}
+
 impl MarketDataSource {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -112,6 +118,23 @@ impl CandleInterval {
         match self {
             Self::OneMinute => chrono::Duration::minutes(1),
         }
+    }
+
+    pub fn candles_between(
+        self,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+    ) -> Result<i32, CoreError> {
+        if end_time <= start_time {
+            return Err(CoreError::InvalidCandleBackfillTimeRange);
+        }
+
+        let step_ms = self.duration().num_milliseconds();
+        let window_ms = end_time
+            .signed_duration_since(start_time)
+            .num_milliseconds();
+        let candles = window_ms / step_ms;
+        i32::try_from(candles).map_err(|_| CoreError::InvalidCandleBackfillEstimate)
     }
 }
 
@@ -544,6 +567,161 @@ pub struct BacktestRequest {
     pub slippage_bps: Decimal,
     pub correlation_id: Option<Uuid>,
     pub holding_candles: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CandleBackfillStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl CandleBackfillStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for CandleBackfillStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedCandleBackfillStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandleBackfillSource {
+    BinanceRestPublic,
+}
+
+impl CandleBackfillSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BinanceRestPublic => "binance_rest_public",
+        }
+    }
+}
+
+impl std::str::FromStr for CandleBackfillSource {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "binance_rest_public" => Ok(Self::BinanceRestPublic),
+            other => Err(CoreError::UnsupportedCandleBackfillSource(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleBackfillRequest {
+    #[serde(default)]
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub limit_per_request: Option<u16>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl CandleBackfillRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyCandleBackfillSymbol);
+        }
+        if self.interval.trim().is_empty() {
+            return Err(CoreError::EmptyCandleBackfillInterval);
+        }
+        let interval: CandleInterval = self.interval.parse()?;
+        let limit = self.limit_per_request.unwrap_or(1000);
+        if limit == 0 {
+            return Err(CoreError::InvalidCandleBackfillLimit);
+        }
+        if limit > 1000 {
+            return Err(CoreError::CandleBackfillLimitTooHigh(limit));
+        }
+        interval.candles_between(self.start_time, self.end_time)?;
+        Ok(())
+    }
+
+    pub fn normalized_symbol(&self) -> Result<Symbol, CoreError> {
+        Symbol::new(self.symbol.clone())
+    }
+
+    pub fn parsed_interval(&self) -> Result<CandleInterval, CoreError> {
+        self.interval.parse()
+    }
+
+    pub fn effective_limit_per_request(&self) -> u16 {
+        self.limit_per_request.unwrap_or(1000)
+    }
+
+    pub fn requested_candles_estimate(&self) -> Result<i32, CoreError> {
+        self.parsed_interval()?
+            .candles_between(self.start_time, self.end_time)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleBackfillProgress {
+    pub run_id: Uuid,
+    pub page: i32,
+    pub request_start_time: DateTime<Utc>,
+    pub request_end_time: DateTime<Utc>,
+    pub fetched_candles: i32,
+    pub inserted_candles: i32,
+    pub updated_candles: i32,
+    pub skipped_candles: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackfilledCandleSummary {
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub interval: String,
+    pub first_open_time: Option<DateTime<Utc>>,
+    pub last_open_time: Option<DateTime<Utc>>,
+    pub candle_count: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleBackfillResult {
+    pub run_id: Uuid,
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub status: CandleBackfillStatus,
+    pub requested_candles_estimate: i32,
+    pub fetched_candles: i32,
+    pub inserted_candles: i32,
+    pub updated_candles: i32,
+    pub skipped_candles: i32,
+    pub failed_reason: Option<String>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 impl BacktestRequest {
@@ -1104,6 +1282,10 @@ pub enum CoreError {
     UnsupportedReplayRunStatus(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
+    #[error("unsupported candle backfill status: {0}")]
+    UnsupportedCandleBackfillStatus(String),
+    #[error("unsupported candle backfill source: {0}")]
+    UnsupportedCandleBackfillSource(String),
     #[error("idempotency_key cannot be empty")]
     EmptyIdempotencyKey,
     #[error("backtest strategy_id cannot be empty")]
@@ -1112,10 +1294,22 @@ pub enum CoreError {
     EmptyBacktestSymbol,
     #[error("backtest timeframe cannot be empty")]
     EmptyBacktestTimeframe,
+    #[error("candle backfill symbol cannot be empty")]
+    EmptyCandleBackfillSymbol,
+    #[error("candle backfill interval cannot be empty")]
+    EmptyCandleBackfillInterval,
     #[error("backtest end_time must be after start_time")]
     InvalidBacktestTimeRange,
+    #[error("candle backfill end_time must be after start_time")]
+    InvalidCandleBackfillTimeRange,
     #[error("backtest initial_capital must be greater than zero")]
     InvalidBacktestInitialCapital,
+    #[error("candle backfill request limit must be greater than zero")]
+    InvalidCandleBackfillLimit,
+    #[error("candle backfill request limit exceeds Binance maximum: {0}")]
+    CandleBackfillLimitTooHigh(u16),
+    #[error("candle backfill estimate exceeds supported bounds")]
+    InvalidCandleBackfillEstimate,
     #[error("holding_candles must be greater than zero")]
     InvalidHoldingCandles,
     #[error("invalid backtest bps field: {0}")]

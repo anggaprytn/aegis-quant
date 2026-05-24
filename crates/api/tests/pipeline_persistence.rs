@@ -60,6 +60,7 @@ fn app_state(pool: db::PgPool) -> AppState {
             symbols: vec![Symbol::new("BTCUSDT").expect("valid symbol")],
             stale_threshold: Duration::from_secs(10),
             binance_ws_base_url: "wss://example.invalid".to_string(),
+            binance_rest_base_url: "https://example.invalid".to_string(),
         },
         strategy_runtime: runtime_config(),
     }

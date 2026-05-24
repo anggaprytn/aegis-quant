@@ -1,4 +1,7 @@
-use aegis_core::{BacktestRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult};
+use aegis_core::{
+    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
+    PaperTradingPipelineResult,
+};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use reqwest::{Method, StatusCode, Url};
@@ -159,6 +162,29 @@ impl ApiClient {
 
     pub async fn market_feed_status(&self) -> Result<FeedStatusResponse, ApiClientError> {
         self.get("/market/feed-status", &[]).await
+    }
+
+    pub async fn backfill_candles(
+        &self,
+        request: &CandleBackfillRequest,
+    ) -> Result<CandleBackfillResult, ApiClientError> {
+        self.post("/market/backfill/candles", request).await
+    }
+
+    pub async fn list_backfill_runs(
+        &self,
+        limit: i64,
+    ) -> Result<CandleBackfillRunsResponse, ApiClientError> {
+        self.get("/market/backfill/runs", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_backfill_run(
+        &self,
+        run_id: Uuid,
+    ) -> Result<CandleBackfillRunResponse, ApiClientError> {
+        self.get(&format!("/market/backfill/runs/{run_id}"), &[])
+            .await
     }
 
     pub async fn activate_kill_switch(
@@ -401,6 +427,22 @@ pub struct FeedStatusResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct CandleBackfillRunsResponse {
+    pub runs: Vec<CandleBackfillResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CandleBackfillRunResponse {
+    pub run: CandleBackfillResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyStatusView {
     pub strategy_id: String,
     pub status: String,
@@ -610,12 +652,31 @@ pub fn build_pipeline_request(args: &crate::cli::PipelineRunArgs) -> PaperTradin
     }
 }
 
+pub fn build_candle_backfill_request(
+    args: &crate::cli::MarketBackfillArgs,
+) -> anyhow::Result<CandleBackfillRequest> {
+    let request = CandleBackfillRequest {
+        exchange: args.exchange.parse()?,
+        symbol: args.symbol.clone(),
+        interval: args.timeframe.clone(),
+        start_time: args.start,
+        end_time: args.end,
+        limit_per_request: args.limit_per_request,
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate()
+        .context("invalid candle backfill request")?;
+    Ok(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_backtest_request, build_pipeline_request, RecentEventsQuery, RiskDecisionsQuery,
+        build_backtest_request, build_candle_backfill_request, build_pipeline_request,
+        RecentEventsQuery, RiskDecisionsQuery,
     };
-    use crate::cli::{BacktestRunArgs, PipelineRunArgs};
+    use crate::cli::{BacktestRunArgs, MarketBackfillArgs, PipelineRunArgs};
     use chrono::{TimeZone, Utc};
     use rust_decimal::Decimal;
     use uuid::Uuid;
@@ -698,5 +759,26 @@ mod tests {
         assert_eq!(value["symbol"], "BTCUSDT");
         assert_eq!(value["timeframe"], "1m");
         assert_eq!(value["correlation_id"], correlation_id.to_string());
+    }
+
+    #[test]
+    fn candle_backfill_request_serializes_expected_wire_shape() {
+        let args = MarketBackfillArgs {
+            exchange: "binance".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            start: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            limit_per_request: Some(1000),
+            correlation_id: None,
+        };
+
+        let request = build_candle_backfill_request(&args).expect("valid request");
+        let value = serde_json::to_value(request).expect("serializes");
+
+        assert_eq!(value["exchange"], "binance");
+        assert_eq!(value["symbol"], "BTCUSDT");
+        assert_eq!(value["interval"], "1m");
+        assert_eq!(value["limit_per_request"], 1000);
     }
 }

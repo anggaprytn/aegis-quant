@@ -1,17 +1,20 @@
 use aegis_core::{
-    BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle, CandleInterval,
-    EventEnvelope, MarketDataSource, OrderIntent, ReplayRunStatus, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
-    SignalConfidence, SignalReason, SignalSide, StrategyId, StrategySignal, Symbol,
+    BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle,
+    CandleBackfillRequest, CandleBackfillStatus, CandleInterval, MarketDataSource, OrderIntent,
+    ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId,
+    StrategySignal, Symbol,
 };
 use chrono::{TimeZone, Utc};
 use db::{
-    create_paper_order, get_backtest_equity_curve, get_backtest_run, get_backtest_trades,
-    get_closed_candles_range, get_order_by_idempotency_key, get_risk_decision, get_system_state,
+    count_candles_range, create_paper_order, get_backtest_equity_curve, get_backtest_run,
+    get_backtest_trades, get_candle_backfill_run, get_closed_candles_range,
+    get_order_by_idempotency_key, get_risk_decision, get_system_state,
     insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_risk_decision, insert_signal_deduped, list_orders, list_recent_signals,
-    set_kill_switch_state, test_support::TestDatabase, update_backtest_run_completed,
-    upsert_candle, CreateOrderError, StateActor,
+    insert_candle_backfill_run, insert_risk_decision, insert_signal_deduped, list_orders,
+    list_recent_signals, set_kill_switch_state, test_support::TestDatabase,
+    update_backtest_run_completed, upsert_candle, upsert_candles_batch, CreateOrderError,
+    StateActor,
 };
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -121,6 +124,18 @@ fn sample_backtest_candle(index: i64, close: i64) -> Candle {
         is_closed: true,
         created_at: open_time,
         updated_at: open_time,
+    }
+}
+
+fn sample_backfill_request() -> CandleBackfillRequest {
+    CandleBackfillRequest {
+        exchange: MarketDataSource::Binance,
+        symbol: "BTCUSDT".to_string(),
+        interval: "1m".to_string(),
+        start_time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        end_time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 10, 0).unwrap(),
+        limit_per_request: Some(1000),
+        correlation_id: Some(Uuid::from_u128(0xaaaa)),
     }
 }
 
@@ -268,6 +283,84 @@ async fn duplicate_idempotency_key_reuses_existing_order_safely() {
         .await
         .expect("orders should list");
     assert_eq!(orders.len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candle_backfill_run_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let request = sample_backfill_request();
+    let run_id = Uuid::new_v4();
+
+    let inserted = insert_candle_backfill_run(
+        &test_db.pool,
+        run_id,
+        &request,
+        request.correlation_id.unwrap(),
+        fixed_time(),
+        serde_json::to_value(&request).unwrap(),
+    )
+    .await
+    .expect("backfill run should persist");
+
+    assert_eq!(inserted.id, run_id);
+    assert_eq!(inserted.status, CandleBackfillStatus::Running.as_str());
+
+    let loaded = get_candle_backfill_run(&test_db.pool, run_id)
+        .await
+        .expect("query should work")
+        .expect("backfill run should exist");
+    assert_eq!(loaded.id, run_id);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candle_upsert_batch_is_idempotent() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let candle = sample_backtest_candle(0, 100);
+
+    let first = upsert_candles_batch(&test_db.pool, std::slice::from_ref(&candle))
+        .await
+        .expect("first upsert should work");
+    let second = upsert_candles_batch(&test_db.pool, std::slice::from_ref(&candle))
+        .await
+        .expect("second upsert should work");
+
+    assert_eq!(first.inserted_candles, 1);
+    assert_eq!(second.skipped_candles, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candle_count_range_returns_closed_candle_count() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let first = sample_backtest_candle(0, 100);
+    let second = sample_backtest_candle(1, 101);
+    upsert_candle(&test_db.pool, &first)
+        .await
+        .expect("first persists");
+    upsert_candle(&test_db.pool, &second)
+        .await
+        .expect("second persists");
+
+    let count = count_candles_range(
+        &test_db.pool,
+        MarketDataSource::Binance,
+        &Symbol::new("BTCUSDT").unwrap(),
+        CandleInterval::OneMinute,
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 3, 0).unwrap(),
+    )
+    .await
+    .expect("count should work");
+
+    assert_eq!(count, 2);
 }
 
 #[tokio::test]

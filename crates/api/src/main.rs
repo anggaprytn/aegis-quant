@@ -3,9 +3,10 @@ mod pipeline;
 use std::{env, net::SocketAddr, time::Instant};
 
 use aegis_core::{
-    BacktestRequest, CandleInterval, MarketMode, OrderIntent, PaperTradingPipelineRequest,
-    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side,
-    SignalReason, StrategyConfig, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, CandleInterval, MarketMode,
+    OrderIntent, PaperTradingPipelineRequest, RiskCheckContext, RiskEvaluationDecision,
+    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason, StrategyConfig,
+    StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
 };
 use axum::{
     extract::{Path, Query, Request, State},
@@ -17,21 +18,22 @@ use axum::{
 };
 use chrono::Utc;
 use db::{
-    backtest_result_from_record, check_health, connect_pool, create_paper_order,
-    ensure_system_state, get_backtest_equity_curve, get_backtest_run, get_backtest_trades,
-    get_latest_market_tick, get_order_by_id, get_recent_closed_candles, get_risk_decision_by_id,
-    get_strategy_status, get_system_event, get_system_state, insert_risk_evaluation,
-    insert_signal_deduped, list_backtest_runs, list_candles, list_market_feed_statuses,
-    list_orders, list_recent_risk_decisions_filtered, list_recent_signals,
-    list_recent_system_events_filtered, list_strategy_status, load_risk_state_snapshot,
-    set_kill_switch_state, strategy_config_from_record, update_strategy_state,
-    upsert_strategy_config, BacktestEquityPointRecord, BacktestTradeRecord, CandleRecord,
+    backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
+    create_paper_order, ensure_system_state, get_backtest_equity_curve, get_backtest_run,
+    get_backtest_trades, get_candle_backfill_run, get_latest_market_tick, get_order_by_id,
+    get_recent_closed_candles, get_risk_decision_by_id, get_strategy_status, get_system_event,
+    get_system_state, insert_risk_evaluation, insert_signal_deduped, list_backtest_runs,
+    list_candle_backfill_runs, list_candles, list_market_feed_statuses, list_orders,
+    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
+    list_strategy_status, load_risk_state_snapshot, set_kill_switch_state,
+    strategy_config_from_record, update_strategy_state, upsert_strategy_config,
+    BacktestEquityPointRecord, BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord,
     CreateOrderError, DbConfig, InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord,
     OrderRecord, PgPool, RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord,
     SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
-use market_ingest::MarketIngestConfig;
+use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
 use replay_engine::ReplayEngine;
 use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
@@ -49,6 +51,8 @@ const DEFAULT_RISK_DECISIONS_LIMIT: i64 = 50;
 const MAX_RISK_DECISIONS_LIMIT: i64 = 200;
 const DEFAULT_CANDLE_LIMIT: i64 = 100;
 const MAX_CANDLE_LIMIT: i64 = 1_000;
+const DEFAULT_BACKFILL_RUNS_LIMIT: i64 = 20;
+const MAX_BACKFILL_RUNS_LIMIT: i64 = 200;
 
 #[derive(Clone)]
 struct AppState {
@@ -438,9 +442,30 @@ struct CandlesQuery {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct BackfillRunsQuery {
+    limit: Option<i64>,
+}
+
 #[derive(Serialize)]
 struct CandlesResponse {
     candles: Vec<CandleRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CandleBackfillRunsResponse {
+    runs: Vec<CandleBackfillResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CandleBackfillRunResponse {
+    run: CandleBackfillResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -653,6 +678,12 @@ async fn main() {
         .route("/market/symbols", get(get_market_symbols))
         .route("/market/ticks/latest", get(get_latest_tick))
         .route("/market/candles", get(get_market_candles))
+        .route(
+            "/market/backfill/candles",
+            post(post_market_backfill_candles),
+        )
+        .route("/market/backfill/runs", get(get_market_backfill_runs))
+        .route("/market/backfill/runs/:id", get(get_market_backfill_run))
         .route("/market/feed-status", get(get_market_feed_status))
         .route("/strategy/list", get(get_strategy_list))
         .route("/strategy/:id/status", get(get_strategy_by_id))
@@ -773,6 +804,13 @@ fn bounded_candle_limit(limit: Option<i64>) -> i64 {
     }
 }
 
+fn bounded_backfill_runs_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_BACKFILL_RUNS_LIMIT),
+        _ => DEFAULT_BACKFILL_RUNS_LIMIT,
+    }
+}
+
 fn parse_strategy_id(value: &str) -> Result<StrategyId, aegis_core::CoreError> {
     value.parse()
 }
@@ -831,6 +869,12 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
         last_signal_id: state.as_ref().and_then(|state| state.last_signal_id),
         last_signal_at: state.as_ref().and_then(|state| state.last_signal_at),
     }
+}
+
+fn candle_backfill_result(
+    record: &CandleBackfillRunRecord,
+) -> Result<CandleBackfillResult, anyhow::Error> {
+    Ok(candle_backfill_result_from_record(record)?)
 }
 
 fn evaluate_strategy_response(
@@ -2385,6 +2429,207 @@ async fn get_market_candles(
                 Json(ErrorResponse {
                     error: "failed_to_query_market_candles",
                     message: "Failed to query market candles.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn post_market_backfill_candles(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(mut payload): Json<CandleBackfillRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Uuid::parse_str(&request.correlation_id).ok();
+    }
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_backfill_request",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let service = match HistoricalCandleBackfillService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        &state.market_config.binance_rest_base_url,
+    ) {
+        Ok(service) => service,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "invalid_backfill_service_configuration",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match service.run(payload).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to backfill market candles"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_backfill_market_candles",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_market_backfill_runs(
+    State(state): State<AppState>,
+    Query(query): Query<BackfillRunsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_candle_backfill_runs(&state.db_pool, bounded_backfill_runs_limit(query.limit)).await
+    {
+        Ok(runs) => {
+            let runs = match runs
+                .iter()
+                .map(candle_backfill_result)
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(runs) => runs,
+                Err(err) => {
+                    error!(
+                        request_id = %request.request_id,
+                        correlation_id = %request.correlation_id,
+                        error = %err,
+                        "failed to map candle backfill runs"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_backfill_runs",
+                            message: "Failed to map candle backfill runs.".to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+
+            (
+                StatusCode::OK,
+                Json(CandleBackfillRunsResponse {
+                    runs,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list candle backfill runs"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_backfill_runs",
+                    message: "Failed to list candle backfill runs.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_market_backfill_run(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_candle_backfill_run(&state.db_pool, id).await {
+        Ok(Some(record)) => match candle_backfill_result(&record) {
+            Ok(run) => (
+                StatusCode::OK,
+                Json(CandleBackfillRunResponse {
+                    run,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_backfill_run",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "backfill_run_not_found",
+                message: "Backfill run not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                run_id = %id,
+                "failed to query candle backfill run"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_backfill_run",
+                    message: "Failed to query candle backfill run.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),

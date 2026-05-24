@@ -11,6 +11,7 @@ This repository foundation includes:
 - Shared core domain types using `rust_decimal`
 - Minimal Axum API for health and system status
 - Binance public WebSocket market ingest with deterministic 1m candle building
+- Binance public REST historical candle backfill into closed stored candles
 - Deterministic candle-only strategy evaluation for `momentum_v1` and `volatility_breakout_v1`
 - Deterministic paper trading pipeline from closed candles to risk-gated paper order lifecycle
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
@@ -42,6 +43,8 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/market/symbols'`
    `curl 'http://127.0.0.1:3000/market/ticks/latest?symbol=BTCUSDT'`
    `curl 'http://127.0.0.1:3000/market/candles?symbol=BTCUSDT&interval=1m&limit=100'`
+   `curl -X POST http://127.0.0.1:3000/market/backfill/candles -H 'content-type: application/json' -d '{"exchange":"binance","symbol":"BTCUSDT","interval":"1m","start_time":"2026-05-01T00:00:00Z","end_time":"2026-05-02T00:00:00Z","limit_per_request":1000}'`
+   `curl 'http://127.0.0.1:3000/market/backfill/runs?limit=20'`
    `curl 'http://127.0.0.1:3000/market/feed-status'`
    `curl 'http://127.0.0.1:3000/strategy/list'`
    `curl 'http://127.0.0.1:3000/signals/recent?symbol=BTCUSDT&limit=50'`
@@ -74,6 +77,7 @@ Optional environment variables:
 - `MARKET_SYMBOLS`
 - `MARKET_STALE_THRESHOLD_SECONDS`
 - `BINANCE_WS_BASE_URL`
+- `BINANCE_REST_BASE_URL`
 - `STRATEGY_DEFAULT_SYMBOLS`
 - `STRATEGY_DEFAULT_TIMEFRAME`
 - `STRATEGY_DEFAULT_NOTIONAL`
@@ -116,6 +120,12 @@ cargo run -p cli -- backtest run \
   --slippage-bps 5 \
   --holding-candles 3
 cargo run -p cli -- backtest list
+cargo run -p cli -- market backfill \
+  --symbol BTCUSDT \
+  --timeframe 1m \
+  --start 2026-05-01T00:00:00Z \
+  --end 2026-05-02T00:00:00Z
+cargo run -p cli -- market backfills
 ```
 
 Notes:
@@ -124,6 +134,49 @@ Notes:
 - `resume` refuses locally unless `--confirm "RESUME TRADING"` matches exactly.
 - `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
 - The CLI does not implement live trading, exchange private APIs, auth, API keys, or any TUI layer.
+
+## Historical candle backfill
+
+Historical closed candles can be loaded from Binance public REST without API keys. Backfill is idempotent: it upserts by `(exchange, symbol, interval, open_time)` and records each run in `candle_backfill_runs`.
+
+API example:
+
+```bash
+curl -X POST http://127.0.0.1:3000/market/backfill/candles \
+  -H 'content-type: application/json' \
+  -d '{
+    "exchange":"binance",
+    "symbol":"BTCUSDT",
+    "interval":"1m",
+    "start_time":"2026-05-01T00:00:00Z",
+    "end_time":"2026-05-02T00:00:00Z",
+    "limit_per_request":1000
+  }'
+```
+
+CLI example:
+
+```bash
+cargo run -p cli -- market backfill \
+  --symbol BTCUSDT \
+  --timeframe 1m \
+  --start 2026-05-01T00:00:00Z \
+  --end 2026-05-02T00:00:00Z
+```
+
+After backfill, replay/backtest uses the same stored closed candles:
+
+```bash
+cargo run -p cli -- backtest run \
+  --strategy momentum_v1 \
+  --symbol BTCUSDT \
+  --timeframe 1m \
+  --start 2026-05-01T00:00:00Z \
+  --end 2026-05-02T00:00:00Z \
+  --initial-capital 1000000 \
+  --fee-bps 10 \
+  --slippage-bps 5
+```
 
 ## Dashboard shell
 
@@ -200,7 +253,7 @@ TEST_DATABASE_URL=postgres://aegis:aegis@127.0.0.1:5432/aegis_quant_test \
 
 ## Market ingest local flow
 
-`market-ingest` connects only to Binance public trade streams for configured symbols. Each trade is persisted to `market_ticks`, fed through a deterministic 1m candle builder, upserted into `candles`, and reflected in `market_feed_status`. The service emits `market.feed.connected`, `market.feed.disconnected`, `market.feed.stale`, `market.trade.received`, and `market.candle.closed` into `system_events`.
+`market-ingest` connects only to Binance public trade streams for configured symbols and can also backfill historical candles from Binance public REST. WebSocket trades are persisted to `market_ticks`, fed through a deterministic 1m candle builder, upserted into `candles`, and reflected in `market_feed_status`. REST backfill upserts only closed candles, records run metadata in `candle_backfill_runs`, and emits `market.backfill.started`, `market.backfill.page_fetched`, `market.backfill.completed`, and `market.backfill.failed`.
 
 ## Strategy evaluation example
 

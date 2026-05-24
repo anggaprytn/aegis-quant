@@ -46,11 +46,23 @@ Binance public trade stream
 -> emit system_events for feed transitions, trades, and candle close
 ```
 
+Historical candle hydration follows this parallel path:
+
+```txt
+Binance public REST klines
+-> deterministic page planning over start_time/end_time
+-> parse only final closed klines
+-> idempotent candle upsert into candles
+-> persist run metadata in candle_backfill_runs
+-> emit market.backfill.* system events
+```
+
 Notes:
 
 - Supported symbols are env-configured and uppercase in persistence/API responses.
 - Candle building is deterministic for identical trade ordering.
 - Out-of-order trades are rejected explicitly rather than rewriting historical candles.
+- Replay/backtest reads the same `candles` table populated by both live WebSocket accumulation and historical REST backfill.
 - The ingest boundary is public market data only. No API keys, private streams, or exchange execution are introduced here.
 
 ## Strategy evaluation flow

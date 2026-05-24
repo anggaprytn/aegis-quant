@@ -47,6 +47,8 @@ pub enum Commands {
     #[command(subcommand)]
     Risk(RiskCommands),
     #[command(subcommand)]
+    Market(MarketCommands),
+    #[command(subcommand)]
     Backtest(BacktestCommands),
 }
 
@@ -114,6 +116,37 @@ pub struct EventsListArgs {
 #[derive(Debug, Subcommand)]
 pub enum RiskCommands {
     Decisions(RiskDecisionsArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MarketCommands {
+    Backfill(MarketBackfillArgs),
+    Backfills(MarketBackfillsArgs),
+    BackfillGet { run_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct MarketBackfillArgs {
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long = "timeframe")]
+    pub timeframe: String,
+    #[arg(long)]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long)]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "limit-per-request")]
+    pub limit_per_request: Option<u16>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Args)]
+pub struct MarketBackfillsArgs {
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Args)]

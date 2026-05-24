@@ -3,7 +3,8 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::api::{
-    BacktestResult, BacktestRunAcceptedResponse, FeedStatusResponse, HealthResponse, OrderRecord,
+    BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
+    CandleBackfillRunsResponse, FeedStatusResponse, HealthResponse, OrderRecord,
     RecentEventsResponse, RiskActionResponse, RiskDecisionsResponse, RiskStatusResponse,
     StatusResponse, StrategyListResponse, StrategyStatusResponse,
 };
@@ -297,6 +298,43 @@ pub fn print_backtest_run(run: &BacktestResult) {
     );
     println!("Fee paid: {}", run.fee_paid);
     println!("Slippage cost: {}", run.slippage_cost);
+}
+
+pub fn print_backfill_result(result: &aegis_core::CandleBackfillResult) {
+    println!("Run ID: {}", result.run_id);
+    println!("Status: {}", result.status.as_str());
+    println!("Exchange: {}", result.exchange.as_str());
+    println!("Symbol: {}", result.symbol);
+    println!("Interval: {}", result.interval);
+    println!("Fetched candles: {}", result.fetched_candles);
+    println!("Inserted candles: {}", result.inserted_candles);
+    println!("Updated candles: {}", result.updated_candles);
+    println!("Skipped candles: {}", result.skipped_candles);
+    println!("Correlation ID: {}", result.correlation_id);
+    if let Some(reason) = &result.failed_reason {
+        println!("Failure reason: {}", reason);
+    }
+}
+
+pub fn print_backfill_runs(response: &CandleBackfillRunsResponse) {
+    for run in &response.runs {
+        println!(
+            "{}  {} {} {} status={} fetched={} inserted={} updated={} skipped={}",
+            run.run_id,
+            run.exchange.as_str(),
+            run.symbol,
+            run.interval,
+            run.status.as_str(),
+            run.fetched_candles,
+            run.inserted_candles,
+            run.updated_candles,
+            run.skipped_candles
+        );
+    }
+}
+
+pub fn print_backfill_run(response: &CandleBackfillRunResponse) {
+    print_backfill_result(&response.run);
 }
 
 fn summarize_feeds(feed: &FeedStatusResponse) -> String {

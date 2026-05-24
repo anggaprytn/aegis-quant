@@ -12,6 +12,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Require auditable state transitions for dangerous actions
 - Keep risk controls and kill switch persistent when implemented
 - Replay/backtest must stay isolated from live and paper execution tables
+- Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
 
 ## TODO boundaries
 

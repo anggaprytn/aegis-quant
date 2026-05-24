@@ -17,6 +17,10 @@ pub enum SystemEventType {
     MarketFeedStale,
     MarketTradeReceived,
     MarketCandleClosed,
+    MarketBackfillStarted,
+    MarketBackfillPageFetched,
+    MarketBackfillCompleted,
+    MarketBackfillFailed,
     SignalGenerated,
     RiskApproved,
     RiskRejected,
@@ -36,6 +40,10 @@ impl SystemEventType {
             Self::MarketFeedStale => "market.feed.stale",
             Self::MarketTradeReceived => "market.trade.received",
             Self::MarketCandleClosed => "market.candle.closed",
+            Self::MarketBackfillStarted => "market.backfill.started",
+            Self::MarketBackfillPageFetched => "market.backfill.page_fetched",
+            Self::MarketBackfillCompleted => "market.backfill.completed",
+            Self::MarketBackfillFailed => "market.backfill.failed",
             Self::SignalGenerated => "signal.generated",
             Self::RiskApproved => "risk.approved",
             Self::RiskRejected => "risk.rejected",
@@ -104,6 +112,10 @@ mod tests {
         assert_eq!(
             SystemEventType::MarketTradeReceived.as_str(),
             "market.trade.received"
+        );
+        assert_eq!(
+            SystemEventType::MarketBackfillCompleted.as_str(),
+            "market.backfill.completed"
         );
         assert_eq!(SystemEventType::RiskRejected.as_str(), "risk.rejected");
         assert_eq!(

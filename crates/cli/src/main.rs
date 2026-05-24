@@ -2,12 +2,12 @@ use aegis_core::PaperTradingPipelineRequest;
 use anyhow::Context;
 use clap::Parser;
 use cli::api::{
-    build_backtest_request, build_pipeline_request, ApiClient, RecentEventsQuery,
-    RiskDecisionsQuery,
+    build_backtest_request, build_candle_backfill_request, build_pipeline_request, ApiClient,
+    RecentEventsQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
-    BacktestCommands, Cli, Commands, EventsCommands, OrderCommands, PipelineCommands, RiskCommands,
-    StrategyCommands, RESUME_CONFIRMATION_TEXT,
+    BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands,
+    PipelineCommands, RiskCommands, StrategyCommands, RESUME_CONFIRMATION_TEXT,
 };
 use cli::config::CliConfig;
 use cli::output;
@@ -150,6 +150,33 @@ async fn main() -> anyhow::Result<()> {
                     output::print_json(&response)?;
                 } else {
                     output::print_risk_decisions(&response);
+                }
+            }
+        },
+        Commands::Market(command) => match command {
+            MarketCommands::Backfill(args) => {
+                let request = build_candle_backfill_request(&args)?;
+                let response = client.backfill_candles(&request).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_backfill_result(&response);
+                }
+            }
+            MarketCommands::Backfills(args) => {
+                let response = client.list_backfill_runs(args.limit).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_backfill_runs(&response);
+                }
+            }
+            MarketCommands::BackfillGet { run_id } => {
+                let response = client.get_backfill_run(run_id).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_backfill_run(&response);
                 }
             }
         },

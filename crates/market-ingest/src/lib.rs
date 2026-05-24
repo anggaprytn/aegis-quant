@@ -1,14 +1,19 @@
 use std::{collections::HashMap, env, time::Duration};
 
 use aegis_core::{
-    Candle, CandleInterval, DataFreshnessStatus, FeedStatus, MarketDataSource, MarketTick,
-    MarketTrade, Symbol,
+    Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult, CandleInterval,
+    DataFreshnessStatus, FeedStatus, MarketDataSource, MarketTick, MarketTrade, Symbol,
 };
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use db::{process_market_trade, upsert_market_feed_status, PgPool};
+use db::{
+    candle_backfill_result_from_record, complete_candle_backfill_run, fail_candle_backfill_run,
+    insert_candle_backfill_run, process_market_trade, update_candle_backfill_progress,
+    upsert_candles_batch, upsert_market_feed_status, PgPool,
+};
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use futures_util::StreamExt;
+use reqwest::Url;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +28,7 @@ pub struct MarketIngestConfig {
     pub symbols: Vec<Symbol>,
     pub stale_threshold: Duration,
     pub binance_ws_base_url: String,
+    pub binance_rest_base_url: String,
 }
 
 impl MarketIngestConfig {
@@ -40,12 +46,15 @@ impl MarketIngestConfig {
             .parse::<u64>()?;
         let binance_ws_base_url = env::var("BINANCE_WS_BASE_URL")
             .unwrap_or_else(|_| "wss://stream.binance.com:9443".to_string());
+        let binance_rest_base_url = env::var("BINANCE_REST_BASE_URL")
+            .unwrap_or_else(|_| "https://api.binance.com".to_string());
 
         Ok(Self {
             exchange,
             symbols,
             stale_threshold: Duration::from_secs(stale_threshold_seconds),
             binance_ws_base_url,
+            binance_rest_base_url,
         })
     }
 
@@ -484,6 +493,311 @@ pub fn parse_binance_trade_message(message: &str) -> Result<MarketTrade> {
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct BinanceRestKlineClient {
+    base_url: Url,
+    http: reqwest::Client,
+}
+
+impl BinanceRestKlineClient {
+    pub fn new(base_url: &str) -> Result<Self> {
+        Ok(Self {
+            base_url: Url::parse(base_url)?,
+            http: reqwest::Client::new(),
+        })
+    }
+
+    pub async fn fetch_klines(
+        &self,
+        symbol: &str,
+        interval: CandleInterval,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        limit: u16,
+    ) -> Result<Vec<BinanceKlineRow>> {
+        let url = self.base_url.join("/api/v3/klines")?;
+        let response = self
+            .http
+            .get(url)
+            .query(&[
+                ("symbol", symbol.to_string()),
+                ("interval", interval.as_str().to_string()),
+                ("startTime", start_time.timestamp_millis().to_string()),
+                ("endTime", end_time.timestamp_millis().to_string()),
+                ("limit", limit.to_string()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?;
+
+        Ok(response.json::<Vec<BinanceKlineRow>>().await?)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoricalCandleBackfillService {
+    pool: PgPool,
+    source: String,
+    client: BinanceRestKlineClient,
+}
+
+impl HistoricalCandleBackfillService {
+    pub fn new(
+        pool: PgPool,
+        source: impl Into<String>,
+        binance_rest_base_url: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            pool,
+            source: source.into(),
+            client: BinanceRestKlineClient::new(binance_rest_base_url)?,
+        })
+    }
+
+    pub async fn run(&self, request: CandleBackfillRequest) -> Result<CandleBackfillResult> {
+        request.validate()?;
+        let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
+        let run_id = Uuid::new_v4();
+        let created_at = Utc::now();
+        let event_publisher = PostgresEventPublisher::new(self.pool.clone());
+        let interval = request.parsed_interval()?;
+        let symbol = request.normalized_symbol()?;
+        let pages = plan_backfill_pages(
+            request.start_time,
+            request.end_time,
+            interval,
+            request.effective_limit_per_request(),
+        )?;
+
+        insert_candle_backfill_run(
+            &self.pool,
+            run_id,
+            &request,
+            correlation_id,
+            created_at,
+            serde_json::to_value(&request)?,
+        )
+        .await?;
+
+        let execution = async {
+            event_publisher
+                .publish(SystemEventType::MarketBackfillStarted.into_event(
+                    correlation_id,
+                    self.source.clone(),
+                    serde_json::json!({
+                        "run_id": run_id,
+                        "exchange": request.exchange.as_str(),
+                        "symbol": symbol.as_str(),
+                        "interval": interval.as_str(),
+                        "start_time": request.start_time,
+                        "end_time": request.end_time,
+                        "requested_candles_estimate": request.requested_candles_estimate()?,
+                    }),
+                ))
+                .await?;
+
+            for (index, page) in pages.iter().enumerate() {
+                let rows = self
+                    .client
+                    .fetch_klines(
+                        symbol.as_str(),
+                        interval,
+                        page.start_time,
+                        page.end_time,
+                        request.effective_limit_per_request(),
+                    )
+                    .await?;
+
+                let mut candles = Vec::new();
+                let now = Utc::now();
+                for row in &rows {
+                    if let Some(candle) = binance_kline_row_to_closed_candle(
+                        row,
+                        request.exchange,
+                        &symbol,
+                        interval,
+                        now,
+                    )? {
+                        candles.push(candle);
+                    }
+                }
+
+                let upsert = upsert_candles_batch(&self.pool, &candles).await?;
+                let progress = CandleBackfillProgress {
+                    run_id,
+                    page: i32::try_from(index + 1).unwrap_or(i32::MAX),
+                    request_start_time: page.start_time,
+                    request_end_time: page.end_time,
+                    fetched_candles: i32::try_from(candles.len()).unwrap_or(i32::MAX),
+                    inserted_candles: upsert.inserted_candles,
+                    updated_candles: upsert.updated_candles,
+                    skipped_candles: upsert.skipped_candles,
+                };
+                update_candle_backfill_progress(&self.pool, run_id, &progress).await?;
+
+                event_publisher
+                    .publish(SystemEventType::MarketBackfillPageFetched.into_event(
+                        correlation_id,
+                        self.source.clone(),
+                        serde_json::json!({
+                            "run_id": run_id,
+                            "page": progress.page,
+                            "page_start_time": progress.request_start_time,
+                            "page_end_time": progress.request_end_time,
+                            "fetched_candles": progress.fetched_candles,
+                            "inserted_candles": progress.inserted_candles,
+                            "updated_candles": progress.updated_candles,
+                            "skipped_candles": progress.skipped_candles,
+                        }),
+                    ))
+                    .await?;
+            }
+
+            let completed = complete_candle_backfill_run(&self.pool, run_id, Utc::now()).await?;
+            let result = candle_backfill_result_from_record(&completed)?;
+            event_publisher
+                .publish(SystemEventType::MarketBackfillCompleted.into_event(
+                    correlation_id,
+                    self.source.clone(),
+                    serde_json::json!({
+                        "run_id": result.run_id,
+                        "exchange": result.exchange.as_str(),
+                        "symbol": result.symbol,
+                        "interval": result.interval,
+                        "fetched_candles": result.fetched_candles,
+                        "inserted_candles": result.inserted_candles,
+                        "updated_candles": result.updated_candles,
+                        "skipped_candles": result.skipped_candles,
+                    }),
+                ))
+                .await?;
+            Ok::<CandleBackfillResult, anyhow::Error>(result)
+        }
+        .await;
+
+        match execution {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                let _ = fail_candle_backfill_run(&self.pool, run_id, &err.to_string(), Utc::now())
+                    .await;
+                let _ = event_publisher
+                    .publish(SystemEventType::MarketBackfillFailed.into_event(
+                        correlation_id,
+                        self.source.clone(),
+                        serde_json::json!({
+                            "run_id": run_id,
+                            "exchange": request.exchange.as_str(),
+                            "symbol": symbol.as_str(),
+                            "interval": interval.as_str(),
+                            "error": err.to_string(),
+                        }),
+                    ))
+                    .await;
+                Err(err)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillPageRequest {
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BinanceKlineRow(
+    pub i64,
+    pub String,
+    pub String,
+    pub String,
+    pub String,
+    pub String,
+    pub i64,
+    pub String,
+    pub i64,
+    pub String,
+    pub String,
+    pub String,
+);
+
+pub fn plan_backfill_pages(
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    interval: CandleInterval,
+    limit_per_request: u16,
+) -> Result<Vec<BackfillPageRequest>> {
+    if end_time <= start_time {
+        return Err(anyhow!("backfill end_time must be after start_time"));
+    }
+    if limit_per_request == 0 {
+        return Err(anyhow!(
+            "backfill limit_per_request must be greater than zero"
+        ));
+    }
+
+    let mut pages = Vec::new();
+    let interval_ms = interval.duration().num_milliseconds();
+    let page_span_ms = interval_ms * i64::from(limit_per_request);
+    let mut cursor = start_time;
+    let inclusive_end = end_time - chrono::Duration::milliseconds(1);
+
+    while cursor < end_time {
+        let page_end = std::cmp::min(
+            cursor + chrono::Duration::milliseconds(page_span_ms)
+                - chrono::Duration::milliseconds(1),
+            inclusive_end,
+        );
+        pages.push(BackfillPageRequest {
+            start_time: cursor,
+            end_time: page_end,
+        });
+        cursor = page_end + chrono::Duration::milliseconds(1);
+    }
+
+    Ok(pages)
+}
+
+pub fn binance_kline_row_to_closed_candle(
+    row: &BinanceKlineRow,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    interval: CandleInterval,
+    now: DateTime<Utc>,
+) -> Result<Option<Candle>> {
+    let open_time = Utc
+        .timestamp_millis_opt(row.0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid Binance kline open_time"))?;
+    let close_time = Utc
+        .timestamp_millis_opt(row.6)
+        .single()
+        .ok_or_else(|| anyhow!("invalid Binance kline close_time"))?;
+    let expected_close_time = open_time + interval.duration() - chrono::Duration::milliseconds(1);
+    if close_time != expected_close_time || close_time >= now {
+        return Ok(None);
+    }
+
+    Ok(Some(Candle {
+        id: Uuid::new_v4(),
+        exchange,
+        symbol: symbol.clone(),
+        interval,
+        open_time,
+        close_time,
+        open: row.1.parse()?,
+        high: row.2.parse()?,
+        low: row.3.parse()?,
+        close: row.4.parse()?,
+        volume: row.5.parse()?,
+        quote_volume: Some(row.7.parse()?),
+        trade_count: i32::try_from(row.8).map_err(|_| anyhow!("trade_count exceeds i32"))?,
+        is_closed: true,
+        created_at: now,
+        updated_at: now,
+    }))
+}
+
 fn new_candle(
     exchange: MarketDataSource,
     symbol: Symbol,
@@ -537,7 +851,10 @@ fn chrono_duration(duration: Duration) -> Result<TimeDelta> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_binance_trade_message, CandleBuilder, CandleBuilderError};
+    use super::{
+        binance_kline_row_to_closed_candle, parse_binance_trade_message, plan_backfill_pages,
+        BinanceKlineRow, CandleBuilder, CandleBuilderError,
+    };
     use aegis_core::{CandleInterval, MarketDataSource, MarketTrade, Symbol};
     use chrono::{TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -675,5 +992,79 @@ mod tests {
         assert_eq!(trade.trade_id, "123");
         assert_eq!(trade.price, Decimal::new(10125, 2));
         assert_eq!(trade.quantity, Decimal::new(5, 1));
+    }
+
+    #[test]
+    fn plans_pagination_windows_for_24_hours_of_1m_candles() {
+        let start = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap();
+        let pages = plan_backfill_pages(start, end, CandleInterval::OneMinute, 1000).unwrap();
+
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].start_time, start);
+        assert_eq!(pages[1].end_time, end - chrono::Duration::milliseconds(1));
+    }
+
+    #[test]
+    fn parses_closed_binance_kline_into_candle() {
+        let symbol = Symbol::new("BTCUSDT").unwrap();
+        let row = BinanceKlineRow(
+            1777593600000,
+            "95000.10".to_string(),
+            "95100.10".to_string(),
+            "94950.00".to_string(),
+            "95050.00".to_string(),
+            "12.5".to_string(),
+            1777593659999,
+            "1188125.00".to_string(),
+            321,
+            "6.0".to_string(),
+            "570000.00".to_string(),
+            "0".to_string(),
+        );
+
+        let candle = binance_kline_row_to_closed_candle(
+            &row,
+            MarketDataSource::Binance,
+            &symbol,
+            CandleInterval::OneMinute,
+            Utc.with_ymd_and_hms(2026, 5, 1, 0, 2, 0).unwrap(),
+        )
+        .unwrap()
+        .expect("closed candle");
+
+        assert_eq!(candle.open, Decimal::new(9500010, 2));
+        assert_eq!(candle.trade_count, 321);
+        assert!(candle.is_closed);
+    }
+
+    #[test]
+    fn excludes_open_or_incomplete_klines() {
+        let symbol = Symbol::new("BTCUSDT").unwrap();
+        let row = BinanceKlineRow(
+            1777593600000,
+            "95000.10".to_string(),
+            "95100.10".to_string(),
+            "94950.00".to_string(),
+            "95050.00".to_string(),
+            "12.5".to_string(),
+            1777593659999,
+            "1188125.00".to_string(),
+            321,
+            "6.0".to_string(),
+            "570000.00".to_string(),
+            "0".to_string(),
+        );
+
+        let candle = binance_kline_row_to_closed_candle(
+            &row,
+            MarketDataSource::Binance,
+            &symbol,
+            CandleInterval::OneMinute,
+            Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 30).unwrap(),
+        )
+        .unwrap();
+
+        assert!(candle.is_none());
     }
 }
