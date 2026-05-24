@@ -1,6 +1,7 @@
 mod auth;
 mod exchange_reconcile;
 mod pipeline;
+mod testnet_shadow;
 
 use std::{env, net::SocketAddr, sync::Arc, time::Instant};
 
@@ -28,7 +29,8 @@ use aegis_core::{
     StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
     TestnetExecutionState, TestnetExecutionTransitionSource, TestnetRepairAction,
     TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
-    TestnetRepairValidationIssue, UserRole, UserStatus,
+    TestnetRepairValidationIssue, TestnetShadowRunRequest, TestnetShadowRunResult, UserRole,
+    UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
@@ -54,18 +56,19 @@ use db::{
     get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
     get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
-    get_strategy_status, get_system_event, get_system_state, get_user_by_email, get_user_by_id,
-    insert_audit_log, insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-    insert_paper_account, insert_paper_equity_snapshot, insert_risk_config_audit,
-    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
-    insert_system_event, insert_user, list_backtest_runs, list_candle_backfill_runs, list_candles,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
-    list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
-    list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
-    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
-    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
-    list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
-    list_strategy_config_audit, list_strategy_config_versions, list_strategy_status,
+    get_strategy_status, get_system_event, get_system_state, get_testnet_shadow_run_by_id,
+    get_user_by_email, get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
+    insert_exchange_testnet_repair_action, insert_paper_account, insert_paper_equity_snapshot,
+    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
+    insert_strategy_config_audit, insert_system_event, insert_user, list_backtest_runs,
+    list_candle_backfill_runs, list_candles, list_exchange_private_stream_events,
+    list_exchange_reconciliation_mismatches, list_exchange_reconciliation_runs,
+    list_exchange_testnet_order_lifecycle_events, list_exchange_testnet_orders,
+    list_exchange_testnet_repair_actions, list_market_feed_statuses, list_open_paper_positions,
+    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
+    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
+    list_risk_config_audit, list_risk_config_versions, list_strategy_config_audit,
+    list_strategy_config_versions, list_strategy_status, list_testnet_shadow_runs,
     load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
     paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
     revoke_session, risk_config_audit_from_record, risk_config_from_record,
@@ -107,6 +110,7 @@ use crate::exchange_reconcile::{
     local_testnet_status_from_exchange_state, mismatch_from_record, reconcile_testnet_orders,
     run_from_record, run_result_from_run, ReconcileTestnetOrdersError,
 };
+use crate::testnet_shadow::run_testnet_shadow_once;
 
 use crate::auth::{
     actor_from_claims, bootstrap_credentials, build_refresh_cookie, clear_refresh_cookie,
@@ -708,6 +712,22 @@ struct ExchangeReconciliationResultResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowRunResponse {
+    run: TestnetShadowRunResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowRunsResponse {
+    runs: Vec<TestnetShadowRunResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[derive(Serialize)]
 struct ExchangeTestnetOrderView {
     id: Uuid,
@@ -811,6 +831,11 @@ struct ExchangePrivateStreamEventsQuery {
 
 #[derive(Deserialize)]
 struct ExchangeReconciliationRunsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct TestnetShadowRunsQuery {
     limit: Option<i64>,
 }
 
@@ -1362,6 +1387,18 @@ async fn main() {
             post(submit_exchange_testnet_pipeline),
         )
         .route(
+            "/exchange/testnet/shadow/run",
+            post(run_exchange_testnet_shadow_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow/runs",
+            get(list_exchange_testnet_shadow_runs_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow/runs/:id",
+            get(get_exchange_testnet_shadow_run_handler),
+        )
+        .route(
             "/exchange/testnet/private-stream/status",
             get(get_exchange_testnet_private_stream_status),
         )
@@ -1806,6 +1843,9 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/pipeline/preview" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/exchange/testnet/shadow/run" {
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/pipeline/submit" {
@@ -6075,6 +6115,176 @@ async fn submit_exchange_testnet_pipeline(
     } else {
         telemetry().inc_exchange_testnet_pipeline_run("submit_rejected");
         response
+    }
+}
+
+async fn run_exchange_testnet_shadow_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<TestnetShadowRunRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+
+    match run_testnet_shadow_once(&state, Some(&actor), payload).await {
+        Ok(run) => (
+            StatusCode::OK,
+            Json(TestnetShadowRunResponse {
+                run,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to run testnet shadow"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_run_testnet_shadow",
+                    message: "Testnet shadow run could not be completed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_exchange_testnet_shadow_runs_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Query(query): Query<TestnetShadowRunsQuery>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_EXCHANGE_TESTNET_LIMIT)
+        .clamp(1, MAX_EXCHANGE_TESTNET_LIMIT);
+
+    match list_testnet_shadow_runs(&state.db_pool, limit).await {
+        Ok(records) => match records
+            .iter()
+            .map(db::testnet_shadow_run_result_from_record)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(runs) => (
+                StatusCode::OK,
+                Json(TestnetShadowRunsResponse {
+                    runs,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_testnet_shadow_runs",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list testnet shadow runs"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_testnet_shadow_runs",
+                    message: "Testnet shadow runs could not be listed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_exchange_testnet_shadow_run_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Path(run_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match get_testnet_shadow_run_by_id(&state.db_pool, run_id).await {
+        Ok(Some(record)) => match db::testnet_shadow_run_result_from_record(&record) {
+            Ok(run) => (
+                StatusCode::OK,
+                Json(TestnetShadowRunResponse {
+                    run,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_testnet_shadow_run",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "testnet_shadow_run_not_found",
+                message: "Testnet shadow run was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query testnet shadow run"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_testnet_shadow_run",
+                    message: "Testnet shadow run could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -10415,24 +10625,27 @@ mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
         cancel_exchange_testnet_order, generate_testnet_client_order_id,
-        is_valid_resume_confirmation, is_valid_testnet_order_confirmation,
-        list_exchange_testnet_order_repairs, login, logout, metrics, normalize_route_label,
+        get_exchange_testnet_shadow_run_handler, is_valid_resume_confirmation,
+        is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
+        list_exchange_testnet_shadow_runs_handler, login, logout, metrics, normalize_route_label,
         order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
         preview_exchange_testnet_pipeline, reconcile_exchange_testnet_orders_handler,
         reconcile_testnet_orders, refresh, repair_exchange_testnet_order,
         request_context_middleware, risk_decision_not_found_error, route_access,
-        submit_exchange_testnet_pipeline, AppConfig, AppState,
+        run_exchange_testnet_shadow_handler, submit_exchange_testnet_pipeline, AppConfig, AppState,
         ExchangeTestnetPipelinePreviewResponse, RequestContext, StrategyRuntimeConfig,
-        CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT,
-        DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
+        TestnetShadowRunResponse, TestnetShadowRunsResponse, CLI_AUTH_MODE_HEADER,
+        CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT,
+        MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
     };
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
         expected_testnet_pipeline_confirmation, AuthLoginResponse, AuthLogoutResponse,
-        AuthRefreshResponse, AuthUserResponse, Candle, CandleInterval, ExchangeEnvironment,
-        ExchangeOrderState, MarketDataSource, MarketMode, MarketTick, Side, Symbol,
-        TestnetExecutionState, TestnetRepairAction, UserRole, UserStatus,
+        AuthRefreshResponse, AuthUserResponse, Candle, CandleInterval, DataFreshnessStatus,
+        ExchangeEnvironment, ExchangeOrderState, FeedStatus, MarketDataSource, MarketMode,
+        MarketTick, RiskConfig, Side, StrategyConfig, StrategyId, StrategyMode, Symbol,
+        TestnetExecutionState, TestnetRepairAction, TestnetShadowDecision, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -10453,6 +10666,7 @@ mod tests {
         list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_orders,
         list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
         set_kill_switch_state, test_support::TestDatabase, upsert_candle,
+        upsert_market_feed_status, upsert_risk_config, upsert_strategy_config,
         ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor,
     };
     use exchange::{
@@ -10966,6 +11180,28 @@ mod tests {
             .with_state(state)
     }
 
+    fn shadow_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/auth/login", post(login))
+            .route(
+                "/exchange/testnet/shadow/run",
+                post(run_exchange_testnet_shadow_handler),
+            )
+            .route(
+                "/exchange/testnet/shadow/runs",
+                get(list_exchange_testnet_shadow_runs_handler),
+            )
+            .route(
+                "/exchange/testnet/shadow/runs/:id",
+                get(get_exchange_testnet_shadow_run_handler),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
     async fn response_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -11275,6 +11511,74 @@ mod tests {
         upsert_candle(pool, &candle)
             .await
             .expect("recent candle should persist");
+    }
+
+    fn shadow_strategy_config(enabled: bool) -> StrategyConfig {
+        StrategyConfig {
+            strategy_id: StrategyId::MomentumV1,
+            enabled,
+            mode: StrategyMode::Shadow,
+            symbols: vec![Symbol::new("BTCUSDT").expect("symbol")],
+            timeframe: CandleInterval::OneMinute,
+            suggested_notional: Decimal::new(100_000, 0),
+            max_signal_age_ms: 5_000,
+            cooldown_seconds: 900,
+            lookback_candles: 3,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: Some("shadow test".to_string()),
+        }
+    }
+
+    async fn seed_shadow_feed(pool: &PgPool, symbol: &str) {
+        upsert_market_feed_status(
+            pool,
+            MarketDataSource::Binance,
+            &Symbol::new(symbol).expect("symbol"),
+            FeedStatus::Connected,
+            DataFreshnessStatus::Fresh,
+            Some(Utc::now()),
+            None,
+            0,
+        )
+        .await
+        .expect("feed status");
+    }
+
+    async fn seed_shadow_candles(pool: &PgPool, symbol: &str, closes: &[i64]) {
+        let base_open = Utc::now() - chrono::Duration::minutes(closes.len() as i64 + 1);
+        for (index, close) in closes.iter().enumerate() {
+            let open_time = base_open + chrono::Duration::minutes(index as i64);
+            let candle = Candle {
+                id: Uuid::new_v4(),
+                exchange: MarketDataSource::Binance,
+                symbol: Symbol::new(symbol).expect("symbol"),
+                interval: CandleInterval::OneMinute,
+                open_time,
+                close_time: open_time + chrono::Duration::minutes(1),
+                open: Decimal::new(*close - 100, 0),
+                high: Decimal::new(*close + 100, 0),
+                low: Decimal::new(*close - 200, 0),
+                close: Decimal::new(*close, 0),
+                volume: Decimal::ONE,
+                quote_volume: Some(Decimal::new(*close, 0)),
+                trade_count: 1,
+                is_closed: true,
+                created_at: open_time + chrono::Duration::seconds(59),
+                updated_at: open_time + chrono::Duration::seconds(59),
+            };
+            upsert_candle(pool, &candle).await.expect("shadow candle");
+        }
+    }
+
+    async fn count_testnet_shadow_runs(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM testnet_shadow_runs")
+            .fetch_one(pool)
+            .await
+            .expect("shadow run count")
+            .get::<i64, _>("count")
     }
 
     #[tokio::test]
@@ -11751,6 +12055,289 @@ mod tests {
             Some("exchange_testnet_request_rejected")
         );
         assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_run_persists_no_signal() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(&test_db.pool, "BTCUSDT", &[100_000, 99_900, 99_800, 99_700]).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<TestnetShadowRunResponse>(response).await;
+        assert_eq!(payload.run.decision, TestnetShadowDecision::NoSignal);
+        assert_eq!(count_testnet_shadow_runs(&test_db.pool).await, 1);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_run_persists_risk_rejected() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        upsert_risk_config(
+            &test_db.pool,
+            &RiskConfig {
+                max_open_positions: 2,
+                max_daily_loss_pct: Decimal::new(2, 0),
+                max_weekly_loss_pct: Decimal::new(5, 0),
+                max_position_notional: Decimal::new(1, 0),
+                max_slippage_pct: Decimal::new(1, 0),
+                max_consecutive_losses: 3,
+                cooldown_seconds: 900,
+                max_signal_age_ms: 5_000,
+                stale_feed_threshold_seconds: 10,
+            },
+        )
+        .await
+        .expect("risk config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<TestnetShadowRunResponse>(response).await;
+        assert_eq!(payload.run.decision, TestnetShadowDecision::RiskRejected);
+        assert!(payload.run.risk_decision_id.is_some());
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_run_persists_would_submit_without_testnet_order_or_lifecycle() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<TestnetShadowRunResponse>(response).await;
+        assert_eq!(payload.run.decision, TestnetShadowDecision::WouldSubmit);
+        assert!(payload.run.would_submit_order.is_some());
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_run_listing_is_isolated_and_ordered() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "viewer@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (viewer_login, _) = login_cli(
+            &app,
+            "viewer@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    "/exchange/testnet/shadow/run",
+                    &operator_login.access_token,
+                    json!({
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m"
+                    }),
+                ))
+                .await
+                .expect("shadow response");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let response = app
+            .clone()
+            .oneshot(bearer_request(
+                "GET",
+                "/exchange/testnet/shadow/runs?limit=10",
+                &viewer_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("shadow list response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<TestnetShadowRunsResponse>(response).await;
+        assert!(payload.runs.len() >= 2);
+        assert!(payload.runs[0].created_at >= payload.runs[1].created_at);
+        assert_eq!(count_testnet_shadow_runs(&test_db.pool).await, 2);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
     }
 
     #[tokio::test]

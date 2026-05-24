@@ -6,7 +6,7 @@ use aegis_core::{
     PaperTradingPipelineRequest, PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, StrategyConfigAuditEntry,
     StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyDryRunRequest, StrategyDryRunResult, TestnetShadowRunRequest, TestnetShadowRunResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -735,6 +735,32 @@ impl ApiClient {
         request: &ExchangeTestnetPipelineSubmitRequest,
     ) -> Result<ExchangeTestnetPipelineSubmitResponse, ApiClientError> {
         self.post("/exchange/testnet/pipeline/submit", request)
+            .await
+    }
+
+    pub async fn exchange_testnet_shadow_run(
+        &self,
+        request: &TestnetShadowRunRequest,
+    ) -> Result<TestnetShadowRunResponse, ApiClientError> {
+        self.post("/exchange/testnet/shadow/run", request).await
+    }
+
+    pub async fn exchange_testnet_shadow_runs(
+        &self,
+        limit: i64,
+    ) -> Result<TestnetShadowRunsResponse, ApiClientError> {
+        self.get(
+            "/exchange/testnet/shadow/runs",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn exchange_testnet_shadow_get(
+        &self,
+        run_id: Uuid,
+    ) -> Result<TestnetShadowRunResponse, ApiClientError> {
+        self.get(&format!("/exchange/testnet/shadow/runs/{run_id}"), &[])
             .await
     }
 
@@ -1469,6 +1495,22 @@ pub struct ExchangeTestnetPipelinePreviewResponse {
 pub struct ExchangeTestnetPipelineSubmitResponse {
     pub preview: ExchangeTestnetPipelinePreview,
     pub order: ExchangeTestnetOrderRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowRunResponse {
+    pub run: TestnetShadowRunResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowRunsResponse {
+    pub runs: Vec<TestnetShadowRunResult>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

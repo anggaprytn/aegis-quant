@@ -26,8 +26,10 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - `/metrics` exposes operational state only, not secrets, but it should still be restricted at the network boundary in production
 - Testnet direct submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
 - Testnet pipeline preview requires operator-or-owner auth, an approved persisted `risk_decision_id`, an inactive kill switch, and fresh local stored pricing; it must not submit exchange orders or persist isolated order lifecycle state
+- Testnet shadow mode requires operator-or-owner auth, an inactive kill switch, enabled strategy config, persisted risk evaluation, and fresh local stored pricing; it persists only `testnet_shadow_runs` and never submits exchange orders
 - Testnet pipeline submit requires owner authorization, exact typed confirmation `SUBMIT TESTNET <SYMBOL>`, an approved persisted `risk_decision_id`, an inactive kill switch, and persists only isolated testnet execution state
 - Testnet repair actions require per-order typed confirmation: `REPAIR TESTNET <CLIENT_ORDER_ID>` or `CANCEL TESTNET <CLIENT_ORDER_ID>` for safe cancel
+- Testnet shadow mode must not create `exchange_testnet_orders`, must not append lifecycle events, and must not mutate paper/backtest/live execution tables
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
 - Testnet lifecycle history is isolated in `exchange_testnet_order_lifecycle_events` and must not mutate paper accounting, backtest, or live execution tables
 - Testnet repair history is isolated in `exchange_testnet_repair_actions` and must not mutate paper accounting, backtest, or live execution tables

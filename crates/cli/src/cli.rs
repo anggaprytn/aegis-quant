@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
-use aegis_core::expected_testnet_pipeline_confirmation;
+use aegis_core::{expected_testnet_pipeline_confirmation, TestnetShadowRunRequest};
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
 pub const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
@@ -121,6 +121,11 @@ pub enum ExchangeTestnetCommands {
     Status,
     PipelinePreview(ExchangeTestnetPipelinePreviewArgs),
     PipelineSubmit(ExchangeTestnetPipelineSubmitArgs),
+    ShadowRun(ExchangeTestnetShadowRunArgs),
+    ShadowRuns(ExchangeTestnetShadowRunsArgs),
+    ShadowGet {
+        run_id: Uuid,
+    },
     #[command(subcommand)]
     PrivateStream(ExchangeTestnetPrivateStreamCommands),
     Symbols,
@@ -161,6 +166,33 @@ pub struct ExchangeTestnetPipelineSubmitArgs {
     pub symbol: String,
     #[arg(long)]
     pub confirm: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetShadowRunArgs {
+    #[arg(long = "strategy")]
+    pub strategy_id: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+}
+
+impl From<ExchangeTestnetShadowRunArgs> for TestnetShadowRunRequest {
+    fn from(value: ExchangeTestnetShadowRunArgs) -> Self {
+        Self {
+            strategy_id: value.strategy_id,
+            symbol: value.symbol,
+            timeframe: value.timeframe,
+            correlation_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetShadowRunsArgs {
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Subcommand)]

@@ -2093,6 +2093,221 @@ impl ExchangeOrderRequest {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetShadowDecision {
+    NoSignal,
+    RiskRejected,
+    WouldSubmit,
+    SkippedDisabledStrategy,
+    SkippedKillSwitch,
+    SkippedStalePrice,
+    SkippedStaleFeed,
+    Error,
+}
+
+impl TestnetShadowDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSignal => "NO_SIGNAL",
+            Self::RiskRejected => "RISK_REJECTED",
+            Self::WouldSubmit => "WOULD_SUBMIT",
+            Self::SkippedDisabledStrategy => "SKIPPED_DISABLED_STRATEGY",
+            Self::SkippedKillSwitch => "SKIPPED_KILL_SWITCH",
+            Self::SkippedStalePrice => "SKIPPED_STALE_PRICE",
+            Self::SkippedStaleFeed => "SKIPPED_STALE_FEED",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowDecision {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "NO_SIGNAL" => Ok(Self::NoSignal),
+            "RISK_REJECTED" => Ok(Self::RiskRejected),
+            "WOULD_SUBMIT" => Ok(Self::WouldSubmit),
+            "SKIPPED_DISABLED_STRATEGY" => Ok(Self::SkippedDisabledStrategy),
+            "SKIPPED_KILL_SWITCH" => Ok(Self::SkippedKillSwitch),
+            "SKIPPED_STALE_PRICE" => Ok(Self::SkippedStalePrice),
+            "SKIPPED_STALE_FEED" => Ok(Self::SkippedStaleFeed),
+            "ERROR" => Ok(Self::Error),
+            other => Err(CoreError::UnsupportedShadowDecision(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetShadowStatus {
+    Completed,
+    Rejected,
+    Error,
+}
+
+impl TestnetShadowStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "COMPLETED",
+            Self::Rejected => "REJECTED",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "COMPLETED" => Ok(Self::Completed),
+            "REJECTED" => Ok(Self::Rejected),
+            "ERROR" => Ok(Self::Error),
+            other => Err(CoreError::UnsupportedShadowStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TestnetShadowRejectionReason {
+    NoSignal,
+    ConditionsNotMet,
+    InsufficientHistory,
+    StrategyDisabled,
+    KillSwitchActive,
+    StalePrice,
+    StaleFeed,
+    MarketFeedUnavailable,
+    MarketFeedDegraded,
+    UnsupportedTimeframe,
+    InvalidPrice,
+    RiskRejected,
+    MaxOpenPositionsExceeded,
+    MaxDailyLossExceeded,
+    MaxWeeklyLossExceeded,
+    MaxConsecutiveLossesExceeded,
+    SignalTooOld,
+    DuplicateOrderDetected,
+    DataStale,
+    PositionNotionalExceeded,
+    CooldownActive,
+    UnsupportedState,
+    Error,
+}
+
+impl TestnetShadowRejectionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSignal => "no_signal",
+            Self::ConditionsNotMet => "conditions_not_met",
+            Self::InsufficientHistory => "insufficient_history",
+            Self::StrategyDisabled => "strategy_disabled",
+            Self::KillSwitchActive => "kill_switch_active",
+            Self::StalePrice => "stale_price",
+            Self::StaleFeed => "stale_feed",
+            Self::MarketFeedUnavailable => "market_feed_unavailable",
+            Self::MarketFeedDegraded => "market_feed_degraded",
+            Self::UnsupportedTimeframe => "unsupported_timeframe",
+            Self::InvalidPrice => "invalid_price",
+            Self::RiskRejected => "risk_rejected",
+            Self::MaxOpenPositionsExceeded => "max_open_positions_exceeded",
+            Self::MaxDailyLossExceeded => "max_daily_loss_exceeded",
+            Self::MaxWeeklyLossExceeded => "max_weekly_loss_exceeded",
+            Self::MaxConsecutiveLossesExceeded => "max_consecutive_losses_exceeded",
+            Self::SignalTooOld => "signal_too_old",
+            Self::DuplicateOrderDetected => "duplicate_order_detected",
+            Self::DataStale => "data_stale",
+            Self::PositionNotionalExceeded => "position_notional_exceeded",
+            Self::CooldownActive => "cooldown_active",
+            Self::UnsupportedState => "unsupported_state",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowRejectionReason {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "no_signal" => Ok(Self::NoSignal),
+            "conditions_not_met" => Ok(Self::ConditionsNotMet),
+            "insufficient_history" => Ok(Self::InsufficientHistory),
+            "strategy_disabled" => Ok(Self::StrategyDisabled),
+            "kill_switch_active" => Ok(Self::KillSwitchActive),
+            "stale_price" => Ok(Self::StalePrice),
+            "stale_feed" => Ok(Self::StaleFeed),
+            "market_feed_unavailable" => Ok(Self::MarketFeedUnavailable),
+            "market_feed_degraded" => Ok(Self::MarketFeedDegraded),
+            "unsupported_timeframe" => Ok(Self::UnsupportedTimeframe),
+            "invalid_price" => Ok(Self::InvalidPrice),
+            "risk_rejected" => Ok(Self::RiskRejected),
+            "max_open_positions_exceeded" => Ok(Self::MaxOpenPositionsExceeded),
+            "max_daily_loss_exceeded" => Ok(Self::MaxDailyLossExceeded),
+            "max_weekly_loss_exceeded" => Ok(Self::MaxWeeklyLossExceeded),
+            "max_consecutive_losses_exceeded" => Ok(Self::MaxConsecutiveLossesExceeded),
+            "signal_too_old" => Ok(Self::SignalTooOld),
+            "duplicate_order_detected" => Ok(Self::DuplicateOrderDetected),
+            "data_stale" => Ok(Self::DataStale),
+            "position_notional_exceeded" => Ok(Self::PositionNotionalExceeded),
+            "cooldown_active" => Ok(Self::CooldownActive),
+            "unsupported_state" => Ok(Self::UnsupportedState),
+            "error" => Ok(Self::Error),
+            other => Err(CoreError::UnsupportedShadowRejectionReason(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetShadowIntent {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: Symbol,
+    pub side: ExchangeOrderSide,
+    pub order_type: ExchangeOrderType,
+    pub time_in_force: Option<ExchangeOrderTimeInForce>,
+    pub quantity: Option<Decimal>,
+    pub quote_notional: Option<Decimal>,
+    pub limit_price: Option<Decimal>,
+    pub risk_decision_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowModeConfig {
+    pub stale_price_threshold_seconds: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowRunRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetShadowRunResult {
+    pub run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub decision: TestnetShadowDecision,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub would_submit_order: Option<TestnetShadowIntent>,
+    pub reasons: Vec<TestnetShadowRejectionReason>,
+    pub price_source: Option<String>,
+    pub resolved_price: Option<Decimal>,
+    pub status: TestnetShadowStatus,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExchangeTestnetPipelinePreviewRequest {
     pub risk_decision_id: Uuid,
@@ -3375,6 +3590,12 @@ pub enum CoreError {
     UnsupportedSignalSide(String),
     #[error("unsupported signal reason: {0}")]
     UnsupportedSignalReason(String),
+    #[error("unsupported testnet shadow decision: {0}")]
+    UnsupportedShadowDecision(String),
+    #[error("unsupported testnet shadow status: {0}")]
+    UnsupportedShadowStatus(String),
+    #[error("unsupported testnet shadow rejection reason: {0}")]
+    UnsupportedShadowRejectionReason(String),
     #[error("unsupported replay run status: {0}")]
     UnsupportedReplayRunStatus(String),
     #[error("unsupported replay mode: {0}")]

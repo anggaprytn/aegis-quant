@@ -50,6 +50,9 @@ pub struct Telemetry {
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
     exchange_testnet_pipeline_runs_total: IntCounterVec,
+    exchange_testnet_shadow_runs_total: IntCounterVec,
+    exchange_testnet_shadow_would_submit_total: IntCounterVec,
+    exchange_testnet_shadow_rejections_total: IntCounterVec,
     exchange_testnet_lifecycle_transitions_total: IntCounterVec,
     exchange_testnet_lifecycle_invalid_transitions_total: IntCounterVec,
     exchange_testnet_orders_by_state: IntGaugeVec,
@@ -312,6 +315,27 @@ impl Telemetry {
             registry
         )
         .expect("exchange_testnet_pipeline_runs_total should register");
+        let exchange_testnet_shadow_runs_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_shadow_runs_total",
+            "Exchange testnet shadow runs by strategy, symbol, and decision.",
+            &["strategy_id", "symbol", "decision"],
+            registry
+        )
+        .expect("exchange_testnet_shadow_runs_total should register");
+        let exchange_testnet_shadow_would_submit_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_shadow_would_submit_total",
+            "Exchange testnet shadow WOULD_SUBMIT counts by strategy and symbol.",
+            &["strategy_id", "symbol"],
+            registry
+        )
+        .expect("exchange_testnet_shadow_would_submit_total should register");
+        let exchange_testnet_shadow_rejections_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_shadow_rejections_total",
+            "Exchange testnet shadow rejections by reason.",
+            &["reason"],
+            registry
+        )
+        .expect("exchange_testnet_shadow_rejections_total should register");
         let exchange_testnet_lifecycle_transitions_total = register_int_counter_vec_with_registry!(
             "exchange_testnet_lifecycle_transitions_total",
             "Testnet lifecycle transitions by source and next_state.",
@@ -448,6 +472,9 @@ impl Telemetry {
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
             exchange_testnet_pipeline_runs_total,
+            exchange_testnet_shadow_runs_total,
+            exchange_testnet_shadow_would_submit_total,
+            exchange_testnet_shadow_rejections_total,
             exchange_testnet_lifecycle_transitions_total,
             exchange_testnet_lifecycle_invalid_transitions_total,
             exchange_testnet_orders_by_state,
@@ -706,6 +733,24 @@ impl Telemetry {
     pub fn inc_exchange_testnet_pipeline_run(&self, result: &str) {
         self.exchange_testnet_pipeline_runs_total
             .with_label_values(&[result])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_shadow_run(&self, strategy_id: &str, symbol: &str, decision: &str) {
+        self.exchange_testnet_shadow_runs_total
+            .with_label_values(&[strategy_id, symbol, decision])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_shadow_would_submit(&self, strategy_id: &str, symbol: &str) {
+        self.exchange_testnet_shadow_would_submit_total
+            .with_label_values(&[strategy_id, symbol])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_shadow_rejection(&self, reason: &str) {
+        self.exchange_testnet_shadow_rejections_total
+            .with_label_values(&[reason])
             .inc();
     }
 

@@ -70,6 +70,8 @@ import type {
   StrategyStatusResponse,
   StrategyToggleResponse,
   SystemEventRecord,
+  TestnetShadowRunResponse,
+  TestnetShadowRunsResponse,
 } from "@/lib/types";
 
 const API_BASE_URL =
@@ -345,6 +347,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  runExchangeTestnetShadow: (payload: {
+    strategy_id: string;
+    symbol: string;
+    timeframe: string;
+    correlation_id?: string;
+  }) =>
+    request<TestnetShadowRunResponse>("/exchange/testnet/shadow/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getExchangeTestnetShadowRuns: (limit = 20) =>
+    request<TestnetShadowRunsResponse>("/exchange/testnet/shadow/runs", undefined, { limit }),
+  getExchangeTestnetShadowRun: (runId: string) =>
+    request<TestnetShadowRunResponse>(`/exchange/testnet/shadow/runs/${runId}`),
   reconcileExchangeTestnetOrders: (payload: ExchangeReconciliationRequest) =>
     request<ExchangeReconciliationResultResponse>("/exchange/testnet/reconcile", {
       method: "POST",

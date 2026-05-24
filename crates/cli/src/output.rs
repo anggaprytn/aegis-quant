@@ -1,5 +1,7 @@
 use aegis_core::User;
-use aegis_core::{ExchangeTestnetPipelinePreview, PaperTradingPipelineResult};
+use aegis_core::{
+    ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowRunResult,
+};
 use colored::Colorize;
 use serde::Serialize;
 
@@ -18,6 +20,7 @@ use crate::api::{
     RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
     StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDryRunResponse, StrategyListResponse, StrategyStatusResponse,
+    TestnetShadowRunsResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -245,6 +248,84 @@ pub fn print_exchange_testnet_pipeline_submit(response: &ExchangeTestnetPipeline
     );
     println!("Status: {}", response.order.status);
     println!("Execution state: {}", response.order.execution_state);
+}
+
+pub fn print_testnet_shadow_run(run: &TestnetShadowRunResult) {
+    println!("Run ID: {}", run.run_id);
+    println!("Strategy ID: {}", run.strategy_id);
+    println!("Symbol: {}", run.symbol);
+    println!("Timeframe: {}", run.timeframe);
+    println!("Decision: {}", run.decision.as_str());
+    println!(
+        "Signal ID: {}",
+        run.signal_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Risk decision ID: {}",
+        run.risk_decision_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Resolved price: {}",
+        run.resolved_price
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Price source: {}",
+        run.price_source.as_deref().unwrap_or("-")
+    );
+    if let Some(intent) = &run.would_submit_order {
+        println!(
+            "Would submit: {} {} type={} quote_notional={} quantity={}",
+            intent.symbol,
+            intent.side.as_str(),
+            intent.order_type.as_str(),
+            intent
+                .quote_notional
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            intent
+                .quantity
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+    if !run.reasons.is_empty() {
+        println!(
+            "Reasons: {}",
+            run.reasons
+                .iter()
+                .map(|value| value.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("Correlation ID: {}", run.correlation_id);
+}
+
+pub fn print_testnet_shadow_runs(response: &TestnetShadowRunsResponse) {
+    for run in &response.runs {
+        println!(
+            "{} {} {} {} signal={} risk={} price={}",
+            run.created_at,
+            run.strategy_id,
+            run.symbol,
+            run.decision.as_str(),
+            run.signal_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            run.risk_decision_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            run.resolved_price
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
 }
 
 pub fn print_exchange_testnet_order_lifecycle(

@@ -24,6 +24,7 @@ import type {
   StrategyConfigUpdateRequest,
   StrategyStatusView,
   SystemEventRecord,
+  TestnetShadowRunResult,
 } from "@/lib/types";
 import {
   cn,
@@ -319,6 +320,10 @@ function AuthenticatedDashboard({
   const [testnetPipelineRiskDecisionId, setTestnetPipelineRiskDecisionId] = useState("");
   const [testnetPipelineConfirmation, setTestnetPipelineConfirmation] = useState("");
   const [selectedTestnetOrderId, setSelectedTestnetOrderId] = useState<string | null>(null);
+  const [testnetShadowStrategyId, setTestnetShadowStrategyId] = useState("momentum_v1");
+  const [testnetShadowSymbol, setTestnetShadowSymbol] = useState("BTCUSDT");
+  const [testnetShadowTimeframe, setTestnetShadowTimeframe] = useState("1m");
+  const [selectedShadowRunId, setSelectedShadowRunId] = useState<string | null>(null);
   const [privateStreamListenKey, setPrivateStreamListenKey] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [eventSourceFilter, setEventSourceFilter] = useState("");
@@ -391,6 +396,21 @@ function AuthenticatedDashboard({
     queryKey: ["exchange-testnet-orders"],
     queryFn: () => api.getExchangeTestnetOrders(20),
     enabled: user.role === "OWNER" || user.role === "OPERATOR",
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetShadowRunsQuery = useQuery({
+    queryKey: ["exchange-testnet-shadow-runs"],
+    queryFn: () => api.getExchangeTestnetShadowRuns(20),
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetShadowRunQuery = useQuery({
+    queryKey: ["exchange-testnet-shadow-run", selectedShadowRunId],
+    queryFn: () => api.getExchangeTestnetShadowRun(selectedShadowRunId ?? ""),
+    enabled:
+      (user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER") &&
+      Boolean(selectedShadowRunId),
     refetchInterval: 10_000,
   });
   const exchangeTestnetLifecycleQuery = useQuery({
@@ -687,6 +707,8 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-symbols"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-balances"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-orders"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-runs"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-run"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-order-lifecycle"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-order-repairs"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-runs"] }),
@@ -704,6 +726,12 @@ function AuthenticatedDashboard({
     (exchangeTestnetOrdersQuery.data?.orders ?? []).find(
       (item) => item.client_order_id === selectedTestnetOrderId,
     ) ?? null;
+  const selectedShadowRun: TestnetShadowRunResult | null =
+    exchangeTestnetShadowRunQuery.data?.run ??
+    (exchangeTestnetShadowRunsQuery.data?.runs ?? []).find(
+      (item) => item.run_id === selectedShadowRunId,
+    ) ??
+    null;
   const selectedTestnetOrderRepairable =
     selectedTestnetOrder !== null &&
     [
@@ -891,6 +919,18 @@ function AuthenticatedDashboard({
       }),
     onSuccess: async () => {
       setTestnetPipelineConfirmation("");
+      await refreshOperationalData();
+    },
+  });
+  const exchangeTestnetShadowRunMutation = useMutation({
+    mutationFn: () =>
+      api.runExchangeTestnetShadow({
+        strategy_id: testnetShadowStrategyId,
+        symbol: testnetShadowSymbol,
+        timeframe: testnetShadowTimeframe,
+      }),
+    onSuccess: async (response) => {
+      setSelectedShadowRunId(response.run.run_id);
       await refreshOperationalData();
     },
   });
@@ -2340,6 +2380,95 @@ function AuthenticatedDashboard({
                   />
                 </div>
                 <InlineStatus error={getErrorMessage(exchangeTestnetStatusQuery.error)} />
+              </Panel>
+              <Panel title="Shadow Run">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <Field
+                    label="Strategy"
+                    value={testnetShadowStrategyId}
+                    onChange={setTestnetShadowStrategyId}
+                    placeholder="momentum_v1"
+                  />
+                  <Field
+                    label="Symbol"
+                    value={testnetShadowSymbol}
+                    onChange={setTestnetShadowSymbol}
+                    placeholder="BTCUSDT"
+                  />
+                  <Field
+                    label="Timeframe"
+                    value={testnetShadowTimeframe}
+                    onChange={setTestnetShadowTimeframe}
+                    placeholder="1m"
+                  />
+                  <button
+                    className="rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 py-2 text-sm"
+                    onClick={() => exchangeTestnetShadowRunMutation.mutate()}
+                    disabled={
+                      exchangeTestnetShadowRunMutation.isPending ||
+                      !(user.role === "OWNER" || user.role === "OPERATOR")
+                    }
+                  >
+                    {exchangeTestnetShadowRunMutation.isPending ? "Running..." : "Run Shadow"}
+                  </button>
+                </div>
+                <InlineStatus
+                  error={getErrorMessage(exchangeTestnetShadowRunMutation.error)}
+                  success={
+                    exchangeTestnetShadowRunMutation.data
+                      ? `${exchangeTestnetShadowRunMutation.data.run.decision} ${exchangeTestnetShadowRunMutation.data.run.run_id}`
+                      : undefined
+                  }
+                />
+              </Panel>
+              <Panel title="Recent Shadow Runs">
+                <div className="space-y-2 text-sm text-slate-200">
+                  {(exchangeTestnetShadowRunsQuery.data?.runs ?? []).map((item) => (
+                    <button
+                      key={item.run_id}
+                      className={cn(
+                        "w-full rounded-xl border bg-surface/60 px-3 py-2 text-left",
+                        selectedShadowRunId === item.run_id ? "border-accent" : "border-border",
+                      )}
+                      onClick={() => setSelectedShadowRunId(item.run_id)}
+                      type="button"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>{formatDateTime(item.created_at)}</span>
+                        <span>{item.decision}</span>
+                      </div>
+                      <div className="text-slate-400">
+                        {item.strategy_id} {item.symbol} signal={shortenId(item.signal_id)} risk={shortenId(item.risk_decision_id)}
+                      </div>
+                      <div className="text-slate-400">
+                        price={item.resolved_price ?? "-"} source={item.price_source ?? "-"}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <InlineStatus error={getErrorMessage(exchangeTestnetShadowRunsQuery.error)} />
+                {selectedShadowRun ? (
+                  <div className="mt-4 rounded-xl border border-border bg-surface/40 px-3 py-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Shadow Run Detail</div>
+                    <div className="mt-2 space-y-1">
+                      <div>Run ID: {selectedShadowRun.run_id}</div>
+                      <div>Correlation ID: {selectedShadowRun.correlation_id}</div>
+                      <div>Status: {selectedShadowRun.status}</div>
+                      <div>Reasons: {selectedShadowRun.reasons.join(", ") || "-"}</div>
+                    </div>
+                    <pre className="mt-3 overflow-auto rounded-lg border border-border/60 bg-surface/70 p-3 text-[11px] text-slate-200">
+                      {JSON.stringify(
+                        {
+                          would_submit_payload: selectedShadowRun.would_submit_order,
+                          reasons: selectedShadowRun.reasons,
+                          correlation_id: selectedShadowRun.correlation_id,
+                        },
+                        null,
+                        2,
+                      )}
+                    </pre>
+                  </div>
+                ) : null}
               </Panel>
               <Panel title="Private Stream Status">
                 <div className="grid gap-3 md:grid-cols-4">

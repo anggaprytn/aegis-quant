@@ -194,6 +194,7 @@ Notes:
 - Binance Spot Testnet uses only `https://testnet.binance.vision`.
 - `POST /exchange/testnet/pipeline/preview` is an operator-visible dry run only: it requires an existing approved `risk_decision_id`, blocks on the persistent kill switch, requires fresh local price context from stored tick/candle data, and must not create `exchange_testnet_orders` or lifecycle rows.
 - `POST /exchange/testnet/pipeline/submit` is owner-only: it revalidates the preview boundary, requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`, persists only isolated testnet-order state, and must never touch paper or backtest tables.
+- `POST /exchange/testnet/shadow/run` is operator-visible shadow execution only: it runs strategy -> signal -> risk -> local-price resolution -> would-submit intent, persists only `testnet_shadow_runs`, and must never submit to Binance or create isolated lifecycle rows.
 - Private testnet orders do not mutate `orders`, `paper_positions`, `paper_fills`, or paper PnL tables.
 - The adapter now also manages Spot Testnet listen-key lifecycle and testnet-only user-data stream URL construction.
 - Reconciliation runs against isolated `exchange_testnet_orders`, persists `exchange_reconciliation_runs` plus `exchange_reconciliation_mismatches`, and updates local testnet status only through safe exchange-to-local mappings.
@@ -225,6 +226,18 @@ Rules:
 - Repair controls may only touch isolated `exchange_testnet_orders`, `exchange_testnet_order_lifecycle_events`, and `exchange_testnet_repair_actions`.
 - `MANUAL_RECHECK` uses the shared REST reconciliation validator; explicit mark actions use a dedicated repair validator and never reactivate a terminal `FILLED` order.
 - `SAFE_CANCEL_REQUEST` is Binance Spot Testnet only and must never call live Binance endpoints.
+
+Testnet shadow flow:
+
+```txt
+closed candles
+-> strategy evaluation
+-> optional deduped signal persistence
+-> mandatory persisted risk decision
+-> fresh local tick/candle price resolution
+-> would-submit testnet intent
+-> persisted testnet_shadow_runs row
+```
 
 ## Frontend cockpit overview
 

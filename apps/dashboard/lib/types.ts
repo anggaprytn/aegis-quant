@@ -700,6 +700,50 @@ export type ExchangeTestnetPipelineSubmitResponse = {
   timestamp: string;
 };
 
+export type TestnetShadowIntent = {
+  exchange: string;
+  environment: string;
+  symbol: string;
+  side: string;
+  order_type: string;
+  time_in_force: string | null;
+  quantity: string | null;
+  quote_notional: string | null;
+  limit_price: string | null;
+  risk_decision_id: string | null;
+};
+
+export type TestnetShadowRunResult = {
+  run_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  decision: string;
+  signal_id: string | null;
+  risk_decision_id: string | null;
+  would_submit_order: TestnetShadowIntent | null;
+  reasons: string[];
+  price_source: string | null;
+  resolved_price: string | null;
+  status: string;
+  created_at: string;
+  correlation_id: string;
+};
+
+export type TestnetShadowRunResponse = {
+  run: TestnetShadowRunResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type TestnetShadowRunsResponse = {
+  runs: TestnetShadowRunResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ExchangeTestnetOrderLifecycleEvent = {
   previous_state: string | null;
   next_state: string;

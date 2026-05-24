@@ -9,7 +9,9 @@ use aegis_core::{
     PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
     RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session, Side, SignalReason,
     StrategyConfig, StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal,
-    Symbol, TestnetExecutionState, User, UserRole, UserStatus,
+    Symbol, TestnetExecutionState, TestnetShadowDecision, TestnetShadowIntent,
+    TestnetShadowRejectionReason, TestnetShadowRunResult, TestnetShadowStatus, User, UserRole,
+    UserStatus,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -249,6 +251,24 @@ pub struct ExchangeReconciliationMismatchRecord {
     pub action: String,
     pub payload: Value,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestnetShadowRunRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub decision: String,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub would_submit_payload: Option<Value>,
+    pub price_source: Option<String>,
+    pub resolved_price: Option<Decimal>,
+    pub reasons: Vec<String>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1997,6 +2017,132 @@ pub async fn list_exchange_testnet_orders(
     .await?;
 
     Ok(rows.iter().map(map_exchange_testnet_order).collect())
+}
+
+pub async fn insert_testnet_shadow_run(
+    pool: &PgPool,
+    run: &TestnetShadowRunRecord,
+) -> Result<TestnetShadowRunRecord> {
+    let reasons = serde_json::to_value(&run.reasons)?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO testnet_shadow_runs (
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            decision,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            price_source,
+            resolved_price,
+            reasons,
+            status,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            decision,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            price_source,
+            resolved_price,
+            reasons,
+            status,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(run.id)
+    .bind(&run.strategy_id)
+    .bind(&run.symbol)
+    .bind(&run.timeframe)
+    .bind(&run.decision)
+    .bind(run.signal_id)
+    .bind(run.risk_decision_id)
+    .bind(&run.would_submit_payload)
+    .bind(&run.price_source)
+    .bind(run.resolved_price)
+    .bind(reasons)
+    .bind(&run.status)
+    .bind(run.created_at)
+    .bind(run.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_testnet_shadow_run(&row))
+}
+
+pub async fn list_testnet_shadow_runs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<TestnetShadowRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            decision,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            price_source,
+            resolved_price,
+            reasons,
+            status,
+            created_at,
+            correlation_id
+        FROM testnet_shadow_runs
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_testnet_shadow_run).collect())
+}
+
+pub async fn get_testnet_shadow_run_by_id(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<TestnetShadowRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            decision,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            price_source,
+            resolved_price,
+            reasons,
+            status,
+            created_at,
+            correlation_id
+        FROM testnet_shadow_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_testnet_shadow_run))
 }
 
 pub async fn list_exchange_testnet_orders_for_reconciliation(
@@ -6431,6 +6577,37 @@ fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
     }
 }
 
+pub fn testnet_shadow_run_result_from_record(
+    record: &TestnetShadowRunRecord,
+) -> Result<TestnetShadowRunResult> {
+    let would_submit_order = record
+        .would_submit_payload
+        .as_ref()
+        .map(|value| serde_json::from_value::<TestnetShadowIntent>(value.clone()))
+        .transpose()?;
+
+    Ok(TestnetShadowRunResult {
+        run_id: record.id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        decision: record.decision.parse::<TestnetShadowDecision>()?,
+        signal_id: record.signal_id,
+        risk_decision_id: record.risk_decision_id,
+        would_submit_order,
+        reasons: record
+            .reasons
+            .iter()
+            .map(|value| value.parse::<TestnetShadowRejectionReason>())
+            .collect::<Result<Vec<_>, _>>()?,
+        price_source: record.price_source.clone(),
+        resolved_price: record.resolved_price,
+        status: record.status.parse::<TestnetShadowStatus>()?,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id.unwrap_or(record.id),
+    })
+}
+
 pub fn backtest_result_from_record(record: &BacktestRunRecord) -> Result<BacktestResult> {
     Ok(BacktestResult {
         run_id: record.id,
@@ -6533,6 +6710,36 @@ fn map_risk_decision(row: &sqlx::postgres::PgRow) -> RiskDecisionRecord {
         symbol: row.try_get("symbol").ok(),
         rationale,
         created_at: row.get("decided_at"),
+    }
+}
+
+fn map_testnet_shadow_run(row: &sqlx::postgres::PgRow) -> TestnetShadowRunRecord {
+    let reasons_json = row.get::<Value, _>("reasons");
+    let reasons = reasons_json
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    TestnetShadowRunRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        decision: row.get("decision"),
+        signal_id: row.get("signal_id"),
+        risk_decision_id: row.get("risk_decision_id"),
+        would_submit_payload: row.get("would_submit_payload"),
+        price_source: row.get("price_source"),
+        resolved_price: row.get("resolved_price"),
+        reasons,
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
     }
 }
 

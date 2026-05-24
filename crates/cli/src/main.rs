@@ -507,6 +507,30 @@ async fn main() -> anyhow::Result<()> {
                         output::print_exchange_testnet_pipeline_submit(&response);
                     }
                 }
+                ExchangeTestnetCommands::ShadowRun(args) => {
+                    let response = client.exchange_testnet_shadow_run(&args.into()).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_shadow_run(&response.run);
+                    }
+                }
+                ExchangeTestnetCommands::ShadowRuns(args) => {
+                    let response = client.exchange_testnet_shadow_runs(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_shadow_runs(&response);
+                    }
+                }
+                ExchangeTestnetCommands::ShadowGet { run_id } => {
+                    let response = client.exchange_testnet_shadow_get(run_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_shadow_run(&response.run);
+                    }
+                }
                 ExchangeTestnetCommands::Balances => {
                     let response = client.exchange_testnet_balances().await?;
                     if cli.json {

@@ -201,6 +201,7 @@ Guardrails:
 - Production Binance endpoints are not configured or used
 - Testnet submission is isolated from paper accounting and paper orders
 - Testnet pipeline preview is operator-visible only and never submits an exchange order or persists `exchange_testnet_orders`
+- Testnet shadow mode is operator-triggered only, persists isolated `testnet_shadow_runs`, and records would-submit intents without submitting or creating `exchange_testnet_orders`
 - Testnet pipeline submit is owner-only, requires an existing approved `risk_decision_id`, and requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`
 - Submit/cancel require `OWNER`, typed confirmation `TESTNET ORDER`, an inactive kill switch, and a preapproved `risk_decision_id`
 - Reconciliation is testnet-only, persists runs plus mismatches, and never mutates paper/backtest/live tables
@@ -227,6 +228,12 @@ cargo run -p cli -- exchange testnet pipeline-preview \
 cargo run -p cli -- exchange testnet pipeline-submit \
   --risk-decision-id 00000000-0000-0000-0000-000000000000 \
   --confirm "SUBMIT TESTNET BTCUSDT"
+cargo run -p cli -- exchange testnet shadow-run \
+  --strategy momentum_v1 \
+  --symbol BTCUSDT \
+  --timeframe 1m
+cargo run -p cli -- exchange testnet shadow-runs --limit 50
+cargo run -p cli -- exchange testnet shadow-get <run_id>
 cargo run -p cli -- exchange testnet order-submit \
   --symbol BTCUSDT \
   --side BUY \
@@ -269,6 +276,11 @@ curl -X POST http://127.0.0.1:3000/exchange/testnet/pipeline/submit \
   -H 'content-type: application/json' \
   -H "authorization: Bearer $AEGIS_ACCESS_TOKEN" \
   -d '{"risk_decision_id":"00000000-0000-0000-0000-000000000000","confirmation_text":"SUBMIT TESTNET BTCUSDT"}'
+
+curl -X POST http://127.0.0.1:3000/exchange/testnet/shadow/run \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer $AEGIS_ACCESS_TOKEN" \
+  -d '{"strategy_id":"momentum_v1","symbol":"BTCUSDT","timeframe":"1m"}'
 ```
 
 Private stream notes:
@@ -280,6 +292,7 @@ Private stream notes:
 - `POST /exchange/testnet/orders/:client_order_id/repair` requires typed per-order confirmation and records repair history in `exchange_testnet_repair_actions`.
 - Listen keys are hashed in Postgres; the API, CLI, logs, and dashboard use masked values only.
 - The dashboard Settings page now exposes a private-stream status card, recent private events, and operator lifecycle controls.
+- The dashboard Settings page now also exposes a testnet shadow-run form, recent shadow runs, and run-detail payload inspection.
 - Preview and submit both require an existing approved `risk_decision_id`, block on an active kill switch, and require fresh local market pricing from the stored tick/candle path.
 
 ## Auth MVP
@@ -289,6 +302,7 @@ Private stream notes:
 - Mutating paper/backfill/backtest endpoints require `OPERATOR` or `OWNER`
 - `POST /risk/resume`, `POST /risk/config/update`, and `POST /strategy/:id/config/update` require `OWNER`
 - `POST /exchange/testnet/pipeline/preview` requires `OPERATOR` or `OWNER`; `POST /exchange/testnet/pipeline/submit` requires `OWNER`
+- `POST /exchange/testnet/shadow/run` requires `OPERATOR` or `OWNER`; `GET /exchange/testnet/shadow/runs` and `GET /exchange/testnet/shadow/runs/:id` require authenticated inspection access
 - Dashboard access requires login unless `AEGIS_AUTH_DISABLED=true`
 - `AEGIS_AUTH_DISABLED=true` injects a synthetic local `OWNER` actor for development only and logs a startup warning
 
