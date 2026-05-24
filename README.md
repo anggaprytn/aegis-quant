@@ -37,8 +37,19 @@ This repository foundation includes:
 3. Load the local environment with `set -a; source .env; set +a`.
 4. Run `cargo fmt` and `cargo check`.
 5. Start the API with `cargo run -p api`.
-6. Start market ingest with `cargo run -p market-ingest`.
-7. Verify JSON endpoints:
+6. Bootstrap the local owner once:
+   `curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner`
+7. Login from CLI:
+   `cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"`
+8. Start market ingest with `cargo run -p market-ingest`.
+9. Start the dashboard:
+   `cd apps/dashboard`
+   `npm install`
+   `npm run dev`
+10. Open `http://127.0.0.1:3001` and sign in.
+11. Use the local operator CLI fallback when needed:
+   `cargo run -p cli -- status`
+12. Verify JSON endpoints:
    `curl http://127.0.0.1:3000/system/health`
    `curl http://127.0.0.1:3000/system/status`
    `curl http://127.0.0.1:3000/system/db-health`
@@ -67,17 +78,10 @@ This repository foundation includes:
    `curl -X POST http://127.0.0.1:3000/paper/account/mark-to-market`
    `curl 'http://127.0.0.1:3000/events/recent?limit=100&event_type=risk.rejected&source=aegis-quant-api'`
    `curl 'http://127.0.0.1:3000/backtest/runs?limit=10'`
-8. Start the dashboard:
-   `cd apps/dashboard`
-   `npm install`
-   `npm run dev`
-9. Open `http://127.0.0.1:3001`.
-10. Use the local operator CLI fallback when needed:
-   `cargo run -p cli -- status`
-
 Required environment variables:
 
 - `DATABASE_URL`
+- `AEGIS_JWT_SECRET` when `AEGIS_AUTH_DISABLED=false`
 
 Optional environment variables:
 
@@ -86,6 +90,14 @@ Optional environment variables:
 - `API_BIND_ADDR`
 - `TEST_DATABASE_URL`
 - `DATABASE_MAX_CONNECTIONS`
+- `AEGIS_AUTH_DISABLED`
+- `AEGIS_ACCESS_TOKEN`
+- `AEGIS_ACCESS_TOKEN_TTL_SECONDS`
+- `AEGIS_REFRESH_TOKEN_TTL_SECONDS`
+- `AEGIS_COOKIE_SECURE`
+- `AEGIS_PROTECT_METRICS`
+- `AEGIS_BOOTSTRAP_OWNER_EMAIL`
+- `AEGIS_BOOTSTRAP_OWNER_PASSWORD`
 - `MARKET_EXCHANGE`
 - `MARKET_SYMBOLS`
 - `MARKET_STALE_THRESHOLD_SECONDS`
@@ -112,6 +124,8 @@ Base URL resolution:
 Examples:
 
 ```bash
+cargo run -p cli -- auth login --email owner@example.com --password 'replace-with-a-12-char-min-password'
+cargo run -p cli -- auth me
 cargo run -p cli -- status
 cargo run -p cli -- kill --reason "manual operator halt"
 cargo run -p cli -- resume --confirm "RESUME TRADING"
@@ -151,14 +165,25 @@ cargo run -p cli -- market backfill \
 cargo run -p cli -- market backfills
 cargo run -p cli -- metrics
 cargo run -p cli -- metrics --grep paper
+cargo run -p cli -- auth logout
 ```
 
 Notes:
 
 - Add `--json` before the command for raw API-shaped output.
+- Access tokens are loaded from `AEGIS_ACCESS_TOKEN` first, then `~/.config/aegis/token.json`.
 - `resume` refuses locally unless `--confirm "RESUME TRADING"` matches exactly.
 - `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
-- The CLI does not implement live trading, exchange private APIs, auth, API keys, or any TUI layer.
+- The CLI does not print tokens by default and does not implement live trading, exchange private APIs, API keys, or any TUI layer.
+
+## Auth MVP
+
+- Public endpoints: `GET /system/health`, `POST /auth/login`, `POST /auth/bootstrap-owner`, `POST /auth/refresh`
+- All other `GET` endpoints require an authenticated `VIEWER` or above
+- Mutating paper/backfill/backtest endpoints require `OPERATOR` or `OWNER`
+- `POST /risk/resume`, `POST /risk/config/update`, and `POST /strategy/:id/config/update` require `OWNER`
+- Dashboard access requires login unless `AEGIS_AUTH_DISABLED=true`
+- `AEGIS_AUTH_DISABLED=true` injects a synthetic local `OWNER` actor for development only and logs a startup warning
 
 ## Telemetry
 
@@ -185,7 +210,7 @@ Current metric coverage includes:
 
 Notes:
 
-- `/metrics` is unauthenticated for now and should be network-restricted in production.
+- `/metrics` stays public by default for local development unless `AEGIS_PROTECT_METRICS=true`.
 - Scrape-time gauges read current operational state from Postgres and do not mutate state.
 - Metrics never expose API keys or private exchange credentials because those are not part of this MVP.
 

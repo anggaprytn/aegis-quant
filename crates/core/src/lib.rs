@@ -71,6 +71,219 @@ impl std::str::FromStr for MarketDataSource {
     }
 }
 
+pub const MIN_PASSWORD_LENGTH: usize = 12;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum UserRole {
+    #[serde(rename = "OWNER")]
+    Owner,
+    #[serde(rename = "OPERATOR")]
+    Operator,
+    #[serde(rename = "VIEWER")]
+    Viewer,
+}
+
+impl UserRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "OWNER",
+            Self::Operator => "OPERATOR",
+            Self::Viewer => "VIEWER",
+        }
+    }
+
+    pub fn permissions(self) -> &'static [Permission] {
+        match self {
+            Self::Owner => &[
+                Permission::ReadInspection,
+                Permission::RunPaperPipeline,
+                Permission::RunBacktest,
+                Permission::RunBackfill,
+                Permission::MarkPaperAccount,
+                Permission::ClosePaperPosition,
+                Permission::ToggleStrategy,
+                Permission::UpdateStrategyConfig,
+                Permission::UpdateRiskConfig,
+                Permission::ResumeKillSwitch,
+                Permission::ManageApiKeysPlaceholder,
+            ],
+            Self::Operator => &[
+                Permission::ReadInspection,
+                Permission::RunPaperPipeline,
+                Permission::RunBacktest,
+                Permission::RunBackfill,
+                Permission::MarkPaperAccount,
+                Permission::ClosePaperPosition,
+                Permission::ToggleStrategy,
+            ],
+            Self::Viewer => &[Permission::ReadInspection],
+        }
+    }
+
+    pub fn has_permission(self, permission: Permission) -> bool {
+        self.permissions().contains(&permission)
+    }
+}
+
+impl std::str::FromStr for UserRole {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "OWNER" => Ok(Self::Owner),
+            "OPERATOR" => Ok(Self::Operator),
+            "VIEWER" => Ok(Self::Viewer),
+            other => Err(CoreError::UnsupportedUserRole(other.to_string())),
+        }
+    }
+}
+
+impl std::fmt::Display for UserRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum UserStatus {
+    #[serde(rename = "ACTIVE")]
+    Active,
+    #[serde(rename = "DISABLED")]
+    Disabled,
+}
+
+impl UserStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "ACTIVE",
+            Self::Disabled => "DISABLED",
+        }
+    }
+}
+
+impl std::str::FromStr for UserStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ACTIVE" => Ok(Self::Active),
+            "DISABLED" => Ok(Self::Disabled),
+            other => Err(CoreError::UnsupportedUserStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Permission {
+    ReadInspection,
+    RunPaperPipeline,
+    RunBacktest,
+    RunBackfill,
+    MarkPaperAccount,
+    ClosePaperPosition,
+    ToggleStrategy,
+    UpdateStrategyConfig,
+    UpdateRiskConfig,
+    ResumeKillSwitch,
+    ManageApiKeysPlaceholder,
+}
+
+impl Permission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadInspection => "read_inspection",
+            Self::RunPaperPipeline => "run_paper_pipeline",
+            Self::RunBacktest => "run_backtest",
+            Self::RunBackfill => "run_backfill",
+            Self::MarkPaperAccount => "mark_paper_account",
+            Self::ClosePaperPosition => "close_paper_position",
+            Self::ToggleStrategy => "toggle_strategy",
+            Self::UpdateStrategyConfig => "update_strategy_config",
+            Self::UpdateRiskConfig => "update_risk_config",
+            Self::ResumeKillSwitch => "resume_kill_switch",
+            Self::ManageApiKeysPlaceholder => "manage_api_keys_placeholder",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct User {
+    pub id: Uuid,
+    pub email: String,
+    pub role: UserRole,
+    pub status: UserStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_login_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Session {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub user_agent: Option<String>,
+    pub ip_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthenticatedActor {
+    pub user_id: Uuid,
+    pub email: String,
+    pub role: UserRole,
+    pub session_id: Option<Uuid>,
+}
+
+impl AuthenticatedActor {
+    pub fn has_permission(&self, permission: Permission) -> bool {
+        self.role.has_permission(permission)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthLoginResponse {
+    pub user: User,
+    pub access_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthUserResponse {
+    pub user: User,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthLogoutResponse {
+    pub logged_out: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthRefreshResponse {
+    pub user: User,
+    pub access_token: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+pub fn validate_password_length(password: &str) -> Result<(), CoreError> {
+    if password.chars().count() < MIN_PASSWORD_LENGTH {
+        return Err(CoreError::PasswordTooShort {
+            min_length: MIN_PASSWORD_LENGTH,
+        });
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeedStatus {
@@ -1941,6 +2154,10 @@ pub enum CoreError {
     UnsupportedCandleBackfillStatus(String),
     #[error("unsupported candle backfill source: {0}")]
     UnsupportedCandleBackfillSource(String),
+    #[error("unsupported user role: {0}")]
+    UnsupportedUserRole(String),
+    #[error("unsupported user status: {0}")]
+    UnsupportedUserStatus(String),
     #[error("idempotency_key cannot be empty")]
     EmptyIdempotencyKey,
     #[error("backtest strategy_id cannot be empty")]
@@ -1969,6 +2186,8 @@ pub enum CoreError {
     InvalidHoldingCandles,
     #[error("invalid backtest bps field: {0}")]
     InvalidBacktestBps(String),
+    #[error("password must be at least {min_length} characters")]
+    PasswordTooShort { min_length: usize },
     #[error("quantity must be greater than zero")]
     InvalidOrderQuantity,
     #[error("limit_price must be greater than zero")]
@@ -1996,7 +2215,10 @@ pub enum CoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionState, OrderIntent, PaperOrder, Side, Symbol};
+    use super::{
+        validate_password_length, ExecutionState, OrderIntent, PaperOrder, Permission, Side,
+        Symbol, UserRole,
+    };
     use chrono::Utc;
     use rust_decimal::Decimal;
     use uuid::Uuid;
@@ -2050,5 +2272,25 @@ mod tests {
                 to: ExecutionState::PaperFilled,
             }
         ));
+    }
+
+    #[test]
+    fn viewer_permissions_are_read_only() {
+        assert!(UserRole::Viewer.has_permission(Permission::ReadInspection));
+        assert!(!UserRole::Viewer.has_permission(Permission::RunPaperPipeline));
+        assert!(!UserRole::Viewer.has_permission(Permission::UpdateRiskConfig));
+    }
+
+    #[test]
+    fn owner_permissions_include_owner_actions() {
+        assert!(UserRole::Owner.has_permission(Permission::UpdateStrategyConfig));
+        assert!(UserRole::Owner.has_permission(Permission::UpdateRiskConfig));
+        assert!(UserRole::Owner.has_permission(Permission::ResumeKillSwitch));
+    }
+
+    #[test]
+    fn password_min_length_is_enforced() {
+        assert!(validate_password_length("123456789012").is_ok());
+        assert!(validate_password_length("too-short").is_err());
     }
 }

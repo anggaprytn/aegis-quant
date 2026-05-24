@@ -1,5 +1,6 @@
 use aegis_core::{
-    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
+    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthUserResponse, BacktestRequest,
+    CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
     PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
     RiskConfigVersion, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
@@ -40,6 +41,11 @@ impl ApiClient {
             http: reqwest::Client::new(),
             auth_header: None,
         }
+    }
+
+    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_header = Some(format!("Bearer {}", token.into()));
+        self
     }
 
     pub async fn get<T>(
@@ -220,6 +226,29 @@ impl ApiClient {
 
     pub async fn system_health(&self) -> Result<HealthResponse, ApiClientError> {
         self.get("/system/health", &[]).await
+    }
+
+    pub async fn auth_login(
+        &self,
+        email: &str,
+        password: &str,
+    ) -> Result<AuthLoginResponse, ApiClientError> {
+        self.post(
+            "/auth/login",
+            &AuthLoginRequest {
+                email: email.to_string(),
+                password: password.to_string(),
+            },
+        )
+        .await
+    }
+
+    pub async fn auth_me(&self) -> Result<AuthUserResponse, ApiClientError> {
+        self.get("/auth/me", &[]).await
+    }
+
+    pub async fn auth_logout(&self) -> Result<AuthLogoutResponse, ApiClientError> {
+        self.post("/auth/logout", &serde_json::json!({})).await
     }
 
     pub async fn metrics(&self) -> Result<String, ApiClientError> {

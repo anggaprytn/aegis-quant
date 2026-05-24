@@ -1,4 +1,4 @@
-use crate::{default_actor, ensure_strategy_config, persist_paper_fill_accounting, AppState};
+use crate::{ensure_strategy_config, persist_paper_fill_accounting, AppState};
 use aegis_core::{
     Candle, CandleInterval, DataFreshnessStatus, EventEnvelope, OrderIntentSource,
     PaperTradingPipelineRequest, PaperTradingPipelineResult, PipelineDecision,
@@ -377,7 +377,7 @@ pub async fn run_paper_pipeline(
         let order_outcome = match create_paper_order(
             &state.db_pool,
             &state.config.app_name,
-            &default_actor(),
+            &db::StateActor::system("paper-pipeline"),
             order_intent,
         )
         .await

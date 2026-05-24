@@ -6,6 +6,35 @@ export type ApiError = {
   timestamp?: string;
 };
 
+export type AuthUser = {
+  id: string;
+  email: string;
+  role: "OWNER" | "OPERATOR" | "VIEWER";
+  status: "ACTIVE" | "DISABLED";
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+};
+
+export type AuthLoginRequest = {
+  email: string;
+  password: string;
+};
+
+export type AuthLoginResponse = {
+  user: AuthUser;
+  access_token: string;
+  expires_at: string;
+};
+
+export type AuthUserResponse = {
+  user: AuthUser;
+};
+
+export type AuthLogoutResponse = {
+  logged_out: boolean;
+};
+
 export type HealthResponse = {
   status: string;
   service: string;

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api, getErrorMessage } from "@/lib/api";
 import type {
+  AuthUser,
   BacktestRequest,
   BacktestResult,
   BacktestRunAcceptedResponse,
@@ -174,6 +175,121 @@ function readMaxFeedAgeSeconds(metricsText: string) {
 }
 
 export function DashboardApp() {
+  const queryClient = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const authQuery = useQuery({
+    queryKey: ["auth-me"],
+    queryFn: api.me,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (authQuery.error) {
+      api.setAccessToken(null);
+    }
+  }, [authQuery.error]);
+
+  const loginMutation = useMutation({
+    mutationFn: api.login,
+    onSuccess: (response) => {
+      api.setAccessToken(response.access_token);
+      queryClient.setQueryData(["auth-me"], { user: response.user });
+      setPassword("");
+    },
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: api.logout,
+    onSettled: async () => {
+      api.setAccessToken(null);
+      await queryClient.invalidateQueries({ queryKey: ["auth-me"] });
+    },
+  });
+
+  if (authQuery.isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-transparent text-slate-100">
+        <div className="rounded-2xl border border-border bg-panel/90 px-6 py-4 shadow-panel">
+          Authenticating...
+        </div>
+      </div>
+    );
+  }
+
+  if (!authQuery.data?.user) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-transparent px-4 text-slate-100">
+        <form
+          className="w-full max-w-md rounded-3xl border border-border bg-panel/95 p-6 shadow-panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            loginMutation.mutate({ email, password });
+          }}
+        >
+          <div className="text-xs uppercase tracking-[0.24em] text-muted">Aegis Quant</div>
+          <h1 className="mt-3 text-2xl font-semibold">Operator Login</h1>
+          <p className="mt-2 text-sm text-slate-300">
+            Dashboard access requires an authenticated local operator session.
+          </p>
+          <div className="mt-6 space-y-4">
+            <label className="block text-sm">
+              <span className="mb-2 block text-slate-300">Email</span>
+              <input
+                className="w-full rounded-xl border border-border bg-surface/70 px-3 py-2 outline-none"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-2 block text-slate-300">Password</span>
+              <input
+                className="w-full rounded-xl border border-border bg-surface/70 px-3 py-2 outline-none"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+                minLength={12}
+              />
+            </label>
+          </div>
+          {loginMutation.error ? (
+            <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+              {getErrorMessage(loginMutation.error)}
+            </div>
+          ) : null}
+          <button
+            className="mt-6 w-full rounded-xl border border-accent bg-accent/15 px-4 py-2 font-medium text-white transition hover:bg-accent/25 disabled:opacity-50"
+            type="submit"
+            disabled={loginMutation.isPending}
+          >
+            {loginMutation.isPending ? "Signing in..." : "Sign In"}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <AuthenticatedDashboard
+      user={authQuery.data.user}
+      onLogout={() => logoutMutation.mutate()}
+      isLoggingOut={logoutMutation.isPending}
+    />
+  );
+}
+
+function AuthenticatedDashboard({
+  user,
+  onLogout,
+  isLoggingOut,
+}: {
+  user: AuthUser;
+  onLogout: () => void;
+  isLoggingOut: boolean;
+}) {
   const queryClient = useQueryClient();
   const [section, setSection] = useState<SectionId>("command-center");
   const [selectedSymbol, setSelectedSymbol] = useState("BTCUSDT");
@@ -702,6 +818,21 @@ export function DashboardApp() {
 
         <main className="flex min-w-0 flex-1 flex-col gap-4">
           <header className="sticky top-3 z-20 rounded-2xl border border-border bg-panel/95 p-3 shadow-panel backdrop-blur">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface/50 px-3 py-2">
+              <div>
+                <div className="text-sm font-medium text-white">{user.email}</div>
+                <div className="text-xs uppercase tracking-[0.2em] text-muted">
+                  Role {user.role}
+                </div>
+              </div>
+              <button
+                className="rounded-xl border border-border bg-surface/70 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-400 hover:text-white disabled:opacity-50"
+                onClick={onLogout}
+                disabled={isLoggingOut}
+              >
+                {isLoggingOut ? "Signing out..." : "Logout"}
+              </button>
+            </div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
               <HeaderStat
                 label="Mode"

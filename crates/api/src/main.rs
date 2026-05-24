@@ -1,3 +1,4 @@
+mod auth;
 mod pipeline;
 
 use std::{env, net::SocketAddr, time::Instant};
@@ -6,15 +7,17 @@ use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
 };
 use aegis_core::{
-    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, CandleInterval, MarketMode,
-    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
-    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDryRunRequest, StrategyDryRunResult, StrategyEvaluationContext, StrategyId,
-    StrategyStatus, Symbol,
+    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
+    AuthenticatedActor, BacktestRequest, CandleBackfillRequest, CandleBackfillResult,
+    CandleInterval, EventEnvelope, MarketMode, OrderIntent, PaperCloseMode,
+    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol, UserRole,
+    UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
@@ -22,7 +25,10 @@ use api::{
 };
 use axum::{
     extract::{MatchedPath, Path, Query, Request, State},
-    http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode},
+    http::{
+        header::{self, CONTENT_TYPE, COOKIE, SET_COOKIE, USER_AGENT},
+        HeaderName, HeaderValue, StatusCode,
+    },
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -31,28 +37,30 @@ use axum::{
 use chrono::Utc;
 use db::{
     backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
-    create_paper_order, ensure_system_state, get_backtest_equity_curve, get_backtest_run,
-    get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
+    count_users, create_paper_order, ensure_system_state, get_backtest_equity_curve,
+    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
     get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
-    get_risk_config, get_risk_decision_by_id, get_strategy_status, get_system_event,
-    get_system_state, insert_paper_account, insert_paper_equity_snapshot, insert_risk_config_audit,
-    insert_risk_evaluation, insert_signal_deduped, insert_strategy_config_audit,
-    insert_system_event, list_backtest_runs, list_candle_backfill_runs, list_candles,
+    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
+    get_strategy_status, get_system_event, get_system_state, get_user_by_email, get_user_by_id,
+    insert_audit_log, insert_paper_account, insert_paper_equity_snapshot, insert_risk_config_audit,
+    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
+    insert_system_event, insert_user, list_backtest_runs, list_candle_backfill_runs, list_candles,
     list_market_feed_statuses, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
     list_paper_positions, list_paper_trade_journal, list_recent_risk_decisions_filtered,
     list_recent_signals, list_recent_system_events_filtered, list_risk_config_audit,
     list_risk_config_versions, list_strategy_config_audit, list_strategy_config_versions,
     list_strategy_status, load_risk_state_snapshot, paper_account_from_record,
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, risk_config_audit_from_record, risk_config_from_record,
-    risk_config_version_from_record, set_kill_switch_state, strategy_config_audit_from_record,
-    strategy_config_from_record, strategy_config_version_from_record, update_strategy_state,
-    upsert_paper_position, upsert_risk_config, upsert_strategy_config, BacktestEquityPointRecord,
-    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
-    InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
-    PaperEquitySnapshotRecord, PaperPositionRecord, PaperTradeJournalRecord, PgPool,
-    RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
-    SystemStateRecord,
+    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
+    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
+    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
+    strategy_config_version_from_record, update_strategy_state, update_user_last_login,
+    upsert_paper_position, upsert_risk_config, upsert_strategy_config, user_from_record,
+    BacktestEquityPointRecord, BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord,
+    CreateOrderError, DbConfig, InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord,
+    OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord, PaperPositionRecord,
+    PaperTradeJournalRecord, PgPool, RiskDecisionRecord, SignalRecord, StateActor,
+    StrategyStatusRecord, SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
@@ -70,6 +78,13 @@ use telemetry::telemetry;
 use tracing::{error, info};
 use uuid::Uuid;
 
+use crate::auth::{
+    actor_from_claims, bootstrap_credentials, build_refresh_cookie, clear_refresh_cookie,
+    decode_access_token, dev_actor, dev_user, hash_password, hash_refresh_token,
+    issue_access_token, issue_refresh_token, parse_refresh_token, verify_password, AuthConfig,
+    REFRESH_COOKIE_NAME,
+};
+
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const CORRELATION_ID_HEADER: HeaderName = HeaderName::from_static("x-correlation-id");
 const DEFAULT_RECENT_EVENTS_LIMIT: i64 = 100;
@@ -86,6 +101,7 @@ const MAX_PAPER_LIMIT: i64 = 500;
 #[derive(Clone)]
 struct AppState {
     config: AppConfig,
+    auth_config: AuthConfig,
     db_pool: PgPool,
     started_at: chrono::DateTime<Utc>,
     market_mode: MarketMode,
@@ -190,6 +206,14 @@ impl AppConfig {
 struct RequestContext {
     request_id: String,
     correlation_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteAccess {
+    Public,
+    Authenticated,
+    Operator,
+    Owner,
 }
 
 #[derive(Serialize)]
@@ -313,6 +337,23 @@ struct ErrorResponse {
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
+}
+
+fn state_actor_from_authenticated(actor: &AuthenticatedActor) -> StateActor {
+    StateActor {
+        actor: format!("user:{}", actor.email),
+        actor_id: Some(actor.user_id),
+    }
+}
+
+fn current_actor(extension: Option<Extension<AuthenticatedActor>>) -> Option<AuthenticatedActor> {
+    extension.map(|value| value.0)
+}
+
+fn required_state_actor(extension: Option<Extension<AuthenticatedActor>>) -> StateActor {
+    current_actor(extension)
+        .map(|actor| state_actor_from_authenticated(&actor))
+        .unwrap_or_else(|| StateActor::system("anonymous"))
 }
 
 #[derive(Serialize)]
@@ -881,6 +922,7 @@ async fn main() {
     init_tracing();
 
     let config = AppConfig::from_env().expect("invalid application configuration");
+    let auth_config = AuthConfig::from_env().expect("invalid auth configuration");
     let db_pool = connect_pool(&DbConfig {
         database_url: config.database_url.clone(),
         max_connections: config.database_max_connections,
@@ -914,6 +956,7 @@ async fn main() {
 
     let state = AppState {
         config: config.clone(),
+        auth_config: auth_config.clone(),
         db_pool,
         started_at,
         market_mode: MarketMode::Paper,
@@ -926,6 +969,11 @@ async fn main() {
         .route("/system/status", get(status))
         .route("/system/db-health", get(db_health))
         .route("/metrics", get(metrics))
+        .route("/auth/bootstrap-owner", post(bootstrap_owner))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/auth/refresh", post(refresh))
+        .route("/auth/me", get(me))
         .route("/events/recent", get(recent_events))
         .route("/events/:id", get(event_by_id))
         .route("/risk/status", get(risk_status))
@@ -1005,7 +1053,10 @@ async fn main() {
         .route("/strategy/:id/evaluate", post(evaluate_strategy_handler))
         .route("/strategy/:id/dry-run", post(strategy_dry_run_handler))
         .route("/signals/recent", get(get_recent_signals))
-        .layer(middleware::from_fn(request_context_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            request_context_middleware,
+        ))
         .with_state(state);
 
     info!(
@@ -1013,9 +1064,14 @@ async fn main() {
         environment = %config.environment,
         bind_addr = %config.bind_addr,
         db_max_connections = config.database_max_connections,
+        auth_disabled = auth_config.disabled,
         "starting api server"
     );
-    info!("TODO: add authn/authz boundary before non-internal exposure");
+    if auth_config.disabled {
+        tracing::warn!(
+            "AEGIS_AUTH_DISABLED=true; injecting local OWNER actor for all protected routes"
+        );
+    }
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
@@ -1034,7 +1090,11 @@ fn init_tracing() {
         .init();
 }
 
-async fn request_context_middleware(mut request: Request, next: Next) -> Response {
+async fn request_context_middleware(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let started_at = Instant::now();
     let request_id = get_or_create_header(request.headers(), &REQUEST_ID_HEADER);
     let correlation_id = request
@@ -1044,10 +1104,11 @@ async fn request_context_middleware(mut request: Request, next: Next) -> Respons
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| request_id.clone());
 
-    request.extensions_mut().insert(RequestContext {
+    let request_context = RequestContext {
         request_id: request_id.clone(),
         correlation_id: correlation_id.clone(),
-    });
+    };
+    request.extensions_mut().insert(request_context.clone());
 
     let method = request.method().clone();
     let path = request
@@ -1056,7 +1117,11 @@ async fn request_context_middleware(mut request: Request, next: Next) -> Respons
         .map(MatchedPath::as_str)
         .map(normalize_route_label)
         .unwrap_or_else(|| normalize_route_label(request.uri().path()));
-    let mut response = next.run(request).await;
+    let mut response = match authorize_request(&state, &mut request, &request_context, &path).await
+    {
+        Ok(()) => next.run(request).await,
+        Err(response) => response,
+    };
     let duration = started_at.elapsed();
 
     telemetry().observe_api_request(
@@ -1094,6 +1159,251 @@ async fn request_context_middleware(mut request: Request, next: Next) -> Respons
     );
 
     response
+}
+
+async fn authorize_request(
+    state: &AppState,
+    request: &mut Request,
+    request_context: &RequestContext,
+    path: &str,
+) -> Result<(), Response> {
+    let method = request.method().clone();
+    let access = route_access(&method, path, state.auth_config.protect_metrics);
+
+    if state.auth_config.disabled {
+        if access != RouteAccess::Public {
+            request.extensions_mut().insert(dev_actor());
+        }
+        return Ok(());
+    }
+
+    if access == RouteAccess::Public {
+        return Ok(());
+    }
+
+    let Some(token) = bearer_token(request.headers()) else {
+        return Err(auth_error_response(
+            state,
+            request_context,
+            StatusCode::UNAUTHORIZED,
+            "auth.unauthorized",
+            "unauthorized",
+            "Authentication is required.",
+            None,
+            path,
+        )
+        .await);
+    };
+
+    let claims = match decode_access_token(&state.auth_config, token) {
+        Ok(claims) => claims,
+        Err(_) => {
+            return Err(auth_error_response(
+                state,
+                request_context,
+                StatusCode::UNAUTHORIZED,
+                "auth.unauthorized",
+                "invalid_access_token",
+                "Authentication is required.",
+                None,
+                path,
+            )
+            .await);
+        }
+    };
+
+    let actor = match actor_from_claims(claims) {
+        Ok(actor) => actor,
+        Err(_) => {
+            return Err(auth_error_response(
+                state,
+                request_context,
+                StatusCode::UNAUTHORIZED,
+                "auth.unauthorized",
+                "invalid_access_token",
+                "Authentication is required.",
+                None,
+                path,
+            )
+            .await);
+        }
+    };
+
+    let Some(session_id) = actor.session_id else {
+        return Err(auth_error_response(
+            state,
+            request_context,
+            StatusCode::UNAUTHORIZED,
+            "auth.unauthorized",
+            "invalid_access_token",
+            "Authentication is required.",
+            None,
+            path,
+        )
+        .await);
+    };
+
+    match get_session_by_id(&state.db_pool, session_id).await {
+        Ok(Some(session)) if session.revoked_at.is_none() && session.expires_at > Utc::now() => {}
+        _ => {
+            return Err(auth_error_response(
+                state,
+                request_context,
+                StatusCode::UNAUTHORIZED,
+                "auth.unauthorized",
+                "expired_or_revoked_session",
+                "Authentication is required.",
+                Some(&actor),
+                path,
+            )
+            .await);
+        }
+    }
+
+    let permitted = match access {
+        RouteAccess::Public | RouteAccess::Authenticated => true,
+        RouteAccess::Operator => actor.role == UserRole::Owner || actor.role == UserRole::Operator,
+        RouteAccess::Owner => actor.role == UserRole::Owner,
+    };
+
+    if !permitted {
+        return Err(auth_error_response(
+            state,
+            request_context,
+            StatusCode::FORBIDDEN,
+            "auth.forbidden",
+            "forbidden",
+            "You do not have permission to perform this action.",
+            Some(&actor),
+            path,
+        )
+        .await);
+    }
+
+    request.extensions_mut().insert(actor);
+    Ok(())
+}
+
+async fn auth_error_response(
+    state: &AppState,
+    request: &RequestContext,
+    status: StatusCode,
+    event_type: &str,
+    error_code: &'static str,
+    message: &'static str,
+    actor: Option<&AuthenticatedActor>,
+    path: &str,
+) -> Response {
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let payload = json!({
+        "path": path,
+        "status": status.as_u16(),
+        "actor_id": actor.map(|value| value.user_id),
+    });
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(event_type, correlation_id, &state.config.app_name, payload),
+    )
+    .await;
+
+    if let Some(actor) = actor {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            event_type,
+            path,
+            &json!({ "status": status.as_u16(), "actor_id": actor.user_id }),
+        )
+        .await;
+    }
+
+    (
+        status,
+        Json(ErrorResponse {
+            error: error_code,
+            message: message.to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) -> RouteAccess {
+    if method == axum::http::Method::GET && path == "/system/health" {
+        return RouteAccess::Public;
+    }
+    if method == axum::http::Method::POST
+        && matches!(
+            path,
+            "/auth/login" | "/auth/bootstrap-owner" | "/auth/refresh"
+        )
+    {
+        return RouteAccess::Public;
+    }
+    if method == axum::http::Method::GET && path == "/metrics" && !protect_metrics {
+        return RouteAccess::Public;
+    }
+    if method == axum::http::Method::GET {
+        return RouteAccess::Authenticated;
+    }
+    if path == "/risk/resume" || path == "/risk/config/update" {
+        return RouteAccess::Owner;
+    }
+    if path.starts_with("/strategy/") && path.ends_with("/config/update") {
+        return RouteAccess::Owner;
+    }
+    RouteAccess::Operator
+}
+
+fn bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+}
+
+fn refresh_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(';').find_map(|part| {
+                let trimmed = part.trim();
+                let (name, value) = trimmed.split_once('=')?;
+                if name == REFRESH_COOKIE_NAME {
+                    Some(value.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+}
+
+fn user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+}
+
+fn request_ip(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(ToOwned::to_owned)
+        })
 }
 
 fn get_or_create_header(headers: &axum::http::HeaderMap, name: &HeaderName) -> String {
@@ -1219,6 +1529,42 @@ fn request_context(request: Option<Extension<RequestContext>>) -> RequestContext
             request_id: Uuid::new_v4().to_string(),
             correlation_id: Uuid::new_v4().to_string(),
         })
+}
+
+fn unauthorized_response(
+    request: RequestContext,
+    error: &'static str,
+    message: &'static str,
+) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(ErrorResponse {
+            error,
+            message: message.to_string(),
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+fn internal_error_response(
+    error: &'static str,
+    message: &'static str,
+    request: RequestContext,
+) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error,
+            message: message.to_string(),
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
 }
 
 fn bounded_recent_events_limit(limit: Option<i64>) -> i64 {
@@ -1428,10 +1774,6 @@ fn evaluate_strategy_response(
 
 fn is_valid_resume_confirmation(value: &str) -> bool {
     value.trim() == "RESUME TRADING"
-}
-
-fn default_actor() -> StateActor {
-    StateActor::system("anonymous")
 }
 
 fn parse_correlation_id_filter(value: Option<&str>) -> Result<Option<Uuid>, String> {
@@ -1754,6 +2096,568 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+async fn bootstrap_owner(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+
+    match count_users(&state.db_pool).await {
+        Ok(count) if count > 0 => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "owner_already_bootstrapped",
+                    message: "Bootstrap owner is only available before the first user exists."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(error = %err, "failed to count users during bootstrap");
+            return internal_error_response(
+                "failed_to_bootstrap_owner",
+                "Failed to inspect existing users before bootstrap.",
+                request,
+            );
+        }
+    }
+
+    let (email, password) = match bootstrap_credentials(&state.auth_config) {
+        Ok(credentials) => credentials,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "missing_bootstrap_credentials",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let password_hash = match hash_password(&password) {
+        Ok(hash) => hash,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_bootstrap_password",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match insert_user(
+        &state.db_pool,
+        Uuid::new_v4(),
+        &email,
+        &password_hash,
+        UserRole::Owner,
+        UserStatus::Active,
+    )
+    .await
+    {
+        Ok(record) => {
+            let user = match user_from_record(&record) {
+                Ok(user) => user,
+                Err(err) => {
+                    error!(error = %err, "failed to map bootstrapped owner");
+                    return internal_error_response(
+                        "failed_to_bootstrap_owner",
+                        "Owner was created but could not be loaded.",
+                        request,
+                    );
+                }
+            };
+            let actor = StateActor {
+                actor: format!("user:{}", user.email),
+                actor_id: Some(user.id),
+            };
+            let metadata = json!({ "actor_id": user.id, "email": user.email, "role": user.role });
+            let _ = insert_audit_log(
+                &state.db_pool,
+                correlation_id,
+                &actor,
+                "auth.owner_bootstrapped",
+                "users/bootstrap-owner",
+                &metadata,
+            )
+            .await;
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "auth.owner_bootstrapped",
+                    correlation_id,
+                    &state.config.app_name,
+                    metadata,
+                ),
+            )
+            .await;
+
+            (StatusCode::CREATED, Json(AuthUserResponse { user })).into_response()
+        }
+        Err(err) => {
+            error!(error = %err, "failed to bootstrap owner");
+            internal_error_response(
+                "failed_to_bootstrap_owner",
+                "Owner bootstrap failed.",
+                request,
+            )
+        }
+    }
+}
+
+async fn login(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<AuthLoginRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let email = payload.email.trim().to_ascii_lowercase();
+    let user_agent = user_agent(&headers);
+    let ip_address = request_ip(&headers);
+
+    let record = match get_user_by_email(&state.db_pool, &email).await {
+        Ok(record) => record,
+        Err(err) => {
+            error!(error = %err, "failed to query user during login");
+            return internal_error_response(
+                "failed_to_login",
+                "Login failed due to a database error.",
+                request,
+            );
+        }
+    };
+
+    let Some(record) = record else {
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "auth.login.failed",
+                correlation_id,
+                &state.config.app_name,
+                json!({ "email": email }),
+            ),
+        )
+        .await;
+        return unauthorized_response(request, "invalid_credentials", "Invalid email or password.");
+    };
+
+    let user = match user_from_record(&record) {
+        Ok(user) => user,
+        Err(err) => {
+            error!(error = %err, "failed to map user during login");
+            return internal_error_response(
+                "failed_to_login",
+                "Login failed due to an internal mapping error.",
+                request,
+            );
+        }
+    };
+
+    let password_ok = verify_password(&payload.password, &record.password_hash).unwrap_or(false);
+    if !password_ok || user.status != UserStatus::Active {
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "auth.login.failed",
+                correlation_id,
+                &state.config.app_name,
+                json!({ "email": email, "actor_id": user.id }),
+            ),
+        )
+        .await;
+        return unauthorized_response(request, "invalid_credentials", "Invalid email or password.");
+    }
+
+    let user = match update_user_last_login(&state.db_pool, user.id, Utc::now()).await {
+        Ok(record) => match user_from_record(&record) {
+            Ok(user) => user,
+            Err(err) => {
+                error!(error = %err, "failed to map user last login");
+                return internal_error_response(
+                    "failed_to_login",
+                    "Login failed due to an internal mapping error.",
+                    request,
+                );
+            }
+        },
+        Err(err) => {
+            error!(error = %err, "failed to update last login");
+            return internal_error_response(
+                "failed_to_login",
+                "Login failed due to a database error.",
+                request,
+            );
+        }
+    };
+
+    let session_id = Uuid::new_v4();
+    let refresh_token = issue_refresh_token(session_id);
+    let refresh_expires_at = Utc::now()
+        + chrono::Duration::from_std(state.auth_config.refresh_token_ttl)
+            .expect("valid refresh ttl");
+    if let Err(err) = insert_session(
+        &state.db_pool,
+        session_id,
+        user.id,
+        &refresh_token.hash,
+        refresh_expires_at,
+        user_agent.as_deref(),
+        ip_address.as_deref(),
+    )
+    .await
+    {
+        error!(error = %err, "failed to create login session");
+        return internal_error_response(
+            "failed_to_login",
+            "Login failed due to a session persistence error.",
+            request,
+        );
+    }
+
+    let access = match issue_access_token(&state.auth_config, &user, session_id, Utc::now()) {
+        Ok(token) => token,
+        Err(err) => {
+            error!(error = %err, "failed to issue access token");
+            return internal_error_response(
+                "failed_to_login",
+                "Login failed due to a token generation error.",
+                request,
+            );
+        }
+    };
+
+    let actor = StateActor {
+        actor: format!("user:{}", user.email),
+        actor_id: Some(user.id),
+    };
+    let metadata = json!({ "actor_id": user.id, "email": user.email, "session_id": session_id });
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &actor,
+        "auth.login.success",
+        "auth/login",
+        &metadata,
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "auth.login.success",
+            correlation_id,
+            &state.config.app_name,
+            metadata,
+        ),
+    )
+    .await;
+
+    let mut response = (
+        StatusCode::OK,
+        Json(AuthLoginResponse {
+            user,
+            access_token: access.token,
+            expires_at: access.expires_at,
+        }),
+    )
+        .into_response();
+    if let Ok(cookie_value) = HeaderValue::from_str(
+        &build_refresh_cookie(&state.auth_config, &refresh_token.raw).to_string(),
+    ) {
+        response.headers_mut().append(SET_COOKIE, cookie_value);
+    }
+    response
+}
+
+async fn logout(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(actor) => actor,
+        None => {
+            return unauthorized_response(request, "unauthorized", "Authentication is required.");
+        }
+    };
+    if let Some(session_id) = actor.session_id {
+        let _ = revoke_session(&state.db_pool, session_id, Utc::now()).await;
+    }
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let state_actor = state_actor_from_authenticated(&actor);
+    let metadata = json!({ "actor_id": actor.user_id, "session_id": actor.session_id });
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &state_actor,
+        "auth.logout",
+        "auth/logout",
+        &metadata,
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "auth.logout",
+            correlation_id,
+            &state.config.app_name,
+            metadata,
+        ),
+    )
+    .await;
+
+    let mut response = (
+        StatusCode::OK,
+        Json(AuthLogoutResponse { logged_out: true }),
+    )
+        .into_response();
+    if let Ok(cookie_value) =
+        HeaderValue::from_str(&clear_refresh_cookie(&state.auth_config).to_string())
+    {
+        response.headers_mut().append(SET_COOKIE, cookie_value);
+    }
+    response
+}
+
+async fn refresh(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let Some(refresh_token_raw) = refresh_cookie(&headers) else {
+        return unauthorized_response(
+            request,
+            "missing_refresh_token",
+            "Refresh token is required.",
+        );
+    };
+    let session_id = match parse_refresh_token(&refresh_token_raw) {
+        Ok(session_id) => session_id,
+        Err(_) => {
+            return unauthorized_response(
+                request,
+                "invalid_refresh_token",
+                "Refresh token is invalid.",
+            );
+        }
+    };
+    let current_hash = hash_refresh_token(&refresh_token_raw);
+    let Some(session) =
+        (match get_session_by_id_and_hash(&state.db_pool, session_id, &current_hash).await {
+            Ok(session) => session,
+            Err(err) => {
+                error!(error = %err, "failed to load refresh session");
+                return internal_error_response(
+                    "failed_to_refresh",
+                    "Refresh failed due to a database error.",
+                    request,
+                );
+            }
+        })
+    else {
+        return unauthorized_response(
+            request,
+            "invalid_refresh_token",
+            "Refresh token is invalid.",
+        );
+    };
+    if session.revoked_at.is_some() || session.expires_at <= Utc::now() {
+        return unauthorized_response(
+            request,
+            "expired_refresh_token",
+            "Refresh token is expired.",
+        );
+    }
+
+    let next_refresh_token = issue_refresh_token(session.id);
+    let refresh_expires_at = Utc::now()
+        + chrono::Duration::from_std(state.auth_config.refresh_token_ttl)
+            .expect("valid refresh ttl");
+    let rotated = match rotate_session_refresh_token(
+        &state.db_pool,
+        session.id,
+        &current_hash,
+        &next_refresh_token.hash,
+        refresh_expires_at,
+        user_agent(&headers).as_deref(),
+        request_ip(&headers).as_deref(),
+    )
+    .await
+    {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return unauthorized_response(
+                request,
+                "invalid_refresh_token",
+                "Refresh token is invalid.",
+            );
+        }
+        Err(err) => {
+            error!(error = %err, "failed to rotate refresh session");
+            return internal_error_response(
+                "failed_to_refresh",
+                "Refresh failed due to a database error.",
+                request,
+            );
+        }
+    };
+    let user = match get_user_by_id(&state.db_pool, rotated.user_id).await {
+        Ok(Some(record)) => match user_from_record(&record) {
+            Ok(user) => user,
+            Err(err) => {
+                error!(error = %err, "failed to map user during refresh");
+                return internal_error_response(
+                    "failed_to_refresh",
+                    "Refresh failed due to an internal mapping error.",
+                    request,
+                );
+            }
+        },
+        Ok(None) => {
+            return unauthorized_response(
+                request,
+                "invalid_refresh_token",
+                "Refresh token is invalid.",
+            );
+        }
+        Err(err) => {
+            error!(error = %err, "failed to load user during refresh");
+            return internal_error_response(
+                "failed_to_refresh",
+                "Refresh failed due to a database error.",
+                request,
+            );
+        }
+    };
+
+    let access = match issue_access_token(&state.auth_config, &user, rotated.id, Utc::now()) {
+        Ok(token) => token,
+        Err(err) => {
+            error!(error = %err, "failed to issue refreshed access token");
+            return internal_error_response(
+                "failed_to_refresh",
+                "Refresh failed due to a token generation error.",
+                request,
+            );
+        }
+    };
+
+    let actor = StateActor {
+        actor: format!("user:{}", user.email),
+        actor_id: Some(user.id),
+    };
+    let metadata = json!({ "actor_id": user.id, "session_id": rotated.id });
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &actor,
+        "auth.refresh",
+        "auth/refresh",
+        &metadata,
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "auth.refresh",
+            correlation_id,
+            &state.config.app_name,
+            metadata,
+        ),
+    )
+    .await;
+
+    let mut response = (
+        StatusCode::OK,
+        Json(AuthRefreshResponse {
+            user,
+            access_token: access.token,
+            expires_at: access.expires_at,
+        }),
+    )
+        .into_response();
+    if let Ok(cookie_value) = HeaderValue::from_str(
+        &build_refresh_cookie(&state.auth_config, &next_refresh_token.raw).to_string(),
+    ) {
+        response.headers_mut().append(SET_COOKIE, cookie_value);
+    }
+    response
+}
+
+async fn me(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let _request = request_context(request);
+    if state.auth_config.disabled {
+        return (
+            StatusCode::OK,
+            Json(AuthUserResponse {
+                user: dev_user(Utc::now()),
+            }),
+        )
+            .into_response();
+    }
+    let Some(actor) = current_actor(actor) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "unauthorized",
+                message: "Authentication is required.".to_string(),
+                request_id: _request.request_id,
+                correlation_id: _request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+    match get_user_by_id(&state.db_pool, actor.user_id).await {
+        Ok(Some(record)) => match user_from_record(&record) {
+            Ok(user) => (StatusCode::OK, Json(AuthUserResponse { user })).into_response(),
+            Err(err) => {
+                error!(error = %err, "failed to map /auth/me user");
+                internal_error_response(
+                    "failed_to_load_current_user",
+                    "Failed to load the current user.",
+                    _request,
+                )
+            }
+        },
+        Ok(None) => unauthorized_response(_request, "unauthorized", "Authentication is required."),
+        Err(err) => {
+            error!(error = %err, "failed to load /auth/me user");
+            internal_error_response(
+                "failed_to_load_current_user",
+                "Failed to load the current user.",
+                _request,
+            )
+        }
+    }
+}
+
 async fn recent_events(
     State(state): State<AppState>,
     Query(query): Query<RecentEventsQuery>,
@@ -2001,14 +2905,16 @@ async fn risk_status(
 async fn enable_kill_switch(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(payload): Json<KillSwitchRequest>,
 ) -> impl IntoResponse {
     let request = request_context(request);
     let correlation_id = parse_correlation_id(&request.correlation_id);
+    let actor = required_state_actor(actor);
 
     match set_kill_switch_state(
         &state.db_pool,
-        &default_actor(),
+        &actor,
         correlation_id,
         &state.config.app_name,
         true,
@@ -2052,9 +2958,11 @@ async fn enable_kill_switch(
 async fn resume_trading(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(payload): Json<ResumeRequest>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let actor = required_state_actor(actor);
 
     if !is_valid_resume_confirmation(&payload.confirmation_text) {
         return (
@@ -2075,7 +2983,7 @@ async fn resume_trading(
 
     match set_kill_switch_state(
         &state.db_pool,
-        &default_actor(),
+        &actor,
         correlation_id,
         &state.config.app_name,
         false,
@@ -2167,7 +3075,7 @@ async fn validate_risk_config_handler(
     };
     let _ = insert_system_event(
         &state.db_pool,
-        &events::EventEnvelope::new(
+        &EventEnvelope::new(
             event_type,
             parse_correlation_id(&request.correlation_id),
             state.config.app_name.clone(),
@@ -2195,10 +3103,13 @@ async fn validate_risk_config_handler(
 async fn update_risk_config_handler(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(payload): Json<RiskConfig>,
 ) -> impl IntoResponse {
     let request = request_context(request);
     let correlation_id = parse_correlation_id(&request.correlation_id);
+    let actor = current_actor(actor);
+    let actor_id = actor.as_ref().map(|value| value.user_id);
     let validation = validate_risk_config(&payload);
     let current_record = ensure_risk_config(&state).await.ok();
     let current_config = current_record
@@ -2225,7 +3136,7 @@ async fn update_risk_config_handler(
                 old_config: current_config,
                 new_config: None,
                 validation_issues: validation.issues.clone(),
-                actor_id: None,
+                actor_id,
                 correlation_id,
                 created_at: Utc::now(),
             },
@@ -2233,11 +3144,11 @@ async fn update_risk_config_handler(
         .await;
         let _ = insert_system_event(
             &state.db_pool,
-            &events::EventEnvelope::new(
+            &EventEnvelope::new(
                 "risk.config.rejected",
                 correlation_id,
                 state.config.app_name.clone(),
-                json!({ "issues": validation.issues }),
+                json!({ "issues": validation.issues, "actor_id": actor_id }),
             ),
         )
         .await;
@@ -2259,25 +3170,29 @@ async fn update_risk_config_handler(
         .expect("valid config must be present");
     let _ = insert_system_event(
         &state.db_pool,
-        &events::EventEnvelope::new(
+        &EventEnvelope::new(
             "risk.config.validated",
             correlation_id,
             state.config.app_name.clone(),
-            json!({}),
+            json!({ "actor_id": actor_id }),
         ),
     )
     .await;
 
-    match persist_risk_config_version(&state.db_pool, &config, None, correlation_id).await {
+    match persist_risk_config_version(&state.db_pool, &config, actor_id, correlation_id).await {
         Ok(record) => {
             telemetry().inc_risk_config_update("updated");
             let _ = insert_system_event(
                 &state.db_pool,
-                &events::EventEnvelope::new(
+                &EventEnvelope::new(
                     "risk.config.updated",
                     correlation_id,
                     state.config.app_name.clone(),
-                    json!({ "config_id": record.config_id, "version": record.current_version }),
+                    json!({
+                        "config_id": record.config_id,
+                        "version": record.current_version,
+                        "actor_id": actor_id
+                    }),
                 ),
             )
             .await;
@@ -2621,9 +3536,11 @@ fn parse_order_intent(
 async fn create_order(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(payload): Json<CreatePaperOrderRequest>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let actor = required_state_actor(actor);
     let intent = match parse_order_intent(payload, &request.correlation_id) {
         Ok(intent) => intent,
         Err("invalid_quantity") => {
@@ -2682,14 +3599,7 @@ async fn create_order(
         }
     };
 
-    match create_paper_order(
-        &state.db_pool,
-        &state.config.app_name,
-        &default_actor(),
-        intent,
-    )
-    .await
-    {
+    match create_paper_order(&state.db_pool, &state.config.app_name, &actor, intent).await {
         Ok(outcome) => {
             telemetry().inc_paper_order(
                 outcome.order.symbol.as_str(),
@@ -2799,11 +3709,28 @@ async fn create_order(
 async fn run_paper_pipeline_handler(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(mut payload): Json<RunPaperPipelineRequest>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let actor = current_actor(actor);
     if payload.correlation_id.is_none() {
         payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+    let correlation_id = payload
+        .correlation_id
+        .expect("correlation_id must be set before pipeline execution");
+    if let Some(actor) = actor.as_ref() {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            "paper.pipeline.run",
+            "paper/pipeline/run",
+            &json!({ "actor_id": actor.user_id }),
+        )
+        .await;
     }
 
     match pipeline::run_paper_pipeline(&state, payload).await {
@@ -2850,11 +3777,28 @@ async fn run_paper_pipeline_handler(
 async fn run_backtest_handler(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(mut payload): Json<RunBacktestRequest>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let actor = current_actor(actor);
     if payload.correlation_id.is_none() {
         payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+    let correlation_id = payload
+        .correlation_id
+        .expect("correlation_id must be set before backtest execution");
+    if let Some(actor) = actor.as_ref() {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            "backtest.run",
+            "backtest/run",
+            &json!({ "actor_id": actor.user_id }),
+        )
+        .await;
     }
 
     let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
@@ -3362,9 +4306,11 @@ async fn close_paper_position_handler(
     State(state): State<AppState>,
     Path(position_id): Path<Uuid>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(payload): Json<PaperClosePositionPayload>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let actor = required_state_actor(actor);
     let reason = match payload.reason {
         Some(reason) => match reason.parse::<PaperCloseReason>() {
             Ok(reason) => Some(reason),
@@ -3407,7 +4353,7 @@ async fn close_paper_position_handler(
     match close_paper_position(
         &state.db_pool,
         &state.market_config,
-        &default_actor(),
+        &actor,
         PaperClosePositionRequest {
             position_id,
             confirmation_text: payload.confirmation_text,
@@ -3907,7 +4853,7 @@ async fn mark_paper_account_to_market(
     }
     let _ = insert_system_event(
         &state.db_pool,
-        &events::EventEnvelope::new(
+        &EventEnvelope::new(
             "paper.equity.updated",
             Uuid::parse_str(&request.correlation_id).unwrap_or_else(|_| Uuid::new_v4()),
             &state.config.app_name,
@@ -4117,12 +5063,17 @@ async fn get_market_candles(
 async fn post_market_backfill_candles(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(mut payload): Json<CandleBackfillRequest>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let actor = current_actor(actor);
     if payload.correlation_id.is_none() {
         payload.correlation_id = Uuid::parse_str(&request.correlation_id).ok();
     }
+    let correlation_id = payload
+        .correlation_id
+        .expect("correlation_id must be set before backfill execution");
     if let Err(err) = payload.validate() {
         return (
             StatusCode::BAD_REQUEST,
@@ -4159,7 +5110,26 @@ async fn post_market_backfill_candles(
     };
 
     match service.run(payload).await {
-        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Ok(result) => {
+            if let Some(actor) = actor.as_ref() {
+                let state_actor = state_actor_from_authenticated(actor);
+                let _ = insert_audit_log(
+                    &state.db_pool,
+                    correlation_id,
+                    &state_actor,
+                    "market.backfill.run",
+                    "market/backfill/candles",
+                    &json!({
+                        "actor_id": actor.user_id,
+                        "run_id": result.run_id,
+                        "symbol": result.symbol,
+                        "interval": result.interval
+                    }),
+                )
+                .await;
+            }
+            (StatusCode::OK, Json(result)).into_response()
+        }
         Err(err) => {
             error!(
                 request_id = %request.request_id,
@@ -4535,7 +5505,7 @@ async fn validate_strategy_config_handler(
     };
     let _ = insert_system_event(
         &state.db_pool,
-        &events::EventEnvelope::new(
+        &EventEnvelope::new(
             event_type,
             request
                 .correlation_id
@@ -4570,9 +5540,12 @@ async fn update_strategy_config_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
     Json(mut payload): Json<StrategyConfigUpdateRequest>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let actor = current_actor(actor);
+    let actor_id = actor.as_ref().map(|value| value.user_id);
     let strategy_id = match parse_strategy_id(&id) {
         Ok(strategy_id) => strategy_id,
         Err(err) => {
@@ -4613,7 +5586,7 @@ async fn update_strategy_config_handler(
                 old_config: current_config.clone(),
                 new_config: None,
                 validation_issues: validation.issues.clone(),
-                actor_id: None,
+                actor_id,
                 correlation_id,
                 created_at: Utc::now(),
             },
@@ -4621,13 +5594,14 @@ async fn update_strategy_config_handler(
         .await;
         let _ = insert_system_event(
             &state.db_pool,
-            &events::EventEnvelope::new(
+            &EventEnvelope::new(
                 "strategy.config.rejected",
                 correlation_id,
                 state.config.app_name.clone(),
                 json!({
                     "strategy_id": strategy_id,
                     "issues": validation.issues,
+                    "actor_id": actor_id,
                 }),
             ),
         )
@@ -4650,25 +5624,25 @@ async fn update_strategy_config_handler(
         .expect("valid config must be present");
     let _ = insert_system_event(
         &state.db_pool,
-        &events::EventEnvelope::new(
+        &EventEnvelope::new(
             "strategy.config.validated",
             correlation_id,
             state.config.app_name.clone(),
-            json!({ "strategy_id": strategy_id }),
+            json!({ "strategy_id": strategy_id, "actor_id": actor_id }),
         ),
     )
     .await;
 
-    match persist_strategy_config_version(&state.db_pool, &config, None, correlation_id).await {
+    match persist_strategy_config_version(&state.db_pool, &config, actor_id, correlation_id).await {
         Ok(_) => {
             telemetry().inc_strategy_config_update(strategy_id.as_str(), "updated");
             let _ = insert_system_event(
                 &state.db_pool,
-                &events::EventEnvelope::new(
+                &EventEnvelope::new(
                     "strategy.config.updated",
                     correlation_id,
                     state.config.app_name.clone(),
-                    json!({ "strategy_id": strategy_id }),
+                    json!({ "strategy_id": strategy_id, "actor_id": actor_id }),
                 ),
             )
             .await;
@@ -5036,16 +6010,18 @@ async fn enable_strategy(
     State(state): State<AppState>,
     Path(id): Path<String>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
 ) -> impl IntoResponse {
-    toggle_strategy_status(state, id, StrategyStatus::Enabled, request).await
+    toggle_strategy_status(state, id, StrategyStatus::Enabled, request, actor).await
 }
 
 async fn disable_strategy(
     State(state): State<AppState>,
     Path(id): Path<String>,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
 ) -> impl IntoResponse {
-    toggle_strategy_status(state, id, StrategyStatus::Disabled, request).await
+    toggle_strategy_status(state, id, StrategyStatus::Disabled, request, actor).await
 }
 
 async fn toggle_strategy_status(
@@ -5053,8 +6029,11 @@ async fn toggle_strategy_status(
     id: String,
     status: StrategyStatus,
     request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
 ) -> Response {
     let request = request_context(request);
+    let actor = current_actor(actor);
+    let actor_id = actor.as_ref().map(|value| value.user_id);
     let strategy_id = match parse_strategy_id(&id) {
         Ok(strategy_id) => strategy_id,
         Err(err) => {
@@ -5100,25 +6079,25 @@ async fn toggle_strategy_status(
     let correlation_id = parse_correlation_id(&request.correlation_id);
     let _ = insert_system_event(
         &state.db_pool,
-        &events::EventEnvelope::new(
+        &EventEnvelope::new(
             "strategy.config.validated",
             correlation_id,
             state.config.app_name.clone(),
-            json!({ "strategy_id": strategy_id }),
+            json!({ "strategy_id": strategy_id, "actor_id": actor_id }),
         ),
     )
     .await;
 
-    match persist_strategy_config_version(&state.db_pool, &config, None, correlation_id).await {
+    match persist_strategy_config_version(&state.db_pool, &config, actor_id, correlation_id).await {
         Ok(_) => match get_strategy_status(&state.db_pool, strategy_id).await {
             Ok(Some(strategy)) => {
                 let _ = insert_system_event(
                     &state.db_pool,
-                    &events::EventEnvelope::new(
+                    &EventEnvelope::new(
                         "strategy.config.updated",
                         correlation_id,
                         state.config.app_name.clone(),
-                        json!({ "strategy_id": strategy_id }),
+                        json!({ "strategy_id": strategy_id, "actor_id": actor_id }),
                     ),
                 )
                 .await;
@@ -5555,6 +6534,7 @@ mod tests {
         DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
         MAX_RISK_DECISIONS_LIMIT,
     };
+    use crate::auth::AuthConfig;
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{CandleInterval, MarketDataSource, MarketMode, Side, Symbol};
     use axum::{
@@ -5777,9 +6757,14 @@ mod tests {
 
     #[tokio::test]
     async fn request_middleware_uses_template_paths_for_metrics() {
+        let state = test_app_state();
         let app = Router::new()
             .route("/orders/:id", get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn(request_context_middleware));
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state);
 
         let response = app
             .oneshot(
@@ -5806,6 +6791,16 @@ mod tests {
                 bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
                 database_url: "postgres://postgres:postgres@127.0.0.1:5432/aegis".to_string(),
                 database_max_connections: 1,
+            },
+            auth_config: AuthConfig {
+                disabled: true,
+                jwt_secret: Some("test-secret".to_string()),
+                access_token_ttl: std::time::Duration::from_secs(900),
+                refresh_token_ttl: std::time::Duration::from_secs(86_400),
+                cookie_secure: false,
+                protect_metrics: false,
+                bootstrap_owner_email: None,
+                bootstrap_owner_password: None,
             },
             db_pool: db::PgPool::connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/aegis")
                 .expect("lazy pool"),

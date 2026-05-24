@@ -7,11 +7,11 @@ use cli::api::{
     RiskDecisionsQuery,
 };
 use cli::cli::{
-    BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands, PaperCommands,
-    PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
-    RESUME_CONFIRMATION_TEXT,
+    AuthCommands, BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands,
+    PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
+    StrategyConfigCommands, RESUME_CONFIRMATION_TEXT,
 };
-use cli::config::CliConfig;
+use cli::config::{clear_token_file, save_token_file, CliConfig};
 use cli::output;
 
 #[tokio::main]
@@ -20,9 +20,53 @@ async fn main() -> anyhow::Result<()> {
     cli.validate()?;
 
     let config = CliConfig::from_env().context("failed to load CLI config")?;
-    let client = ApiClient::new(config.api_base_url);
+    let client = config
+        .access_token
+        .clone()
+        .map(|token| ApiClient::new(config.api_base_url.clone()).with_bearer_token(token))
+        .unwrap_or_else(|| ApiClient::new(config.api_base_url.clone()));
 
     match cli.command {
+        Commands::Auth(command) => match command {
+            AuthCommands::Login(args) => {
+                let response = ApiClient::new(config.api_base_url.clone())
+                    .auth_login(&args.email, &args.password)
+                    .await?;
+                save_token_file(&config.token_path, &response.access_token)?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_auth_login(&response.user);
+                }
+            }
+            AuthCommands::Me => {
+                if config.access_token.is_none() {
+                    anyhow::bail!(
+                        "not authenticated; run `aegis auth login --email <EMAIL> --password <PASSWORD>` or set AEGIS_ACCESS_TOKEN"
+                    );
+                }
+                let response = client.auth_me().await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_auth_me(&response.user);
+                }
+            }
+            AuthCommands::Logout => {
+                if config.access_token.is_none() {
+                    anyhow::bail!(
+                        "not authenticated; run `aegis auth login --email <EMAIL> --password <PASSWORD>` or set AEGIS_ACCESS_TOKEN"
+                    );
+                }
+                let response = client.auth_logout().await?;
+                clear_token_file(&config.token_path)?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_auth_logout();
+                }
+            }
+        },
         Commands::Status => {
             let health = client.system_health().await?;
             let status = client.system_status().await?;

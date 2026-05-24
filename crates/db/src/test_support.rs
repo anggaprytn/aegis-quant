@@ -29,6 +29,7 @@ const TEST_TABLES: &[&str] = &[
     "market_ticks",
     "system_state",
     "symbols",
+    "sessions",
     "users",
 ];
 

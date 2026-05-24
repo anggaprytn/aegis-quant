@@ -1,4 +1,5 @@
 use aegis_core::PaperTradingPipelineResult;
+use aegis_core::User;
 use colored::Colorize;
 use serde::Serialize;
 
@@ -84,6 +85,21 @@ pub fn print_status(
                 .join(", ")
         );
     }
+}
+
+pub fn print_auth_login(user: &User) {
+    println!("Logged in as {} ({})", user.email, user.role.as_str());
+}
+
+pub fn print_auth_me(user: &User) {
+    println!("User ID: {}", user.id);
+    println!("Email: {}", user.email);
+    println!("Role: {}", user.role.as_str());
+    println!("Status: {}", user.status.as_str());
+}
+
+pub fn print_auth_logout() {
+    println!("Logged out.");
 }
 
 pub fn print_risk_action(response: &RiskActionResponse) {

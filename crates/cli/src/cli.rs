@@ -35,6 +35,8 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    #[command(subcommand)]
+    Auth(AuthCommands),
     Status,
     Metrics(MetricsArgs),
     Kill {
@@ -58,6 +60,21 @@ pub enum Commands {
     Backtest(BacktestCommands),
     #[command(subcommand)]
     Paper(PaperCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuthCommands {
+    Login(AuthLoginArgs),
+    Me,
+    Logout,
+}
+
+#[derive(Debug, Args)]
+pub struct AuthLoginArgs {
+    #[arg(long)]
+    pub email: String,
+    #[arg(long)]
+    pub password: String,
 }
 
 #[derive(Debug, Args)]

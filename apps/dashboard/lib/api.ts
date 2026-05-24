@@ -1,4 +1,8 @@
 import type {
+  AuthLoginRequest,
+  AuthLoginResponse,
+  AuthLogoutResponse,
+  AuthUserResponse,
   ApiError,
   BacktestEquityCurveResponse,
   BacktestRequest,
@@ -52,6 +56,11 @@ import type {
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   "http://localhost:3000";
+const ACCESS_TOKEN_STORAGE_KEY = "aegis_dashboard_access_token";
+let accessToken =
+  typeof window !== "undefined"
+    ? window.sessionStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)
+    : null;
 
 class HttpError extends Error {
   status: number;
@@ -84,8 +93,10 @@ async function request<T>(
     ...init,
     headers: {
       "content-type": "application/json",
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
       ...(init?.headers ?? {}),
     },
+    credentials: "include",
     cache: "no-store",
   });
 
@@ -114,8 +125,10 @@ async function requestText(
   const response = await fetch(withQuery(path, query), {
     ...init,
     headers: {
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
       ...(init?.headers ?? {}),
     },
+    credentials: "include",
     cache: "no-store",
   });
 
@@ -137,6 +150,25 @@ export function getErrorMessage(error: unknown) {
 }
 
 export const api = {
+  setAccessToken: (token: string | null) => {
+    accessToken = token;
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (token) {
+      window.sessionStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+    }
+  },
+  getAccessToken: () => accessToken,
+  login: (payload: AuthLoginRequest) =>
+    request<AuthLoginResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  me: () => request<AuthUserResponse>("/auth/me"),
+  logout: () => request<AuthLogoutResponse>("/auth/logout", { method: "POST", body: "{}" }),
   getSystemHealth: () => request<HealthResponse>("/system/health"),
   getMetricsText: () => requestText("/metrics"),
   getSystemStatus: () => request<StatusResponse>("/system/status"),

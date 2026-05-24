@@ -188,6 +188,28 @@ Frontend constraints:
 - No chart-heavy UX in MVP
 - Defensive rendering around backend errors and optional data shapes
 
+## Auth flow
+
+The operator auth MVP is intentionally local and single-tenant in shape:
+
+```txt
+bootstrap owner from env
+-> Argon2id password hash in users
+-> login validates password
+-> create DB-backed session with hashed refresh token
+-> issue short-lived JWT access token
+-> dashboard/CLI send Bearer token
+-> API middleware resolves AuthenticatedActor
+-> mutating handlers write actor_id into audit/event payloads where practical
+```
+
+Notes:
+
+- Roles are `OWNER`, `OPERATOR`, and `VIEWER`.
+- `OWNER` controls risk config updates, strategy config updates, and kill-switch resume.
+- Dashboard and CLI both use the same `/auth/*` API surface.
+- `AEGIS_AUTH_DISABLED=true` bypasses login for local development by injecting a synthetic OWNER actor.
+
 ## Cockpit observability flow
 
 The operational cockpit should expose persisted truth from the backend rather than reconstructing links in the browser:

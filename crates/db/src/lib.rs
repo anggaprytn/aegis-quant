@@ -7,8 +7,8 @@ use aegis_core::{
     PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
     PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
     RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
-    RiskEvaluationResult, Side, SignalReason, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal, Symbol,
+    RiskEvaluationResult, Session, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigVersion, StrategyId, StrategySignal, Symbol, User, UserRole, UserStatus,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -50,6 +50,31 @@ pub struct SystemEventRecord {
     pub payload: Value,
     pub occurred_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRecord {
+    pub id: Uuid,
+    pub email: String,
+    pub password_hash: String,
+    pub role: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_login_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub refresh_token_hash: String,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub user_agent: Option<String>,
+    pub ip_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -511,6 +536,298 @@ pub async fn check_health(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
+pub async fn count_users(pool: &PgPool) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+        .fetch_one(pool)
+        .await?)
+}
+
+pub async fn get_user_by_email(pool: &PgPool, email: &str) -> Result<Option<UserRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            email,
+            password_hash,
+            role,
+            status,
+            created_at,
+            updated_at,
+            last_login_at
+        FROM users
+        WHERE lower(email) = lower($1)
+        "#,
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| map_user(&row)))
+}
+
+pub async fn get_user_by_id(pool: &PgPool, user_id: Uuid) -> Result<Option<UserRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            email,
+            password_hash,
+            role,
+            status,
+            created_at,
+            updated_at,
+            last_login_at
+        FROM users
+        WHERE id = $1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| map_user(&row)))
+}
+
+pub async fn insert_user(
+    pool: &PgPool,
+    id: Uuid,
+    email: &str,
+    password_hash: &str,
+    role: UserRole,
+    status: UserStatus,
+) -> Result<UserRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO users (
+            id,
+            email,
+            password_hash,
+            role,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, lower($2), $3, $4, $5, NOW(), NOW())
+        RETURNING
+            id,
+            email,
+            password_hash,
+            role,
+            status,
+            created_at,
+            updated_at,
+            last_login_at
+        "#,
+    )
+    .bind(id)
+    .bind(email)
+    .bind(password_hash)
+    .bind(role.as_str())
+    .bind(status.as_str())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_user(&row))
+}
+
+pub async fn update_user_last_login(
+    pool: &PgPool,
+    user_id: Uuid,
+    logged_in_at: DateTime<Utc>,
+) -> Result<UserRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE users
+        SET
+            last_login_at = $2,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING
+            id,
+            email,
+            password_hash,
+            role,
+            status,
+            created_at,
+            updated_at,
+            last_login_at
+        "#,
+    )
+    .bind(user_id)
+    .bind(logged_in_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_user(&row))
+}
+
+pub async fn insert_session(
+    pool: &PgPool,
+    id: Uuid,
+    user_id: Uuid,
+    refresh_token_hash: &str,
+    expires_at: DateTime<Utc>,
+    user_agent: Option<&str>,
+    ip_address: Option<&str>,
+) -> Result<SessionRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO sessions (
+            id,
+            user_id,
+            refresh_token_hash,
+            expires_at,
+            user_agent,
+            ip_address,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+        RETURNING
+            id,
+            user_id,
+            refresh_token_hash,
+            expires_at,
+            revoked_at,
+            created_at,
+            updated_at,
+            user_agent,
+            ip_address
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(refresh_token_hash)
+    .bind(expires_at)
+    .bind(user_agent)
+    .bind(ip_address)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_session(&row))
+}
+
+pub async fn get_session_by_id(pool: &PgPool, session_id: Uuid) -> Result<Option<SessionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            user_id,
+            refresh_token_hash,
+            expires_at,
+            revoked_at,
+            created_at,
+            updated_at,
+            user_agent,
+            ip_address
+        FROM sessions
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| map_session(&row)))
+}
+
+pub async fn get_session_by_id_and_hash(
+    pool: &PgPool,
+    session_id: Uuid,
+    refresh_token_hash: &str,
+) -> Result<Option<SessionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            user_id,
+            refresh_token_hash,
+            expires_at,
+            revoked_at,
+            created_at,
+            updated_at,
+            user_agent,
+            ip_address
+        FROM sessions
+        WHERE id = $1
+          AND refresh_token_hash = $2
+        "#,
+    )
+    .bind(session_id)
+    .bind(refresh_token_hash)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| map_session(&row)))
+}
+
+pub async fn rotate_session_refresh_token(
+    pool: &PgPool,
+    session_id: Uuid,
+    current_refresh_token_hash: &str,
+    next_refresh_token_hash: &str,
+    expires_at: DateTime<Utc>,
+    user_agent: Option<&str>,
+    ip_address: Option<&str>,
+) -> Result<Option<SessionRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE sessions
+        SET
+            refresh_token_hash = $3,
+            expires_at = $4,
+            updated_at = NOW(),
+            user_agent = COALESCE($5, user_agent),
+            ip_address = COALESCE($6, ip_address)
+        WHERE id = $1
+          AND refresh_token_hash = $2
+          AND revoked_at IS NULL
+        RETURNING
+            id,
+            user_id,
+            refresh_token_hash,
+            expires_at,
+            revoked_at,
+            created_at,
+            updated_at,
+            user_agent,
+            ip_address
+        "#,
+    )
+    .bind(session_id)
+    .bind(current_refresh_token_hash)
+    .bind(next_refresh_token_hash)
+    .bind(expires_at)
+    .bind(user_agent)
+    .bind(ip_address)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| map_session(&row)))
+}
+
+pub async fn revoke_session(
+    pool: &PgPool,
+    session_id: Uuid,
+    revoked_at: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE sessions
+        SET
+            revoked_at = COALESCE(revoked_at, $2),
+            updated_at = NOW()
+        WHERE id = $1
+        "#,
+    )
+    .bind(session_id)
+    .bind(revoked_at)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 pub async fn ensure_system_state(pool: &PgPool) -> Result<SystemStateRecord> {
     let bootstrap_correlation_id = Uuid::new_v4();
     let row = sqlx::query(
@@ -701,6 +1018,32 @@ pub async fn insert_system_event(
     .await?;
 
     Ok(map_system_event(&row))
+}
+
+pub async fn insert_audit_log(
+    pool: &PgPool,
+    correlation_id: Uuid,
+    actor: &StateActor,
+    action: &str,
+    target: &str,
+    metadata: &Value,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO audit_logs (id, correlation_id, actor, action, target, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(correlation_id)
+    .bind(&actor.actor)
+    .bind(action)
+    .bind(target)
+    .bind(metadata)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn load_risk_state_snapshot(pool: &PgPool) -> Result<risk_engine::RiskStateSnapshot> {
@@ -4974,6 +5317,31 @@ pub fn backtest_config_from_value(value: &Value) -> Result<BacktestConfig> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
+pub fn user_from_record(record: &UserRecord) -> Result<User> {
+    Ok(User {
+        id: record.id,
+        email: record.email.clone(),
+        role: record.role.parse()?,
+        status: record.status.parse()?,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        last_login_at: record.last_login_at,
+    })
+}
+
+pub fn session_from_record(record: &SessionRecord) -> Session {
+    Session {
+        id: record.id,
+        user_id: record.user_id,
+        expires_at: record.expires_at,
+        revoked_at: record.revoked_at,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        user_agent: record.user_agent.clone(),
+        ip_address: record.ip_address.clone(),
+    }
+}
+
 fn map_risk_decision(row: &sqlx::postgres::PgRow) -> RiskDecisionRecord {
     let rationale = row.get::<String, _>("rationale");
     let rationale_json = serde_json::from_str::<Value>(&rationale).ok();
@@ -5009,6 +5377,33 @@ fn map_system_state(row: &sqlx::postgres::PgRow) -> SystemStateRecord {
         updated_by_actor_id: row.get("updated_by_actor_id"),
         last_correlation_id: row.get("last_correlation_id"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_user(row: &sqlx::postgres::PgRow) -> UserRecord {
+    UserRecord {
+        id: row.get("id"),
+        email: row.get("email"),
+        password_hash: row.get("password_hash"),
+        role: row.get("role"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        last_login_at: row.get("last_login_at"),
+    }
+}
+
+fn map_session(row: &sqlx::postgres::PgRow) -> SessionRecord {
+    SessionRecord {
+        id: row.get("id"),
+        user_id: row.get("user_id"),
+        refresh_token_hash: row.get("refresh_token_hash"),
+        expires_at: row.get("expires_at"),
+        revoked_at: row.get("revoked_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        user_agent: row.get("user_agent"),
+        ip_address: row.get("ip_address"),
     }
 }
 
@@ -5647,6 +6042,7 @@ async fn insert_order_audit_log(
     action: &str,
 ) -> std::result::Result<(), CreateOrderError> {
     let metadata = json!({
+        "actor_id": actor.actor_id,
         "order_id": order.intent.order_id,
         "risk_decision_id": order.intent.risk_decision_id,
         "idempotency_key": order.intent.idempotency_key,
