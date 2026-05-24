@@ -8,12 +8,13 @@ use aegis_core::{
     RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDryRunRequest, StrategyDryRunResult, StrategyPerformanceSummary,
-    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyPerformanceSummary, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -658,6 +659,24 @@ impl ApiClient {
             },
         )
         .await
+    }
+
+    pub async fn strategy_diagnostics(
+        &self,
+        strategy_id: &str,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+        limit: i64,
+    ) -> Result<StrategyDiagnosticsResponse, ApiClientError> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(symbol) = symbol {
+            query.push(("symbol", symbol));
+        }
+        if let Some(timeframe) = timeframe {
+            query.push(("timeframe", timeframe));
+        }
+        self.get(&format!("/strategy/{strategy_id}/diagnostics"), &query)
+            .await
     }
 
     pub async fn enable_strategy(
@@ -1641,6 +1660,14 @@ pub struct StrategyConfigAuditResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyDryRunResponse {
     pub result: StrategyDryRunResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyDiagnosticsResponse {
+    pub result: StrategyDiagnosticsResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

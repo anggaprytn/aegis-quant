@@ -1,8 +1,10 @@
 use aegis_core::{
     Candle, CandleInterval, CoreError, SignalConfidence, SignalReason, SignalSide, StrategyConfig,
     StrategyConfigUpdateRequest, StrategyConfigValidationIssue, StrategyConfigValidationResult,
-    StrategyConfigValidationSeverity, StrategyEvaluationContext, StrategyEvaluationResult,
-    StrategyId, StrategyMode, StrategySignal,
+    StrategyConfigValidationSeverity, StrategyDataHealth, StrategyDiagnosticCheck,
+    StrategyDiagnosticSeverity, StrategyDiagnosticsDecision, StrategyDiagnosticsResult,
+    StrategyEvaluationContext, StrategyEvaluationResult, StrategyId, StrategyMode,
+    StrategyNoSignalReason, StrategySignal,
 };
 use chrono::Utc;
 use rust_decimal::Decimal;
@@ -304,6 +306,160 @@ pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluation
     }
 }
 
+pub fn diagnose(
+    context: StrategyEvaluationContext,
+) -> Result<StrategyDiagnosticsResult, CoreError> {
+    context.config.validate()?;
+
+    if context.config.strategy_id != context.strategy_id {
+        return Err(CoreError::UnsupportedStrategyId(format!(
+            "strategy config does not match evaluation target: {} != {}",
+            context.config.strategy_id, context.strategy_id
+        )));
+    }
+
+    let candles = normalize_closed_candles(&context.candles);
+    let required_closed_candles = required_candle_count(&context.config);
+    let latest_closed_candle_time = candles.last().map(|candle| candle.close_time);
+    let latest_closed_candle_age_ms = latest_closed_candle_time.map(|timestamp| {
+        context
+            .evaluated_at
+            .signed_duration_since(timestamp)
+            .num_milliseconds()
+    });
+    let stale = latest_closed_candle_age_ms
+        .map(|age_ms| age_ms > context.config.max_signal_age_ms)
+        .unwrap_or(false);
+    let data_health = StrategyDataHealth {
+        required_lookback_candles: context.config.lookback_candles,
+        required_closed_candles,
+        available_closed_candles: candles.len() as i64,
+        latest_closed_candle_time,
+        latest_closed_candle_age_ms,
+        stale,
+        latest_closes: candles
+            .iter()
+            .rev()
+            .take(20)
+            .map(|candle| format!("{} close={}", candle.close_time.to_rfc3339(), candle.close))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+    };
+
+    let mut condition_checks = Vec::new();
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "strategy_enabled".to_string(),
+        passed: context.config.enabled,
+        severity: if context.config.enabled {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if context.config.enabled {
+            "Strategy is enabled.".to_string()
+        } else {
+            "Strategy is disabled in configuration.".to_string()
+        },
+        actual: Some(context.config.enabled.to_string()),
+        expected: Some("true".to_string()),
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "closed_candle_coverage".to_string(),
+        passed: data_health.available_closed_candles >= data_health.required_closed_candles,
+        severity: if data_health.available_closed_candles >= data_health.required_closed_candles {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!(
+            "Found {} closed candles; strategy needs {}.",
+            data_health.available_closed_candles, data_health.required_closed_candles
+        ),
+        actual: Some(data_health.available_closed_candles.to_string()),
+        expected: Some(format!(">= {}", data_health.required_closed_candles)),
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "closed_candle_freshness".to_string(),
+        passed: !stale,
+        severity: if stale {
+            StrategyDiagnosticSeverity::Warn
+        } else {
+            StrategyDiagnosticSeverity::Info
+        },
+        message: match latest_closed_candle_age_ms {
+            Some(age_ms) => format!(
+                "Latest closed candle age is {} ms; max signal age is {} ms.",
+                age_ms, context.config.max_signal_age_ms
+            ),
+            None => "No closed candle is available to evaluate freshness.".to_string(),
+        },
+        actual: latest_closed_candle_age_ms.map(|value| value.to_string()),
+        expected: Some(format!("<= {}", context.config.max_signal_age_ms)),
+    });
+
+    let final_result = if !context.config.enabled {
+        DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::StrategyDisabled,
+            no_signal_reason: Some(StrategyNoSignalReason::StrategyDisabled),
+            summary: "Strategy is disabled, so it would not emit a signal.".to_string(),
+            source_candle_open_time: None,
+            confidence: None,
+        }
+    } else if data_health.available_closed_candles < data_health.required_closed_candles {
+        DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::InsufficientData,
+            no_signal_reason: Some(StrategyNoSignalReason::InsufficientCandles),
+            summary: format!(
+                "Only {} closed candles are available, below the required {} candles.",
+                data_health.available_closed_candles, data_health.required_closed_candles
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        }
+    } else if stale {
+        DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::StaleData,
+            no_signal_reason: Some(StrategyNoSignalReason::StaleData),
+            summary: match latest_closed_candle_age_ms {
+                Some(age_ms) => format!(
+                    "Latest closed candle is stale at {} ms old; max signal age is {} ms.",
+                    age_ms, context.config.max_signal_age_ms
+                ),
+                None => "No closed candle is available, so data is stale.".to_string(),
+            },
+            source_candle_open_time: None,
+            confidence: None,
+        }
+    } else {
+        match context.strategy_id {
+            StrategyId::MomentumV1 => diagnose_momentum(&context, &candles, &mut condition_checks),
+            StrategyId::VolatilityBreakoutV1 => {
+                diagnose_breakout(&context, &candles, &mut condition_checks)
+            }
+        }?
+    };
+
+    Ok(StrategyDiagnosticsResult {
+        strategy_id: context.strategy_id.to_string(),
+        symbol: context.symbol.as_str().to_string(),
+        timeframe: context.config.timeframe.as_str().to_string(),
+        strategy_enabled: context.config.enabled,
+        config_valid: true,
+        validation_issues: Vec::new(),
+        data_health,
+        condition_checks,
+        final_decision: final_result.final_decision,
+        no_signal_reason: final_result.no_signal_reason,
+        summary: final_result.summary,
+        source_candle_open_time: final_result.source_candle_open_time,
+        confidence: final_result.confidence,
+        correlation_id: context.correlation_id,
+        evaluated_at: context.evaluated_at,
+    })
+}
+
 fn evaluate_momentum(
     context: &StrategyEvaluationContext,
     candles: Vec<Candle>,
@@ -422,6 +578,226 @@ fn generated_result(
         signal: Some(signal),
         correlation_id: context.correlation_id,
         evaluated_at: context.evaluated_at,
+    })
+}
+
+#[derive(Debug)]
+struct DiagnosticOutcome {
+    final_decision: StrategyDiagnosticsDecision,
+    no_signal_reason: Option<StrategyNoSignalReason>,
+    summary: String,
+    source_candle_open_time: Option<chrono::DateTime<Utc>>,
+    confidence: Option<Decimal>,
+}
+
+fn diagnose_momentum(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    let recent = &candles[candles.len() - required_candle_count(&context.config) as usize..];
+    let is_higher_closes = recent.windows(2).all(|pair| pair[1].close > pair[0].close);
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "momentum_higher_closes".to_string(),
+        passed: is_higher_closes,
+        severity: if is_higher_closes {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if is_higher_closes {
+            "Each close in the lookback window is strictly higher than the previous close."
+                .to_string()
+        } else {
+            "Momentum requires strictly higher closes across the lookback window, but the sequence breaks."
+                .to_string()
+        },
+        actual: Some(
+            recent
+                .iter()
+                .map(|candle| candle.close.to_string())
+                .collect::<Vec<_>>()
+                .join(" -> "),
+        ),
+        expected: Some("strictly increasing closes".to_string()),
+    });
+
+    if !is_higher_closes {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::MomentumNotStrictlyHigherCloses),
+            summary: format!(
+                "Momentum did not trigger because the latest {} closes are not strictly increasing.",
+                recent.len()
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let confidence = Decimal::new(65, 2);
+    let confidence_passed = context
+        .config
+        .confidence_floor
+        .map(|floor| confidence >= floor)
+        .unwrap_or(true);
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "confidence_floor".to_string(),
+        passed: confidence_passed,
+        severity: if confidence_passed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: match context.config.confidence_floor {
+            Some(floor) if confidence_passed => {
+                format!(
+                    "Deterministic confidence {} meets configured floor {}.",
+                    confidence, floor
+                )
+            }
+            Some(floor) => {
+                format!(
+                    "Deterministic confidence {} is below configured floor {}.",
+                    confidence, floor
+                )
+            }
+            None => "No confidence floor is configured.".to_string(),
+        },
+        actual: Some(confidence.to_string()),
+        expected: context
+            .config
+            .confidence_floor
+            .map(|value| format!(">= {value}")),
+    });
+
+    if !confidence_passed {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::ConfidenceBelowFloor),
+            summary: format!(
+                "Momentum conditions passed, but confidence {} is below the configured floor.",
+                confidence
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    Ok(DiagnosticOutcome {
+        final_decision: StrategyDiagnosticsDecision::WouldSignal,
+        no_signal_reason: None,
+        summary: format!(
+            "Momentum would signal because the latest {} closes are strictly increasing.",
+            recent.len()
+        ),
+        source_candle_open_time: recent.last().map(|candle| candle.open_time),
+        confidence: Some(confidence),
+    })
+}
+
+fn diagnose_breakout(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    let recent = &candles[candles.len() - required_candle_count(&context.config) as usize..];
+    let latest = recent.last().expect("recent candles must be present");
+    let previous_window = &recent[..recent.len() - 1];
+    let recent_high = previous_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .expect("previous window must be present");
+    let breakout = latest.close > recent_high;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakout_above_recent_high".to_string(),
+        passed: breakout,
+        severity: if breakout {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if breakout {
+            "Latest close is above the highest high in the prior lookback window.".to_string()
+        } else {
+            "Latest close is not above the highest high in the prior lookback window.".to_string()
+        },
+        actual: Some(latest.close.to_string()),
+        expected: Some(format!("> {}", recent_high)),
+    });
+
+    if !breakout {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::BreakoutNotAboveRecentHigh),
+            summary: format!(
+                "Breakout did not trigger because latest close {} is not above recent high {}.",
+                latest.close, recent_high
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let confidence = Decimal::new(70, 2);
+    let confidence_passed = context
+        .config
+        .confidence_floor
+        .map(|floor| confidence >= floor)
+        .unwrap_or(true);
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "confidence_floor".to_string(),
+        passed: confidence_passed,
+        severity: if confidence_passed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: match context.config.confidence_floor {
+            Some(floor) if confidence_passed => {
+                format!(
+                    "Deterministic confidence {} meets configured floor {}.",
+                    confidence, floor
+                )
+            }
+            Some(floor) => {
+                format!(
+                    "Deterministic confidence {} is below configured floor {}.",
+                    confidence, floor
+                )
+            }
+            None => "No confidence floor is configured.".to_string(),
+        },
+        actual: Some(confidence.to_string()),
+        expected: context
+            .config
+            .confidence_floor
+            .map(|value| format!(">= {value}")),
+    });
+
+    if !confidence_passed {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::ConfidenceBelowFloor),
+            summary: format!(
+                "Breakout conditions passed, but confidence {} is below the configured floor.",
+                confidence
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    Ok(DiagnosticOutcome {
+        final_decision: StrategyDiagnosticsDecision::WouldSignal,
+        no_signal_reason: None,
+        summary: format!(
+            "Breakout would signal because latest close {} is above recent high {}.",
+            latest.close, recent_high
+        ),
+        source_candle_open_time: Some(latest.open_time),
+        confidence: Some(confidence),
     })
 }
 
@@ -557,12 +933,13 @@ fn normalize_notes(notes: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_default_strategy_configs, evaluate, required_candle_count, validate_strategy_config,
-        StrategyValidationContext,
+        build_default_strategy_configs, diagnose, evaluate, required_candle_count,
+        validate_strategy_config, StrategyValidationContext,
     };
     use aegis_core::{
         Candle, CandleInterval, MarketDataSource, SignalReason, StrategyConfigUpdateRequest,
-        StrategyEvaluationContext, StrategyId, StrategyMode, Symbol,
+        StrategyDiagnosticsDecision, StrategyEvaluationContext, StrategyId, StrategyMode,
+        StrategyNoSignalReason, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -592,6 +969,18 @@ mod tests {
     }
 
     fn context(strategy_id: StrategyId, candles: Vec<Candle>) -> StrategyEvaluationContext {
+        let evaluated_at = candles
+            .last()
+            .map(|candle| candle.close_time + Duration::seconds(1))
+            .unwrap_or_else(Utc::now);
+        context_at(strategy_id, candles, evaluated_at)
+    }
+
+    fn context_at(
+        strategy_id: StrategyId,
+        candles: Vec<Candle>,
+        evaluated_at: chrono::DateTime<Utc>,
+    ) -> StrategyEvaluationContext {
         let configs = build_default_strategy_configs(
             vec![Symbol::new("BTCUSDT").expect("valid symbol")],
             CandleInterval::OneMinute,
@@ -610,7 +999,7 @@ mod tests {
             symbol: Symbol::new("BTCUSDT").expect("valid symbol"),
             config,
             candles,
-            evaluated_at: Utc::now(),
+            evaluated_at,
         }
     }
 
@@ -698,6 +1087,103 @@ mod tests {
 
         assert!(!result.generated);
         assert_eq!(result.reason, SignalReason::ConditionsNotMet);
+    }
+
+    #[test]
+    fn momentum_diagnostics_explain_no_signal() {
+        let candles = vec![
+            sample_candle(0, 100, 101, true),
+            sample_candle(1, 101, 102, true),
+            sample_candle(2, 99, 102, true),
+            sample_candle(3, 100, 101, true),
+        ];
+
+        let result =
+            diagnose(context(StrategyId::MomentumV1, candles)).expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::MomentumNotStrictlyHigherCloses)
+        );
+        assert!(result.summary.contains("not strictly increasing"));
+    }
+
+    #[test]
+    fn momentum_diagnostics_explain_would_signal() {
+        let candles = vec![
+            sample_candle(0, 100, 101, true),
+            sample_candle(1, 101, 102, true),
+            sample_candle(2, 103, 104, true),
+            sample_candle(3, 106, 107, true),
+        ];
+
+        let result =
+            diagnose(context(StrategyId::MomentumV1, candles)).expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.final_decision,
+            StrategyDiagnosticsDecision::WouldSignal
+        );
+        assert_eq!(result.no_signal_reason, None);
+        assert!(result.summary.contains("would signal"));
+    }
+
+    #[test]
+    fn diagnostics_explain_insufficient_candles() {
+        let candles = vec![
+            sample_candle(0, 100, 101, true),
+            sample_candle(1, 101, 102, true),
+        ];
+
+        let result =
+            diagnose(context(StrategyId::MomentumV1, candles)).expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.final_decision,
+            StrategyDiagnosticsDecision::InsufficientData
+        );
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::InsufficientCandles)
+        );
+        assert!(result.summary.contains("below the required"));
+    }
+
+    #[test]
+    fn breakout_diagnostics_explain_no_signal() {
+        let mut candles = (0..20)
+            .map(|index| sample_candle(index, 100 + index, 120 + index, true))
+            .collect::<Vec<_>>();
+        candles.push(sample_candle(20, 120, 121, true));
+
+        let result = diagnose(context(StrategyId::VolatilityBreakoutV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::BreakoutNotAboveRecentHigh)
+        );
+        assert!(result.summary.contains("not above recent high"));
+    }
+
+    #[test]
+    fn breakout_diagnostics_explain_would_signal() {
+        let mut candles = (0..20)
+            .map(|index| sample_candle(index, 100 + index, 101 + index, true))
+            .collect::<Vec<_>>();
+        candles.push(sample_candle(20, 130, 131, true));
+
+        let result = diagnose(context(StrategyId::VolatilityBreakoutV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.final_decision,
+            StrategyDiagnosticsDecision::WouldSignal
+        );
+        assert_eq!(result.no_signal_reason, None);
+        assert!(result.summary.contains("would signal"));
     }
 
     #[test]

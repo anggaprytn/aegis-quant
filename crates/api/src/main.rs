@@ -34,11 +34,13 @@ use aegis_core::{
     RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
     StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
     StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyEvaluationContext, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
-    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyNoSignalReason,
+    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyPerformanceSummary,
+    StrategyPnlBreakdown, StrategyStatus, Symbol, TestnetExecutionState,
+    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetRepairAction, TestnetRepairActionStatus,
     TestnetRepairRequest, TestnetRepairResult, TestnetRepairValidationIssue,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -129,8 +131,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use strategy_engine::{
-    build_default_strategy_configs, evaluate as evaluate_strategy, required_candle_count,
-    validate_strategy_config, StrategyValidationContext,
+    build_default_strategy_configs, diagnose as diagnose_strategy, evaluate as evaluate_strategy,
+    required_candle_count, validate_strategy_config, StrategyValidationContext,
 };
 use telemetry::telemetry;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -1334,6 +1336,13 @@ struct RecentSignalsQuery {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct StrategyDiagnosticsQuery {
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    limit: Option<i64>,
+}
+
 #[derive(Serialize)]
 struct RecentSignalsResponse {
     signals: Vec<SignalRecord>,
@@ -1393,6 +1402,14 @@ struct StrategyConfigAuditResponse {
 #[derive(Serialize)]
 struct StrategyDryRunResponse {
     result: StrategyDryRunResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyDiagnosticsResponse {
+    result: StrategyDiagnosticsResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1913,6 +1930,10 @@ async fn main() {
         .route("/strategy/:id/disable", post(disable_strategy))
         .route("/strategy/:id/evaluate", post(evaluate_strategy_handler))
         .route("/strategy/:id/dry-run", post(strategy_dry_run_handler))
+        .route(
+            "/strategy/:id/diagnostics",
+            get(strategy_diagnostics_handler),
+        )
         .route("/signals/recent", get(get_recent_signals))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -2760,6 +2781,41 @@ fn evaluate_strategy_response(
             source_candle_open_time: None,
             correlation_id,
         },
+    }
+}
+
+fn build_data_health(
+    config: &StrategyConfig,
+    candles: &[aegis_core::Candle],
+    evaluated_at: DateTime<Utc>,
+    limit: i64,
+) -> StrategyDataHealth {
+    let latest_closed_candle_time = candles.last().map(|candle| candle.close_time);
+    let latest_closed_candle_age_ms = latest_closed_candle_time.map(|timestamp| {
+        evaluated_at
+            .signed_duration_since(timestamp)
+            .num_milliseconds()
+    });
+    let stale = latest_closed_candle_age_ms
+        .map(|age_ms| age_ms > config.max_signal_age_ms)
+        .unwrap_or(false);
+
+    StrategyDataHealth {
+        required_lookback_candles: config.lookback_candles,
+        required_closed_candles: required_candle_count(config),
+        available_closed_candles: candles.len() as i64,
+        latest_closed_candle_time,
+        latest_closed_candle_age_ms,
+        stale,
+        latest_closes: candles
+            .iter()
+            .rev()
+            .take(limit as usize)
+            .map(|candle| format!("{} close={}", candle.close_time.to_rfc3339(), candle.close))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
     }
 }
 
@@ -12614,6 +12670,205 @@ async fn enable_strategy(
     toggle_strategy_status(state, id, StrategyStatus::Enabled, request, actor).await
 }
 
+async fn strategy_diagnostics_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<StrategyDiagnosticsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let persisted = match ensure_strategy_config(&state, strategy_id).await {
+        Ok(config) => config,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_strategy_config",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let symbol = match query
+        .symbol
+        .clone()
+        .map(Symbol::new)
+        .transpose()
+        .map_err(|err| err.to_string())
+    {
+        Ok(Some(symbol)) => symbol,
+        Ok(None) => default_strategy_symbol(&persisted),
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let timeframe = if let Some(raw) = query.timeframe.as_deref() {
+        match raw.parse::<CandleInterval>() {
+            Ok(timeframe) => timeframe,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_timeframe",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        persisted.timeframe
+    };
+
+    let limit = bounded_limit(query.limit);
+    let validation = validate_strategy_config(
+        &strategy_update_request_from_config(&persisted),
+        &strategy_validation_context(&state),
+    );
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let candle_limit = required_candle_count(&persisted).max(limit);
+    let candles =
+        match get_recent_closed_candles(&state.db_pool, &symbol, timeframe, candle_limit).await {
+            Ok(candles) => candles,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_closed_candles",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+    let evaluated_at = Utc::now();
+
+    let mut result = if !validation.valid {
+        StrategyDiagnosticsResult {
+            strategy_id: strategy_id.to_string(),
+            symbol: symbol.as_str().to_string(),
+            timeframe: timeframe.as_str().to_string(),
+            strategy_enabled: persisted.enabled,
+            config_valid: false,
+            validation_issues: validation.issues.clone(),
+            data_health: build_data_health(&persisted, &candles, evaluated_at, limit),
+            condition_checks: vec![StrategyDiagnosticCheck {
+                name: "config_validation".to_string(),
+                passed: false,
+                severity: aegis_core::StrategyDiagnosticSeverity::Error,
+                message: format!(
+                    "Strategy config has {} validation issue(s).",
+                    validation.issues.len()
+                ),
+                actual: Some(validation.issues.len().to_string()),
+                expected: Some("0".to_string()),
+            }],
+            final_decision: StrategyDiagnosticsDecision::InvalidConfig,
+            no_signal_reason: Some(StrategyNoSignalReason::InvalidConfig),
+            summary: format!(
+                "Strategy config is invalid: {}",
+                validation
+                    .issues
+                    .iter()
+                    .map(|issue| issue.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+            correlation_id,
+            evaluated_at,
+        }
+    } else {
+        match diagnose_strategy(StrategyEvaluationContext {
+            correlation_id,
+            strategy_id,
+            symbol: symbol.clone(),
+            config: StrategyConfig {
+                timeframe,
+                ..persisted.clone()
+            },
+            candles,
+            evaluated_at,
+        }) {
+            Ok(result) => result,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_evaluate_strategy_diagnostics",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    };
+    result.data_health.latest_closes = result
+        .data_health
+        .latest_closes
+        .into_iter()
+        .rev()
+        .take(limit as usize)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    (
+        StatusCode::OK,
+        Json(StrategyDiagnosticsResponse {
+            result,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
 async fn disable_strategy(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -13139,9 +13394,9 @@ mod tests {
         preview_exchange_testnet_shadow_promotion_handler,
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
         repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
-        route_access, run_exchange_testnet_shadow_handler, submit_exchange_testnet_pipeline,
-        submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
-        ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
+        route_access, run_exchange_testnet_shadow_handler, strategy_diagnostics_handler,
+        submit_exchange_testnet_pipeline, submit_exchange_testnet_shadow_promotion_handler,
+        AppConfig, AppState, ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
         ExecutionReadinessSnapshotsResponse, RequestContext, StrategyRuntimeConfig,
         TestnetShadowPromotionResponse, TestnetShadowPromotionSubmitResponse,
         TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
@@ -13848,6 +14103,10 @@ mod tests {
     fn strategy_test_router(state: AppState) -> Router {
         Router::new()
             .route("/strategy/list", get(get_strategy_list))
+            .route(
+                "/strategy/:id/diagnostics",
+                get(strategy_diagnostics_handler),
+            )
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 request_context_middleware,
@@ -14168,6 +14427,22 @@ mod tests {
             .get::<i64, _>("count")
     }
 
+    async fn count_signals(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM signals")
+            .fetch_one(pool)
+            .await
+            .expect("signal count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_risk_decisions(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM risk_decisions")
+            .fetch_one(pool)
+            .await
+            .expect("risk decision count")
+            .get::<i64, _>("count")
+    }
+
     async fn count_paper_equity_snapshots(pool: &PgPool) -> i64 {
         sqlx::query("SELECT COUNT(*) AS count FROM paper_equity_snapshots")
             .fetch_one(pool)
@@ -14368,6 +14643,44 @@ mod tests {
             .await
             .expect("strategy config count");
         assert_eq!(config_count, 2);
+    }
+
+    #[tokio::test]
+    async fn strategy_diagnostics_reads_closed_candles_without_mutating_state() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = strategy_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        seed_shadow_candles(&test_db.pool, "BTCUSDT", &[100_000, 99_900, 99_800, 99_700]).await;
+
+        let before_signals = count_signals(&test_db.pool).await;
+        let before_risk_decisions = count_risk_decisions(&test_db.pool).await;
+        let before_orders = count_paper_orders(&test_db.pool).await;
+
+        let response = app
+            .oneshot(get_request(
+                "/strategy/momentum_v1/diagnostics?symbol=BTCUSDT&timeframe=1m&limit=20",
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload = response_json::<Value>(response).await;
+        let decision = payload["result"]["final_decision"]
+            .as_str()
+            .expect("final decision");
+        assert!(matches!(decision, "NO_SIGNAL" | "WOULD_SIGNAL"));
+        assert_eq!(
+            payload["result"]["data_health"]["available_closed_candles"].as_i64(),
+            Some(4)
+        );
+        assert_eq!(count_signals(&test_db.pool).await, before_signals);
+        assert_eq!(
+            count_risk_decisions(&test_db.pool).await,
+            before_risk_decisions
+        );
+        assert_eq!(count_paper_orders(&test_db.pool).await, before_orders);
     }
 
     async fn insert_recent_closed_candle(pool: &PgPool, symbol: &str, close: Decimal) {

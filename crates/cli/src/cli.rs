@@ -534,6 +534,7 @@ pub enum StrategyCommands {
     #[command(subcommand)]
     Config(StrategyConfigCommands),
     DryRun(StrategyDryRunArgs),
+    Diagnostics(StrategyDiagnosticsArgs),
     Enable {
         strategy_id: String,
     },
@@ -589,6 +590,17 @@ pub struct StrategyDryRunArgs {
     pub symbol: Option<String>,
     #[arg(long)]
     pub timeframe: Option<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct StrategyDiagnosticsArgs {
+    pub strategy_id: String,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Subcommand)]

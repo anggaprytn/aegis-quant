@@ -875,6 +875,69 @@ export type StrategyDryRunResponse = {
   timestamp: string;
 };
 
+export type StrategyDiagnosticSeverity = "INFO" | "WARN" | "ERROR";
+
+export type StrategyDiagnosticsDecision =
+  | "WOULD_SIGNAL"
+  | "NO_SIGNAL"
+  | "INSUFFICIENT_DATA"
+  | "STRATEGY_DISABLED"
+  | "INVALID_CONFIG"
+  | "STALE_DATA";
+
+export type StrategyNoSignalReason =
+  | "MOMENTUM_NOT_STRICTLY_HIGHER_CLOSES"
+  | "BREAKOUT_NOT_ABOVE_RECENT_HIGH"
+  | "CONFIDENCE_BELOW_FLOOR"
+  | "INSUFFICIENT_CANDLES"
+  | "STRATEGY_DISABLED"
+  | "INVALID_CONFIG"
+  | "STALE_DATA";
+
+export type StrategyDiagnosticCheck = {
+  name: string;
+  passed: boolean;
+  severity: StrategyDiagnosticSeverity;
+  message: string;
+  actual: string | null;
+  expected: string | null;
+};
+
+export type StrategyDataHealth = {
+  required_lookback_candles: number;
+  required_closed_candles: number;
+  available_closed_candles: number;
+  latest_closed_candle_time: string | null;
+  latest_closed_candle_age_ms: number | null;
+  stale: boolean;
+  latest_closes: string[];
+};
+
+export type StrategyDiagnosticsResult = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  strategy_enabled: boolean;
+  config_valid: boolean;
+  validation_issues: StrategyConfigValidationIssue[];
+  data_health: StrategyDataHealth;
+  condition_checks: StrategyDiagnosticCheck[];
+  final_decision: StrategyDiagnosticsDecision;
+  no_signal_reason: StrategyNoSignalReason | null;
+  summary: string;
+  source_candle_open_time: string | null;
+  confidence: string | null;
+  correlation_id: string;
+  evaluated_at: string;
+};
+
+export type StrategyDiagnosticsResponse = {
+  result: StrategyDiagnosticsResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type EvaluateStrategyResponse = {
   strategy_id: string;
   symbol: string;

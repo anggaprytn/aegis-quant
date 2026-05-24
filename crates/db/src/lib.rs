@@ -6438,10 +6438,16 @@ async fn fetch_signals_and_risk_breakdown(
             COUNT(*) FILTER (WHERE rd.decision = 'REJECTED')::BIGINT AS rejected_count
         FROM risk_decisions rd
         LEFT JOIN signals s ON s.id = rd.signal_id
-        WHERE rd.created_at >= $1
-          AND rd.created_at <= $2
-          AND ($3::TEXT IS NULL OR rd.strategy_id = $3)
-          AND ($4::TEXT IS NULL OR rd.symbol = $4)
+        WHERE rd.decided_at >= $1
+          AND rd.decided_at <= $2
+          AND (
+                $3::TEXT IS NULL
+                OR COALESCE(s.strategy_id, rd.rationale::jsonb ->> 'strategy_id') = $3
+            )
+          AND (
+                $4::TEXT IS NULL
+                OR COALESCE(s.symbol, rd.rationale::jsonb ->> 'symbol') = $4
+            )
           AND ($5::TEXT IS NULL OR s.timeframe = $5)
         "#,
     )
@@ -6733,11 +6739,15 @@ async fn get_paper_mode_summary(
         r#"
         SELECT COUNT(*)::BIGINT AS paper_orders_count
         FROM orders o
-        LEFT JOIN signals s ON s.id = o.signal_id
+        LEFT JOIN risk_decisions rd ON rd.id = o.risk_decision_id
+        LEFT JOIN signals s ON s.id = rd.signal_id
         WHERE o.market_mode = 'paper'
           AND o.created_at >= $1
           AND o.created_at <= $2
-          AND ($3::TEXT IS NULL OR o.strategy_id = $3)
+          AND (
+                $3::TEXT IS NULL
+                OR COALESCE(s.strategy_id, rd.rationale::jsonb ->> 'strategy_id') = $3
+            )
           AND ($4::TEXT IS NULL OR o.symbol = $4)
           AND ($5::TEXT IS NULL OR s.timeframe = $5)
         "#,

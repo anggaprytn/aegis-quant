@@ -717,6 +717,122 @@ pub struct StrategyDryRunRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyDiagnosticsRequest {
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub limit: Option<i64>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyDiagnosticSeverity {
+    Info,
+    Warn,
+    Error,
+}
+
+impl StrategyDiagnosticSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyDiagnosticCheck {
+    pub name: String,
+    pub passed: bool,
+    pub severity: StrategyDiagnosticSeverity,
+    pub message: String,
+    pub actual: Option<String>,
+    pub expected: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyNoSignalReason {
+    MomentumNotStrictlyHigherCloses,
+    BreakoutNotAboveRecentHigh,
+    ConfidenceBelowFloor,
+    InsufficientCandles,
+    StrategyDisabled,
+    InvalidConfig,
+    StaleData,
+}
+
+impl StrategyNoSignalReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MomentumNotStrictlyHigherCloses => "MOMENTUM_NOT_STRICTLY_HIGHER_CLOSES",
+            Self::BreakoutNotAboveRecentHigh => "BREAKOUT_NOT_ABOVE_RECENT_HIGH",
+            Self::ConfidenceBelowFloor => "CONFIDENCE_BELOW_FLOOR",
+            Self::InsufficientCandles => "INSUFFICIENT_CANDLES",
+            Self::StrategyDisabled => "STRATEGY_DISABLED",
+            Self::InvalidConfig => "INVALID_CONFIG",
+            Self::StaleData => "STALE_DATA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyDataHealth {
+    pub required_lookback_candles: u32,
+    pub required_closed_candles: i64,
+    pub available_closed_candles: i64,
+    pub latest_closed_candle_time: Option<DateTime<Utc>>,
+    pub latest_closed_candle_age_ms: Option<i64>,
+    pub stale: bool,
+    pub latest_closes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyDiagnosticsDecision {
+    WouldSignal,
+    NoSignal,
+    InsufficientData,
+    StrategyDisabled,
+    InvalidConfig,
+    StaleData,
+}
+
+impl StrategyDiagnosticsDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WouldSignal => "WOULD_SIGNAL",
+            Self::NoSignal => "NO_SIGNAL",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::StrategyDisabled => "STRATEGY_DISABLED",
+            Self::InvalidConfig => "INVALID_CONFIG",
+            Self::StaleData => "STALE_DATA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyDiagnosticsResult {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub strategy_enabled: bool,
+    pub config_valid: bool,
+    pub validation_issues: Vec<StrategyConfigValidationIssue>,
+    pub data_health: StrategyDataHealth,
+    pub condition_checks: Vec<StrategyDiagnosticCheck>,
+    pub final_decision: StrategyDiagnosticsDecision,
+    pub no_signal_reason: Option<StrategyNoSignalReason>,
+    pub summary: String,
+    pub source_candle_open_time: Option<DateTime<Utc>>,
+    pub confidence: Option<Decimal>,
+    pub correlation_id: Uuid,
+    pub evaluated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyDryRunResult {
     pub strategy_id: String,
     pub symbol: String,

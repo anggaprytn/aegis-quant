@@ -21,8 +21,8 @@ use crate::api::{
     RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
     RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
     StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
-    StrategyDecisionBreakdownResponse, StrategyDryRunResponse, StrategyListResponse,
-    StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
+    StrategyDecisionBreakdownResponse, StrategyDiagnosticsResponse, StrategyDryRunResponse,
+    StrategyListResponse, StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
     StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
     TestnetPromotionFunnelRowsResponse, TestnetPromotionFunnelSummaryResponse,
     TestnetShadowPromotionsResponse, TestnetShadowRunnerControlResponse,
@@ -889,6 +889,58 @@ pub fn print_strategy_dry_run(response: &StrategyDryRunResponse) {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string())
     );
+}
+
+pub fn print_strategy_diagnostics(response: &StrategyDiagnosticsResponse) {
+    let result = &response.result;
+    println!("Strategy ID: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Decision: {}", result.final_decision.as_str());
+    println!("Enabled: {}", result.strategy_enabled);
+    println!("Config valid: {}", result.config_valid);
+    println!("Summary: {}", result.summary);
+    println!(
+        "Latest closed candle: {}",
+        result
+            .data_health
+            .latest_closed_candle_time
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Closed candles: {} / required {}",
+        result.data_health.available_closed_candles, result.data_health.required_closed_candles
+    );
+    if let Some(reason) = result.no_signal_reason {
+        println!("No-signal reason: {}", reason.as_str());
+    }
+    if !result.validation_issues.is_empty() {
+        println!("Validation issues:");
+        for issue in &result.validation_issues {
+            println!(
+                "  - {} {}: {}",
+                issue.severity.as_str(),
+                issue.field,
+                issue.message
+            );
+        }
+    }
+    println!("Condition checks:");
+    for check in &result.condition_checks {
+        println!(
+            "  - [{}] {}: {}",
+            check.severity.as_str(),
+            check.name,
+            check.message
+        );
+    }
+    if !result.data_health.latest_closes.is_empty() {
+        println!("Latest closes:");
+        for close in &result.data_health.latest_closes {
+            println!("  - {}", close);
+        }
+    }
 }
 
 pub fn print_orders(orders: &[OrderRecord]) {

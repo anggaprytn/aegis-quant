@@ -29,6 +29,7 @@ import type {
   RiskConfig,
   RiskDecisionRecord,
   StrategyComparisonSummary,
+  StrategyDiagnosticsResult,
   StrategyConfigUpdateRequest,
   StrategyDecisionBreakdown,
   StrategyPerformanceSummary,
@@ -132,6 +133,14 @@ function strategyConfigFormFromStatus(
     take_profit_pct: strategy?.take_profit_pct ?? null,
     holding_candles: strategy?.holding_candles ?? 3,
     notes: strategy?.notes ?? "",
+  };
+}
+
+function strategyDiagnosticsFormFromStatus(strategy?: StrategyStatusView) {
+  return {
+    symbol: strategy?.symbols[0] ?? "BTCUSDT",
+    timeframe: strategy?.timeframe ?? "1m",
+    limit: 20,
   };
 }
 
@@ -406,6 +415,11 @@ function AuthenticatedDashboard({
     useState<CandleBackfillResult | null>(null);
   const [strategyConfigForm, setStrategyConfigForm] =
     useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
+  const [strategyDiagnosticsForm, setStrategyDiagnosticsForm] = useState(
+    strategyDiagnosticsFormFromStatus(),
+  );
+  const [strategyDiagnosticsResult, setStrategyDiagnosticsResult] =
+    useState<StrategyDiagnosticsResult | null>(null);
   const [riskConfigForm, setRiskConfigForm] = useState<RiskConfig>(riskConfigFormFromView());
 
   const healthQuery = useQuery({
@@ -885,6 +899,10 @@ function AuthenticatedDashboard({
       setStrategyConfigForm(
         strategyConfigFormFromStatus(selectedStrategyStatusQuery.data.strategy),
       );
+      setStrategyDiagnosticsForm(
+        strategyDiagnosticsFormFromStatus(selectedStrategyStatusQuery.data.strategy),
+      );
+      setStrategyDiagnosticsResult(null);
     }
   }, [selectedStrategyStatusQuery.data?.strategy]);
 
@@ -1079,6 +1097,18 @@ function AuthenticatedDashboard({
         timeframe: strategyConfigForm.timeframe,
         config_override: strategyConfigForm,
       }),
+  });
+
+  const strategyDiagnosticsMutation = useMutation({
+    mutationFn: () =>
+      api.getStrategyDiagnostics(selectedStrategyId, {
+        symbol: strategyDiagnosticsForm.symbol,
+        timeframe: strategyDiagnosticsForm.timeframe,
+        limit: strategyDiagnosticsForm.limit,
+      }),
+    onSuccess: (response) => {
+      setStrategyDiagnosticsResult(response.result);
+    },
   });
 
   const validateRiskConfigMutation = useMutation({
@@ -2223,6 +2253,110 @@ function AuthenticatedDashboard({
               </Panel>
               <Panel className="xl:col-span-12" title="Recent Signals">
                 <SignalsTable signals={recentSignals} />
+              </Panel>
+              <Panel className="xl:col-span-12" title="Strategy Diagnostics">
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <Field
+                      label="Strategy"
+                      value={selectedStrategyId}
+                      as="select"
+                      options={strategies.map((strategy) => strategy.strategy_id)}
+                      onChange={setSelectedStrategyId}
+                    />
+                    <Field
+                      label="Symbol"
+                      value={strategyDiagnosticsForm.symbol}
+                      onChange={(value) =>
+                        setStrategyDiagnosticsForm((current) => ({
+                          ...current,
+                          symbol: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Timeframe"
+                      value={strategyDiagnosticsForm.timeframe}
+                      as="select"
+                      options={["1m"]}
+                      onChange={(value) =>
+                        setStrategyDiagnosticsForm((current) => ({
+                          ...current,
+                          timeframe: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Close Limit"
+                      value={String(strategyDiagnosticsForm.limit)}
+                      onChange={(value) =>
+                        setStrategyDiagnosticsForm((current) => ({
+                          ...current,
+                          limit: Number(value) || 20,
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <ActionButton
+                      label="Run Diagnostics"
+                      onClick={() => strategyDiagnosticsMutation.mutate()}
+                      busy={strategyDiagnosticsMutation.isPending}
+                    />
+                  </div>
+                  <InlineStatus
+                    error={getErrorMessage(strategyDiagnosticsMutation.error)}
+                    success={
+                      strategyDiagnosticsResult
+                        ? `diagnostics: ${strategyDiagnosticsResult.final_decision}`
+                        : undefined
+                    }
+                  />
+                  <KeyValue
+                    items={[
+                      ["Decision", strategyDiagnosticsResult?.final_decision ?? "N/A"],
+                      ["No-Signal Reason", strategyDiagnosticsResult?.no_signal_reason ?? "N/A"],
+                      ["Enabled", String(strategyDiagnosticsResult?.strategy_enabled ?? false)],
+                      ["Config Valid", String(strategyDiagnosticsResult?.config_valid ?? false)],
+                      [
+                        "Latest Candle",
+                        formatDateTime(
+                          strategyDiagnosticsResult?.data_health.latest_closed_candle_time,
+                        ),
+                      ],
+                      [
+                        "Closed Candles",
+                        strategyDiagnosticsResult
+                          ? `${strategyDiagnosticsResult.data_health.available_closed_candles} / ${strategyDiagnosticsResult.data_health.required_closed_candles}`
+                          : "N/A",
+                      ],
+                    ]}
+                    loading={strategyDiagnosticsMutation.isPending}
+                    error={undefined}
+                  />
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-sm text-slate-200">
+                    <div className="font-medium text-slate-100">Summary</div>
+                    <div className="mt-2 text-slate-300">
+                      {strategyDiagnosticsResult?.summary ?? "Run diagnostics to inspect strategy conditions."}
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Condition Checks</div>
+                    {(strategyDiagnosticsResult?.condition_checks ?? []).map((check) => (
+                      <div key={`${check.name}-${check.message}`} className="mt-2">
+                        {check.severity} {check.name}: {check.message}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Latest Closes</div>
+                    {(strategyDiagnosticsResult?.data_health.latest_closes ?? []).map((close) => (
+                      <div key={close} className="mt-2">
+                        {close}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </Panel>
             </section>
           )}

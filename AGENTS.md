@@ -9,6 +9,7 @@ Read `docs/PRD.md` before making architectural or implementation decisions.
 This is not an AI trading bot.
 
 This is deterministic execution infrastructure focused on:
+
 - market data ingestion
 - event logging
 - risk-gated execution
@@ -38,6 +39,7 @@ LLM components are advisory only and must never have execution authority.
 ## MVP Priority
 
 Build in this order:
+
 1. Rust workspace
 2. shared core types
 3. Postgres migrations
@@ -54,6 +56,7 @@ Build in this order:
 ## Stack
 
 Backend:
+
 - Rust
 - Tokio
 - Axum
@@ -66,6 +69,7 @@ Backend:
 - thiserror / anyhow
 
 Frontend:
+
 - Next.js
 - TypeScript
 - Tailwind
@@ -74,6 +78,7 @@ Frontend:
 - lightweight-charts later
 
 Infra:
+
 - Docker Compose
 - Postgres
 - Caddy or Nginx later
@@ -88,3 +93,12 @@ crates/
 apps/dashboard/
 infra/
 docs/
+
+## Local Runtime Verification
+
+When changing API endpoints or dashboard-facing behavior, prefer testing against the local Docker stack if it is already running:
+- rebuild API container if backend changed
+- call the endpoint with bearer token
+- inspect Docker logs for 500s
+- report exact curl result or reason if local runtime verification was skipped
+```

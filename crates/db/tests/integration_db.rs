@@ -1715,6 +1715,153 @@ async fn strategy_performance_summary_reads_shadow_runs() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_performance_summary_returns_empty_combined_when_no_data() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+
+    let summary = get_strategy_performance_summary(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: None,
+            symbol: None,
+            timeframe: None,
+            mode: StrategyPerformanceMode::Combined,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("empty combined summary should load");
+
+    assert_eq!(summary.mode, StrategyPerformanceMode::Combined);
+    assert_eq!(summary.total_runs, 0);
+    assert_eq!(summary.total_signals, 0);
+    assert_eq!(summary.approved_risk_decisions, 0);
+    assert_eq!(summary.rejected_risk_decisions, 0);
+    assert_eq!(summary.paper_positions_opened, 0);
+    assert_eq!(summary.paper_positions_closed, 0);
+    assert_eq!(summary.backtest_runs_count, 0);
+    assert_eq!(summary.shadow_would_submit_count, 0);
+    assert_eq!(summary.shadow_no_signal_count, 0);
+    assert_eq!(summary.shadow_risk_rejected_count, 0);
+    assert_eq!(summary.realized_pnl, Decimal::ZERO);
+    assert_eq!(summary.unrealized_pnl, Decimal::ZERO);
+    assert_eq!(summary.risk_rejection_rate, Decimal::ZERO);
+    assert_eq!(summary.win_rate, None);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_performance_summary_returns_empty_filtered_combined_when_no_matching_data() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+
+    let summary = get_strategy_performance_summary(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Combined,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("empty filtered combined summary should load");
+
+    assert_eq!(summary.strategy_id.as_deref(), Some("momentum_v1"));
+    assert_eq!(summary.symbol.as_deref(), Some("BTCUSDT"));
+    assert_eq!(summary.timeframe.as_deref(), Some("1m"));
+    assert_eq!(summary.total_runs, 0);
+    assert_eq!(summary.total_signals, 0);
+    assert_eq!(summary.realized_pnl, Decimal::ZERO);
+    assert_eq!(summary.risk_rejection_rate, Decimal::ZERO);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_performance_summary_combined_tolerates_missing_modes() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let request = sample_backtest_request();
+    let config = sample_backtest_config();
+    let run_id = Uuid::new_v4();
+    insert_backtest_run(
+        &test_db.pool,
+        run_id,
+        &request,
+        &config,
+        fixed_time(),
+        ReplayRunStatus::Pending,
+        request.correlation_id,
+    )
+    .await
+    .expect("backtest run should persist");
+    update_backtest_run_completed(
+        &test_db.pool,
+        &BacktestResult {
+            run_id,
+            strategy_id: request.strategy_id.clone(),
+            symbol: request.symbol.clone(),
+            timeframe: request.timeframe.clone(),
+            start_time: request.start_time,
+            end_time: request.end_time,
+            initial_capital: request.initial_capital,
+            final_equity: Decimal::new(1_050_000, 0),
+            pnl: Decimal::new(50_000, 0),
+            pnl_pct: Decimal::new(5, 0),
+            max_drawdown_pct: Decimal::new(1, 0),
+            win_rate: Decimal::new(5, 1),
+            trade_count: 2,
+            winning_trades: 1,
+            losing_trades: 1,
+            avg_win: Decimal::new(10_000, 0),
+            avg_loss: Decimal::new(-5_000, 0),
+            fee_paid: Decimal::new(100, 0),
+            slippage_cost: Decimal::new(50, 0),
+            status: ReplayRunStatus::Completed,
+            created_at: fixed_time(),
+            correlation_id: request.correlation_id,
+        },
+        &config,
+    )
+    .await
+    .expect("backtest completion should persist");
+
+    let summary = get_strategy_performance_summary(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Combined,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("combined summary should load with only backtest data");
+
+    assert_eq!(summary.mode, StrategyPerformanceMode::Combined);
+    assert_eq!(summary.total_runs, 1);
+    assert_eq!(summary.backtest_runs_count, 1);
+    assert_eq!(summary.paper_positions_opened, 0);
+    assert_eq!(summary.paper_positions_closed, 0);
+    assert_eq!(summary.shadow_would_submit_count, 0);
+    assert_eq!(summary.realized_pnl, Decimal::new(50_000, 0));
+    assert_eq!(summary.best_backtest_pnl_pct, Some(Decimal::new(5, 0)));
+    assert_eq!(summary.avg_backtest_pnl_pct, Some(Decimal::new(5, 0)));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
 async fn strategy_performance_summary_reads_backtest_runs() {
     let test_db = TestDatabase::setup()
         .await

@@ -68,6 +68,7 @@ import type {
   RiskStatusResponse,
   StatusResponse,
   StrategyDecisionBreakdownResponse,
+  StrategyDiagnosticsResponse,
   StrategyListResponse,
   StrategyPerformanceMode,
   StrategyPerformanceRankingsResponse,
@@ -481,6 +482,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  getStrategyDiagnostics: (
+    id: string,
+    params?: { symbol?: string; timeframe?: string; limit?: number },
+  ) =>
+    request<StrategyDiagnosticsResponse>(`/strategy/${id}/diagnostics`, undefined, params),
   enableStrategy: (id: string) =>
     request<StrategyToggleResponse>(`/strategy/${id}/enable`, { method: "POST" }),
   disableStrategy: (id: string) =>

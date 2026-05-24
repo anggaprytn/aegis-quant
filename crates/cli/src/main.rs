@@ -236,6 +236,21 @@ async fn main() -> anyhow::Result<()> {
                     output::print_strategy_dry_run(&response);
                 }
             }
+            StrategyCommands::Diagnostics(args) => {
+                let response = client
+                    .strategy_diagnostics(
+                        &args.strategy_id,
+                        args.symbol,
+                        args.timeframe,
+                        args.limit,
+                    )
+                    .await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_strategy_diagnostics(&response);
+                }
+            }
             StrategyCommands::Enable { strategy_id } => {
                 let response = client.enable_strategy(&strategy_id).await?;
                 if cli.json {
