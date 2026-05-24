@@ -12,6 +12,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Require auditable state transitions for dangerous actions
 - Keep risk controls and kill switch persistent when implemented
 - Replay/backtest must stay isolated from live and paper execution tables
+- Strategy analytics is read-only, VIEWER-readable inspection only and must never trigger execution, reconciliation, repair, or any paper/testnet mutation
 - Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
 - Paper accounting is simulated only and never submits exchange orders
 - Binance Spot Testnet credentials, when configured, are backend-only and never exposed to the dashboard or CLI
@@ -55,5 +56,6 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - DB-backed auth tests cover bootstrap, login/session persistence, refresh rotation, logout revocation, unauthenticated rejection, and role-based forbids against Postgres
 - Production/private exchange execution remains deferred; only Binance Spot Testnet skeleton endpoints are present
 - Replay/backtest reads stored candles only and must not mutate production `signals`, `risk_decisions`, or `orders`
+- Strategy analytics reads persisted backtest, paper, signal/risk, and shadow rows only; it must not mutate paper orders, paper positions, paper PnL, backtest tables, isolated testnet execution tables, or lifecycle history
 - Paper accounting reads only stored paper orders and stored public market data; it does not call exchange private endpoints or handle API keys
 - `/metrics` is public by default for local/internal MVP use unless `AEGIS_PROTECT_METRICS=true`; production deployment should place it behind private networking, reverse-proxy policy, or equivalent access controls

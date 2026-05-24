@@ -4,9 +4,10 @@ use aegis_core::{
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, ExchangeTestnetPipelinePreview,
     ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
     PaperTradingPipelineRequest, PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDryRunRequest, StrategyDryRunResult, TestnetShadowRunRequest, TestnetShadowRunResult,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyPerformanceSummary, TestnetShadowRunRequest, TestnetShadowRunResult,
     TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
     TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
@@ -967,6 +968,83 @@ impl ApiClient {
 
     pub async fn backtest_run(&self, run_id: Uuid) -> Result<BacktestRunResponse, ApiClientError> {
         self.get(&format!("/backtest/runs/{run_id}"), &[]).await
+    }
+
+    pub async fn strategy_performance(
+        &self,
+        strategy_id: Option<String>,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+        mode: String,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: Option<i64>,
+    ) -> Result<StrategyPerformanceSummaryResponse, ApiClientError> {
+        let mut query = vec![("mode", mode)];
+        if let Some(strategy_id) = strategy_id.filter(|value| !value.is_empty()) {
+            query.push(("strategy_id", strategy_id));
+        }
+        if let Some(symbol) = symbol.filter(|value| !value.is_empty()) {
+            query.push(("symbol", symbol));
+        }
+        if let Some(timeframe) = timeframe.filter(|value| !value.is_empty()) {
+            query.push(("timeframe", timeframe));
+        }
+        if let Some(start_time) = start_time {
+            query.push(("start_time", start_time.to_rfc3339()));
+        }
+        if let Some(end_time) = end_time {
+            query.push(("end_time", end_time.to_rfc3339()));
+        }
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        self.get("/analytics/strategy/performance", &query).await
+    }
+
+    pub async fn strategy_rankings(
+        &self,
+        mode: String,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+        limit: i64,
+    ) -> Result<StrategyPerformanceRankingsResponse, ApiClientError> {
+        let mut query = vec![("mode", mode), ("limit", limit.to_string())];
+        if let Some(symbol) = symbol.filter(|value| !value.is_empty()) {
+            query.push(("symbol", symbol));
+        }
+        if let Some(timeframe) = timeframe.filter(|value| !value.is_empty()) {
+            query.push(("timeframe", timeframe));
+        }
+        self.get("/analytics/strategy/rankings", &query).await
+    }
+
+    pub async fn strategy_decision_breakdown(
+        &self,
+        strategy_id: &str,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<StrategyDecisionBreakdownResponse, ApiClientError> {
+        let mut query = Vec::new();
+        if let Some(symbol) = symbol.filter(|value| !value.is_empty()) {
+            query.push(("symbol", symbol));
+        }
+        if let Some(timeframe) = timeframe.filter(|value| !value.is_empty()) {
+            query.push(("timeframe", timeframe));
+        }
+        if let Some(start_time) = start_time {
+            query.push(("start_time", start_time.to_rfc3339()));
+        }
+        if let Some(end_time) = end_time {
+            query.push(("end_time", end_time.to_rfc3339()));
+        }
+        self.get(
+            &format!("/analytics/strategy/{strategy_id}/decision-breakdown"),
+            &query,
+        )
+        .await
     }
 }
 
@@ -1941,6 +2019,30 @@ pub struct BacktestRunsResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BacktestRunResponse {
     pub run: BacktestResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyPerformanceSummaryResponse {
+    pub summary: StrategyPerformanceSummary,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyPerformanceRankingsResponse {
+    pub rankings: Vec<StrategyComparisonSummary>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyDecisionBreakdownResponse {
+    pub breakdown: StrategyDecisionBreakdown,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

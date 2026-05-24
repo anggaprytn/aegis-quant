@@ -33,7 +33,8 @@
 - Completed: isolated testnet operator repair controls with typed confirmation, owner/operator role gates, repair history persistence, and API/CLI/dashboard surfaces
 - Completed: gated testnet pipeline preview/submit boundary with approved-risk gating, owner-confirmed submit, isolated persistence, and no paper/backtest mutation
 - Completed: testnet shadow mode runner with persistent scheduler config/state, daemon loop, manual run-once controls, API/CLI/dashboard inspection, isolated telemetry, and no exchange submission
-- Current focus: tighten reconciliation and operator visibility across paper/testnet boundaries before any live execution surface area
+- Completed: read-only strategy performance analytics across backtest, paper, and shadow data with API, CLI, dashboard, and bounded telemetry support
+- Current focus: tighten analytics depth, reconciliation visibility, and operator workflows across paper/testnet boundaries before any live execution surface area
 
 ## Next implementation steps
 

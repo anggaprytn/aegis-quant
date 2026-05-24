@@ -6,6 +6,8 @@ export type ApiError = {
   timestamp?: string;
 };
 
+export type StrategyPerformanceMode = "BACKTEST" | "PAPER" | "SHADOW" | "COMBINED";
+
 export type AuthUser = {
   id: string;
   email: string;
@@ -46,6 +48,122 @@ export type HealthResponse = {
   status: string;
   service: string;
   environment: string;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyPerformanceSummary = {
+  strategy_id: string | null;
+  symbol: string | null;
+  timeframe: string | null;
+  mode: StrategyPerformanceMode;
+  window_start: string;
+  window_end: string;
+  total_runs: number;
+  total_signals: number;
+  approved_risk_decisions: number;
+  rejected_risk_decisions: number;
+  risk_rejection_rate: string;
+  shadow_would_submit_count: number;
+  shadow_no_signal_count: number;
+  shadow_risk_rejected_count: number;
+  paper_orders_count: number;
+  paper_positions_opened: number;
+  paper_positions_closed: number;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  win_rate: string | null;
+  avg_win: string | null;
+  avg_loss: string | null;
+  max_drawdown_pct: string | null;
+  backtest_runs_count: number;
+  best_backtest_pnl_pct: string | null;
+  worst_backtest_pnl_pct: string | null;
+  avg_backtest_pnl_pct: string | null;
+  created_at: string;
+  computed_at: string;
+};
+
+export type StrategyComparisonSummary = {
+  strategy_id: string;
+  symbol: string | null;
+  timeframe: string | null;
+  mode: StrategyPerformanceMode;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  risk_rejection_rate: string;
+  win_rate: string | null;
+  best_backtest_pnl_pct: string | null;
+  worst_backtest_pnl_pct: string | null;
+  avg_backtest_pnl_pct: string | null;
+  shadow_would_submit_count: number;
+  shadow_no_signal_count: number;
+  shadow_risk_rejected_count: number;
+  approved_risk_decisions: number;
+  rejected_risk_decisions: number;
+  paper_orders_count: number;
+  total_signals: number;
+  total_runs: number;
+  computed_at: string;
+};
+
+export type StrategyDecisionBreakdown = {
+  strategy_id: string;
+  symbol: string | null;
+  timeframe: string | null;
+  window_start: string;
+  window_end: string;
+  total_runs: number;
+  would_submit_count: number;
+  no_signal_count: number;
+  risk_rejected_count: number;
+  skipped_count: number;
+  error_count: number;
+  computed_at: string;
+};
+
+export type StrategyPnlBreakdown = {
+  strategy_id: string | null;
+  symbol: string | null;
+  timeframe: string | null;
+  mode: StrategyPerformanceMode;
+  window_start: string;
+  window_end: string;
+  positions_opened: number;
+  positions_closed: number;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  win_rate: string | null;
+  avg_win: string | null;
+  avg_loss: string | null;
+  max_drawdown_pct: string | null;
+  computed_at: string;
+};
+
+export type StrategyPerformanceSummaryResponse = {
+  summary: StrategyPerformanceSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyPerformanceRankingsResponse = {
+  rankings: StrategyComparisonSummary[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyDecisionBreakdownResponse = {
+  breakdown: StrategyDecisionBreakdown;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyPnlBreakdownResponse = {
+  breakdown: StrategyPnlBreakdown;
   request_id: string;
   correlation_id: string;
   timestamp: string;

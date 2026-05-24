@@ -61,7 +61,12 @@ import type {
   RiskDecisionsResponse,
   RiskStatusResponse,
   StatusResponse,
+  StrategyDecisionBreakdownResponse,
   StrategyListResponse,
+  StrategyPerformanceMode,
+  StrategyPerformanceRankingsResponse,
+  StrategyPerformanceSummaryResponse,
+  StrategyPnlBreakdownResponse,
   StrategyConfigAuditResponse,
   StrategyConfigUpdateRequest,
   StrategyConfigValidationResponse,
@@ -488,6 +493,75 @@ export const api = {
     request<BacktestTradesResponse>(`/backtest/runs/${id}/trades`),
   getBacktestEquity: (id: string) =>
     request<BacktestEquityCurveResponse>(`/backtest/runs/${id}/equity`),
+  getStrategyPerformance: (
+    mode: StrategyPerformanceMode,
+    strategyId?: string,
+    symbol?: string,
+    timeframe?: string,
+    startTime?: string,
+    endTime?: string,
+    limit?: number,
+  ) =>
+    request<StrategyPerformanceSummaryResponse>(
+      "/analytics/strategy/performance",
+      undefined,
+      {
+        mode,
+        strategy_id: strategyId,
+        symbol,
+        timeframe,
+        start_time: startTime,
+        end_time: endTime,
+        limit,
+      },
+    ),
+  getStrategyPerformanceRankings: (
+    mode: StrategyPerformanceMode,
+    symbol?: string,
+    timeframe?: string,
+    limit = 20,
+  ) =>
+    request<StrategyPerformanceRankingsResponse>(
+      "/analytics/strategy/rankings",
+      undefined,
+      { mode, symbol, timeframe, limit },
+    ),
+  getStrategyDecisionBreakdown: (
+    strategyId: string,
+    symbol?: string,
+    timeframe?: string,
+    startTime?: string,
+    endTime?: string,
+  ) =>
+    request<StrategyDecisionBreakdownResponse>(
+      `/analytics/strategy/${strategyId}/decision-breakdown`,
+      undefined,
+      { symbol, timeframe, start_time: startTime, end_time: endTime },
+    ),
+  getStrategyPaperPnlBreakdown: (
+    strategyId: string,
+    symbol?: string,
+    timeframe?: string,
+    startTime?: string,
+    endTime?: string,
+  ) =>
+    request<StrategyPnlBreakdownResponse>(
+      `/analytics/strategy/${strategyId}/paper-pnl-breakdown`,
+      undefined,
+      { symbol, timeframe, start_time: startTime, end_time: endTime },
+    ),
+  getStrategyBacktestBreakdown: (
+    strategyId: string,
+    symbol?: string,
+    timeframe?: string,
+    startTime?: string,
+    endTime?: string,
+  ) =>
+    request<StrategyPnlBreakdownResponse>(
+      `/analytics/strategy/${strategyId}/backtest-breakdown`,
+      undefined,
+      { symbol, timeframe, start_time: startTime, end_time: endTime },
+    ),
   getRecentEvents: (params?: {
     limit?: number;
     event_type?: string;

@@ -1246,6 +1246,300 @@ impl std::str::FromStr for ExchangeName {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyPerformanceMode {
+    Backtest,
+    Paper,
+    Shadow,
+    Combined,
+}
+
+impl StrategyPerformanceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Backtest => "BACKTEST",
+            Self::Paper => "PAPER",
+            Self::Shadow => "SHADOW",
+            Self::Combined => "COMBINED",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyPerformanceMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "BACKTEST" => Ok(Self::Backtest),
+            "PAPER" => Ok(Self::Paper),
+            "SHADOW" => Ok(Self::Shadow),
+            "COMBINED" => Ok(Self::Combined),
+            other => Err(CoreError::UnsupportedStrategyPerformanceMode(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrategyPerformanceWindow {
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrategyPerformanceRequest {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub mode: StrategyPerformanceMode,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyPerformanceMetric {
+    pub name: String,
+    pub value: Decimal,
+    pub mode: StrategyPerformanceMode,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyComparisonSummary {
+    pub strategy_id: String,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub mode: StrategyPerformanceMode,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub risk_rejection_rate: Decimal,
+    pub win_rate: Option<Decimal>,
+    pub best_backtest_pnl_pct: Option<Decimal>,
+    pub worst_backtest_pnl_pct: Option<Decimal>,
+    pub avg_backtest_pnl_pct: Option<Decimal>,
+    pub shadow_would_submit_count: i64,
+    pub shadow_no_signal_count: i64,
+    pub shadow_risk_rejected_count: i64,
+    pub approved_risk_decisions: i64,
+    pub rejected_risk_decisions: i64,
+    pub paper_orders_count: i64,
+    pub total_signals: i64,
+    pub total_runs: i64,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyDecisionBreakdown {
+    pub strategy_id: String,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub total_runs: i64,
+    pub would_submit_count: i64,
+    pub no_signal_count: i64,
+    pub risk_rejected_count: i64,
+    pub skipped_count: i64,
+    pub error_count: i64,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyRiskBreakdown {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub approved_decisions: i64,
+    pub rejected_decisions: i64,
+    pub rejection_rate: Decimal,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyPnlBreakdown {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub mode: StrategyPerformanceMode,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub positions_opened: i64,
+    pub positions_closed: i64,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub win_rate: Option<Decimal>,
+    pub avg_win: Option<Decimal>,
+    pub avg_loss: Option<Decimal>,
+    pub max_drawdown_pct: Option<Decimal>,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyPerformanceSummary {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub mode: StrategyPerformanceMode,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub total_runs: i64,
+    pub total_signals: i64,
+    pub approved_risk_decisions: i64,
+    pub rejected_risk_decisions: i64,
+    pub risk_rejection_rate: Decimal,
+    pub shadow_would_submit_count: i64,
+    pub shadow_no_signal_count: i64,
+    pub shadow_risk_rejected_count: i64,
+    pub paper_orders_count: i64,
+    pub paper_positions_opened: i64,
+    pub paper_positions_closed: i64,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub win_rate: Option<Decimal>,
+    pub avg_win: Option<Decimal>,
+    pub avg_loss: Option<Decimal>,
+    pub max_drawdown_pct: Option<Decimal>,
+    pub backtest_runs_count: i64,
+    pub best_backtest_pnl_pct: Option<Decimal>,
+    pub worst_backtest_pnl_pct: Option<Decimal>,
+    pub avg_backtest_pnl_pct: Option<Decimal>,
+    pub created_at: DateTime<Utc>,
+    pub computed_at: DateTime<Utc>,
+}
+
+pub fn calculate_strategy_rejection_rate(rejected: i64, total: i64) -> Decimal {
+    if total <= 0 {
+        Decimal::ZERO
+    } else {
+        Decimal::from(rejected) / Decimal::from(total)
+    }
+}
+
+pub fn calculate_strategy_win_rate(wins: i64, total: i64) -> Option<Decimal> {
+    if total <= 0 {
+        None
+    } else {
+        Some(Decimal::from(wins) / Decimal::from(total))
+    }
+}
+
+pub fn calculate_strategy_average_pnl(total: Decimal, count: i64) -> Option<Decimal> {
+    if count <= 0 {
+        None
+    } else {
+        Some(total / Decimal::from(count))
+    }
+}
+
+pub fn combine_strategy_performance_summaries(
+    mut summaries: Vec<StrategyPerformanceSummary>,
+) -> Option<StrategyPerformanceSummary> {
+    let first = summaries.pop()?;
+    let mut combined = first.clone();
+    combined.mode = StrategyPerformanceMode::Combined;
+    let mut total_winning_outcomes = match (first.win_rate, first.paper_positions_closed) {
+        (Some(rate), count) if count > 0 => rate * Decimal::from(count),
+        _ => Decimal::ZERO,
+    };
+    let mut total_avg_win_sum = match (first.avg_win, first.paper_positions_closed) {
+        (Some(avg), count) if count > 0 => avg * Decimal::from(count),
+        _ => Decimal::ZERO,
+    };
+    let mut total_avg_loss_sum = match (first.avg_loss, first.paper_positions_closed) {
+        (Some(avg), count) if count > 0 => avg * Decimal::from(count),
+        _ => Decimal::ZERO,
+    };
+    let mut avg_win_count = if first.avg_win.is_some() {
+        first.paper_positions_closed
+    } else {
+        0
+    };
+    let mut avg_loss_count = if first.avg_loss.is_some() {
+        first.paper_positions_closed
+    } else {
+        0
+    };
+    let mut avg_backtest_sum = match (first.avg_backtest_pnl_pct, first.backtest_runs_count) {
+        (Some(avg), count) if count > 0 => avg * Decimal::from(count),
+        _ => Decimal::ZERO,
+    };
+
+    for summary in summaries {
+        combined.window_start = combined.window_start.min(summary.window_start);
+        combined.window_end = combined.window_end.max(summary.window_end);
+        combined.total_runs += summary.total_runs;
+        combined.total_signals += summary.total_signals;
+        combined.approved_risk_decisions += summary.approved_risk_decisions;
+        combined.rejected_risk_decisions += summary.rejected_risk_decisions;
+        combined.shadow_would_submit_count += summary.shadow_would_submit_count;
+        combined.shadow_no_signal_count += summary.shadow_no_signal_count;
+        combined.shadow_risk_rejected_count += summary.shadow_risk_rejected_count;
+        combined.paper_orders_count += summary.paper_orders_count;
+        combined.paper_positions_opened += summary.paper_positions_opened;
+        combined.paper_positions_closed += summary.paper_positions_closed;
+        combined.realized_pnl += summary.realized_pnl;
+        combined.unrealized_pnl += summary.unrealized_pnl;
+        combined.backtest_runs_count += summary.backtest_runs_count;
+        combined.created_at = combined.created_at.min(summary.created_at);
+        combined.computed_at = combined.computed_at.max(summary.computed_at);
+        if let Some(rate) = summary.win_rate {
+            total_winning_outcomes += rate * Decimal::from(summary.paper_positions_closed);
+        }
+        if let Some(avg) = summary.avg_win {
+            total_avg_win_sum += avg * Decimal::from(summary.paper_positions_closed);
+            avg_win_count += summary.paper_positions_closed;
+        }
+        if let Some(avg) = summary.avg_loss {
+            total_avg_loss_sum += avg * Decimal::from(summary.paper_positions_closed);
+            avg_loss_count += summary.paper_positions_closed;
+        }
+        if let Some(avg) = summary.avg_backtest_pnl_pct {
+            avg_backtest_sum += avg * Decimal::from(summary.backtest_runs_count);
+        }
+        combined.max_drawdown_pct = match (combined.max_drawdown_pct, summary.max_drawdown_pct) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        };
+        combined.best_backtest_pnl_pct = match (
+            combined.best_backtest_pnl_pct,
+            summary.best_backtest_pnl_pct,
+        ) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        };
+        combined.worst_backtest_pnl_pct = match (
+            combined.worst_backtest_pnl_pct,
+            summary.worst_backtest_pnl_pct,
+        ) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        };
+    }
+
+    let total_risk_decisions = combined.approved_risk_decisions + combined.rejected_risk_decisions;
+    combined.risk_rejection_rate =
+        calculate_strategy_rejection_rate(combined.rejected_risk_decisions, total_risk_decisions);
+    combined.win_rate = if combined.paper_positions_closed > 0 {
+        Some(total_winning_outcomes / Decimal::from(combined.paper_positions_closed))
+    } else {
+        None
+    };
+    combined.avg_win = calculate_strategy_average_pnl(total_avg_win_sum, avg_win_count);
+    combined.avg_loss = calculate_strategy_average_pnl(total_avg_loss_sum, avg_loss_count);
+    combined.avg_backtest_pnl_pct =
+        calculate_strategy_average_pnl(avg_backtest_sum, combined.backtest_runs_count);
+
+    Some(combined)
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ExchangeOrderSide {
     Buy,
     Sell,
@@ -3780,6 +4074,8 @@ pub enum CoreError {
     UnsupportedStrategyStatus(String),
     #[error("unsupported strategy mode: {0}")]
     UnsupportedStrategyMode(String),
+    #[error("unsupported strategy performance mode: {0}")]
+    UnsupportedStrategyPerformanceMode(String),
     #[error("unsupported signal side: {0}")]
     UnsupportedSignalSide(String),
     #[error("unsupported signal reason: {0}")]
@@ -3946,13 +4242,15 @@ pub enum CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
+        calculate_strategy_average_pnl, calculate_strategy_rejection_rate,
+        calculate_strategy_win_rate, combine_strategy_performance_summaries,
         validate_password_length, validate_testnet_repair_transition, ExchangeEnvironment,
         ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
         ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
         ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
         ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionState, OrderIntent,
-        PaperOrder, Permission, Side, Symbol, TestnetExecutionState, TestnetRepairAction,
-        TestnetRepairRequest, UserRole,
+        PaperOrder, Permission, Side, StrategyPerformanceMode, StrategyPerformanceSummary, Symbol,
+        TestnetExecutionState, TestnetRepairAction, TestnetRepairRequest, UserRole,
     };
     use chrono::Utc;
     use rust_decimal::Decimal;
@@ -4265,5 +4563,99 @@ mod tests {
             false,
         )
         .is_err());
+    }
+
+    #[test]
+    fn strategy_rejection_rate_returns_zero_for_empty_totals() {
+        assert_eq!(calculate_strategy_rejection_rate(0, 0), Decimal::ZERO);
+    }
+
+    #[test]
+    fn strategy_win_rate_returns_none_for_empty_totals() {
+        assert_eq!(calculate_strategy_win_rate(0, 0), None);
+    }
+
+    #[test]
+    fn strategy_average_pnl_returns_none_for_empty_totals() {
+        assert_eq!(calculate_strategy_average_pnl(Decimal::ZERO, 0), None);
+    }
+
+    #[test]
+    fn combined_strategy_summary_handles_missing_modes() {
+        let now = Utc::now();
+        let paper = StrategyPerformanceSummary {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Paper,
+            window_start: now,
+            window_end: now,
+            total_runs: 0,
+            total_signals: 3,
+            approved_risk_decisions: 2,
+            rejected_risk_decisions: 1,
+            risk_rejection_rate: Decimal::ZERO,
+            shadow_would_submit_count: 0,
+            shadow_no_signal_count: 0,
+            shadow_risk_rejected_count: 0,
+            paper_orders_count: 2,
+            paper_positions_opened: 2,
+            paper_positions_closed: 1,
+            realized_pnl: Decimal::from(12),
+            unrealized_pnl: Decimal::from(4),
+            win_rate: Some(Decimal::ONE),
+            avg_win: Some(Decimal::from(12)),
+            avg_loss: None,
+            max_drawdown_pct: Some(Decimal::from_str_exact("0.12").unwrap()),
+            backtest_runs_count: 0,
+            best_backtest_pnl_pct: None,
+            worst_backtest_pnl_pct: None,
+            avg_backtest_pnl_pct: None,
+            created_at: now,
+            computed_at: now,
+        };
+        let shadow = StrategyPerformanceSummary {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Shadow,
+            window_start: now,
+            window_end: now,
+            total_runs: 4,
+            total_signals: 0,
+            approved_risk_decisions: 0,
+            rejected_risk_decisions: 0,
+            risk_rejection_rate: Decimal::ZERO,
+            shadow_would_submit_count: 2,
+            shadow_no_signal_count: 1,
+            shadow_risk_rejected_count: 1,
+            paper_orders_count: 0,
+            paper_positions_opened: 0,
+            paper_positions_closed: 0,
+            realized_pnl: Decimal::ZERO,
+            unrealized_pnl: Decimal::ZERO,
+            win_rate: None,
+            avg_win: None,
+            avg_loss: None,
+            max_drawdown_pct: None,
+            backtest_runs_count: 0,
+            best_backtest_pnl_pct: None,
+            worst_backtest_pnl_pct: None,
+            avg_backtest_pnl_pct: None,
+            created_at: now,
+            computed_at: now,
+        };
+
+        let combined = combine_strategy_performance_summaries(vec![paper, shadow]).unwrap();
+
+        assert_eq!(combined.mode, StrategyPerformanceMode::Combined);
+        assert_eq!(combined.total_runs, 4);
+        assert_eq!(combined.total_signals, 3);
+        assert_eq!(combined.shadow_would_submit_count, 2);
+        assert_eq!(combined.paper_orders_count, 2);
+        assert_eq!(combined.realized_pnl, Decimal::from(12));
+        assert_eq!(combined.unrealized_pnl, Decimal::from(4));
+        assert_eq!(combined.win_rate, Some(Decimal::ONE));
+        assert_eq!(combined.avg_backtest_pnl_pct, None);
     }
 }

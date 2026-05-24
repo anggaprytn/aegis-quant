@@ -110,6 +110,8 @@ pub enum Commands {
     #[command(subcommand)]
     Paper(PaperCommands),
     #[command(subcommand)]
+    Analytics(AnalyticsCommands),
+    #[command(subcommand)]
     Exchange(ExchangeCommands),
 }
 
@@ -564,6 +566,62 @@ pub enum PaperCommands {
     Equity(PaperListArgs),
     Journal(PaperListArgs),
     Mark,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AnalyticsCommands {
+    #[command(subcommand)]
+    Strategy(AnalyticsStrategyCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AnalyticsStrategyCommands {
+    Performance(AnalyticsPerformanceArgs),
+    Rankings(AnalyticsRankingsArgs),
+    DecisionBreakdown(AnalyticsDecisionBreakdownArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AnalyticsPerformanceArgs {
+    #[arg(long = "strategy")]
+    pub strategy_id: Option<String>,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long)]
+    pub mode: String,
+    #[arg(long)]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long)]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+pub struct AnalyticsRankingsArgs {
+    #[arg(long)]
+    pub mode: String,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct AnalyticsDecisionBreakdownArgs {
+    pub strategy_id: String,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long)]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long)]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Args)]

@@ -21,7 +21,11 @@ import type {
   PaperPositionRecord,
   RiskConfig,
   RiskDecisionRecord,
+  StrategyComparisonSummary,
   StrategyConfigUpdateRequest,
+  StrategyDecisionBreakdown,
+  StrategyPerformanceSummary,
+  StrategyPnlBreakdown,
   StrategyStatusView,
   SystemEventRecord,
   TestnetShadowRunResult,
@@ -42,6 +46,7 @@ type SectionId =
   | "strategies"
   | "risk"
   | "orders"
+  | "analytics"
   | "backtests"
   | "events"
   | "settings";
@@ -52,6 +57,7 @@ const SECTIONS: Array<{ id: SectionId; label: string }> = [
   { id: "strategies", label: "Strategies" },
   { id: "risk", label: "Risk" },
   { id: "orders", label: "Orders" },
+  { id: "analytics", label: "Analytics" },
   { id: "backtests", label: "Backtests" },
   { id: "events", label: "Logs / Events" },
   { id: "settings", label: "Settings" },
@@ -592,6 +598,95 @@ function AuthenticatedDashboard({
     queryFn: () => api.getStrategyConfig(selectedStrategyId),
     enabled: Boolean(selectedStrategyId),
   });
+  const selectedAnalyticsTimeframe =
+    selectedStrategyStatusQuery.data?.strategy.timeframe ?? "1m";
+  const strategyPerformanceQuery = useQuery({
+    queryKey: [
+      "analytics-strategy-performance",
+      selectedStrategyId,
+      selectedSymbol,
+      selectedAnalyticsTimeframe,
+    ],
+    queryFn: () =>
+      api.getStrategyPerformance(
+        "COMBINED",
+        selectedStrategyId,
+        selectedSymbol,
+        selectedAnalyticsTimeframe,
+      ),
+    enabled: Boolean(selectedStrategyId),
+    refetchInterval: 15_000,
+  });
+  const strategyRankingsQuery = useQuery({
+    queryKey: ["analytics-strategy-rankings", selectedAnalyticsTimeframe],
+    queryFn: () =>
+      api.getStrategyPerformanceRankings(
+        "COMBINED",
+        undefined,
+        selectedAnalyticsTimeframe,
+        20,
+      ),
+    refetchInterval: 15_000,
+  });
+  const shadowRankingsQuery = useQuery({
+    queryKey: ["analytics-shadow-rankings", selectedAnalyticsTimeframe],
+    queryFn: () =>
+      api.getStrategyPerformanceRankings(
+        "SHADOW",
+        undefined,
+        selectedAnalyticsTimeframe,
+        20,
+      ),
+    refetchInterval: 15_000,
+  });
+  const strategyDecisionBreakdownQuery = useQuery({
+    queryKey: [
+      "analytics-decision-breakdown",
+      selectedStrategyId,
+      selectedSymbol,
+      selectedAnalyticsTimeframe,
+    ],
+    queryFn: () =>
+      api.getStrategyDecisionBreakdown(
+        selectedStrategyId,
+        selectedSymbol,
+        selectedAnalyticsTimeframe,
+      ),
+    enabled: Boolean(selectedStrategyId),
+    refetchInterval: 15_000,
+  });
+  const strategyPaperPnlBreakdownQuery = useQuery({
+    queryKey: [
+      "analytics-paper-pnl-breakdown",
+      selectedStrategyId,
+      selectedSymbol,
+      selectedAnalyticsTimeframe,
+    ],
+    queryFn: () =>
+      api.getStrategyPaperPnlBreakdown(
+        selectedStrategyId,
+        selectedSymbol,
+        selectedAnalyticsTimeframe,
+      ),
+    enabled: Boolean(selectedStrategyId),
+    refetchInterval: 15_000,
+  });
+  const strategyBacktestBreakdownQuery = useQuery({
+    queryKey: [
+      "analytics-backtest-breakdown",
+      selectedStrategyId,
+      selectedSymbol,
+      selectedAnalyticsTimeframe,
+    ],
+    queryFn: () =>
+      api.getStrategyBacktestBreakdown(
+        selectedStrategyId,
+        selectedSymbol,
+        selectedAnalyticsTimeframe,
+      ),
+    enabled: Boolean(selectedStrategyId),
+    refetchInterval: 15_000,
+  });
   const strategyConfigVersionsQuery = useQuery({
     queryKey: ["strategy-config-versions", selectedStrategyId],
     queryFn: () => api.getStrategyConfigVersions(selectedStrategyId),
@@ -739,6 +834,12 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["orders"] }),
       queryClient.invalidateQueries({ queryKey: ["signals"] }),
       queryClient.invalidateQueries({ queryKey: ["backtest-runs"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-strategy-performance"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-strategy-rankings"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-shadow-rankings"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-decision-breakdown"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-paper-pnl-breakdown"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-backtest-breakdown"] }),
       queryClient.invalidateQueries({ queryKey: ["events"] }),
       queryClient.invalidateQueries({ queryKey: ["feed-status"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-status"] }),
@@ -2289,6 +2390,138 @@ function AuthenticatedDashboard({
             </section>
           )}
 
+          {section === "analytics" && (
+            <section className="grid gap-4 xl:grid-cols-12">
+              <Panel className="xl:col-span-4" title="Selected Strategy">
+                <KeyValue
+                  items={[
+                    ["Strategy", selectedStrategyId],
+                    ["Symbol", selectedSymbol],
+                    ["Timeframe", selectedAnalyticsTimeframe],
+                    [
+                      "Window",
+                      strategyPerformanceQuery.data?.summary
+                        ? `${formatDateTime(strategyPerformanceQuery.data.summary.window_start)} -> ${formatDateTime(strategyPerformanceQuery.data.summary.window_end)}`
+                        : "Last 7 days",
+                    ],
+                  ]}
+                  loading={strategyPerformanceQuery.isLoading}
+                  error={getErrorMessage(strategyPerformanceQuery.error)}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-4" title="Combined Performance">
+                <KeyValue
+                  items={[
+                    ["Runs", String(strategyPerformanceQuery.data?.summary.total_runs ?? 0)],
+                    ["Signals", String(strategyPerformanceQuery.data?.summary.total_signals ?? 0)],
+                    [
+                      "Risk Rejection Rate",
+                      formatNumber(strategyPerformanceQuery.data?.summary.risk_rejection_rate),
+                    ],
+                    [
+                      "Realized PnL",
+                      formatNumber(strategyPerformanceQuery.data?.summary.realized_pnl),
+                    ],
+                    [
+                      "Unrealized PnL",
+                      formatNumber(strategyPerformanceQuery.data?.summary.unrealized_pnl),
+                    ],
+                    [
+                      "Win Rate",
+                      formatNumber(strategyPerformanceQuery.data?.summary.win_rate),
+                    ],
+                  ]}
+                  loading={strategyPerformanceQuery.isLoading}
+                  error={getErrorMessage(strategyPerformanceQuery.error)}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-4" title="Operator Questions">
+                <KeyValue
+                  items={[
+                    [
+                      "Most Would-Submit",
+                      shadowRankingsQuery.data?.rankings[0]?.strategy_id ?? "Insufficient data",
+                    ],
+                    [
+                      "Most Risk-Rejected",
+                      [...(strategyRankingsQuery.data?.rankings ?? [])]
+                        .sort((left, right) => right.rejected_risk_decisions - left.rejected_risk_decisions)[0]
+                        ?.strategy_id ?? "Insufficient data",
+                    ],
+                    [
+                      "Best Paper Realized PnL",
+                      [...(strategyRankingsQuery.data?.rankings ?? [])]
+                        .sort((left, right) => Number(right.realized_pnl) - Number(left.realized_pnl))[0]
+                        ?.strategy_id ?? "Insufficient data",
+                    ],
+                    [
+                      "Best Backtest Avg PnL",
+                      strategyRankingsQuery.data?.rankings[0]?.strategy_id ?? "Insufficient data",
+                    ],
+                    [
+                      "Selected Symbol No-Signal",
+                      String(strategyDecisionBreakdownQuery.data?.breakdown.no_signal_count ?? 0),
+                    ],
+                  ]}
+                  loading={strategyRankingsQuery.isLoading || shadowRankingsQuery.isLoading}
+                  error={
+                    getErrorMessage(strategyRankingsQuery.error) ??
+                    getErrorMessage(shadowRankingsQuery.error)
+                  }
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-7" title="Strategy Rankings">
+                <AnalyticsRankingsTable rankings={strategyRankingsQuery.data?.rankings ?? []} />
+                <InlineStatus error={getErrorMessage(strategyRankingsQuery.error)} />
+              </Panel>
+
+              <Panel className="xl:col-span-5" title="Shadow Decision Breakdown">
+                <KeyValue
+                  items={[
+                    [
+                      "Would Submit",
+                      String(strategyDecisionBreakdownQuery.data?.breakdown.would_submit_count ?? 0),
+                    ],
+                    [
+                      "No Signal",
+                      String(strategyDecisionBreakdownQuery.data?.breakdown.no_signal_count ?? 0),
+                    ],
+                    [
+                      "Risk Rejected",
+                      String(strategyDecisionBreakdownQuery.data?.breakdown.risk_rejected_count ?? 0),
+                    ],
+                    [
+                      "Skipped",
+                      String(strategyDecisionBreakdownQuery.data?.breakdown.skipped_count ?? 0),
+                    ],
+                    ["Errors", String(strategyDecisionBreakdownQuery.data?.breakdown.error_count ?? 0)],
+                  ]}
+                  loading={strategyDecisionBreakdownQuery.isLoading}
+                  error={getErrorMessage(strategyDecisionBreakdownQuery.error)}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-6" title="Paper PnL Breakdown">
+                <AnalyticsPnlBreakdownCard
+                  breakdown={strategyPaperPnlBreakdownQuery.data?.breakdown}
+                  loading={strategyPaperPnlBreakdownQuery.isLoading}
+                  error={getErrorMessage(strategyPaperPnlBreakdownQuery.error)}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-6" title="Backtest Summary">
+                <AnalyticsPnlBreakdownCard
+                  breakdown={strategyBacktestBreakdownQuery.data?.breakdown}
+                  loading={strategyBacktestBreakdownQuery.isLoading}
+                  error={getErrorMessage(strategyBacktestBreakdownQuery.error)}
+                />
+              </Panel>
+            </section>
+          )}
+
           {section === "backtests" && (
             <section className="grid gap-4 xl:grid-cols-12">
               <Panel className="xl:col-span-7" title="Backtest Run Form">
@@ -3353,6 +3586,77 @@ function SimpleList({ items }: { items: string[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function AnalyticsRankingsTable({ rankings }: { rankings: StrategyComparisonSummary[] }) {
+  if (!rankings.length) {
+    return <EmptyState label="No analytics rankings available." />;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-left text-sm">
+        <thead className="text-xs uppercase tracking-[0.18em] text-muted">
+          <tr>
+            <th className="px-3 py-2">Strategy</th>
+            <th className="px-3 py-2">Realized PnL</th>
+            <th className="px-3 py-2">Would Submit</th>
+            <th className="px-3 py-2">Risk Rejected</th>
+            <th className="px-3 py-2">Backtest Avg %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rankings.map((ranking) => (
+            <tr key={`${ranking.mode}-${ranking.strategy_id}`} className="border-t border-border/70">
+              <td className="px-3 py-2 text-slate-100">{ranking.strategy_id}</td>
+              <td className="px-3 py-2 text-copy/80">{formatNumber(ranking.realized_pnl)}</td>
+              <td className="px-3 py-2 text-copy/80">{ranking.shadow_would_submit_count}</td>
+              <td className="px-3 py-2 text-copy/80">{ranking.rejected_risk_decisions}</td>
+              <td className="px-3 py-2 text-copy/80">
+                {formatNumber(ranking.avg_backtest_pnl_pct)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AnalyticsPnlBreakdownCard({
+  breakdown,
+  loading,
+  error,
+}: {
+  breakdown?: StrategyPnlBreakdown;
+  loading?: boolean;
+  error?: string;
+}) {
+  if (error) {
+    return <InlineStatus error={error} />;
+  }
+  if (loading) {
+    return <div className="text-sm text-slate-300">Loading...</div>;
+  }
+  if (!breakdown) {
+    return <EmptyState label="Insufficient analytics data." />;
+  }
+
+  return (
+    <KeyValue
+      items={[
+        ["Mode", breakdown.mode],
+        ["Positions Opened", String(breakdown.positions_opened)],
+        ["Positions Closed", String(breakdown.positions_closed)],
+        ["Realized PnL", formatNumber(breakdown.realized_pnl)],
+        ["Unrealized PnL", formatNumber(breakdown.unrealized_pnl)],
+        ["Win Rate", formatNumber(breakdown.win_rate)],
+        ["Avg Win", formatNumber(breakdown.avg_win)],
+        ["Avg Loss", formatNumber(breakdown.avg_loss)],
+        ["Max Drawdown %", formatNumber(breakdown.max_drawdown_pct)],
+      ]}
+    />
   );
 }
 

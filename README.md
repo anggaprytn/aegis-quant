@@ -17,6 +17,7 @@ This repository foundation includes:
 - Paper account, position, fill, journal, equity snapshot, and manual close accounting for operational paper trading
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
 - Strategy config validation, versioning, audit logging, and dry-run evaluation before pipeline/backtest use
+- Read-only strategy performance analytics across backtest, paper, and shadow data
 - Minimal Next.js operational dashboard shell for paper-only inspection and control
 - Binance Spot Testnet adapter skeleton with protected inspection and owner-gated testnet submit/cancel
 - Event model and publisher trait skeleton
@@ -166,6 +167,15 @@ cargo run -p cli -- backtest run \
   --slippage-bps 5 \
   --holding-candles 3
 cargo run -p cli -- backtest list
+cargo run -p cli -- analytics strategy performance \
+  --strategy momentum_v1 \
+  --symbol BTCUSDT \
+  --timeframe 1m \
+  --mode COMBINED
+cargo run -p cli -- analytics strategy rankings --mode SHADOW --limit 20
+cargo run -p cli -- analytics strategy decision-breakdown momentum_v1 \
+  --symbol BTCUSDT \
+  --timeframe 1m
 cargo run -p cli -- market backfill \
   --symbol BTCUSDT \
   --timeframe 1m \
@@ -189,6 +199,7 @@ Notes:
 - `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
 - The CLI does not print tokens by default and does not implement live trading, production exchange private APIs, API key reads, or any TUI layer.
 - Testnet exchange commands talk only to the Aegis HTTP API; the CLI never reads Binance secrets directly.
+- Strategy analytics is read-only: it compares persisted backtest, paper, and shadow behavior and never submits or mutates orders, positions, PnL, reconciliation rows, or exchange state.
 
 ## Binance Spot Testnet adapter
 

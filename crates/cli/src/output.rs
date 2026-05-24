@@ -19,8 +19,9 @@ use crate::api::{
     RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
     RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
     StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
-    StrategyDryRunResponse, StrategyListResponse, StrategyStatusResponse,
-    TestnetShadowRunnerControlResponse, TestnetShadowRunnerStatusResponse,
+    StrategyDecisionBreakdownResponse, StrategyDryRunResponse, StrategyListResponse,
+    StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
+    StrategyStatusResponse, TestnetShadowRunnerControlResponse, TestnetShadowRunnerStatusResponse,
     TestnetShadowRunsResponse,
 };
 
@@ -988,6 +989,101 @@ pub fn print_backfill_runs(response: &CandleBackfillRunsResponse) {
 
 pub fn print_backfill_run(response: &CandleBackfillRunResponse) {
     print_backfill_result(&response.run);
+}
+
+pub fn print_strategy_performance_summary(response: &StrategyPerformanceSummaryResponse) {
+    let summary = &response.summary;
+    println!(
+        "Mode: {}  Strategy: {}  Symbol: {}  Timeframe: {}",
+        summary.mode.as_str(),
+        summary.strategy_id.as_deref().unwrap_or("ALL"),
+        summary.symbol.as_deref().unwrap_or("ALL"),
+        summary.timeframe.as_deref().unwrap_or("ALL")
+    );
+    println!("Window: {} -> {}", summary.window_start, summary.window_end);
+    println!(
+        "Runs: {}  Signals: {}  Approved risk: {}  Rejected risk: {}  Rejection rate: {}",
+        summary.total_runs,
+        summary.total_signals,
+        summary.approved_risk_decisions,
+        summary.rejected_risk_decisions,
+        summary.risk_rejection_rate
+    );
+    println!(
+        "Shadow would-submit: {}  No-signal: {}  Shadow risk-rejected: {}",
+        summary.shadow_would_submit_count,
+        summary.shadow_no_signal_count,
+        summary.shadow_risk_rejected_count
+    );
+    println!(
+        "Paper orders: {}  Opened: {}  Closed: {}",
+        summary.paper_orders_count, summary.paper_positions_opened, summary.paper_positions_closed
+    );
+    println!(
+        "Realized PnL: {}  Unrealized PnL: {}  Win rate: {}",
+        summary.realized_pnl,
+        summary.unrealized_pnl,
+        summary
+            .win_rate
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Backtests: {}  Best: {}  Worst: {}  Avg: {}",
+        summary.backtest_runs_count,
+        summary
+            .best_backtest_pnl_pct
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        summary
+            .worst_backtest_pnl_pct
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        summary
+            .avg_backtest_pnl_pct
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+}
+
+pub fn print_strategy_performance_rankings(response: &StrategyPerformanceRankingsResponse) {
+    for ranking in &response.rankings {
+        println!(
+            "{} mode={} realized={} would_submit={} rejected={} backtest_avg={}",
+            ranking.strategy_id,
+            ranking.mode.as_str(),
+            ranking.realized_pnl,
+            ranking.shadow_would_submit_count,
+            ranking.rejected_risk_decisions,
+            ranking
+                .avg_backtest_pnl_pct
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+}
+
+pub fn print_strategy_decision_breakdown(response: &StrategyDecisionBreakdownResponse) {
+    let breakdown = &response.breakdown;
+    println!(
+        "Strategy: {}  Symbol: {}  Timeframe: {}",
+        breakdown.strategy_id,
+        breakdown.symbol.as_deref().unwrap_or("ALL"),
+        breakdown.timeframe.as_deref().unwrap_or("ALL")
+    );
+    println!(
+        "Window: {} -> {}",
+        breakdown.window_start, breakdown.window_end
+    );
+    println!(
+        "Runs: {}  Would-submit: {}  No-signal: {}  Risk-rejected: {}  Skipped: {}  Error: {}",
+        breakdown.total_runs,
+        breakdown.would_submit_count,
+        breakdown.no_signal_count,
+        breakdown.risk_rejected_count,
+        breakdown.skipped_count,
+        breakdown.error_count
+    );
 }
 
 fn summarize_feeds(feed: &FeedStatusResponse) -> String {

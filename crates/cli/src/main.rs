@@ -11,11 +11,12 @@ use cli::api::{
     RiskDecisionsQuery,
 };
 use cli::cli::{
-    AuthCommands, BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands,
-    ExchangeTestnetCommands, ExchangeTestnetPrivateStreamCommands,
-    ExchangeTestnetShadowRunnerCommands, MarketCommands, OrderCommands, PaperCommands,
-    PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
-    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    AnalyticsCommands, AnalyticsStrategyCommands, AuthCommands, BacktestCommands, Cli, Commands,
+    EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
+    ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, MarketCommands,
+    OrderCommands, PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands,
+    StrategyCommands, StrategyConfigCommands, RESUME_CONFIRMATION_TEXT,
+    TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -837,6 +838,54 @@ async fn main() -> anyhow::Result<()> {
                     output::print_paper_pnl(&response);
                 }
             }
+        },
+        Commands::Analytics(command) => match command {
+            AnalyticsCommands::Strategy(command) => match command {
+                AnalyticsStrategyCommands::Performance(args) => {
+                    let response = client
+                        .strategy_performance(
+                            args.strategy_id,
+                            args.symbol,
+                            args.timeframe,
+                            args.mode,
+                            args.start_time,
+                            args.end_time,
+                            args.limit,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_performance_summary(&response);
+                    }
+                }
+                AnalyticsStrategyCommands::Rankings(args) => {
+                    let response = client
+                        .strategy_rankings(args.mode, args.symbol, args.timeframe, args.limit)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_performance_rankings(&response);
+                    }
+                }
+                AnalyticsStrategyCommands::DecisionBreakdown(args) => {
+                    let response = client
+                        .strategy_decision_breakdown(
+                            &args.strategy_id,
+                            args.symbol,
+                            args.timeframe,
+                            args.start_time,
+                            args.end_time,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_decision_breakdown(&response);
+                    }
+                }
+            },
         },
     }
 

@@ -1,21 +1,24 @@
 use aegis_core::{
-    BacktestConfig, BacktestEquityPoint, BacktestResult, BacktestTrade, Candle,
-    CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult, CandleBackfillStatus,
-    CandleInterval, DataFreshnessStatus, EventEnvelope, ExchangeReconciliationStatus,
-    ExecutionState, FeedStatus, MarketDataSource, MarketTick, OrderIntent, OrderStatus,
-    PaperAccount, PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus,
-    PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradeJournalEntry, PositionSide,
-    PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session, Side, SignalReason,
-    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal,
-    Symbol, TestnetExecutionState, TestnetShadowDecision, TestnetShadowIntent,
-    TestnetShadowRejectionReason, TestnetShadowRunResult, TestnetShadowRunnerConfig,
-    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState, TestnetShadowRunnerStatus,
-    TestnetShadowStatus, User, UserRole, UserStatus,
+    calculate_strategy_rejection_rate, calculate_strategy_win_rate,
+    combine_strategy_performance_summaries, BacktestConfig, BacktestEquityPoint, BacktestResult,
+    BacktestTrade, Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult,
+    CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
+    ExchangeReconciliationStatus, ExecutionState, FeedStatus, MarketDataSource, MarketTick,
+    OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus, PaperClosePositionResult,
+    PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition,
+    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus, PaperTradeJournalEntry,
+    PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session,
+    Side, SignalReason, StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyId, StrategyPerformanceMode,
+    StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
+    StrategyRiskBreakdown, StrategySignal, Symbol, TestnetExecutionState, TestnetShadowDecision,
+    TestnetShadowIntent, TestnetShadowRejectionReason, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState,
+    TestnetShadowRunnerStatus, TestnetShadowStatus, User, UserRole, UserStatus,
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -5157,6 +5160,777 @@ pub async fn get_backtest_equity_curve(
     .await?;
 
     Ok(rows.iter().map(map_backtest_equity_point).collect())
+}
+
+const ANALYTICS_DEFAULT_LIMIT: i64 = 20;
+const ANALYTICS_MAX_LIMIT: i64 = 100;
+const ANALYTICS_DEFAULT_WINDOW_DAYS: i64 = 7;
+
+fn bounded_analytics_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(ANALYTICS_MAX_LIMIT),
+        _ => ANALYTICS_DEFAULT_LIMIT,
+    }
+}
+
+fn analytics_window(
+    request: &StrategyPerformanceRequest,
+) -> (DateTime<Utc>, DateTime<Utc>, DateTime<Utc>) {
+    let computed_at = Utc::now();
+    let end_time = request.end_time.unwrap_or(computed_at);
+    let start_time = request
+        .start_time
+        .unwrap_or_else(|| end_time - Duration::days(ANALYTICS_DEFAULT_WINDOW_DAYS));
+    if start_time <= end_time {
+        (start_time, end_time, computed_at)
+    } else {
+        (end_time, start_time, computed_at)
+    }
+}
+
+fn empty_strategy_performance_summary(
+    request: &StrategyPerformanceRequest,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    computed_at: DateTime<Utc>,
+) -> StrategyPerformanceSummary {
+    StrategyPerformanceSummary {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        mode: request.mode,
+        window_start,
+        window_end,
+        total_runs: 0,
+        total_signals: 0,
+        approved_risk_decisions: 0,
+        rejected_risk_decisions: 0,
+        risk_rejection_rate: Decimal::ZERO,
+        shadow_would_submit_count: 0,
+        shadow_no_signal_count: 0,
+        shadow_risk_rejected_count: 0,
+        paper_orders_count: 0,
+        paper_positions_opened: 0,
+        paper_positions_closed: 0,
+        realized_pnl: Decimal::ZERO,
+        unrealized_pnl: Decimal::ZERO,
+        win_rate: None,
+        avg_win: None,
+        avg_loss: None,
+        max_drawdown_pct: None,
+        backtest_runs_count: 0,
+        best_backtest_pnl_pct: None,
+        worst_backtest_pnl_pct: None,
+        avg_backtest_pnl_pct: None,
+        created_at: computed_at,
+        computed_at,
+    }
+}
+
+fn empty_strategy_decision_breakdown(
+    request: &StrategyPerformanceRequest,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    computed_at: DateTime<Utc>,
+) -> StrategyDecisionBreakdown {
+    StrategyDecisionBreakdown {
+        strategy_id: request.strategy_id.clone().unwrap_or_default(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        window_start,
+        window_end,
+        total_runs: 0,
+        would_submit_count: 0,
+        no_signal_count: 0,
+        risk_rejected_count: 0,
+        skipped_count: 0,
+        error_count: 0,
+        computed_at,
+    }
+}
+
+fn empty_strategy_pnl_breakdown(
+    request: &StrategyPerformanceRequest,
+    mode: StrategyPerformanceMode,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    computed_at: DateTime<Utc>,
+) -> StrategyPnlBreakdown {
+    StrategyPnlBreakdown {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        mode,
+        window_start,
+        window_end,
+        positions_opened: 0,
+        positions_closed: 0,
+        realized_pnl: Decimal::ZERO,
+        unrealized_pnl: Decimal::ZERO,
+        win_rate: None,
+        avg_win: None,
+        avg_loss: None,
+        max_drawdown_pct: None,
+        computed_at,
+    }
+}
+
+fn build_strategy_risk_breakdown(
+    request: &StrategyPerformanceRequest,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    computed_at: DateTime<Utc>,
+    approved_decisions: i64,
+    rejected_decisions: i64,
+) -> StrategyRiskBreakdown {
+    StrategyRiskBreakdown {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        window_start,
+        window_end,
+        approved_decisions,
+        rejected_decisions,
+        rejection_rate: calculate_strategy_rejection_rate(
+            rejected_decisions,
+            approved_decisions + rejected_decisions,
+        ),
+        computed_at,
+    }
+}
+
+async fn fetch_signals_and_risk_breakdown(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    computed_at: DateTime<Utc>,
+) -> Result<(i64, StrategyRiskBreakdown)> {
+    let signal_row = sqlx::query(
+        r#"
+        SELECT COUNT(*)::BIGINT AS count
+        FROM signals
+        WHERE created_at >= $1
+          AND created_at <= $2
+          AND ($3::TEXT IS NULL OR strategy_id = $3)
+          AND ($4::TEXT IS NULL OR symbol = $4)
+          AND ($5::TEXT IS NULL OR timeframe = $5)
+        "#,
+    )
+    .bind(window_start)
+    .bind(window_end)
+    .bind(request.strategy_id.as_deref())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+    let total_signals = signal_row.get::<i64, _>("count");
+
+    let risk_row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*) FILTER (WHERE rd.decision = 'APPROVED')::BIGINT AS approved_count,
+            COUNT(*) FILTER (WHERE rd.decision = 'REJECTED')::BIGINT AS rejected_count
+        FROM risk_decisions rd
+        LEFT JOIN signals s ON s.id = rd.signal_id
+        WHERE rd.created_at >= $1
+          AND rd.created_at <= $2
+          AND ($3::TEXT IS NULL OR rd.strategy_id = $3)
+          AND ($4::TEXT IS NULL OR rd.symbol = $4)
+          AND ($5::TEXT IS NULL OR s.timeframe = $5)
+        "#,
+    )
+    .bind(window_start)
+    .bind(window_end)
+    .bind(request.strategy_id.as_deref())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    let approved_decisions = risk_row.get::<i64, _>("approved_count");
+    let rejected_decisions = risk_row.get::<i64, _>("rejected_count");
+    Ok((
+        total_signals,
+        build_strategy_risk_breakdown(
+            request,
+            window_start,
+            window_end,
+            computed_at,
+            approved_decisions,
+            rejected_decisions,
+        ),
+    ))
+}
+
+pub async fn get_strategy_shadow_decision_breakdown(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<StrategyDecisionBreakdown> {
+    let (window_start, window_end, computed_at) = analytics_window(request);
+    let Some(strategy_id) = request.strategy_id.clone() else {
+        return Ok(empty_strategy_decision_breakdown(
+            request,
+            window_start,
+            window_end,
+            computed_at,
+        ));
+    };
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS total_runs,
+            COUNT(*) FILTER (WHERE decision = 'WOULD_SUBMIT')::BIGINT AS would_submit_count,
+            COUNT(*) FILTER (WHERE decision = 'NO_SIGNAL')::BIGINT AS no_signal_count,
+            COUNT(*) FILTER (WHERE decision = 'RISK_REJECTED')::BIGINT AS risk_rejected_count,
+            COUNT(*) FILTER (
+                WHERE decision LIKE 'SKIPPED_%'
+            )::BIGINT AS skipped_count,
+            COUNT(*) FILTER (WHERE decision = 'ERROR')::BIGINT AS error_count
+        FROM testnet_shadow_runs
+        WHERE created_at >= $1
+          AND created_at <= $2
+          AND strategy_id = $3
+          AND ($4::TEXT IS NULL OR symbol = $4)
+          AND ($5::TEXT IS NULL OR timeframe = $5)
+        "#,
+    )
+    .bind(window_start)
+    .bind(window_end)
+    .bind(strategy_id.clone())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(StrategyDecisionBreakdown {
+        strategy_id,
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        window_start,
+        window_end,
+        total_runs: row.get("total_runs"),
+        would_submit_count: row.get("would_submit_count"),
+        no_signal_count: row.get("no_signal_count"),
+        risk_rejected_count: row.get("risk_rejected_count"),
+        skipped_count: row.get("skipped_count"),
+        error_count: row.get("error_count"),
+        computed_at,
+    })
+}
+
+pub async fn get_strategy_paper_pnl_breakdown(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<StrategyPnlBreakdown> {
+    let (window_start, window_end, computed_at) = analytics_window(request);
+    let Some(account) = get_default_paper_account(pool).await? else {
+        return Ok(empty_strategy_pnl_breakdown(
+            request,
+            StrategyPerformanceMode::Paper,
+            window_start,
+            window_end,
+            computed_at,
+        ));
+    };
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS positions_opened,
+            COUNT(*) FILTER (WHERE pp.status = 'closed')::BIGINT AS positions_closed,
+            COALESCE(SUM(pp.realized_pnl), 0) AS realized_pnl,
+            COALESCE(SUM(pp.unrealized_pnl), 0) AS unrealized_pnl,
+            COUNT(*) FILTER (
+                WHERE pp.status = 'closed' AND pp.realized_pnl > 0
+            )::BIGINT AS wins,
+            AVG(pp.realized_pnl) FILTER (
+                WHERE pp.status = 'closed' AND pp.realized_pnl > 0
+            ) AS avg_win,
+            AVG(pp.realized_pnl) FILTER (
+                WHERE pp.status = 'closed' AND pp.realized_pnl < 0
+            ) AS avg_loss
+        FROM paper_positions pp
+        LEFT JOIN signals s ON s.id = pp.signal_id
+        WHERE pp.account_id = $1
+          AND pp.opened_at >= $2
+          AND pp.opened_at <= $3
+          AND ($4::TEXT IS NULL OR pp.strategy_id = $4)
+          AND ($5::TEXT IS NULL OR pp.symbol = $5)
+          AND ($6::TEXT IS NULL OR s.timeframe = $6)
+        "#,
+    )
+    .bind(account.id)
+    .bind(window_start)
+    .bind(window_end)
+    .bind(request.strategy_id.as_deref())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    let positions_closed = row.get::<i64, _>("positions_closed");
+    let max_drawdown_pct =
+        if request.strategy_id.is_none() && request.symbol.is_none() && request.timeframe.is_none()
+        {
+            let drawdown_row = sqlx::query(
+                r#"
+            SELECT MAX(drawdown_pct) AS max_drawdown_pct
+            FROM paper_equity_snapshots
+            WHERE account_id = $1
+              AND snapshot_at >= $2
+              AND snapshot_at <= $3
+            "#,
+            )
+            .bind(account.id)
+            .bind(window_start)
+            .bind(window_end)
+            .fetch_one(pool)
+            .await?;
+            drawdown_row.get::<Option<Decimal>, _>("max_drawdown_pct")
+        } else {
+            None
+        };
+
+    Ok(StrategyPnlBreakdown {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        mode: StrategyPerformanceMode::Paper,
+        window_start,
+        window_end,
+        positions_opened: row.get("positions_opened"),
+        positions_closed,
+        realized_pnl: row.get("realized_pnl"),
+        unrealized_pnl: row.get("unrealized_pnl"),
+        win_rate: calculate_strategy_win_rate(row.get("wins"), positions_closed),
+        avg_win: row.get("avg_win"),
+        avg_loss: row.get("avg_loss"),
+        max_drawdown_pct,
+        computed_at,
+    })
+}
+
+pub async fn get_strategy_backtest_breakdown(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<StrategyPnlBreakdown> {
+    let (window_start, window_end, computed_at) = analytics_window(request);
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS run_count,
+            COALESCE(SUM(pnl), 0) AS realized_pnl,
+            COUNT(*) FILTER (WHERE pnl > 0)::BIGINT AS wins,
+            AVG(avg_win) FILTER (WHERE status = 'COMPLETED') AS avg_win,
+            AVG(avg_loss) FILTER (WHERE status = 'COMPLETED') AS avg_loss,
+            AVG(max_drawdown_pct) FILTER (WHERE status = 'COMPLETED') AS max_drawdown_pct
+        FROM backtest_runs
+        WHERE created_at >= $1
+          AND created_at <= $2
+          AND ($3::TEXT IS NULL OR strategy_id = $3)
+          AND ($4::TEXT IS NULL OR symbol = $4)
+          AND ($5::TEXT IS NULL OR timeframe = $5)
+        "#,
+    )
+    .bind(window_start)
+    .bind(window_end)
+    .bind(request.strategy_id.as_deref())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    let run_count = row.get::<i64, _>("run_count");
+    Ok(StrategyPnlBreakdown {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        mode: StrategyPerformanceMode::Backtest,
+        window_start,
+        window_end,
+        positions_opened: run_count,
+        positions_closed: run_count,
+        realized_pnl: row.get("realized_pnl"),
+        unrealized_pnl: Decimal::ZERO,
+        win_rate: calculate_strategy_win_rate(row.get("wins"), run_count),
+        avg_win: row.get("avg_win"),
+        avg_loss: row.get("avg_loss"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        computed_at,
+    })
+}
+
+async fn get_shadow_mode_summary(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<StrategyPerformanceSummary> {
+    let (window_start, window_end, computed_at) = analytics_window(request);
+    let mut summary =
+        empty_strategy_performance_summary(request, window_start, window_end, computed_at);
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS total_runs,
+            COUNT(*) FILTER (WHERE decision = 'WOULD_SUBMIT')::BIGINT AS would_submit_count,
+            COUNT(*) FILTER (WHERE decision = 'NO_SIGNAL')::BIGINT AS no_signal_count,
+            COUNT(*) FILTER (WHERE decision = 'RISK_REJECTED')::BIGINT AS risk_rejected_count,
+            COUNT(*) FILTER (WHERE risk_decision_id IS NOT NULL AND decision != 'RISK_REJECTED')::BIGINT AS approved_risk_decisions,
+            COUNT(*) FILTER (WHERE decision = 'RISK_REJECTED')::BIGINT AS rejected_risk_decisions,
+            COUNT(*) FILTER (WHERE signal_id IS NOT NULL)::BIGINT AS total_signals
+        FROM testnet_shadow_runs
+        WHERE created_at >= $1
+          AND created_at <= $2
+          AND ($3::TEXT IS NULL OR strategy_id = $3)
+          AND ($4::TEXT IS NULL OR symbol = $4)
+          AND ($5::TEXT IS NULL OR timeframe = $5)
+        "#,
+    )
+    .bind(window_start)
+    .bind(window_end)
+    .bind(request.strategy_id.as_deref())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    summary.total_runs = row.get("total_runs");
+    summary.total_signals = row.get("total_signals");
+    summary.approved_risk_decisions = row.get("approved_risk_decisions");
+    summary.rejected_risk_decisions = row.get("rejected_risk_decisions");
+    summary.risk_rejection_rate = calculate_strategy_rejection_rate(
+        summary.rejected_risk_decisions,
+        summary.approved_risk_decisions + summary.rejected_risk_decisions,
+    );
+    summary.shadow_would_submit_count = row.get("would_submit_count");
+    summary.shadow_no_signal_count = row.get("no_signal_count");
+    summary.shadow_risk_rejected_count = row.get("risk_rejected_count");
+    Ok(summary)
+}
+
+async fn get_paper_mode_summary(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<StrategyPerformanceSummary> {
+    let (window_start, window_end, computed_at) = analytics_window(request);
+    let mut summary =
+        empty_strategy_performance_summary(request, window_start, window_end, computed_at);
+    let (total_signals, risk_breakdown) =
+        fetch_signals_and_risk_breakdown(pool, request, window_start, window_end, computed_at)
+            .await?;
+    summary.total_signals = total_signals;
+    summary.approved_risk_decisions = risk_breakdown.approved_decisions;
+    summary.rejected_risk_decisions = risk_breakdown.rejected_decisions;
+    summary.risk_rejection_rate = risk_breakdown.rejection_rate;
+
+    let order_row = sqlx::query(
+        r#"
+        SELECT COUNT(*)::BIGINT AS paper_orders_count
+        FROM orders o
+        LEFT JOIN signals s ON s.id = o.signal_id
+        WHERE o.market_mode = 'paper'
+          AND o.created_at >= $1
+          AND o.created_at <= $2
+          AND ($3::TEXT IS NULL OR o.strategy_id = $3)
+          AND ($4::TEXT IS NULL OR o.symbol = $4)
+          AND ($5::TEXT IS NULL OR s.timeframe = $5)
+        "#,
+    )
+    .bind(window_start)
+    .bind(window_end)
+    .bind(request.strategy_id.as_deref())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+    summary.paper_orders_count = order_row.get("paper_orders_count");
+
+    let pnl = get_strategy_paper_pnl_breakdown(pool, request).await?;
+    summary.total_runs = pnl.positions_opened;
+    summary.paper_positions_opened = pnl.positions_opened;
+    summary.paper_positions_closed = pnl.positions_closed;
+    summary.realized_pnl = pnl.realized_pnl;
+    summary.unrealized_pnl = pnl.unrealized_pnl;
+    summary.win_rate = pnl.win_rate;
+    summary.avg_win = pnl.avg_win;
+    summary.avg_loss = pnl.avg_loss;
+    summary.max_drawdown_pct = pnl.max_drawdown_pct;
+    Ok(summary)
+}
+
+async fn get_backtest_mode_summary(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<StrategyPerformanceSummary> {
+    let (window_start, window_end, computed_at) = analytics_window(request);
+    let mut summary =
+        empty_strategy_performance_summary(request, window_start, window_end, computed_at);
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS run_count,
+            COALESCE(SUM(pnl), 0) AS realized_pnl,
+            MAX(pnl_pct) FILTER (WHERE status = 'COMPLETED') AS best_backtest_pnl_pct,
+            MIN(pnl_pct) FILTER (WHERE status = 'COMPLETED') AS worst_backtest_pnl_pct,
+            AVG(pnl_pct) FILTER (WHERE status = 'COMPLETED') AS avg_backtest_pnl_pct,
+            AVG(win_rate) FILTER (WHERE status = 'COMPLETED') AS win_rate,
+            AVG(avg_win) FILTER (WHERE status = 'COMPLETED') AS avg_win,
+            AVG(avg_loss) FILTER (WHERE status = 'COMPLETED') AS avg_loss,
+            MAX(max_drawdown_pct) FILTER (WHERE status = 'COMPLETED') AS max_drawdown_pct,
+            MIN(created_at) AS created_at
+        FROM backtest_runs
+        WHERE created_at >= $1
+          AND created_at <= $2
+          AND ($3::TEXT IS NULL OR strategy_id = $3)
+          AND ($4::TEXT IS NULL OR symbol = $4)
+          AND ($5::TEXT IS NULL OR timeframe = $5)
+        "#,
+    )
+    .bind(window_start)
+    .bind(window_end)
+    .bind(request.strategy_id.as_deref())
+    .bind(request.symbol.as_deref())
+    .bind(request.timeframe.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    summary.total_runs = row.get("run_count");
+    summary.backtest_runs_count = row.get("run_count");
+    summary.realized_pnl = row.get("realized_pnl");
+    summary.win_rate = row.get("win_rate");
+    summary.avg_win = row.get("avg_win");
+    summary.avg_loss = row.get("avg_loss");
+    summary.max_drawdown_pct = row.get("max_drawdown_pct");
+    summary.best_backtest_pnl_pct = row.get("best_backtest_pnl_pct");
+    summary.worst_backtest_pnl_pct = row.get("worst_backtest_pnl_pct");
+    summary.avg_backtest_pnl_pct = row.get("avg_backtest_pnl_pct");
+    summary.created_at = row
+        .get::<Option<DateTime<Utc>>, _>("created_at")
+        .unwrap_or(computed_at);
+    Ok(summary)
+}
+
+pub async fn get_strategy_performance_summary(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<StrategyPerformanceSummary> {
+    match request.mode {
+        StrategyPerformanceMode::Backtest => get_backtest_mode_summary(pool, request).await,
+        StrategyPerformanceMode::Paper => get_paper_mode_summary(pool, request).await,
+        StrategyPerformanceMode::Shadow => get_shadow_mode_summary(pool, request).await,
+        StrategyPerformanceMode::Combined => {
+            let backtest_request = StrategyPerformanceRequest {
+                mode: StrategyPerformanceMode::Backtest,
+                ..request.clone()
+            };
+            let paper_request = StrategyPerformanceRequest {
+                mode: StrategyPerformanceMode::Paper,
+                ..request.clone()
+            };
+            let shadow_request = StrategyPerformanceRequest {
+                mode: StrategyPerformanceMode::Shadow,
+                ..request.clone()
+            };
+            let combined = combine_strategy_performance_summaries(vec![
+                get_backtest_mode_summary(pool, &backtest_request).await?,
+                get_paper_mode_summary(pool, &paper_request).await?,
+                get_shadow_mode_summary(pool, &shadow_request).await?,
+            ]);
+            Ok(combined.unwrap_or_else(|| {
+                let (window_start, window_end, computed_at) = analytics_window(request);
+                empty_strategy_performance_summary(request, window_start, window_end, computed_at)
+            }))
+        }
+    }
+}
+
+pub async fn list_strategy_performance_rankings(
+    pool: &PgPool,
+    request: &StrategyPerformanceRequest,
+) -> Result<Vec<StrategyComparisonSummary>> {
+    let (window_start, window_end, computed_at) = analytics_window(request);
+    let limit = bounded_analytics_limit(request.limit);
+    let strategy_rows = match request.mode {
+        StrategyPerformanceMode::Backtest => {
+            sqlx::query(
+                r#"
+                SELECT strategy_id
+                FROM backtest_runs
+                WHERE created_at >= $1
+                  AND created_at <= $2
+                  AND ($3::TEXT IS NULL OR symbol = $3)
+                  AND ($4::TEXT IS NULL OR timeframe = $4)
+                GROUP BY strategy_id
+                ORDER BY AVG(pnl_pct) DESC NULLS LAST, strategy_id ASC
+                LIMIT $5
+                "#,
+            )
+            .bind(window_start)
+            .bind(window_end)
+            .bind(request.symbol.as_deref())
+            .bind(request.timeframe.as_deref())
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        }
+        StrategyPerformanceMode::Paper => {
+            let Some(account) = get_default_paper_account(pool).await? else {
+                return Ok(Vec::new());
+            };
+            sqlx::query(
+                r#"
+                SELECT pp.strategy_id
+                FROM paper_positions pp
+                LEFT JOIN signals s ON s.id = pp.signal_id
+                WHERE pp.account_id = $1
+                  AND pp.strategy_id IS NOT NULL
+                  AND pp.opened_at >= $2
+                  AND pp.opened_at <= $3
+                  AND ($4::TEXT IS NULL OR pp.symbol = $4)
+                  AND ($5::TEXT IS NULL OR s.timeframe = $5)
+                GROUP BY pp.strategy_id
+                ORDER BY SUM(pp.realized_pnl) DESC NULLS LAST, pp.strategy_id ASC
+                LIMIT $6
+                "#,
+            )
+            .bind(account.id)
+            .bind(window_start)
+            .bind(window_end)
+            .bind(request.symbol.as_deref())
+            .bind(request.timeframe.as_deref())
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        }
+        StrategyPerformanceMode::Shadow => {
+            sqlx::query(
+                r#"
+                SELECT strategy_id
+                FROM testnet_shadow_runs
+                WHERE created_at >= $1
+                  AND created_at <= $2
+                  AND ($3::TEXT IS NULL OR symbol = $3)
+                  AND ($4::TEXT IS NULL OR timeframe = $4)
+                GROUP BY strategy_id
+                ORDER BY COUNT(*) FILTER (WHERE decision = 'WOULD_SUBMIT') DESC, strategy_id ASC
+                LIMIT $5
+                "#,
+            )
+            .bind(window_start)
+            .bind(window_end)
+            .bind(request.symbol.as_deref())
+            .bind(request.timeframe.as_deref())
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        }
+        StrategyPerformanceMode::Combined => {
+            sqlx::query(
+                r#"
+                SELECT strategy_id
+                FROM (
+                    SELECT strategy_id
+                    FROM backtest_runs
+                    WHERE created_at >= $1
+                      AND created_at <= $2
+                      AND ($3::TEXT IS NULL OR symbol = $3)
+                      AND ($4::TEXT IS NULL OR timeframe = $4)
+                    UNION
+                    SELECT strategy_id
+                    FROM paper_positions
+                    WHERE strategy_id IS NOT NULL
+                      AND opened_at >= $1
+                      AND opened_at <= $2
+                      AND ($3::TEXT IS NULL OR symbol = $3)
+                    UNION
+                    SELECT strategy_id
+                    FROM testnet_shadow_runs
+                    WHERE created_at >= $1
+                      AND created_at <= $2
+                      AND ($3::TEXT IS NULL OR symbol = $3)
+                      AND ($4::TEXT IS NULL OR timeframe = $4)
+                ) strategies
+                ORDER BY strategy_id ASC
+                LIMIT $5
+                "#,
+            )
+            .bind(window_start)
+            .bind(window_end)
+            .bind(request.symbol.as_deref())
+            .bind(request.timeframe.as_deref())
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        }
+    };
+
+    let mut rankings = Vec::new();
+    for row in strategy_rows {
+        let strategy_id = row.get::<String, _>("strategy_id");
+        let summary = get_strategy_performance_summary(
+            pool,
+            &StrategyPerformanceRequest {
+                strategy_id: Some(strategy_id.clone()),
+                ..request.clone()
+            },
+        )
+        .await?;
+        rankings.push(StrategyComparisonSummary {
+            strategy_id,
+            symbol: request.symbol.clone(),
+            timeframe: request.timeframe.clone(),
+            mode: request.mode,
+            realized_pnl: summary.realized_pnl,
+            unrealized_pnl: summary.unrealized_pnl,
+            risk_rejection_rate: summary.risk_rejection_rate,
+            win_rate: summary.win_rate,
+            best_backtest_pnl_pct: summary.best_backtest_pnl_pct,
+            worst_backtest_pnl_pct: summary.worst_backtest_pnl_pct,
+            avg_backtest_pnl_pct: summary.avg_backtest_pnl_pct,
+            shadow_would_submit_count: summary.shadow_would_submit_count,
+            shadow_no_signal_count: summary.shadow_no_signal_count,
+            shadow_risk_rejected_count: summary.shadow_risk_rejected_count,
+            approved_risk_decisions: summary.approved_risk_decisions,
+            rejected_risk_decisions: summary.rejected_risk_decisions,
+            paper_orders_count: summary.paper_orders_count,
+            total_signals: summary.total_signals,
+            total_runs: summary.total_runs,
+            computed_at,
+        });
+    }
+
+    rankings.sort_by(|left, right| match request.mode {
+        StrategyPerformanceMode::Backtest => right
+            .avg_backtest_pnl_pct
+            .unwrap_or(Decimal::ZERO)
+            .cmp(&left.avg_backtest_pnl_pct.unwrap_or(Decimal::ZERO))
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id)),
+        StrategyPerformanceMode::Paper => right
+            .realized_pnl
+            .cmp(&left.realized_pnl)
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id)),
+        StrategyPerformanceMode::Shadow => right
+            .shadow_would_submit_count
+            .cmp(&left.shadow_would_submit_count)
+            .then_with(|| {
+                right
+                    .rejected_risk_decisions
+                    .cmp(&left.rejected_risk_decisions)
+            })
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id)),
+        StrategyPerformanceMode::Combined => right
+            .realized_pnl
+            .cmp(&left.realized_pnl)
+            .then_with(|| {
+                right
+                    .shadow_would_submit_count
+                    .cmp(&left.shadow_would_submit_count)
+            })
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id)),
+    });
+    rankings.truncate(limit as usize);
+    Ok(rankings)
 }
 
 pub async fn upsert_strategy_config(

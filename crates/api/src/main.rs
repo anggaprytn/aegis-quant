@@ -23,9 +23,11 @@ use aegis_core::{
     PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
     RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
     RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyEvaluationContext, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
+    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
     TestnetExecutionState, TestnetExecutionTransitionSource, TestnetRepairAction,
     TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
     TestnetRepairValidationIssue, TestnetShadowRunRequest, TestnetShadowRunResult,
@@ -55,7 +57,7 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, connect_pool, count_users,
@@ -64,8 +66,10 @@ use db::{
     get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
     get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
-    get_strategy_status, get_system_event, get_system_state, get_testnet_shadow_run_by_id,
-    get_user_by_email, get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
+    get_strategy_backtest_breakdown, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_shadow_decision_breakdown, get_strategy_status,
+    get_system_event, get_system_state, get_testnet_shadow_run_by_id, get_user_by_email,
+    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
     insert_exchange_testnet_repair_action, insert_paper_account, insert_paper_equity_snapshot,
     insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
     insert_strategy_config_audit, insert_system_event, insert_user, list_backtest_runs,
@@ -76,12 +80,12 @@ use db::{
     list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
     list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
     list_risk_config_audit, list_risk_config_versions, list_strategy_config_audit,
-    list_strategy_config_versions, list_strategy_status, list_testnet_shadow_runs,
-    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
-    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
-    revoke_session, risk_config_audit_from_record, risk_config_from_record,
-    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
-    strategy_config_audit_from_record, strategy_config_from_record,
+    list_strategy_config_versions, list_strategy_performance_rankings, list_strategy_status,
+    list_testnet_shadow_runs, load_risk_state_snapshot, paper_account_from_record,
+    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
+    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
+    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
+    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
     strategy_config_version_from_record, update_strategy_state, update_user_last_login,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
     upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
@@ -336,6 +340,25 @@ struct RiskDecisionsQuery {
 #[derive(Deserialize)]
 struct BacktestRunsQuery {
     limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct StrategyAnalyticsQuery {
+    strategy_id: Option<String>,
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    mode: StrategyPerformanceMode,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct StrategyDecisionBreakdownQuery {
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
 }
 
 #[derive(Deserialize)]
@@ -786,6 +809,38 @@ struct TestnetShadowRunnerConfigValidationResponse {
 struct TestnetShadowRunnerControlResponse {
     state: TestnetShadowRunnerState,
     tick: Option<TestnetShadowRunnerTickResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StrategyPerformanceSummaryResponse {
+    summary: StrategyPerformanceSummary,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StrategyPerformanceRankingsResponse {
+    rankings: Vec<StrategyComparisonSummary>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StrategyDecisionBreakdownResponse {
+    breakdown: StrategyDecisionBreakdown,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StrategyPnlBreakdownResponse {
+    breakdown: StrategyPnlBreakdown,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1580,6 +1635,26 @@ async fn main() {
             "/backtest/runs/:id/equity",
             get(get_backtest_equity_handler),
         )
+        .route(
+            "/analytics/strategy/performance",
+            get(get_strategy_performance_handler),
+        )
+        .route(
+            "/analytics/strategy/rankings",
+            get(list_strategy_performance_rankings_handler),
+        )
+        .route(
+            "/analytics/strategy/:id/decision-breakdown",
+            get(get_strategy_decision_breakdown_handler),
+        )
+        .route(
+            "/analytics/strategy/:id/paper-pnl-breakdown",
+            get(get_strategy_paper_pnl_breakdown_handler),
+        )
+        .route(
+            "/analytics/strategy/:id/backtest-breakdown",
+            get(get_strategy_backtest_breakdown_handler),
+        )
         .route("/orders", get(get_orders))
         .route("/orders/:id", get(get_order))
         .route("/market/symbols", get(get_market_symbols))
@@ -2208,6 +2283,27 @@ fn bounded_candle_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(value) if value > 0 => value.min(MAX_CANDLE_LIMIT),
         _ => DEFAULT_CANDLE_LIMIT,
+    }
+}
+
+fn bounded_strategy_analytics_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(100),
+        _ => 20,
+    }
+}
+
+fn strategy_performance_request_from_query(
+    query: StrategyAnalyticsQuery,
+) -> StrategyPerformanceRequest {
+    StrategyPerformanceRequest {
+        strategy_id: query.strategy_id,
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        mode: query.mode,
+        start_time: query.start_time,
+        end_time: query.end_time,
+        limit: Some(bounded_strategy_analytics_limit(query.limit)),
     }
 }
 
@@ -8578,6 +8674,203 @@ async fn get_backtest_equity_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_query_backtest_equity",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_performance_handler(
+    State(state): State<AppState>,
+    Query(query): Query<StrategyAnalyticsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("strategy_performance");
+    let performance_request = strategy_performance_request_from_query(query);
+
+    match get_strategy_performance_summary(&state.db_pool, &performance_request).await {
+        Ok(summary) => (
+            StatusCode::OK,
+            Json(StrategyPerformanceSummaryResponse {
+                summary,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_strategy_performance",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_strategy_performance_rankings_handler(
+    State(state): State<AppState>,
+    Query(query): Query<StrategyAnalyticsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("strategy_rankings");
+    let performance_request = strategy_performance_request_from_query(query);
+
+    match list_strategy_performance_rankings(&state.db_pool, &performance_request).await {
+        Ok(rankings) => (
+            StatusCode::OK,
+            Json(StrategyPerformanceRankingsResponse {
+                rankings,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_strategy_rankings",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_decision_breakdown_handler(
+    State(state): State<AppState>,
+    Path(strategy_id): Path<String>,
+    Query(query): Query<StrategyDecisionBreakdownQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("strategy_decision_breakdown");
+    let performance_request = StrategyPerformanceRequest {
+        strategy_id: Some(strategy_id),
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        mode: StrategyPerformanceMode::Shadow,
+        start_time: query.start_time,
+        end_time: query.end_time,
+        limit: None,
+    };
+
+    match get_strategy_shadow_decision_breakdown(&state.db_pool, &performance_request).await {
+        Ok(breakdown) => (
+            StatusCode::OK,
+            Json(StrategyDecisionBreakdownResponse {
+                breakdown,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_strategy_decision_breakdown",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_paper_pnl_breakdown_handler(
+    State(state): State<AppState>,
+    Path(strategy_id): Path<String>,
+    Query(query): Query<StrategyDecisionBreakdownQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("strategy_paper_pnl_breakdown");
+    let performance_request = StrategyPerformanceRequest {
+        strategy_id: Some(strategy_id),
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        mode: StrategyPerformanceMode::Paper,
+        start_time: query.start_time,
+        end_time: query.end_time,
+        limit: None,
+    };
+
+    match get_strategy_paper_pnl_breakdown(&state.db_pool, &performance_request).await {
+        Ok(breakdown) => (
+            StatusCode::OK,
+            Json(StrategyPnlBreakdownResponse {
+                breakdown,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_strategy_paper_pnl_breakdown",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_backtest_breakdown_handler(
+    State(state): State<AppState>,
+    Path(strategy_id): Path<String>,
+    Query(query): Query<StrategyDecisionBreakdownQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("strategy_backtest_breakdown");
+    let performance_request = StrategyPerformanceRequest {
+        strategy_id: Some(strategy_id),
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        mode: StrategyPerformanceMode::Backtest,
+        start_time: query.start_time,
+        end_time: query.end_time,
+        limit: None,
+    };
+
+    match get_strategy_backtest_breakdown(&state.db_pool, &performance_request).await {
+        Ok(breakdown) => (
+            StatusCode::OK,
+            Json(StrategyPnlBreakdownResponse {
+                breakdown,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_strategy_backtest_breakdown",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

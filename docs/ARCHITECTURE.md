@@ -161,6 +161,29 @@ Notes:
 - Replay persists only into `backtest_runs`, `backtest_trades`, and `backtest_equity_curve`.
 - Replay must not mutate production `signals`, `risk_decisions`, or `orders`.
 
+## Strategy analytics read model
+
+Operator analytics is a read-only aggregation layer over the existing isolated persistence:
+
+```txt
+backtest_runs
++ paper_positions / paper_equity_snapshots / orders
++ testnet_shadow_runs
++ signals / risk_decisions
+-> read-only SQL aggregation helpers
+-> /analytics/strategy/*
+-> dashboard cards/tables + CLI inspection
+```
+
+Notes:
+
+- Analytics never writes derived rows back into Postgres.
+- Backtest metrics stay sourced from `backtest_runs`.
+- Paper metrics stay sourced from paper accounting tables and paper orders only.
+- Shadow metrics stay sourced from `testnet_shadow_runs` only.
+- Combined summaries are assembled in memory from bounded per-mode reads; they are not a new execution source of truth.
+- The analytics API is inspection-only and must never trigger exchange submission, paper pipeline execution, backtests, repair actions, or reconciliation.
+
 ## Deployment shape
 
 For MVP local development:

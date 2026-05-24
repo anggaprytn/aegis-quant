@@ -1,13 +1,15 @@
 use aegis_core::{
-    BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle,
+    BacktestConfig, BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle,
     CandleBackfillRequest, CandleBackfillStatus, CandleInterval, ExchangeEnvironment,
     ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName,
     ExchangeOrderSide, ExchangeOrderState, ExchangeOrderStatus, ExchangeOrderTimeInForce,
     ExchangeOrderType, ExchangeReconciliationAction, ExchangeReconciliationMismatchKind,
-    ExchangeReconciliationSummary, MarketDataSource, OrderIntent, ReplayRunStatus,
-    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
-    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId, StrategySignal,
-    Symbol, TestnetExecutionState, TestnetExecutionTransitionSource, TestnetShadowRunnerConfig,
+    ExchangeReconciliationSummary, FeeModel, MarketDataSource, OrderIntent, PaperAccount,
+    PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide, PositionStatus, ReplayMode,
+    ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId,
+    StrategyPerformanceMode, StrategyPerformanceRequest, StrategySignal, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetShadowRunnerConfig,
     TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
@@ -17,21 +19,23 @@ use db::{
     get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_closed_candles_range,
     get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key, get_risk_decision,
-    get_system_state, insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_candle_backfill_run, insert_exchange_private_stream_event,
-    insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
-    insert_exchange_testnet_order, insert_risk_decision, insert_signal_deduped,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_shadow_decision_breakdown, get_system_state, insert_backtest_equity_points,
+    insert_backtest_run, insert_backtest_trade, insert_candle_backfill_run,
+    insert_exchange_private_stream_event, insert_exchange_reconciliation_mismatch,
+    insert_exchange_reconciliation_run, insert_exchange_testnet_order, insert_paper_account,
+    insert_risk_decision, insert_signal_deduped, insert_testnet_shadow_run,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
-    set_kill_switch_state, test_support::TestDatabase, testnet_shadow_runner_config_from_record,
-    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
-    update_exchange_testnet_order_status, upsert_candle, upsert_candles_batch,
-    upsert_exchange_private_stream_state, upsert_testnet_shadow_runner_config,
-    upsert_testnet_shadow_runner_state, CreateOrderError, ExchangePrivateStreamEventRecord,
-    ExchangePrivateStreamStateRecord, ExchangeReconciliationMismatchRecord,
-    ExchangeReconciliationRunRecord, ExchangeTestnetOrderLifecycleEventRecord,
-    ExchangeTestnetOrderRecord, StateActor, TESTNET_SHADOW_RUNNER_CONFIG_ID,
-    TESTNET_SHADOW_RUNNER_STATE_ID,
+    list_strategy_performance_rankings, set_kill_switch_state, test_support::TestDatabase,
+    testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
+    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_candle,
+    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
+    ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, StateActor,
+    TestnetShadowRunRecord, TESTNET_SHADOW_RUNNER_CONFIG_ID, TESTNET_SHADOW_RUNNER_STATE_ID,
 };
 use exchange::{
     apply_testnet_transition, local_testnet_order_status_from_private_execution_report,
@@ -123,6 +127,58 @@ fn sample_backtest_request() -> BacktestRequest {
         correlation_id: Some(Uuid::from_u128(0x901)),
         holding_candles: Some(3),
         strategy_config_override: None,
+    }
+}
+
+fn sample_backtest_config() -> BacktestConfig {
+    BacktestConfig {
+        replay_mode: ReplayMode::Backtest,
+        holding_candles: 3,
+        fee_model: FeeModel::Bps,
+        slippage_model: aegis_core::SlippageModel::Bps,
+        fee_bps: Decimal::new(10, 0),
+        slippage_bps: Decimal::new(5, 0),
+        risk_config_id: None,
+        risk_config: None,
+    }
+}
+
+fn sample_paper_account() -> PaperAccount {
+    PaperAccount {
+        id: Uuid::new_v4(),
+        name: "paper-main".to_string(),
+        base_currency: "USDT".to_string(),
+        initial_equity: Decimal::new(1_000_000, 0),
+        current_equity: Decimal::new(1_010_000, 0),
+        realized_pnl: Decimal::new(10_000, 0),
+        unrealized_pnl: Decimal::ZERO,
+        status: PaperAccountStatus::Active,
+        created_at: fixed_time(),
+        updated_at: fixed_time(),
+    }
+}
+
+fn sample_paper_position(account_id: Uuid) -> PaperPosition {
+    PaperPosition {
+        id: Uuid::new_v4(),
+        account_id,
+        symbol: "BTCUSDT".to_string(),
+        side: PositionSide::Long,
+        quantity: Decimal::ONE,
+        entry_price: Decimal::new(100_000, 0),
+        mark_price: Some(Decimal::new(101_000, 0)),
+        price_status: PaperPriceStatus::Live,
+        notional: Decimal::new(100_000, 0),
+        realized_pnl: Decimal::new(5_000, 0),
+        unrealized_pnl: Decimal::ZERO,
+        status: PositionStatus::Closed,
+        opened_at: fixed_time(),
+        closed_at: Some(fixed_time() + chrono::Duration::minutes(5)),
+        strategy_id: Some("momentum_v1".to_string()),
+        signal_id: None,
+        risk_decision_id: None,
+        order_id: None,
+        updated_at: fixed_time() + chrono::Duration::minutes(5),
     }
 }
 
@@ -1480,4 +1536,279 @@ async fn testnet_shadow_runner_state_persists() {
     assert_eq!(mapped.status, TestnetShadowRunnerStatus::Paused);
     assert_eq!(mapped.total_ticks, 3);
     assert_eq!(mapped.total_runs, 5);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_performance_summary_reads_shadow_runs() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    insert_testnet_shadow_run(
+        &test_db.pool,
+        &TestnetShadowRunRecord {
+            id: Uuid::new_v4(),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            decision: "WOULD_SUBMIT".to_string(),
+            signal_id: None,
+            risk_decision_id: None,
+            would_submit_payload: Some(json!({"symbol":"BTCUSDT"})),
+            price_source: Some("stored_tick".to_string()),
+            resolved_price: Some(Decimal::new(100_000, 0)),
+            reasons: Vec::new(),
+            status: "COMPLETED".to_string(),
+            created_at: fixed_time(),
+            correlation_id: Some(Uuid::new_v4()),
+        },
+    )
+    .await
+    .expect("shadow run should persist");
+
+    let summary = get_strategy_performance_summary(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Shadow,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("summary should load");
+
+    assert_eq!(summary.shadow_would_submit_count, 1);
+    assert_eq!(summary.total_runs, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_performance_summary_reads_backtest_runs() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let request = sample_backtest_request();
+    let config = sample_backtest_config();
+    let run_id = Uuid::new_v4();
+    insert_backtest_run(
+        &test_db.pool,
+        run_id,
+        &request,
+        &config,
+        fixed_time(),
+        ReplayRunStatus::Pending,
+        request.correlation_id,
+    )
+    .await
+    .expect("backtest run should persist");
+    update_backtest_run_completed(
+        &test_db.pool,
+        &BacktestResult {
+            run_id,
+            strategy_id: request.strategy_id.clone(),
+            symbol: request.symbol.clone(),
+            timeframe: request.timeframe.clone(),
+            start_time: request.start_time,
+            end_time: request.end_time,
+            initial_capital: request.initial_capital,
+            final_equity: Decimal::new(1_050_000, 0),
+            pnl: Decimal::new(50_000, 0),
+            pnl_pct: Decimal::new(5, 0),
+            max_drawdown_pct: Decimal::new(1, 0),
+            win_rate: Decimal::new(5, 1),
+            trade_count: 2,
+            winning_trades: 1,
+            losing_trades: 1,
+            avg_win: Decimal::new(10_000, 0),
+            avg_loss: Decimal::new(-5_000, 0),
+            fee_paid: Decimal::new(100, 0),
+            slippage_cost: Decimal::new(50, 0),
+            status: ReplayRunStatus::Completed,
+            created_at: fixed_time(),
+            correlation_id: request.correlation_id,
+        },
+        &config,
+    )
+    .await
+    .expect("backtest completion should persist");
+
+    let summary = get_strategy_performance_summary(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Backtest,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("summary should load");
+
+    assert_eq!(summary.backtest_runs_count, 1);
+    assert_eq!(summary.best_backtest_pnl_pct, Some(Decimal::new(5, 0)));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_performance_summary_reads_paper_positions() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let account = sample_paper_account();
+    insert_paper_account(&test_db.pool, &account)
+        .await
+        .expect("paper account should persist");
+    upsert_paper_position(&test_db.pool, &sample_paper_position(account.id))
+        .await
+        .expect("paper position should persist");
+
+    let breakdown = get_strategy_paper_pnl_breakdown(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: None,
+            mode: StrategyPerformanceMode::Paper,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("paper pnl breakdown should load");
+
+    assert_eq!(breakdown.positions_closed, 1);
+    assert_eq!(breakdown.realized_pnl, Decimal::new(5_000, 0));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_rankings_orders_strategies_correctly() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    for (strategy_id, pnl) in [("momentum_v1", 5), ("volatility_breakout_v1", 2)] {
+        let mut request = sample_backtest_request();
+        request.strategy_id = strategy_id.to_string();
+        let config = sample_backtest_config();
+        let run_id = Uuid::new_v4();
+        insert_backtest_run(
+            &test_db.pool,
+            run_id,
+            &request,
+            &config,
+            fixed_time(),
+            ReplayRunStatus::Pending,
+            request.correlation_id,
+        )
+        .await
+        .expect("backtest run should persist");
+        update_backtest_run_completed(
+            &test_db.pool,
+            &BacktestResult {
+                run_id,
+                strategy_id: request.strategy_id.clone(),
+                symbol: request.symbol.clone(),
+                timeframe: request.timeframe.clone(),
+                start_time: request.start_time,
+                end_time: request.end_time,
+                initial_capital: request.initial_capital,
+                final_equity: Decimal::new(1_000_000 + pnl * 10_000, 0),
+                pnl: Decimal::new(pnl * 10_000, 0),
+                pnl_pct: Decimal::new(pnl, 0),
+                max_drawdown_pct: Decimal::ONE,
+                win_rate: Decimal::new(5, 1),
+                trade_count: 1,
+                winning_trades: 1,
+                losing_trades: 0,
+                avg_win: Decimal::new(pnl * 10_000, 0),
+                avg_loss: Decimal::ZERO,
+                fee_paid: Decimal::ZERO,
+                slippage_cost: Decimal::ZERO,
+                status: ReplayRunStatus::Completed,
+                created_at: fixed_time(),
+                correlation_id: request.correlation_id,
+            },
+            &config,
+        )
+        .await
+        .expect("backtest completion should persist");
+    }
+
+    let rankings = list_strategy_performance_rankings(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: None,
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Backtest,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: Some(20),
+        },
+    )
+    .await
+    .expect("rankings should load");
+
+    assert_eq!(
+        rankings.first().map(|item| item.strategy_id.as_str()),
+        Some("momentum_v1")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_decision_breakdown_counts_shadow_outcomes() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    for decision in ["WOULD_SUBMIT", "NO_SIGNAL", "RISK_REJECTED"] {
+        insert_testnet_shadow_run(
+            &test_db.pool,
+            &TestnetShadowRunRecord {
+                id: Uuid::new_v4(),
+                strategy_id: "momentum_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "1m".to_string(),
+                decision: decision.to_string(),
+                signal_id: None,
+                risk_decision_id: None,
+                would_submit_payload: None,
+                price_source: None,
+                resolved_price: None,
+                reasons: Vec::new(),
+                status: "COMPLETED".to_string(),
+                created_at: fixed_time(),
+                correlation_id: Some(Uuid::new_v4()),
+            },
+        )
+        .await
+        .expect("shadow run should persist");
+    }
+
+    let breakdown = get_strategy_shadow_decision_breakdown(
+        &test_db.pool,
+        &StrategyPerformanceRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            mode: StrategyPerformanceMode::Shadow,
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("decision breakdown should load");
+
+    assert_eq!(breakdown.would_submit_count, 1);
+    assert_eq!(breakdown.no_signal_count, 1);
+    assert_eq!(breakdown.risk_rejected_count, 1);
 }
