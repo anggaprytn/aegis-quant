@@ -610,6 +610,62 @@ impl ApiClient {
         self.get(&format!("/orders/{order_id}"), &[]).await
     }
 
+    pub async fn exchange_testnet_status(
+        &self,
+    ) -> Result<ExchangeTestnetStatusResponse, ApiClientError> {
+        self.get("/exchange/testnet/status", &[]).await
+    }
+
+    pub async fn exchange_testnet_symbols(
+        &self,
+    ) -> Result<ExchangeTestnetSymbolsResponse, ApiClientError> {
+        self.get("/exchange/testnet/symbols", &[]).await
+    }
+
+    pub async fn exchange_testnet_balances(
+        &self,
+    ) -> Result<ExchangeTestnetBalancesResponse, ApiClientError> {
+        self.get("/exchange/testnet/balances", &[]).await
+    }
+
+    pub async fn exchange_testnet_orders(
+        &self,
+        limit: i64,
+    ) -> Result<ExchangeTestnetOrdersResponse, ApiClientError> {
+        self.get("/exchange/testnet/orders", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn exchange_testnet_order_get(
+        &self,
+        client_order_id: &str,
+    ) -> Result<ExchangeTestnetOrderResponse, ApiClientError> {
+        self.get(&format!("/exchange/testnet/orders/{client_order_id}"), &[])
+            .await
+    }
+
+    pub async fn exchange_testnet_order_submit(
+        &self,
+        request: &ExchangeTestnetOrderSubmitRequest,
+    ) -> Result<ExchangeTestnetOrderResponse, ApiClientError> {
+        self.post("/exchange/testnet/orders", request).await
+    }
+
+    pub async fn exchange_testnet_order_cancel(
+        &self,
+        client_order_id: &str,
+        confirmation_text: &str,
+    ) -> Result<ExchangeTestnetOrderResponse, ApiClientError> {
+        self.post(
+            &format!("/exchange/testnet/orders/{client_order_id}/cancel"),
+            &ExchangeTestnetOrderCancelRequest {
+                confirmation_text: confirmation_text.to_string(),
+                correlation_id: None,
+            },
+        )
+        .await
+    }
+
     pub async fn paper_account(&self) -> Result<PaperAccountResponse, ApiClientError> {
         self.get("/paper/account", &[]).await
     }
@@ -747,6 +803,27 @@ struct KillSwitchRequest {
 struct ResumeRequest {
     confirmation_text: String,
     reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExchangeTestnetOrderSubmitRequest {
+    pub symbol: String,
+    pub side: String,
+    #[serde(rename = "order_type")]
+    pub order_type: String,
+    pub time_in_force: Option<String>,
+    pub quantity: Option<String>,
+    pub quote_notional: Option<String>,
+    pub limit_price: Option<String>,
+    pub risk_decision_id: Option<Uuid>,
+    pub confirmation_text: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExchangeTestnetOrderCancelRequest {
+    confirmation_text: String,
+    correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1040,6 +1117,98 @@ pub struct OrdersResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct OrderResponse {
     pub order: OrderRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetStatusResponse {
+    pub exchange: String,
+    pub environment: String,
+    pub rest_base_url: String,
+    pub configured: bool,
+    pub request_mode: String,
+    pub rate_limits: Value,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetSymbolInfo {
+    pub exchange: String,
+    pub environment: String,
+    pub symbol: String,
+    pub base_asset: String,
+    pub quote_asset: String,
+    pub status: String,
+    pub min_price: Option<String>,
+    pub tick_size: Option<String>,
+    pub min_qty: Option<String>,
+    pub step_size: Option<String>,
+    pub min_notional: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetSymbolsResponse {
+    pub symbols: Vec<ExchangeTestnetSymbolInfo>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetBalanceRecord {
+    pub exchange: String,
+    pub environment: String,
+    pub asset: String,
+    pub free: String,
+    pub locked: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetBalancesResponse {
+    pub balances: Vec<ExchangeTestnetBalanceRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetOrderRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub environment: String,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub symbol: String,
+    pub side: String,
+    pub order_type: String,
+    pub time_in_force: Option<String>,
+    pub requested_qty: Option<String>,
+    pub requested_notional: Option<String>,
+    pub limit_price: Option<String>,
+    pub status: String,
+    pub ack_payload: Option<Value>,
+    pub latest_status_payload: Option<Value>,
+    pub risk_decision_id: Option<Uuid>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetOrdersResponse {
+    pub orders: Vec<ExchangeTestnetOrderRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetOrderResponse {
+    pub order: ExchangeTestnetOrderRecord,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

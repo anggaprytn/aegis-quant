@@ -304,6 +304,14 @@ function AuthenticatedDashboard({
   const [killSwitchReason, setKillSwitchReason] = useState("");
   const [resumeReason, setResumeReason] = useState("");
   const [resumeConfirmation, setResumeConfirmation] = useState("");
+  const [testnetConfirmation, setTestnetConfirmation] = useState("");
+  const [testnetSymbol, setTestnetSymbol] = useState("BTCUSDT");
+  const [testnetSide, setTestnetSide] = useState("BUY");
+  const [testnetOrderType, setTestnetOrderType] = useState("MARKET");
+  const [testnetQuoteNotional, setTestnetQuoteNotional] = useState("10");
+  const [testnetQuantity, setTestnetQuantity] = useState("");
+  const [testnetLimitPrice, setTestnetLimitPrice] = useState("");
+  const [testnetRiskDecisionId, setTestnetRiskDecisionId] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [eventSourceFilter, setEventSourceFilter] = useState("");
   const [eventCorrelationFilter, setEventCorrelationFilter] = useState("");
@@ -337,6 +345,28 @@ function AuthenticatedDashboard({
     queryKey: ["risk-status"],
     queryFn: api.getRiskStatus,
     refetchInterval: 5_000,
+  });
+  const exchangeTestnetStatusQuery = useQuery({
+    queryKey: ["exchange-testnet-status"],
+    queryFn: api.getExchangeTestnetStatus,
+    refetchInterval: 15_000,
+  });
+  const exchangeTestnetSymbolsQuery = useQuery({
+    queryKey: ["exchange-testnet-symbols"],
+    queryFn: api.getExchangeTestnetSymbols,
+    refetchInterval: 60_000,
+  });
+  const exchangeTestnetBalancesQuery = useQuery({
+    queryKey: ["exchange-testnet-balances"],
+    queryFn: api.getExchangeTestnetBalances,
+    enabled: user.role === "OWNER" || user.role === "OPERATOR",
+    refetchInterval: 15_000,
+  });
+  const exchangeTestnetOrdersQuery = useQuery({
+    queryKey: ["exchange-testnet-orders"],
+    queryFn: () => api.getExchangeTestnetOrders(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR",
+    refetchInterval: 10_000,
   });
   const symbolsQuery = useQuery({
     queryKey: ["market-symbols"],
@@ -586,6 +616,10 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["backtest-runs"] }),
       queryClient.invalidateQueries({ queryKey: ["events"] }),
       queryClient.invalidateQueries({ queryKey: ["feed-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-symbols"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-balances"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-orders"] }),
       queryClient.invalidateQueries({ queryKey: ["backfill-runs"] }),
       queryClient.invalidateQueries({ queryKey: ["backfill-run"] }),
       queryClient.invalidateQueries({ queryKey: ["latest-tick"] }),
@@ -729,6 +763,32 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["paper-equity"] });
       queryClient.invalidateQueries({ queryKey: ["paper-journal"] });
       queryClient.invalidateQueries({ queryKey: ["metrics-text"] });
+    },
+  });
+  const exchangeTestnetSubmitMutation = useMutation({
+    mutationFn: () =>
+      api.submitExchangeTestnetOrder({
+        symbol: testnetSymbol,
+        side: testnetSide,
+        order_type: testnetOrderType,
+        quote_notional:
+          testnetOrderType === "MARKET" && testnetQuoteNotional ? testnetQuoteNotional : undefined,
+        quantity: testnetQuantity || undefined,
+        limit_price: testnetLimitPrice || undefined,
+        risk_decision_id: testnetRiskDecisionId || undefined,
+        confirmation_text: testnetConfirmation,
+      }),
+    onSuccess: async () => {
+      setTestnetConfirmation("");
+      await refreshOperationalData();
+    },
+  });
+  const exchangeTestnetCancelMutation = useMutation({
+    mutationFn: (clientOrderId: string) =>
+      api.cancelExchangeTestnetOrder(clientOrderId, testnetConfirmation),
+    onSuccess: async () => {
+      setTestnetConfirmation("");
+      await refreshOperationalData();
     },
   });
 
@@ -2102,11 +2162,93 @@ function AuthenticatedDashboard({
 
           {section === "settings" && (
             <section className="grid gap-4">
-              <Panel title="Settings Placeholder">
-                <div className="text-sm text-slate-300">
-                  No mutable settings are exposed in the MVP dashboard. Keep operational controls paper-only.
+              <Panel title="Testnet Exchange">
+                <div className="mb-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                  TESTNET ONLY, NO LIVE TRADING. Submission still requires typed confirmation and a preapproved risk decision.
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <HeaderStat
+                    label="Adapter"
+                    value={exchangeTestnetStatusQuery.data?.configured ? "configured" : "missing creds"}
+                    tone={exchangeTestnetStatusQuery.data?.configured ? "ok" : "warning"}
+                  />
+                  <HeaderStat
+                    label="Environment"
+                    value={exchangeTestnetStatusQuery.data?.environment ?? "testnet"}
+                    tone="neutral"
+                  />
+                  <HeaderStat
+                    label="Kill Switch"
+                    value={riskQuery.data?.kill_switch.enabled ? "active" : "inactive"}
+                    tone={riskQuery.data?.kill_switch.enabled ? "danger" : "ok"}
+                  />
+                </div>
+                <InlineStatus error={getErrorMessage(exchangeTestnetStatusQuery.error)} />
+              </Panel>
+              <Panel title="Symbols and Balances">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2 text-sm text-slate-200">
+                    {(exchangeTestnetSymbolsQuery.data?.symbols ?? []).slice(0, 8).map((item) => (
+                      <div key={item.symbol} className="rounded-xl border border-border bg-surface/60 px-3 py-2">
+                        {item.symbol} {item.base_asset}/{item.quote_asset}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="space-y-2 text-sm text-slate-200">
+                    {(exchangeTestnetBalancesQuery.data?.balances ?? []).slice(0, 8).map((item) => (
+                      <div key={item.asset} className="rounded-xl border border-border bg-surface/60 px-3 py-2">
+                        {item.asset} free {item.free} locked {item.locked}
+                      </div>
+                    ))}
+                    <InlineStatus error={getErrorMessage(exchangeTestnetBalancesQuery.error)} />
+                  </div>
                 </div>
               </Panel>
+              <Panel title="Recent Testnet Orders">
+                <div className="space-y-2 text-sm text-slate-200">
+                  {(exchangeTestnetOrdersQuery.data?.orders ?? []).map((item) => (
+                    <div key={item.id} className="rounded-xl border border-border bg-surface/60 px-3 py-2">
+                      <div>{item.client_order_id}</div>
+                      <div className="text-slate-400">
+                        {item.symbol} {item.side} {item.order_type} {item.status}
+                      </div>
+                      {user.role === "OWNER" ? (
+                        <button
+                          className="mt-2 rounded-lg border border-border px-3 py-1 text-xs"
+                          onClick={() => exchangeTestnetCancelMutation.mutate(item.client_order_id)}
+                          disabled={testnetConfirmation !== "TESTNET ORDER" || exchangeTestnetCancelMutation.isPending}
+                        >
+                          Cancel
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+              {user.role === "OWNER" ? (
+                <Panel title="Submit Testnet Order">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field label="Symbol" value={testnetSymbol} onChange={setTestnetSymbol} />
+                    <Field label="Side" value={testnetSide} onChange={setTestnetSide} />
+                    <Field label="Type" value={testnetOrderType} onChange={setTestnetOrderType} />
+                    <Field label="Quote Notional" value={testnetQuoteNotional} onChange={setTestnetQuoteNotional} />
+                    <Field label="Quantity" value={testnetQuantity} onChange={setTestnetQuantity} />
+                    <Field label="Limit Price" value={testnetLimitPrice} onChange={setTestnetLimitPrice} />
+                    <Field label="Risk Decision ID" value={testnetRiskDecisionId} onChange={setTestnetRiskDecisionId} placeholder="approved UUID" />
+                    <Field label='Type "TESTNET ORDER"' value={testnetConfirmation} onChange={setTestnetConfirmation} />
+                  </div>
+                  <div className="mt-4 flex gap-3">
+                    <button
+                      className="rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm"
+                      onClick={() => exchangeTestnetSubmitMutation.mutate()}
+                      disabled={exchangeTestnetSubmitMutation.isPending || testnetConfirmation !== "TESTNET ORDER"}
+                    >
+                      Submit Testnet Order
+                    </button>
+                  </div>
+                  <InlineStatus error={getErrorMessage(exchangeTestnetSubmitMutation.error) ?? getErrorMessage(exchangeTestnetCancelMutation.error)} />
+                </Panel>
+              ) : null}
             </section>
           )}
         </main>

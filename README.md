@@ -18,6 +18,7 @@ This repository foundation includes:
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
 - Strategy config validation, versioning, audit logging, and dry-run evaluation before pipeline/backtest use
 - Minimal Next.js operational dashboard shell for paper-only inspection and control
+- Binance Spot Testnet adapter skeleton with protected inspection and owner-gated testnet submit/cancel
 - Event model and publisher trait skeleton
 - Postgres migration baseline
 - Local development Docker Compose setup
@@ -26,8 +27,7 @@ This repository foundation includes:
 ## Non-goals in this scaffold
 
 - Live trading
-- Real exchange order execution
-- Exchange secrets
+- Live exchange order execution
 - Automatic strategy scheduling
 
 ## Quick start
@@ -102,6 +102,10 @@ Optional environment variables:
 - `MARKET_SYMBOLS`
 - `MARKET_STALE_THRESHOLD_SECONDS`
 - `BINANCE_WS_BASE_URL`
+- `BINANCE_TESTNET_REST_BASE_URL`
+- `BINANCE_TESTNET_API_KEY`
+- `BINANCE_TESTNET_API_SECRET`
+- `BINANCE_TESTNET_RECV_WINDOW_MS`
 - `BINANCE_REST_BASE_URL`
 - `STRATEGY_DEFAULT_SYMBOLS`
 - `STRATEGY_DEFAULT_TIMEFRAME`
@@ -180,6 +184,42 @@ Notes:
 - `resume` refuses locally unless `--confirm "RESUME TRADING"` matches exactly.
 - `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
 - The CLI does not print tokens by default and does not implement live trading, exchange private APIs, API keys, or any TUI layer.
+- Testnet exchange commands talk only to the Aegis HTTP API; the CLI never reads Binance secrets directly.
+
+## Binance Spot Testnet adapter
+
+This repository now includes a testnet-only exchange adapter skeleton for future controlled execution.
+
+Guardrails:
+
+- Only Binance Spot Testnet is supported
+- `ExchangeEnvironment::Live` is hard-rejected everywhere
+- Production Binance endpoints are not configured or used
+- Testnet submission is isolated from paper accounting and paper orders
+- Submit/cancel require `OWNER`, typed confirmation `TESTNET ORDER`, an inactive kill switch, and a preapproved `risk_decision_id`
+
+Required env when using the adapter:
+
+- `BINANCE_TESTNET_REST_BASE_URL=https://testnet.binance.vision`
+- `BINANCE_TESTNET_API_KEY`
+- `BINANCE_TESTNET_API_SECRET`
+
+Operator examples:
+
+```bash
+cargo run -p cli -- exchange testnet status
+cargo run -p cli -- exchange testnet symbols
+cargo run -p cli -- exchange testnet balances
+cargo run -p cli -- exchange testnet order-submit \
+  --symbol BTCUSDT \
+  --side BUY \
+  --type MARKET \
+  --quote-notional 10 \
+  --risk-decision-id 00000000-0000-0000-0000-000000000000 \
+  --confirm "TESTNET ORDER"
+cargo run -p cli -- exchange testnet order-get aegis-testnet-<correlationid>
+cargo run -p cli -- exchange testnet order-cancel aegis-testnet-<correlationid> --confirm "TESTNET ORDER"
+```
 
 ## Auth MVP
 

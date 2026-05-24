@@ -1191,6 +1191,326 @@ pub enum MarketMode {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExchangeEnvironment {
+    Testnet,
+    Live,
+}
+
+impl ExchangeEnvironment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Testnet => "testnet",
+            Self::Live => "live",
+        }
+    }
+}
+
+impl std::str::FromStr for ExchangeEnvironment {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "testnet" => Ok(Self::Testnet),
+            "live" => Ok(Self::Live),
+            other => Err(CoreError::UnsupportedExchangeEnvironment(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExchangeName {
+    Binance,
+}
+
+impl ExchangeName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Binance => "binance",
+        }
+    }
+}
+
+impl std::str::FromStr for ExchangeName {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "binance" => Ok(Self::Binance),
+            other => Err(CoreError::UnsupportedExchangeName(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeOrderSide {
+    Buy,
+    Sell,
+}
+
+impl ExchangeOrderSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeOrderType {
+    Market,
+    Limit,
+}
+
+impl ExchangeOrderType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Market => "MARKET",
+            Self::Limit => "LIMIT",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeOrderTimeInForce {
+    Gtc,
+    Ioc,
+    Fok,
+}
+
+impl ExchangeOrderTimeInForce {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gtc => "GTC",
+            Self::Ioc => "IOC",
+            Self::Fok => "FOK",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExchangeRequestMode {
+    Signed,
+    Public,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeOrderState {
+    New,
+    PartiallyFilled,
+    Filled,
+    Canceled,
+    PendingCancel,
+    Rejected,
+    Expired,
+}
+
+impl ExchangeOrderState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "NEW",
+            Self::PartiallyFilled => "PARTIALLY_FILLED",
+            Self::Filled => "FILLED",
+            Self::Canceled => "CANCELED",
+            Self::PendingCancel => "PENDING_CANCEL",
+            Self::Rejected => "REJECTED",
+            Self::Expired => "EXPIRED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeOrderRequest {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: Symbol,
+    pub side: ExchangeOrderSide,
+    pub order_type: ExchangeOrderType,
+    pub time_in_force: Option<ExchangeOrderTimeInForce>,
+    pub quantity: Option<Decimal>,
+    pub quote_notional: Option<Decimal>,
+    pub limit_price: Option<Decimal>,
+    pub client_order_id: String,
+    pub recv_window_ms: Option<u64>,
+    pub risk_decision_id: Option<Uuid>,
+}
+
+impl ExchangeOrderRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.client_order_id.trim().is_empty() {
+            return Err(CoreError::EmptyClientOrderId);
+        }
+        if self.environment == ExchangeEnvironment::Live {
+            return Err(CoreError::LiveExchangeEnvironmentRejected);
+        }
+        match (self.quantity, self.quote_notional) {
+            (Some(quantity), None) => {
+                if quantity <= Decimal::ZERO {
+                    return Err(CoreError::InvalidExchangeQuantity);
+                }
+            }
+            (None, Some(notional)) => {
+                if notional <= Decimal::ZERO {
+                    return Err(CoreError::InvalidExchangeNotional);
+                }
+            }
+            (Some(quantity), Some(notional)) => {
+                if quantity <= Decimal::ZERO {
+                    return Err(CoreError::InvalidExchangeQuantity);
+                }
+                if notional <= Decimal::ZERO {
+                    return Err(CoreError::InvalidExchangeNotional);
+                }
+            }
+            (None, None) => return Err(CoreError::MissingExchangeQuantityOrNotional),
+        }
+        if self.order_type == ExchangeOrderType::Limit {
+            let Some(limit_price) = self.limit_price else {
+                return Err(CoreError::MissingExchangeLimitPrice);
+            };
+            if limit_price <= Decimal::ZERO {
+                return Err(CoreError::InvalidExchangeLimitPrice);
+            }
+            if self.time_in_force.is_none() {
+                return Err(CoreError::MissingExchangeTimeInForce);
+            }
+        }
+        if let Some(limit_price) = self.limit_price {
+            if limit_price <= Decimal::ZERO {
+                return Err(CoreError::InvalidExchangeLimitPrice);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeOrderAck {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: String,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub status: ExchangeOrderState,
+    pub transact_time: DateTime<Utc>,
+    pub executed_qty: Decimal,
+    pub cumulative_quote_qty: Decimal,
+    pub is_working: Option<bool>,
+    pub raw_payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeOrderStatus {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: String,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub status: ExchangeOrderState,
+    pub side: ExchangeOrderSide,
+    pub order_type: ExchangeOrderType,
+    pub time_in_force: Option<ExchangeOrderTimeInForce>,
+    pub original_qty: Option<Decimal>,
+    pub executed_qty: Decimal,
+    pub cumulative_quote_qty: Decimal,
+    pub limit_price: Option<Decimal>,
+    pub updated_at: DateTime<Utc>,
+    pub raw_payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeCancelRequest {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: Symbol,
+    pub client_order_id: String,
+    pub recv_window_ms: Option<u64>,
+}
+
+impl ExchangeCancelRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.client_order_id.trim().is_empty() {
+            return Err(CoreError::EmptyClientOrderId);
+        }
+        if self.environment == ExchangeEnvironment::Live {
+            return Err(CoreError::LiveExchangeEnvironmentRejected);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeCancelAck {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: String,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub status: ExchangeOrderState,
+    pub cancelled_at: DateTime<Utc>,
+    pub raw_payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeBalance {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub asset: String,
+    pub free: Decimal,
+    pub locked: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeSymbolInfo {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: String,
+    pub base_asset: String,
+    pub quote_asset: String,
+    pub status: String,
+    pub min_price: Option<Decimal>,
+    pub tick_size: Option<Decimal>,
+    pub min_qty: Option<Decimal>,
+    pub step_size: Option<Decimal>,
+    pub min_notional: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangeRateLimitState {
+    pub request_weight: Option<u32>,
+    pub orders_1m: Option<u32>,
+    pub raw_requests_5m: Option<u32>,
+    pub retry_after_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExchangeError {
+    #[error("exchange adapter configuration is missing: {0}")]
+    Configuration(String),
+    #[error("live exchange environment is disabled")]
+    LiveEnvironmentDisabled,
+    #[error("exchange request validation failed: {0}")]
+    Validation(String),
+    #[error("exchange authentication failed")]
+    Authentication,
+    #[error("exchange request was rate limited")]
+    RateLimited,
+    #[error("exchange returned an API error: {0}")]
+    Api(String),
+    #[error("exchange transport error: {0}")]
+    Transport(String),
+    #[error("exchange response could not be decoded: {0}")]
+    Serialization(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Money {
     pub amount: Decimal,
@@ -2138,6 +2458,10 @@ pub enum CoreError {
     UnsupportedReplayRunStatus(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
+    #[error("unsupported exchange environment: {0}")]
+    UnsupportedExchangeEnvironment(String),
+    #[error("unsupported exchange name: {0}")]
+    UnsupportedExchangeName(String),
     #[error("unsupported paper account status: {0}")]
     UnsupportedPaperAccountStatus(String),
     #[error("unsupported position side: {0}")]
@@ -2164,6 +2488,8 @@ pub enum CoreError {
     UnsupportedUserStatus(String),
     #[error("idempotency_key cannot be empty")]
     EmptyIdempotencyKey,
+    #[error("client_order_id cannot be empty")]
+    EmptyClientOrderId,
     #[error("backtest strategy_id cannot be empty")]
     EmptyBacktestStrategyId,
     #[error("backtest symbol cannot be empty")]
@@ -2194,6 +2520,20 @@ pub enum CoreError {
     PasswordTooShort { min_length: usize },
     #[error("quantity must be greater than zero")]
     InvalidOrderQuantity,
+    #[error("exchange quantity must be greater than zero")]
+    InvalidExchangeQuantity,
+    #[error("exchange quote notional must be greater than zero")]
+    InvalidExchangeNotional,
+    #[error("exchange limit_price must be greater than zero")]
+    InvalidExchangeLimitPrice,
+    #[error("exchange order requires quantity or quote_notional")]
+    MissingExchangeQuantityOrNotional,
+    #[error("exchange limit order requires limit_price")]
+    MissingExchangeLimitPrice,
+    #[error("exchange limit order requires time_in_force")]
+    MissingExchangeTimeInForce,
+    #[error("live exchange environment is rejected")]
+    LiveExchangeEnvironmentRejected,
     #[error("limit_price must be greater than zero")]
     InvalidLimitPrice,
     #[error("strategy suggested notional must be greater than zero")]
@@ -2220,11 +2560,13 @@ pub enum CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_password_length, ExecutionState, OrderIntent, PaperOrder, Permission, Side,
-        Symbol, UserRole,
+        validate_password_length, ExchangeEnvironment, ExchangeName, ExchangeOrderRequest,
+        ExchangeOrderSide, ExchangeOrderState, ExchangeOrderType, ExecutionState, OrderIntent,
+        PaperOrder, Permission, Side, Symbol, UserRole,
     };
     use chrono::Utc;
     use rust_decimal::Decimal;
+    use serde_json::json;
     use uuid::Uuid;
 
     fn sample_intent() -> OrderIntent {
@@ -2296,5 +2638,71 @@ mod tests {
     fn password_min_length_is_enforced() {
         assert!(validate_password_length("123456789012").is_ok());
         assert!(validate_password_length("too-short").is_err());
+    }
+
+    #[test]
+    fn exchange_order_rejects_live_environment() {
+        let request = ExchangeOrderRequest {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Live,
+            symbol: Symbol::new("btcusdt").expect("valid symbol"),
+            side: ExchangeOrderSide::Buy,
+            order_type: ExchangeOrderType::Market,
+            time_in_force: None,
+            quantity: Some(Decimal::ONE),
+            quote_notional: None,
+            limit_price: None,
+            client_order_id: "test-client-order".to_string(),
+            recv_window_ms: None,
+            risk_decision_id: None,
+        };
+
+        assert!(matches!(
+            request.validate(),
+            Err(super::CoreError::LiveExchangeEnvironmentRejected)
+        ));
+    }
+
+    #[test]
+    fn exchange_order_validation_requires_price_for_limit_order() {
+        let request = ExchangeOrderRequest {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol: Symbol::new("btcusdt").expect("valid symbol"),
+            side: ExchangeOrderSide::Buy,
+            order_type: ExchangeOrderType::Limit,
+            time_in_force: None,
+            quantity: Some(Decimal::ONE),
+            quote_notional: None,
+            limit_price: None,
+            client_order_id: "test-client-order".to_string(),
+            recv_window_ms: None,
+            risk_decision_id: None,
+        };
+
+        assert!(matches!(
+            request.validate(),
+            Err(super::CoreError::MissingExchangeLimitPrice)
+        ));
+    }
+
+    #[test]
+    fn exchange_ack_does_not_imply_fill() {
+        let ack = super::ExchangeOrderAck {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: "test-client-order".to_string(),
+            exchange_order_id: Some("12345".to_string()),
+            status: ExchangeOrderState::New,
+            transact_time: Utc::now(),
+            executed_qty: Decimal::ZERO,
+            cumulative_quote_qty: Decimal::ZERO,
+            is_working: Some(true),
+            raw_payload: json!({ "status": "NEW" }),
+        };
+
+        assert_eq!(ack.status, ExchangeOrderState::New);
+        assert_eq!(ack.executed_qty, Decimal::ZERO);
     }
 }

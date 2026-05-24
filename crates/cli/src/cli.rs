@@ -2,6 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
+pub const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
 
 #[derive(Debug, Parser)]
 #[command(name = "aegis", about = "Aegis Quant operational CLI")]
@@ -26,6 +27,27 @@ impl Cli {
         if let Commands::Paper(PaperCommands::Close(args)) = &self.command {
             if args.confirm.is_none() {
                 anyhow::bail!("paper close requires --confirm \"CLOSE <SYMBOL>\"");
+            }
+        }
+        if let Commands::Exchange(ExchangeCommands::Testnet(command)) = &self.command {
+            match command {
+                ExchangeTestnetCommands::OrderSubmit(args) => {
+                    if args.confirm.as_deref() != Some(TESTNET_ORDER_CONFIRMATION_TEXT) {
+                        anyhow::bail!(
+                            "exchange testnet order-submit requires --confirm {:?} exactly",
+                            TESTNET_ORDER_CONFIRMATION_TEXT
+                        );
+                    }
+                }
+                ExchangeTestnetCommands::OrderCancel(args) => {
+                    if args.confirm.as_deref() != Some(TESTNET_ORDER_CONFIRMATION_TEXT) {
+                        anyhow::bail!(
+                            "exchange testnet order-cancel requires --confirm {:?} exactly",
+                            TESTNET_ORDER_CONFIRMATION_TEXT
+                        );
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -60,6 +82,53 @@ pub enum Commands {
     Backtest(BacktestCommands),
     #[command(subcommand)]
     Paper(PaperCommands),
+    #[command(subcommand)]
+    Exchange(ExchangeCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExchangeCommands {
+    #[command(subcommand)]
+    Testnet(ExchangeTestnetCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExchangeTestnetCommands {
+    Status,
+    Symbols,
+    Balances,
+    OrderSubmit(ExchangeTestnetOrderSubmitArgs),
+    OrderGet { client_order_id: String },
+    OrderCancel(ExchangeTestnetOrderCancelArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetOrderSubmitArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub side: String,
+    #[arg(long = "type")]
+    pub order_type: String,
+    #[arg(long = "time-in-force")]
+    pub time_in_force: Option<String>,
+    #[arg(long)]
+    pub quantity: Option<rust_decimal::Decimal>,
+    #[arg(long = "quote-notional")]
+    pub quote_notional: Option<rust_decimal::Decimal>,
+    #[arg(long = "limit-price")]
+    pub limit_price: Option<rust_decimal::Decimal>,
+    #[arg(long = "risk-decision-id")]
+    pub risk_decision_id: Option<Uuid>,
+    #[arg(long)]
+    pub confirm: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetOrderCancelArgs {
+    pub client_order_id: String,
+    #[arg(long)]
+    pub confirm: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -347,7 +416,7 @@ pub struct BacktestListArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands, RESUME_CONFIRMATION_TEXT};
+    use super::{Cli, Commands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT};
     use clap::Parser;
 
     #[test]
@@ -378,5 +447,44 @@ mod tests {
         let cli = Cli::try_parse_from(["aegis", "metrics", "--grep", "paper"]).expect("cli parses");
 
         assert!(matches!(cli.command, Commands::Metrics(_)));
+    }
+
+    #[test]
+    fn exchange_testnet_submit_requires_exact_confirmation() {
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "exchange",
+            "testnet",
+            "order-submit",
+            "--symbol",
+            "BTCUSDT",
+            "--side",
+            "BUY",
+            "--type",
+            "MARKET",
+            "--quote-notional",
+            "10",
+            "--confirm",
+            TESTNET_ORDER_CONFIRMATION_TEXT,
+        ])
+        .expect("cli parses");
+
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn exchange_testnet_cancel_rejects_wrong_confirmation() {
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "exchange",
+            "testnet",
+            "order-cancel",
+            "client-1",
+            "--confirm",
+            "wrong",
+        ])
+        .expect("cli parses");
+
+        assert!(cli.validate().is_err());
     }
 }

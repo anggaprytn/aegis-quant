@@ -31,6 +31,7 @@ LLM components are advisory only and do not have execution authority.
 - Correlation IDs are required on events
 - Auditable state changes should land in `system_events` or `audit_logs`
 - Kill switch persistence is required and lives in the database
+- Exchange execution state is isolated from internal paper execution state
 
 ## Market ingest flow
 
@@ -172,11 +173,33 @@ For MVP local development:
 
 No Kubernetes, no microservice decomposition, and no paid infrastructure assumptions are introduced in this foundation.
 
+## Exchange adapter boundary
+
+The exchange crate now models a testnet-only private execution boundary:
+
+```txt
+approved risk_decision_id
+-> owner-confirmed testnet order request
+-> exchange adapter trait
+-> Binance Spot Testnet REST boundary
+-> isolated exchange_testnet_orders persistence
+-> audit_logs + system_events
+```
+
+Notes:
+
+- `ExchangeEnvironment::Live` is hard-rejected in core validation and adapter config checks.
+- Binance Spot Testnet uses only `https://testnet.binance.vision`.
+- Private testnet orders do not mutate `orders`, `paper_positions`, `paper_fills`, or paper PnL tables.
+- The adapter trait currently covers exchange info, balances, submit, cancel, and order status only.
+- Private stream handling remains deferred; this patch keeps the network boundary explicit without wiring streaming execution.
+
 ## Frontend cockpit overview
 
 The dashboard is intentionally dense and operational:
 
 - Sidebar sections: Command Center, Market Data, Strategies, Risk, Orders, Backtests, Logs / Events, Settings placeholder
+- Settings now includes a minimal Testnet Exchange surface for status, symbols, balances, recent isolated testnet orders, and owner-gated submit/cancel controls
 - Sticky header: mode, kill switch state, feed state, data age, daily PnL placeholder, API health
 - Paper-only controls: kill switch activation, typed resume confirmation, strategy evaluation, paper pipeline run, and backtest run
 - Read-only cockpit inspection: persisted risk decisions, enriched paper order detail, and filtered recent system events

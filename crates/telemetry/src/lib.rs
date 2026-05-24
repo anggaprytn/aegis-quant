@@ -46,6 +46,9 @@ pub struct Telemetry {
     backtest_runs_total: IntCounterVec,
     backtest_duration_seconds: HistogramVec,
     backtest_trades_total: IntCounterVec,
+    exchange_testnet_requests_total: IntCounterVec,
+    exchange_testnet_orders_total: IntCounterVec,
+    exchange_testnet_errors_total: IntCounterVec,
     db_health_status: IntGauge,
     db_query_errors_total: IntCounterVec,
     known_position_symbols: Mutex<BTreeSet<String>>,
@@ -268,6 +271,27 @@ impl Telemetry {
             registry
         )
         .expect("backtest_trades_total should register");
+        let exchange_testnet_requests_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_requests_total",
+            "Exchange testnet adapter requests by operation and result.",
+            &["operation", "result"],
+            registry
+        )
+        .expect("exchange_testnet_requests_total should register");
+        let exchange_testnet_orders_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_orders_total",
+            "Exchange testnet orders by symbol, side, and status.",
+            &["symbol", "side", "status"],
+            registry
+        )
+        .expect("exchange_testnet_orders_total should register");
+        let exchange_testnet_errors_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_errors_total",
+            "Exchange testnet adapter errors by operation and kind.",
+            &["operation", "kind"],
+            registry
+        )
+        .expect("exchange_testnet_errors_total should register");
         let db_health_status = register_int_gauge_with_registry!(
             "db_health_status",
             "Database health status as 1 for healthy and 0 for unhealthy.",
@@ -315,6 +339,9 @@ impl Telemetry {
             backtest_runs_total,
             backtest_duration_seconds,
             backtest_trades_total,
+            exchange_testnet_requests_total,
+            exchange_testnet_orders_total,
+            exchange_testnet_errors_total,
             db_health_status,
             db_query_errors_total,
             known_position_symbols: Mutex::new(BTreeSet::new()),
@@ -538,6 +565,24 @@ impl Telemetry {
         self.backtest_trades_total
             .with_label_values(&[strategy_id, symbol])
             .inc_by(count);
+    }
+
+    pub fn inc_exchange_testnet_request(&self, operation: &str, result: &str) {
+        self.exchange_testnet_requests_total
+            .with_label_values(&[operation, result])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_order(&self, symbol: &str, side: &str, status: &str) {
+        self.exchange_testnet_orders_total
+            .with_label_values(&[symbol, side, status])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_error(&self, operation: &str, kind: &str) {
+        self.exchange_testnet_errors_total
+            .with_label_values(&[operation, kind])
+            .inc();
     }
 }
 

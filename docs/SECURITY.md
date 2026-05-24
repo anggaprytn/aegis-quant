@@ -14,6 +14,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Replay/backtest must stay isolated from live and paper execution tables
 - Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
 - Paper accounting is simulated only and never submits exchange orders
+- Binance Spot Testnet credentials, when configured, are backend-only and never exposed to the dashboard or CLI
 - Passwords are hashed with Argon2id; plaintext passwords are never stored or returned
 - Access tokens are short-lived JWTs and refresh tokens are stored only as hashes in Postgres
 - Dashboard login stores only the access token client-side; refresh tokens stay in HTTP-only cookies and the dashboard refreshes access on `401`
@@ -23,6 +24,10 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Paper position close is simulated only, requires typed confirmation `CLOSE <SYMBOL>`, and rejects missing/stale public mark prices by default
 - Strategy config changes are audited, versioned, and emitted as system events; live mode remains blocked even in config validation/update paths
 - `/metrics` exposes operational state only, not secrets, but it should still be restricted at the network boundary in production
+- Testnet submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
+- Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
+- Binance private REST support is testnet-only, signs requests with HMAC SHA256, and does not log API secrets
+- Production Binance env vars and withdrawal endpoints are intentionally absent
 
 ## TODO boundaries
 
@@ -31,7 +36,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Operator auth is intentionally local/single-tenant: OWNER, OPERATOR, VIEWER
 - Bootstrap owner creation is one-time only and requires `AEGIS_BOOTSTRAP_OWNER_EMAIL` plus `AEGIS_BOOTSTRAP_OWNER_PASSWORD`
 - DB-backed auth tests cover bootstrap, login/session persistence, refresh rotation, logout revocation, unauthenticated rejection, and role-based forbids against Postgres
-- Request signing and exchange credential handling are intentionally deferred until after paper trading is stable
+- Production/private exchange execution remains deferred; only Binance Spot Testnet skeleton endpoints are present
 - Replay/backtest reads stored candles only and must not mutate production `signals`, `risk_decisions`, or `orders`
 - Paper accounting reads only stored paper orders and stored public market data; it does not call exchange private endpoints or handle API keys
 - `/metrics` is public by default for local/internal MVP use unless `AEGIS_PROTECT_METRICS=true`; production deployment should place it behind private networking, reverse-proxy policy, or equivalent access controls

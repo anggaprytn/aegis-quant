@@ -9,6 +9,7 @@ authors.workspace = true
 accounting = { path = "../accounting" }
 aegis-core = { path = "../core" }
 db = { path = "../db" }
+exchange = { path = "../exchange" }
 events = { path = "../events" }
 market-ingest = { path = "../market-ingest" }
 replay-engine = { path = "../replay-engine" }

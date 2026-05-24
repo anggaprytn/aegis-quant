@@ -8,9 +8,10 @@ use cli::api::{
     RiskDecisionsQuery,
 };
 use cli::cli::{
-    AuthCommands, BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands,
-    PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
-    StrategyConfigCommands, RESUME_CONFIRMATION_TEXT,
+    AuthCommands, BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands,
+    ExchangeTestnetCommands, MarketCommands, OrderCommands, PaperCommands, PipelineCommands,
+    RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -404,6 +405,78 @@ async fn main() -> anyhow::Result<()> {
                     output::print_backtest_run(&response.run);
                 }
             }
+        },
+        Commands::Exchange(command) => match command {
+            ExchangeCommands::Testnet(command) => match command {
+                ExchangeTestnetCommands::Status => {
+                    let response = client.exchange_testnet_status().await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_status(&response);
+                    }
+                }
+                ExchangeTestnetCommands::Symbols => {
+                    let response = client.exchange_testnet_symbols().await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_symbols(&response);
+                    }
+                }
+                ExchangeTestnetCommands::Balances => {
+                    let response = client.exchange_testnet_balances().await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_balances(&response);
+                    }
+                }
+                ExchangeTestnetCommands::OrderSubmit(args) => {
+                    let response = client
+                        .exchange_testnet_order_submit(
+                            &cli::api::ExchangeTestnetOrderSubmitRequest {
+                                symbol: args.symbol,
+                                side: args.side,
+                                order_type: args.order_type,
+                                time_in_force: args.time_in_force,
+                                quantity: args.quantity.map(|value| value.to_string()),
+                                quote_notional: args.quote_notional.map(|value| value.to_string()),
+                                limit_price: args.limit_price.map(|value| value.to_string()),
+                                risk_decision_id: args.risk_decision_id,
+                                confirmation_text: TESTNET_ORDER_CONFIRMATION_TEXT.to_string(),
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_order(&response);
+                    }
+                }
+                ExchangeTestnetCommands::OrderGet { client_order_id } => {
+                    let response = client.exchange_testnet_order_get(&client_order_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_order(&response);
+                    }
+                }
+                ExchangeTestnetCommands::OrderCancel(args) => {
+                    let response = client
+                        .exchange_testnet_order_cancel(
+                            &args.client_order_id,
+                            TESTNET_ORDER_CONFIRMATION_TEXT,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_order(&response);
+                    }
+                }
+            },
         },
         Commands::Paper(command) => match command {
             PaperCommands::Account => {

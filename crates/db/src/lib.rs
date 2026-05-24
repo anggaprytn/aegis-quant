@@ -137,6 +137,29 @@ pub struct OrderRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeTestnetOrderRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub environment: String,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub symbol: String,
+    pub side: String,
+    pub order_type: String,
+    pub time_in_force: Option<String>,
+    pub requested_qty: Option<Decimal>,
+    pub requested_notional: Option<Decimal>,
+    pub limit_price: Option<Decimal>,
+    pub status: String,
+    pub ack_payload: Option<Value>,
+    pub latest_status_payload: Option<Value>,
+    pub risk_decision_id: Option<Uuid>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaperAccountRecord {
     pub id: Uuid,
     pub name: String,
@@ -1607,6 +1630,255 @@ pub async fn get_order_by_idempotency_key(
     .await?;
 
     Ok(row.as_ref().map(map_order))
+}
+
+pub async fn insert_exchange_testnet_order(
+    pool: &PgPool,
+    record: &ExchangeTestnetOrderRecord,
+) -> Result<ExchangeTestnetOrderRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO exchange_testnet_orders (
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+        )
+        RETURNING
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(record.id)
+    .bind(&record.exchange)
+    .bind(&record.environment)
+    .bind(&record.client_order_id)
+    .bind(&record.exchange_order_id)
+    .bind(&record.symbol)
+    .bind(&record.side)
+    .bind(&record.order_type)
+    .bind(&record.time_in_force)
+    .bind(record.requested_qty)
+    .bind(record.requested_notional)
+    .bind(record.limit_price)
+    .bind(&record.status)
+    .bind(&record.ack_payload)
+    .bind(&record.latest_status_payload)
+    .bind(record.risk_decision_id)
+    .bind(record.created_by)
+    .bind(record.created_at)
+    .bind(record.updated_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_exchange_testnet_order(&row))
+}
+
+pub async fn update_exchange_testnet_order_ack(
+    pool: &PgPool,
+    client_order_id: &str,
+    exchange_order_id: Option<&str>,
+    status: &str,
+    ack_payload: &Value,
+) -> Result<Option<ExchangeTestnetOrderRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE exchange_testnet_orders
+        SET
+            exchange_order_id = COALESCE($2, exchange_order_id),
+            status = $3,
+            ack_payload = $4,
+            latest_status_payload = COALESCE(latest_status_payload, $4),
+            updated_at = NOW()
+        WHERE client_order_id = $1
+        RETURNING
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(client_order_id)
+    .bind(exchange_order_id)
+    .bind(status)
+    .bind(ack_payload)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_exchange_testnet_order))
+}
+
+pub async fn update_exchange_testnet_order_status(
+    pool: &PgPool,
+    client_order_id: &str,
+    exchange_order_id: Option<&str>,
+    status: &str,
+    latest_status_payload: &Value,
+) -> Result<Option<ExchangeTestnetOrderRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE exchange_testnet_orders
+        SET
+            exchange_order_id = COALESCE($2, exchange_order_id),
+            status = $3,
+            latest_status_payload = $4,
+            updated_at = NOW()
+        WHERE client_order_id = $1
+        RETURNING
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(client_order_id)
+    .bind(exchange_order_id)
+    .bind(status)
+    .bind(latest_status_payload)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_exchange_testnet_order))
+}
+
+pub async fn get_exchange_testnet_order_by_client_order_id(
+    pool: &PgPool,
+    client_order_id: &str,
+) -> Result<Option<ExchangeTestnetOrderRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            created_at,
+            updated_at
+        FROM exchange_testnet_orders
+        WHERE client_order_id = $1
+        "#,
+    )
+    .bind(client_order_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_exchange_testnet_order))
+}
+
+pub async fn list_exchange_testnet_orders(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ExchangeTestnetOrderRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            created_at,
+            updated_at
+        FROM exchange_testnet_orders
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_exchange_testnet_order).collect())
 }
 
 pub async fn get_default_paper_account(pool: &PgPool) -> Result<Option<PaperAccountRecord>> {
@@ -5542,6 +5814,30 @@ fn map_paper_trade_journal(row: &sqlx::postgres::PgRow) -> PaperTradeJournalReco
         payload: row.get("payload"),
         created_at: row.get("created_at"),
         correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_exchange_testnet_order(row: &sqlx::postgres::PgRow) -> ExchangeTestnetOrderRecord {
+    ExchangeTestnetOrderRecord {
+        id: row.get("id"),
+        exchange: row.get("exchange"),
+        environment: row.get("environment"),
+        client_order_id: row.get("client_order_id"),
+        exchange_order_id: row.get("exchange_order_id"),
+        symbol: row.get("symbol"),
+        side: row.get("side"),
+        order_type: row.get("order_type"),
+        time_in_force: row.get("time_in_force"),
+        requested_qty: row.get("requested_qty"),
+        requested_notional: row.get("requested_notional"),
+        limit_price: row.get("limit_price"),
+        status: row.get("status"),
+        ack_payload: row.get("ack_payload"),
+        latest_status_payload: row.get("latest_status_payload"),
+        risk_decision_id: row.get("risk_decision_id"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
     }
 }
 

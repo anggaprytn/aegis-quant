@@ -9,15 +9,17 @@ use accounting::{
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     AuthenticatedActor, BacktestRequest, CandleBackfillRequest, CandleBackfillResult,
-    CandleInterval, EventEnvelope, MarketMode, OrderIntent, PaperCloseMode,
-    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol, UserRole,
-    UserStatus,
+    CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
+    ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
+    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeRateLimitState, ExchangeRequestMode,
+    ExchangeSymbolInfo, MarketMode, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
+    PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyEvaluationContext, StrategyId,
+    StrategyStatus, Symbol, UserRole, UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
@@ -39,12 +41,14 @@ use db::{
     backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
     count_users, create_paper_order, ensure_system_state, get_backtest_equity_curve,
     get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
-    get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
-    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
-    get_strategy_status, get_system_event, get_system_state, get_user_by_email, get_user_by_id,
-    insert_audit_log, insert_paper_account, insert_paper_equity_snapshot, insert_risk_config_audit,
-    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
-    insert_system_event, insert_user, list_backtest_runs, list_candle_backfill_runs, list_candles,
+    get_exchange_testnet_order_by_client_order_id, get_latest_market_tick, get_order_by_id,
+    get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
+    get_session_by_id, get_session_by_id_and_hash, get_strategy_status, get_system_event,
+    get_system_state, get_user_by_email, get_user_by_id, insert_audit_log,
+    insert_exchange_testnet_order, insert_paper_account, insert_paper_equity_snapshot,
+    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
+    insert_strategy_config_audit, insert_system_event, insert_user, list_backtest_runs,
+    list_candle_backfill_runs, list_candles, list_exchange_testnet_orders,
     list_market_feed_statuses, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
     list_paper_positions, list_paper_trade_journal, list_recent_risk_decisions_filtered,
     list_recent_signals, list_recent_system_events_filtered, list_risk_config_audit,
@@ -54,22 +58,25 @@ use db::{
     persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
     risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
     set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, update_strategy_state, update_user_last_login,
+    strategy_config_version_from_record, update_exchange_testnet_order_ack,
+    update_exchange_testnet_order_status, update_strategy_state, update_user_last_login,
     upsert_paper_position, upsert_risk_config, upsert_strategy_config, user_from_record,
     BacktestEquityPointRecord, BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord,
-    CreateOrderError, DbConfig, InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord,
-    OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord, PaperPositionRecord,
-    PaperTradeJournalRecord, PgPool, RiskDecisionRecord, SignalRecord, StateActor,
-    StrategyStatusRecord, SystemEventRecord, SystemStateRecord,
+    CreateOrderError, DbConfig, ExchangeTestnetOrderRecord, InsertSignalOutcome,
+    MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
+    PaperEquitySnapshotRecord, PaperPositionRecord, PaperTradeJournalRecord, PgPool,
+    RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
+    SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
+use exchange::{BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig, ExchangeAdapter};
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
 use replay_engine::ReplayEngine;
 use risk_engine::{validate_risk_config, RiskEvaluator};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use strategy_engine::{
     build_default_strategy_configs, evaluate as evaluate_strategy, required_candle_count,
     validate_strategy_config, StrategyValidationContext,
@@ -97,8 +104,11 @@ const DEFAULT_BACKFILL_RUNS_LIMIT: i64 = 20;
 const MAX_BACKFILL_RUNS_LIMIT: i64 = 200;
 const DEFAULT_PAPER_LIMIT: i64 = 50;
 const MAX_PAPER_LIMIT: i64 = 500;
+const DEFAULT_EXCHANGE_TESTNET_LIMIT: i64 = 20;
+const MAX_EXCHANGE_TESTNET_LIMIT: i64 = 200;
 const CLI_AUTH_MODE_HEADER: &str = "x-aegis-auth-mode";
 const CLI_AUTH_MODE_VALUE: &str = "cli";
+const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
 
 #[derive(Clone)]
 struct AppState {
@@ -109,6 +119,7 @@ struct AppState {
     market_mode: MarketMode,
     market_config: MarketIngestConfig,
     strategy_runtime: StrategyRuntimeConfig,
+    exchange_testnet: BinanceSpotTestnetAdapter,
 }
 
 #[derive(Clone)]
@@ -510,6 +521,101 @@ struct OrdersResponse {
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetStatusResponse {
+    exchange: String,
+    environment: String,
+    rest_base_url: String,
+    configured: bool,
+    request_mode: ExchangeRequestMode,
+    rate_limits: ExchangeRateLimitState,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetSymbolsResponse {
+    symbols: Vec<ExchangeSymbolInfo>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetBalancesResponse {
+    balances: Vec<ExchangeBalance>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetOrderResponse {
+    order: ExchangeTestnetOrderView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetOrdersResponse {
+    orders: Vec<ExchangeTestnetOrderView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetOrderView {
+    id: Uuid,
+    exchange: String,
+    environment: String,
+    client_order_id: String,
+    exchange_order_id: Option<String>,
+    symbol: String,
+    side: String,
+    order_type: String,
+    time_in_force: Option<String>,
+    requested_qty: Option<String>,
+    requested_notional: Option<String>,
+    limit_price: Option<String>,
+    status: String,
+    ack_payload: Option<Value>,
+    latest_status_payload: Option<Value>,
+    risk_decision_id: Option<Uuid>,
+    created_by: Option<Uuid>,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct ExchangeTestnetOrdersQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct SubmitExchangeTestnetOrderRequest {
+    symbol: String,
+    side: ExchangeOrderSide,
+    order_type: ExchangeOrderType,
+    time_in_force: Option<ExchangeOrderTimeInForce>,
+    quantity: Option<String>,
+    quote_notional: Option<String>,
+    limit_price: Option<String>,
+    risk_decision_id: Option<Uuid>,
+    confirmation_text: String,
+    recv_window_ms: Option<u64>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+struct CancelExchangeTestnetOrderRequest {
+    confirmation_text: String,
+    recv_window_ms: Option<u64>,
+    correlation_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -947,6 +1053,7 @@ async fn main() {
         MarketIngestConfig::from_env().expect("invalid market ingest configuration");
     let strategy_runtime =
         StrategyRuntimeConfig::from_env().expect("invalid strategy configuration");
+    let exchange_testnet = BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig::from_env());
 
     event_publisher
         .publish(SystemEventType::SystemStarted.into_event(
@@ -969,6 +1076,7 @@ async fn main() {
         market_mode: MarketMode::Paper,
         market_config,
         strategy_runtime,
+        exchange_testnet,
     };
 
     let app = Router::new()
@@ -997,6 +1105,31 @@ async fn main() {
         )
         .route("/risk/config/audit", get(get_risk_config_audit_handler))
         .route("/risk/evaluate", post(evaluate_risk))
+        .route("/exchange/testnet/status", get(get_exchange_testnet_status))
+        .route(
+            "/exchange/testnet/symbols",
+            get(get_exchange_testnet_symbols),
+        )
+        .route(
+            "/exchange/testnet/balances",
+            get(get_exchange_testnet_balances),
+        )
+        .route(
+            "/exchange/testnet/orders",
+            get(list_exchange_testnet_orders_handler),
+        )
+        .route(
+            "/exchange/testnet/orders",
+            post(submit_exchange_testnet_order),
+        )
+        .route(
+            "/exchange/testnet/orders/:client_order_id",
+            get(get_exchange_testnet_order),
+        )
+        .route(
+            "/exchange/testnet/orders/:client_order_id/cancel",
+            post(cancel_exchange_testnet_order),
+        )
         .route("/paper/orders", post(create_order))
         .route("/paper/pipeline/run", post(run_paper_pipeline_handler))
         .route("/paper/account", get(get_paper_account))
@@ -1354,6 +1487,15 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     if method == axum::http::Method::GET && path == "/metrics" && !protect_metrics {
         return RouteAccess::Public;
     }
+    if method == axum::http::Method::GET && path == "/exchange/testnet/balances" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::GET && path.starts_with("/exchange/testnet/orders/") {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::GET && path == "/exchange/testnet/orders" {
+        return RouteAccess::Operator;
+    }
     if method == axum::http::Method::GET {
         return RouteAccess::Authenticated;
     }
@@ -1361,6 +1503,9 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
         return RouteAccess::Owner;
     }
     if path.starts_with("/strategy/") && path.ends_with("/config/update") {
+        return RouteAccess::Owner;
+    }
+    if path == "/exchange/testnet/orders" || path.starts_with("/exchange/testnet/orders/") {
         return RouteAccess::Owner;
     }
     RouteAccess::Operator
@@ -1621,6 +1766,13 @@ fn bounded_paper_limit(limit: Option<i64>) -> i64 {
     }
 }
 
+fn bounded_exchange_testnet_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_EXCHANGE_TESTNET_LIMIT),
+        _ => DEFAULT_EXCHANGE_TESTNET_LIMIT,
+    }
+}
+
 fn parse_strategy_id(value: &str) -> Result<StrategyId, aegis_core::CoreError> {
     value.parse()
 }
@@ -1791,6 +1943,14 @@ fn is_valid_resume_confirmation(value: &str) -> bool {
     value.trim() == "RESUME TRADING"
 }
 
+fn is_valid_testnet_order_confirmation(value: &str) -> bool {
+    value.trim() == TESTNET_ORDER_CONFIRMATION_TEXT
+}
+
+fn generate_testnet_client_order_id(correlation_id: Uuid) -> String {
+    format!("aegis-testnet-{}", correlation_id.simple())
+}
+
 fn parse_correlation_id_filter(value: Option<&str>) -> Result<Option<Uuid>, String> {
     match value.map(str::trim).filter(|value| !value.is_empty()) {
         Some(raw) => Uuid::parse_str(raw)
@@ -1908,6 +2068,30 @@ fn order_view(record: OrderRecord) -> OrderView {
         rejected_at: record.rejected_at,
         expired_at: record.expired_at,
         expires_at: record.expires_at,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+fn exchange_testnet_order_view(record: ExchangeTestnetOrderRecord) -> ExchangeTestnetOrderView {
+    ExchangeTestnetOrderView {
+        id: record.id,
+        exchange: record.exchange,
+        environment: record.environment,
+        client_order_id: record.client_order_id,
+        exchange_order_id: record.exchange_order_id,
+        symbol: record.symbol,
+        side: record.side,
+        order_type: record.order_type,
+        time_in_force: record.time_in_force,
+        requested_qty: record.requested_qty.map(|value| value.to_string()),
+        requested_notional: record.requested_notional.map(|value| value.to_string()),
+        limit_price: record.limit_price.map(|value| value.to_string()),
+        status: record.status,
+        ack_payload: record.ack_payload,
+        latest_status_payload: record.latest_status_payload,
+        risk_decision_id: record.risk_decision_id,
+        created_by: record.created_by,
         created_at: record.created_at,
         updated_at: record.updated_at,
     }
@@ -2039,7 +2223,13 @@ async fn status(
             event_bus: DependencyStatus {
                 status: "configured",
             },
-            exchange_execution: DependencyStatus { status: "disabled" },
+            exchange_execution: DependencyStatus {
+                status: if state.exchange_testnet.status().configured {
+                    "testnet_configured"
+                } else {
+                    "testnet_unconfigured"
+                },
+            },
         },
     })
 }
@@ -3528,6 +3718,954 @@ async fn evaluate_risk(
     }
 
     (StatusCode::OK, Json(risk_evaluate_response(&evaluation))).into_response()
+}
+
+async fn get_exchange_testnet_status(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let status = state.exchange_testnet.status();
+
+    (
+        StatusCode::OK,
+        Json(ExchangeTestnetStatusResponse {
+            exchange: status.exchange.as_str().to_string(),
+            environment: status.environment.as_str().to_string(),
+            rest_base_url: status.rest_base_url,
+            configured: status.configured,
+            request_mode: status.request_mode,
+            rate_limits: status.rate_limits,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+}
+
+async fn get_exchange_testnet_symbols(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_exchange_testnet_request("symbols", "attempt");
+
+    match state.exchange_testnet.get_exchange_info().await {
+        Ok(symbols) => {
+            telemetry().inc_exchange_testnet_request("symbols", "ok");
+            (
+                StatusCode::OK,
+                Json(ExchangeTestnetSymbolsResponse {
+                    symbols,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => exchange_testnet_error_response(&request, "symbols", err),
+    }
+}
+
+async fn get_exchange_testnet_balances(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_exchange_testnet_request("balances", "attempt");
+
+    match state.exchange_testnet.get_balances().await {
+        Ok(balances) => {
+            telemetry().inc_exchange_testnet_request("balances", "ok");
+            (
+                StatusCode::OK,
+                Json(ExchangeTestnetBalancesResponse {
+                    balances,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => exchange_testnet_error_response(&request, "balances", err),
+    }
+}
+
+async fn list_exchange_testnet_orders_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Query(query): Query<ExchangeTestnetOrdersQuery>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let limit = bounded_exchange_testnet_limit(query.limit);
+
+    match list_exchange_testnet_orders(&state.db_pool, limit).await {
+        Ok(orders) => (
+            StatusCode::OK,
+            Json(ExchangeTestnetOrdersResponse {
+                orders: orders
+                    .into_iter()
+                    .map(exchange_testnet_order_view)
+                    .collect(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list exchange testnet orders"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_exchange_testnet_orders",
+                    message: "Exchange testnet orders could not be listed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_exchange_testnet_order(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Path(client_order_id): Path<String>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match get_exchange_testnet_order_by_client_order_id(&state.db_pool, &client_order_id).await {
+        Ok(Some(order)) => {
+            telemetry().inc_exchange_testnet_request("get_order_status", "attempt");
+            match state
+                .exchange_testnet
+                .get_order_status(&client_order_id)
+                .await
+            {
+                Ok(status) => {
+                    telemetry().inc_exchange_testnet_request("get_order_status", "ok");
+                    let payload = status.raw_payload.clone();
+                    match update_exchange_testnet_order_status(
+                        &state.db_pool,
+                        &client_order_id,
+                        status.exchange_order_id.as_deref(),
+                        status.status.as_str(),
+                        &payload,
+                    )
+                    .await
+                    {
+                        Ok(Some(updated)) => (
+                            StatusCode::OK,
+                            Json(ExchangeTestnetOrderResponse {
+                                order: exchange_testnet_order_view(updated),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response(),
+                        Ok(None) | Err(_) => (
+                            StatusCode::OK,
+                            Json(ExchangeTestnetOrderResponse {
+                                order: exchange_testnet_order_view(order),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response(),
+                    }
+                }
+                Err(err) => {
+                    if matches!(err, aegis_core::ExchangeError::Configuration(_)) {
+                        (
+                            StatusCode::OK,
+                            Json(ExchangeTestnetOrderResponse {
+                                order: exchange_testnet_order_view(order),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response()
+                    } else {
+                        exchange_testnet_error_response(&request, "get_order_status", err)
+                    }
+                }
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "exchange_testnet_order_not_found",
+                message: "Exchange testnet order was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query exchange testnet order"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_exchange_testnet_order",
+                    message: "Exchange testnet order could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn submit_exchange_testnet_order(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<SubmitExchangeTestnetOrderRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    if !is_valid_testnet_order_confirmation(&payload.confirmation_text) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_testnet_confirmation",
+                message: format!(
+                    "Testnet submit requires confirmation_text exactly equal to {:?}.",
+                    TESTNET_ORDER_CONFIRMATION_TEXT
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let Some(risk_decision_id) = payload.risk_decision_id else {
+        return exchange_testnet_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            "missing_risk_decision_id",
+            "A preapproved risk_decision_id is required for testnet submission.",
+            payload.symbol.clone(),
+        )
+        .await;
+    };
+
+    if let Err(response) = ensure_testnet_submission_allowed(
+        &state,
+        &actor,
+        &request,
+        correlation_id,
+        risk_decision_id,
+        &payload.symbol,
+    )
+    .await
+    {
+        return response;
+    }
+
+    let symbol = match Symbol::new(payload.symbol.clone()) {
+        Ok(symbol) => symbol,
+        Err(_) => {
+            return exchange_testnet_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                "invalid_symbol",
+                "symbol must be a non-empty market symbol.",
+                payload.symbol,
+            )
+            .await;
+        }
+    };
+    let quantity = match payload
+        .quantity
+        .as_deref()
+        .map(Decimal::from_str_exact)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return exchange_testnet_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                "invalid_quantity",
+                "quantity must be a valid decimal.",
+                symbol.to_string(),
+            )
+            .await;
+        }
+    };
+    let quote_notional = match payload
+        .quote_notional
+        .as_deref()
+        .map(Decimal::from_str_exact)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return exchange_testnet_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                "invalid_quote_notional",
+                "quote_notional must be a valid decimal.",
+                symbol.to_string(),
+            )
+            .await;
+        }
+    };
+    let limit_price = match payload
+        .limit_price
+        .as_deref()
+        .map(Decimal::from_str_exact)
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return exchange_testnet_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                "invalid_limit_price",
+                "limit_price must be a valid decimal.",
+                symbol.to_string(),
+            )
+            .await;
+        }
+    };
+
+    let client_order_id = generate_testnet_client_order_id(correlation_id);
+    let order = ExchangeOrderRequest {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        symbol: symbol.clone(),
+        side: payload.side,
+        order_type: payload.order_type,
+        time_in_force: payload.time_in_force,
+        quantity,
+        quote_notional,
+        limit_price,
+        client_order_id: client_order_id.clone(),
+        recv_window_ms: payload.recv_window_ms,
+        risk_decision_id: Some(risk_decision_id),
+    };
+    if let Err(err) = order.validate() {
+        return exchange_testnet_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            "invalid_exchange_order_request",
+            &err.to_string(),
+            symbol.to_string(),
+        )
+        .await;
+    }
+
+    let persisted = ExchangeTestnetOrderRecord {
+        id: Uuid::new_v4(),
+        exchange: ExchangeName::Binance.as_str().to_string(),
+        environment: ExchangeEnvironment::Testnet.as_str().to_string(),
+        client_order_id: client_order_id.clone(),
+        exchange_order_id: None,
+        symbol: symbol.to_string(),
+        side: payload.side.as_str().to_string(),
+        order_type: payload.order_type.as_str().to_string(),
+        time_in_force: payload
+            .time_in_force
+            .map(|value| value.as_str().to_string()),
+        requested_qty: quantity,
+        requested_notional: quote_notional,
+        limit_price,
+        status: "SUBMIT_REQUESTED".to_string(),
+        ack_payload: None,
+        latest_status_payload: None,
+        risk_decision_id: Some(risk_decision_id),
+        created_by: actor.actor_id,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &actor,
+        "exchange.testnet.order.submit_requested",
+        &client_order_id,
+        &json!({ "symbol": persisted.symbol, "risk_decision_id": risk_decision_id }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.order.submit_requested",
+            correlation_id,
+            &state.config.app_name,
+            json!({ "client_order_id": client_order_id, "symbol": persisted.symbol }),
+        ),
+    )
+    .await;
+
+    if let Err(err) = insert_exchange_testnet_order(&state.db_pool, &persisted).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            "failed to persist exchange testnet order request"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_exchange_testnet_order",
+                message: "Exchange testnet order could not be persisted.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    telemetry().inc_exchange_testnet_request("submit_order", "attempt");
+    match state.exchange_testnet.submit_order(order).await {
+        Ok(ack) => {
+            submit_exchange_testnet_order_success(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                persisted,
+                ack,
+            )
+            .await
+        }
+        Err(err) => {
+            exchange_testnet_adapter_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                "submit_order",
+                err,
+                symbol.to_string(),
+            )
+            .await
+        }
+    }
+}
+
+async fn cancel_exchange_testnet_order(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Path(client_order_id): Path<String>,
+    Json(payload): Json<CancelExchangeTestnetOrderRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    if !is_valid_testnet_order_confirmation(&payload.confirmation_text) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_testnet_confirmation",
+                message: format!(
+                    "Testnet cancel requires confirmation_text exactly equal to {:?}.",
+                    TESTNET_ORDER_CONFIRMATION_TEXT
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let existing_order =
+        match get_exchange_testnet_order_by_client_order_id(&state.db_pool, &client_order_id).await
+        {
+            Ok(Some(order)) => order,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "exchange_testnet_order_not_found",
+                        message: "Exchange testnet order was not found.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+            Err(err) => {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    "failed to load exchange testnet order before cancel"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_exchange_testnet_order",
+                        message: "Exchange testnet order could not be loaded.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+    let request_model = match Symbol::new(existing_order.symbol.clone()) {
+        Ok(symbol) => ExchangeCancelRequest {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol,
+            client_order_id: client_order_id.clone(),
+            recv_window_ms: payload.recv_window_ms,
+        },
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "invalid_persisted_exchange_testnet_order",
+                    message: "Persisted exchange testnet order has an invalid symbol.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &actor,
+        "exchange.testnet.order.cancel_requested",
+        &client_order_id,
+        &json!({ "symbol": existing_order.symbol }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.order.cancel_requested",
+            correlation_id,
+            &state.config.app_name,
+            json!({ "client_order_id": client_order_id }),
+        ),
+    )
+    .await;
+
+    telemetry().inc_exchange_testnet_request("cancel_order", "attempt");
+    match state.exchange_testnet.cancel_order(request_model).await {
+        Ok(ack) => {
+            cancel_exchange_testnet_order_success(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                existing_order,
+                ack,
+            )
+            .await
+        }
+        Err(err) => {
+            exchange_testnet_adapter_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                "cancel_order",
+                err,
+                client_order_id,
+            )
+            .await
+        }
+    }
+}
+
+async fn submit_exchange_testnet_order_success(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    fallback_record: ExchangeTestnetOrderRecord,
+    ack: ExchangeOrderAck,
+) -> Response {
+    telemetry().inc_exchange_testnet_request("submit_order", "ok");
+    telemetry().inc_exchange_testnet_order(
+        &fallback_record.symbol,
+        &fallback_record.side,
+        ack.status.as_str(),
+    );
+    let ack_payload = ack.raw_payload.clone();
+    let updated = update_exchange_testnet_order_ack(
+        &state.db_pool,
+        &fallback_record.client_order_id,
+        ack.exchange_order_id.as_deref(),
+        ack.status.as_str(),
+        &ack_payload,
+    )
+    .await;
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        actor,
+        "exchange.testnet.order.acked",
+        &fallback_record.client_order_id,
+        &json!({ "status": ack.status.as_str(), "exchange_order_id": ack.exchange_order_id }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.order.acked",
+            correlation_id,
+            &state.config.app_name,
+            json!({ "client_order_id": fallback_record.client_order_id, "status": ack.status.as_str() }),
+        ),
+    )
+    .await;
+
+    match updated {
+        Ok(Some(order_record)) => (
+            StatusCode::CREATED,
+            Json(ExchangeTestnetOrderResponse {
+                order: exchange_testnet_order_view(order_record),
+                request_id: request.request_id.clone(),
+                correlation_id: request.correlation_id.clone(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) | Err(_) => (
+            StatusCode::CREATED,
+            Json(ExchangeTestnetOrderResponse {
+                order: exchange_testnet_order_view(fallback_record),
+                request_id: request.request_id.clone(),
+                correlation_id: request.correlation_id.clone(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn cancel_exchange_testnet_order_success(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    fallback_record: ExchangeTestnetOrderRecord,
+    ack: ExchangeCancelAck,
+) -> Response {
+    telemetry().inc_exchange_testnet_request("cancel_order", "ok");
+    telemetry().inc_exchange_testnet_order(
+        &fallback_record.symbol,
+        &fallback_record.side,
+        ack.status.as_str(),
+    );
+    let payload = ack.raw_payload.clone();
+    let updated = update_exchange_testnet_order_status(
+        &state.db_pool,
+        &fallback_record.client_order_id,
+        ack.exchange_order_id.as_deref(),
+        ack.status.as_str(),
+        &payload,
+    )
+    .await;
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        actor,
+        "exchange.testnet.order.cancelled",
+        &fallback_record.client_order_id,
+        &json!({ "status": ack.status.as_str(), "exchange_order_id": ack.exchange_order_id }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.order.cancelled",
+            correlation_id,
+            &state.config.app_name,
+            json!({ "client_order_id": fallback_record.client_order_id, "status": ack.status.as_str() }),
+        ),
+    )
+    .await;
+
+    match updated {
+        Ok(Some(order_record)) => (
+            StatusCode::OK,
+            Json(ExchangeTestnetOrderResponse {
+                order: exchange_testnet_order_view(order_record),
+                request_id: request.request_id.clone(),
+                correlation_id: request.correlation_id.clone(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) | Err(_) => (
+            StatusCode::OK,
+            Json(ExchangeTestnetOrderResponse {
+                order: exchange_testnet_order_view(fallback_record),
+                request_id: request.request_id.clone(),
+                correlation_id: request.correlation_id.clone(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn ensure_testnet_submission_allowed(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    risk_decision_id: Uuid,
+    symbol: &str,
+) -> std::result::Result<(), Response> {
+    if state.exchange_testnet.config().environment != ExchangeEnvironment::Testnet {
+        return Err(exchange_testnet_rejected_response(
+            state,
+            actor,
+            request,
+            correlation_id,
+            "invalid_exchange_environment",
+            "Only testnet environment is allowed.",
+            symbol.to_string(),
+        )
+        .await);
+    }
+
+    match get_system_state(&state.db_pool).await {
+        Ok(system_state) if system_state.kill_switch_enabled => {
+            return Err(exchange_testnet_rejected_response(
+                state,
+                actor,
+                request,
+                correlation_id,
+                "kill_switch_active",
+                "Global kill switch is active.",
+                symbol.to_string(),
+            )
+            .await);
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load system state for exchange testnet submission"
+            );
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_read_system_state",
+                    message: "System state could not be loaded.".to_string(),
+                    request_id: request.request_id.clone(),
+                    correlation_id: request.correlation_id.clone(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response());
+        }
+    }
+
+    match get_risk_decision_by_id(&state.db_pool, risk_decision_id).await {
+        Ok(Some(record)) if record.decision == "APPROVED" => Ok(()),
+        Ok(Some(_)) => Err(exchange_testnet_rejected_response(
+            state,
+            actor,
+            request,
+            correlation_id,
+            "risk_decision_not_approved",
+            "risk_decision_id must reference an APPROVED risk decision.",
+            symbol.to_string(),
+        )
+        .await),
+        Ok(None) => Err(exchange_testnet_rejected_response(
+            state,
+            actor,
+            request,
+            correlation_id,
+            "risk_decision_not_found",
+            "risk_decision_id must reference an existing persisted risk decision.",
+            symbol.to_string(),
+        )
+        .await),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load risk decision for exchange testnet submission"
+            );
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_risk_decision",
+                    message: "Risk decision could not be loaded.".to_string(),
+                    request_id: request.request_id.clone(),
+                    correlation_id: request.correlation_id.clone(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response())
+        }
+    }
+}
+
+async fn exchange_testnet_rejected_response(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    error_code: &'static str,
+    message: &str,
+    symbol: String,
+) -> Response {
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        actor,
+        "exchange.testnet.order.rejected",
+        &symbol,
+        &json!({ "error": error_code, "message": message }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.order.rejected",
+            correlation_id,
+            &state.config.app_name,
+            json!({ "symbol": symbol, "error": error_code, "message": message }),
+        ),
+    )
+    .await;
+
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: error_code,
+            message: message.to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+async fn exchange_testnet_adapter_rejected_response(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    operation: &'static str,
+    err: aegis_core::ExchangeError,
+    symbol: String,
+) -> Response {
+    telemetry().inc_exchange_testnet_request(operation, "error");
+    telemetry().inc_exchange_testnet_error(operation, exchange_error_kind(&err));
+    exchange_testnet_rejected_response(
+        state,
+        actor,
+        request,
+        correlation_id,
+        "exchange_testnet_request_rejected",
+        &err.to_string(),
+        symbol,
+    )
+    .await
+}
+
+fn exchange_testnet_error_response(
+    request: &RequestContext,
+    operation: &'static str,
+    err: aegis_core::ExchangeError,
+) -> Response {
+    telemetry().inc_exchange_testnet_request(operation, "error");
+    telemetry().inc_exchange_testnet_error(operation, exchange_error_kind(&err));
+    let status = match err {
+        aegis_core::ExchangeError::Configuration(_) => StatusCode::SERVICE_UNAVAILABLE,
+        aegis_core::ExchangeError::Authentication => StatusCode::BAD_GATEWAY,
+        aegis_core::ExchangeError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        aegis_core::ExchangeError::LiveEnvironmentDisabled => StatusCode::CONFLICT,
+        aegis_core::ExchangeError::Validation(_) => StatusCode::BAD_REQUEST,
+        aegis_core::ExchangeError::Api(_)
+        | aegis_core::ExchangeError::Transport(_)
+        | aegis_core::ExchangeError::Serialization(_) => StatusCode::BAD_GATEWAY,
+    };
+    (
+        status,
+        Json(ErrorResponse {
+            error: "exchange_testnet_request_failed",
+            message: err.to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+fn exchange_error_kind(err: &aegis_core::ExchangeError) -> &'static str {
+    match err {
+        aegis_core::ExchangeError::Configuration(_) => "configuration",
+        aegis_core::ExchangeError::LiveEnvironmentDisabled => "live_disabled",
+        aegis_core::ExchangeError::Validation(_) => "validation",
+        aegis_core::ExchangeError::Authentication => "authentication",
+        aegis_core::ExchangeError::RateLimited => "rate_limited",
+        aegis_core::ExchangeError::Api(_) => "api",
+        aegis_core::ExchangeError::Transport(_) => "transport",
+        aegis_core::ExchangeError::Serialization(_) => "serialization",
+    }
 }
 
 fn parse_order_intent(
@@ -6552,18 +7690,20 @@ async fn evaluate_strategy_handler(
 mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
-        is_valid_resume_confirmation, login, logout, metrics, normalize_route_label, order_view,
-        parse_correlation_id_filter, parse_order_intent, parse_risk_check_context, refresh,
-        request_context_middleware, risk_decision_not_found_error, AppConfig, AppState,
-        RequestContext, StrategyRuntimeConfig, CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
-        DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
-        MAX_RISK_DECISIONS_LIMIT,
+        generate_testnet_client_order_id, is_valid_resume_confirmation,
+        is_valid_testnet_order_confirmation, login, logout, metrics, normalize_route_label,
+        order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
+        refresh, request_context_middleware, risk_decision_not_found_error, route_access,
+        AppConfig, AppState, RequestContext, StrategyRuntimeConfig, CLI_AUTH_MODE_HEADER,
+        CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT,
+        MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
     };
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
         AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-        CandleInterval, MarketDataSource, MarketMode, Side, Symbol, UserRole, UserStatus,
+        CandleInterval, ExchangeEnvironment, MarketDataSource, MarketMode, Side, Symbol, UserRole,
+        UserStatus,
     };
     use axum::{
         body::Body,
@@ -6580,6 +7720,7 @@ mod tests {
         count_users, get_session_by_id, get_user_by_email, insert_user, test_support::TestDatabase,
         OrderRecord, PgPool,
     };
+    use exchange::{BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig};
     use market_ingest::MarketIngestConfig;
     use rust_decimal::Decimal;
     use serde::de::DeserializeOwned;
@@ -6644,6 +7785,51 @@ mod tests {
         assert!(is_valid_resume_confirmation("RESUME TRADING"));
         assert!(!is_valid_resume_confirmation("resume trading"));
         assert!(!is_valid_resume_confirmation("RESUME"));
+    }
+
+    #[test]
+    fn testnet_confirmation_must_match_exact_phrase() {
+        assert!(is_valid_testnet_order_confirmation("TESTNET ORDER"));
+        assert!(!is_valid_testnet_order_confirmation("testnet order"));
+        assert!(!is_valid_testnet_order_confirmation("TESTNET"));
+    }
+
+    #[test]
+    fn testnet_client_order_id_is_deterministic_per_correlation_id() {
+        let correlation_id =
+            Uuid::parse_str("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0").expect("valid uuid");
+        assert_eq!(
+            generate_testnet_client_order_id(correlation_id),
+            "aegis-testnet-2ea0ed54f2bf402d8da04e92cde5b2a0"
+        );
+    }
+
+    #[test]
+    fn exchange_testnet_route_access_matches_role_expectations() {
+        assert!(matches!(
+            route_access(&axum::http::Method::GET, "/exchange/testnet/status", false),
+            super::RouteAccess::Authenticated
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::GET,
+                "/exchange/testnet/balances",
+                false
+            ),
+            super::RouteAccess::Operator
+        ));
+        assert!(matches!(
+            route_access(&axum::http::Method::POST, "/exchange/testnet/orders", false),
+            super::RouteAccess::Owner
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/exchange/testnet/orders/client-1/cancel",
+                false
+            ),
+            super::RouteAccess::Owner
+        ));
     }
 
     #[test]
@@ -6861,6 +8047,13 @@ mod tests {
                 momentum_lookback_candles: 3,
                 breakout_lookback_candles: 20,
             },
+            exchange_testnet: BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
+                environment: ExchangeEnvironment::Testnet,
+                rest_base_url: "https://testnet.binance.vision".to_string(),
+                api_key: None,
+                api_secret: None,
+                recv_window_ms: None,
+            }),
         }
     }
 
@@ -7367,6 +8560,13 @@ mod tests {
                 momentum_lookback_candles: 3,
                 breakout_lookback_candles: 20,
             },
+            exchange_testnet: BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
+                environment: ExchangeEnvironment::Testnet,
+                rest_base_url: "https://testnet.binance.vision".to_string(),
+                api_key: None,
+                api_secret: None,
+                recv_window_ms: None,
+            }),
         }
     }
 }

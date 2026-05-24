@@ -5,13 +5,15 @@ use serde::Serialize;
 
 use crate::api::{
     BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
-    CandleBackfillRunsResponse, FeedStatusResponse, HealthResponse, OrderRecord,
-    PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse,
-    PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse,
-    RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
-    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
-    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
-    StrategyDryRunResponse, StrategyListResponse, StrategyStatusResponse,
+    CandleBackfillRunsResponse, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
+    ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse, FeedStatusResponse,
+    HealthResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
+    PaperEquityResponse, PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse,
+    PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse, RiskConfigAuditResponse,
+    RiskConfigResponse, RiskConfigValidationResponse, RiskConfigVersionsResponse,
+    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
+    StrategyConfigValidationResponse, StrategyConfigVersionsResponse, StrategyDryRunResponse,
+    StrategyListResponse, StrategyStatusResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -100,6 +102,53 @@ pub fn print_auth_me(user: &User) {
 
 pub fn print_auth_logout() {
     println!("Logged out.");
+}
+
+pub fn print_exchange_testnet_status(response: &ExchangeTestnetStatusResponse) {
+    println!("Exchange: {}", response.exchange);
+    println!("Environment: {}", response.environment);
+    println!("Configured: {}", response.configured);
+    println!("Request mode: {}", response.request_mode);
+    println!("REST base URL: {}", response.rest_base_url);
+}
+
+pub fn print_exchange_testnet_symbols(response: &ExchangeTestnetSymbolsResponse) {
+    for symbol in &response.symbols {
+        println!(
+            "{}  {} / {}  status={}",
+            symbol.symbol, symbol.base_asset, symbol.quote_asset, symbol.status
+        );
+    }
+}
+
+pub fn print_exchange_testnet_balances(response: &ExchangeTestnetBalancesResponse) {
+    for balance in &response.balances {
+        println!(
+            "{}  free={} locked={}",
+            balance.asset, balance.free, balance.locked
+        );
+    }
+}
+
+pub fn print_exchange_testnet_order(response: &ExchangeTestnetOrderResponse) {
+    let order = &response.order;
+    println!("Client order ID: {}", order.client_order_id);
+    println!(
+        "Exchange order ID: {}",
+        order.exchange_order_id.as_deref().unwrap_or("-")
+    );
+    println!("Symbol: {}", order.symbol);
+    println!("Side: {}", order.side);
+    println!("Type: {}", order.order_type);
+    println!("Status: {}", order.status);
+    println!(
+        "Requested quantity: {}",
+        order.requested_qty.as_deref().unwrap_or("-")
+    );
+    println!(
+        "Requested quote notional: {}",
+        order.requested_notional.as_deref().unwrap_or("-")
+    );
 }
 
 pub fn print_risk_action(response: &RiskActionResponse) {

@@ -576,6 +576,90 @@ export type OrderResponse = {
   timestamp: string;
 };
 
+export type ExchangeTestnetStatusResponse = {
+  exchange: string;
+  environment: string;
+  rest_base_url: string;
+  configured: boolean;
+  request_mode: string;
+  rate_limits: Record<string, unknown>;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeTestnetSymbolInfo = {
+  exchange: string;
+  environment: string;
+  symbol: string;
+  base_asset: string;
+  quote_asset: string;
+  status: string;
+  min_price: string | null;
+  tick_size: string | null;
+  min_qty: string | null;
+  step_size: string | null;
+  min_notional: string | null;
+};
+
+export type ExchangeTestnetSymbolsResponse = {
+  symbols: ExchangeTestnetSymbolInfo[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeTestnetBalanceRecord = {
+  exchange: string;
+  environment: string;
+  asset: string;
+  free: string;
+  locked: string;
+};
+
+export type ExchangeTestnetBalancesResponse = {
+  balances: ExchangeTestnetBalanceRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeTestnetOrderRecord = {
+  id: string;
+  exchange: string;
+  environment: string;
+  client_order_id: string;
+  exchange_order_id: string | null;
+  symbol: string;
+  side: string;
+  order_type: string;
+  time_in_force: string | null;
+  requested_qty: string | null;
+  requested_notional: string | null;
+  limit_price: string | null;
+  status: string;
+  ack_payload: Record<string, unknown> | null;
+  latest_status_payload: Record<string, unknown> | null;
+  risk_decision_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ExchangeTestnetOrdersResponse = {
+  orders: ExchangeTestnetOrderRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeTestnetOrderResponse = {
+  order: ExchangeTestnetOrderRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type PaperAccountRecord = {
   id: string;
   name: string;

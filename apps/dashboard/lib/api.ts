@@ -17,6 +17,11 @@ import type {
   CandleBackfillRunsResponse,
   CandlesResponse,
   EvaluateStrategyResponse,
+  ExchangeTestnetBalancesResponse,
+  ExchangeTestnetOrderResponse,
+  ExchangeTestnetOrdersResponse,
+  ExchangeTestnetStatusResponse,
+  ExchangeTestnetSymbolsResponse,
   FeedStatusResponse,
   HealthResponse,
   MarketSymbolsResponse,
@@ -258,6 +263,27 @@ export const api = {
     request<CandleBackfillRunsResponse>("/market/backfill/runs", undefined, { limit }),
   getMarketBackfillRun: (id: string) =>
     request<CandleBackfillRunResponse>(`/market/backfill/runs/${id}`),
+  getExchangeTestnetStatus: () =>
+    request<ExchangeTestnetStatusResponse>("/exchange/testnet/status"),
+  getExchangeTestnetSymbols: () =>
+    request<ExchangeTestnetSymbolsResponse>("/exchange/testnet/symbols"),
+  getExchangeTestnetBalances: () =>
+    request<ExchangeTestnetBalancesResponse>("/exchange/testnet/balances"),
+  getExchangeTestnetOrders: (limit = 20) =>
+    request<ExchangeTestnetOrdersResponse>("/exchange/testnet/orders", undefined, { limit }),
+  submitExchangeTestnetOrder: (payload: Record<string, unknown>) =>
+    request<ExchangeTestnetOrderResponse>("/exchange/testnet/orders", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  cancelExchangeTestnetOrder: (clientOrderId: string, confirmationText: string) =>
+    request<ExchangeTestnetOrderResponse>(
+      `/exchange/testnet/orders/${clientOrderId}/cancel`,
+      {
+        method: "POST",
+        body: JSON.stringify({ confirmation_text: confirmationText }),
+      },
+    ),
   getMarketFeedStatus: () => request<FeedStatusResponse>("/market/feed-status"),
   getStrategyList: () => request<StrategyListResponse>("/strategy/list"),
   getStrategyStatus: (id: string) =>
