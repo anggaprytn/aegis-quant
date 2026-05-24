@@ -1,7 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
-use aegis_core::{expected_testnet_pipeline_confirmation, TestnetShadowRunRequest};
+use aegis_core::{
+    expected_testnet_pipeline_confirmation, TestnetShadowRunRequest,
+    TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
+};
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
 pub const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
@@ -127,6 +130,8 @@ pub enum ExchangeTestnetCommands {
         run_id: Uuid,
     },
     #[command(subcommand)]
+    ShadowRunner(ExchangeTestnetShadowRunnerCommands),
+    #[command(subcommand)]
     PrivateStream(ExchangeTestnetPrivateStreamCommands),
     Symbols,
     Balances,
@@ -193,6 +198,57 @@ impl From<ExchangeTestnetShadowRunArgs> for TestnetShadowRunRequest {
 pub struct ExchangeTestnetShadowRunsArgs {
     #[arg(long, default_value_t = 50)]
     pub limit: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExchangeTestnetShadowRunnerCommands {
+    Status,
+    Config,
+    ConfigUpdate(ExchangeTestnetShadowRunnerConfigUpdateArgs),
+    RunOnce,
+    Pause,
+    Resume,
+    Start,
+    Stop,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetShadowRunnerConfigUpdateArgs {
+    #[arg(long)]
+    pub enabled: bool,
+    #[arg(long = "interval-seconds")]
+    pub interval_seconds: i32,
+    #[arg(long, value_delimiter = ',')]
+    pub strategies: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub symbols: Vec<String>,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "max-runs-per-tick")]
+    pub max_runs_per_tick: i32,
+    #[arg(long = "stale-feed-policy", default_value = "SKIP")]
+    pub stale_feed_policy: String,
+    #[arg(long)]
+    pub notes: Option<String>,
+}
+
+impl TryFrom<ExchangeTestnetShadowRunnerConfigUpdateArgs> for TestnetShadowRunnerConfigInput {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ExchangeTestnetShadowRunnerConfigUpdateArgs) -> anyhow::Result<Self> {
+        Ok(Self {
+            enabled: value.enabled,
+            interval_seconds: value.interval_seconds,
+            strategies: value.strategies,
+            symbols: value.symbols,
+            timeframe: value.timeframe,
+            max_runs_per_tick: value.max_runs_per_tick,
+            stale_feed_policy: value
+                .stale_feed_policy
+                .parse::<TestnetShadowRunnerStaleFeedPolicy>()?,
+            notes: value.notes,
+        })
+    }
 }
 
 #[derive(Debug, Subcommand)]

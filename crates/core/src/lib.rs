@@ -2308,6 +2308,200 @@ pub struct TestnetShadowRunResult {
     pub correlation_id: Uuid,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetShadowRunnerStatus {
+    Stopped,
+    Running,
+    Paused,
+    Error,
+}
+
+impl TestnetShadowRunnerStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "STOPPED",
+            Self::Running => "RUNNING",
+            Self::Paused => "PAUSED",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowRunnerStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "STOPPED" => Ok(Self::Stopped),
+            "RUNNING" => Ok(Self::Running),
+            "PAUSED" => Ok(Self::Paused),
+            "ERROR" => Ok(Self::Error),
+            other => Err(CoreError::UnsupportedShadowRunnerStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetShadowRunnerStaleFeedPolicy {
+    Skip,
+}
+
+impl TestnetShadowRunnerStaleFeedPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "SKIP",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowRunnerStaleFeedPolicy {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "SKIP" => Ok(Self::Skip),
+            other => Err(CoreError::UnsupportedShadowRunnerStaleFeedPolicy(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowRunnerConfigInput {
+    pub enabled: bool,
+    pub interval_seconds: i32,
+    pub strategies: Vec<String>,
+    pub symbols: Vec<String>,
+    pub timeframe: String,
+    pub max_runs_per_tick: i32,
+    pub stale_feed_policy: TestnetShadowRunnerStaleFeedPolicy,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowRunnerConfig {
+    pub id: Uuid,
+    pub enabled: bool,
+    pub interval_seconds: i32,
+    pub strategies: Vec<String>,
+    pub symbols: Vec<String>,
+    pub timeframe: String,
+    pub max_runs_per_tick: i32,
+    pub stale_feed_policy: TestnetShadowRunnerStaleFeedPolicy,
+    pub notes: Option<String>,
+    pub updated_by: Option<Uuid>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowRunnerState {
+    pub id: Uuid,
+    pub status: TestnetShadowRunnerStatus,
+    pub last_tick_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub total_ticks: i64,
+    pub total_runs: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetShadowRunnerControlAction {
+    Start,
+    Stop,
+    Pause,
+    Resume,
+    RunOnce,
+}
+
+impl TestnetShadowRunnerControlAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "START",
+            Self::Stop => "STOP",
+            Self::Pause => "PAUSE",
+            Self::Resume => "RESUME",
+            Self::RunOnce => "RUN_ONCE",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowRunnerControlAction {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "START" => Ok(Self::Start),
+            "STOP" => Ok(Self::Stop),
+            "PAUSE" => Ok(Self::Pause),
+            "RESUME" => Ok(Self::Resume),
+            "RUN_ONCE" => Ok(Self::RunOnce),
+            other => Err(CoreError::UnsupportedShadowRunnerControlAction(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowRunnerControlRequest {
+    pub action: TestnetShadowRunnerControlAction,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetShadowRunnerTickStatus {
+    NoOp,
+    Completed,
+    PartialFailure,
+    Failed,
+}
+
+impl TestnetShadowRunnerTickStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoOp => "NO_OP",
+            Self::Completed => "COMPLETED",
+            Self::PartialFailure => "PARTIAL_FAILURE",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowRunnerTickStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "NO_OP" => Ok(Self::NoOp),
+            "COMPLETED" => Ok(Self::Completed),
+            "PARTIAL_FAILURE" => Ok(Self::PartialFailure),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedShadowRunnerTickStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowRunnerTickResult {
+    pub status: TestnetShadowRunnerTickStatus,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
+    pub scheduled: bool,
+    pub attempted_runs: i32,
+    pub completed_runs: i32,
+    pub failed_runs: i32,
+    pub correlation_id: Uuid,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExchangeTestnetPipelinePreviewRequest {
     pub risk_decision_id: Uuid,
@@ -3596,6 +3790,14 @@ pub enum CoreError {
     UnsupportedShadowStatus(String),
     #[error("unsupported testnet shadow rejection reason: {0}")]
     UnsupportedShadowRejectionReason(String),
+    #[error("unsupported testnet shadow runner status: {0}")]
+    UnsupportedShadowRunnerStatus(String),
+    #[error("unsupported testnet shadow runner stale feed policy: {0}")]
+    UnsupportedShadowRunnerStaleFeedPolicy(String),
+    #[error("unsupported testnet shadow runner control action: {0}")]
+    UnsupportedShadowRunnerControlAction(String),
+    #[error("unsupported testnet shadow runner tick status: {0}")]
+    UnsupportedShadowRunnerTickStatus(String),
     #[error("unsupported replay run status: {0}")]
     UnsupportedReplayRunStatus(String),
     #[error("unsupported replay mode: {0}")]

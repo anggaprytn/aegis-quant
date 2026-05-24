@@ -744,6 +744,66 @@ export type TestnetShadowRunsResponse = {
   timestamp: string;
 };
 
+export type TestnetShadowRunnerConfig = {
+  id: string;
+  enabled: boolean;
+  interval_seconds: number;
+  strategies: string[];
+  symbols: string[];
+  timeframe: string;
+  max_runs_per_tick: number;
+  stale_feed_policy: string;
+  notes: string | null;
+  updated_by: string | null;
+  updated_at: string;
+};
+
+export type TestnetShadowRunnerState = {
+  id: string;
+  status: string;
+  last_tick_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  total_ticks: number;
+  total_runs: number;
+  updated_at: string;
+};
+
+export type TestnetShadowRunnerTickResult = {
+  status: string;
+  started_at: string;
+  completed_at: string;
+  scheduled: boolean;
+  attempted_runs: number;
+  completed_runs: number;
+  failed_runs: number;
+  correlation_id: string;
+  message: string | null;
+};
+
+export type TestnetShadowRunnerStatusResponse = {
+  config: TestnetShadowRunnerConfig;
+  state: TestnetShadowRunnerState;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type TestnetShadowRunnerConfigResponse = {
+  config: TestnetShadowRunnerConfig;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type TestnetShadowRunnerControlResponse = {
+  state: TestnetShadowRunnerState;
+  tick: TestnetShadowRunnerTickResult | null;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ExchangeTestnetOrderLifecycleEvent = {
   previous_state: string | null;
   next_state: string;

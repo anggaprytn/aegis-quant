@@ -1,7 +1,6 @@
 mod auth;
 mod exchange_reconcile;
 mod pipeline;
-mod testnet_shadow;
 
 use std::{env, net::SocketAddr, sync::Arc, time::Instant};
 
@@ -29,12 +28,21 @@ use aegis_core::{
     StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
     TestnetExecutionState, TestnetExecutionTransitionSource, TestnetRepairAction,
     TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
-    TestnetRepairValidationIssue, TestnetShadowRunRequest, TestnetShadowRunResult, UserRole,
-    UserStatus,
+    TestnetRepairValidationIssue, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    UserRole, UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
-    ClosePaperPositionError,
+    testnet_shadow::run_testnet_shadow_once,
+    testnet_shadow_runner::{
+        apply_testnet_shadow_runner_control_action, load_testnet_shadow_runner_snapshot,
+        persist_testnet_shadow_runner_config, validate_testnet_shadow_runner_config,
+        TestnetShadowRunnerConfigValidation,
+    },
+    AppConfig as ShadowAppConfig, AppState as ShadowAppState, ClosePaperPositionError,
+    StrategyRuntimeConfig as ShadowStrategyRuntimeConfig,
 };
 use axum::{
     extract::{MatchedPath, Path, Query, Request, State},
@@ -106,17 +114,15 @@ use telemetry::telemetry;
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::exchange_reconcile::{
-    local_testnet_status_from_exchange_state, mismatch_from_record, reconcile_testnet_orders,
-    run_from_record, run_result_from_run, ReconcileTestnetOrdersError,
-};
-use crate::testnet_shadow::run_testnet_shadow_once;
-
 use crate::auth::{
     actor_from_claims, bootstrap_credentials, build_refresh_cookie, clear_refresh_cookie,
     decode_access_token, dev_actor, dev_user, hash_password, hash_refresh_token,
     issue_access_token, issue_refresh_token, parse_refresh_token, verify_password, AuthConfig,
     REFRESH_COOKIE_NAME,
+};
+use crate::exchange_reconcile::{
+    local_testnet_status_from_exchange_state, mismatch_from_record, reconcile_testnet_orders,
+    run_from_record, run_result_from_run, ReconcileTestnetOrdersError,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -408,6 +414,29 @@ fn required_state_actor(extension: Option<Extension<AuthenticatedActor>>) -> Sta
     current_actor(extension)
         .map(|actor| state_actor_from_authenticated(&actor))
         .unwrap_or_else(|| StateActor::system("anonymous"))
+}
+
+fn shadow_runtime_state(state: &AppState) -> ShadowAppState {
+    ShadowAppState {
+        config: ShadowAppConfig {
+            app_name: state.config.app_name.clone(),
+            environment: state.config.environment.clone(),
+            bind_addr: state.config.bind_addr,
+            database_url: state.config.database_url.clone(),
+            database_max_connections: state.config.database_max_connections,
+        },
+        db_pool: state.db_pool.clone(),
+        started_at: state.started_at,
+        market_mode: state.market_mode,
+        market_config: state.market_config.clone(),
+        strategy_runtime: ShadowStrategyRuntimeConfig {
+            default_symbols: state.strategy_runtime.default_symbols.clone(),
+            default_timeframe: state.strategy_runtime.default_timeframe,
+            default_notional: state.strategy_runtime.default_notional,
+            momentum_lookback_candles: state.strategy_runtime.momentum_lookback_candles,
+            breakout_lookback_candles: state.strategy_runtime.breakout_lookback_candles,
+        },
+    }
 }
 
 #[derive(Serialize)]
@@ -723,6 +752,40 @@ struct TestnetShadowRunResponse {
 #[derive(Serialize, Deserialize)]
 struct TestnetShadowRunsResponse {
     runs: Vec<TestnetShadowRunResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowRunnerStatusResponse {
+    config: TestnetShadowRunnerConfig,
+    state: TestnetShadowRunnerState,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowRunnerConfigResponse {
+    config: TestnetShadowRunnerConfig,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowRunnerConfigValidationResponse {
+    validation: TestnetShadowRunnerConfigValidation,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowRunnerControlResponse {
+    state: TestnetShadowRunnerState,
+    tick: Option<TestnetShadowRunnerTickResult>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1399,6 +1462,26 @@ async fn main() {
             get(get_exchange_testnet_shadow_run_handler),
         )
         .route(
+            "/exchange/testnet/shadow-runner/status",
+            get(get_exchange_testnet_shadow_runner_status_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow-runner/config",
+            get(get_exchange_testnet_shadow_runner_config_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow-runner/config/validate",
+            post(validate_exchange_testnet_shadow_runner_config_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow-runner/config/update",
+            post(update_exchange_testnet_shadow_runner_config_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow-runner/control",
+            post(control_exchange_testnet_shadow_runner_handler),
+        )
+        .route(
             "/exchange/testnet/private-stream/status",
             get(get_exchange_testnet_private_stream_status),
         )
@@ -1846,6 +1929,18 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/shadow/run" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/exchange/testnet/shadow-runner/config/update"
+    {
+        return RouteAccess::Owner;
+    }
+    if method == axum::http::Method::POST
+        && path == "/exchange/testnet/shadow-runner/config/validate"
+    {
+        return RouteAccess::Owner;
+    }
+    if method == axum::http::Method::POST && path == "/exchange/testnet/shadow-runner/control" {
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/pipeline/submit" {
@@ -6126,11 +6221,12 @@ async fn run_exchange_testnet_shadow_handler(
 ) -> impl IntoResponse {
     let request = request_context(request);
     let actor = required_state_actor(actor);
+    let shadow_state = shadow_runtime_state(&state);
     if payload.correlation_id.is_none() {
         payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
     }
 
-    match run_testnet_shadow_once(&state, Some(&actor), payload).await {
+    match run_testnet_shadow_once(&shadow_state, Some(&actor), payload).await {
         Ok(run) => (
             StatusCode::OK,
             Json(TestnetShadowRunResponse {
@@ -6285,6 +6381,311 @@ async fn get_exchange_testnet_shadow_run_handler(
             )
                 .into_response()
         }
+    }
+}
+
+async fn get_exchange_testnet_shadow_runner_status_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let shadow_state = shadow_runtime_state(&state);
+
+    match load_testnet_shadow_runner_snapshot(&shadow_state).await {
+        Ok(snapshot) => (
+            StatusCode::OK,
+            Json(TestnetShadowRunnerStatusResponse {
+                config: snapshot.config,
+                state: snapshot.state,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_testnet_shadow_runner_status",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_exchange_testnet_shadow_runner_config_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let shadow_state = shadow_runtime_state(&state);
+
+    match load_testnet_shadow_runner_snapshot(&shadow_state).await {
+        Ok(snapshot) => (
+            StatusCode::OK,
+            Json(TestnetShadowRunnerConfigResponse {
+                config: snapshot.config,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_testnet_shadow_runner_config",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn validate_exchange_testnet_shadow_runner_config_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<TestnetShadowRunnerConfigInput>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let validation = validate_testnet_shadow_runner_config(&payload);
+    let event_type = if validation.valid {
+        "exchange.testnet.shadow_runner.config.validated"
+    } else {
+        "exchange.testnet.shadow_runner.config.rejected"
+    };
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            event_type,
+            parse_correlation_id(&request.correlation_id),
+            state.config.app_name.clone(),
+            json!({ "issues": validation.issues }),
+        ),
+    )
+    .await;
+
+    (
+        if validation.valid {
+            StatusCode::OK
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
+        Json(TestnetShadowRunnerConfigValidationResponse {
+            validation,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+async fn update_exchange_testnet_shadow_runner_config_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<TestnetShadowRunnerConfigInput>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    let state_actor = actor
+        .as_ref()
+        .map(state_actor_from_authenticated)
+        .unwrap_or_else(|| StateActor::system("anonymous"));
+    let actor_id = actor.as_ref().map(|value| value.user_id);
+    let shadow_state = shadow_runtime_state(&state);
+    let validation = validate_testnet_shadow_runner_config(&payload);
+
+    if !validation.valid {
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "exchange.testnet.shadow_runner.config.rejected",
+                parse_correlation_id(&request.correlation_id),
+                state.config.app_name.clone(),
+                json!({ "issues": validation.issues, "actor_id": actor_id }),
+            ),
+        )
+        .await;
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(TestnetShadowRunnerConfigValidationResponse {
+                validation,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match persist_testnet_shadow_runner_config(
+        &shadow_state,
+        &payload,
+        actor.as_ref().map(|value| value.user_id),
+    )
+    .await
+    {
+        Ok(config) => {
+            let correlation_id = parse_correlation_id(&request.correlation_id);
+            let _ = insert_audit_log(
+                &state.db_pool,
+                correlation_id,
+                &state_actor,
+                "exchange.testnet.shadow_runner.config.updated",
+                "testnet_shadow_runner_config",
+                &json!({ "config": config, "actor_id": actor_id }),
+            )
+            .await;
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "exchange.testnet.shadow_runner.config.updated",
+                    correlation_id,
+                    state.config.app_name.clone(),
+                    json!({ "config": config, "actor_id": actor_id }),
+                ),
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(TestnetShadowRunnerConfigResponse {
+                    config,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_update_testnet_shadow_runner_config",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn control_exchange_testnet_shadow_runner_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<TestnetShadowRunnerControlRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    let Some(ref authenticated_actor) = actor else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "unauthorized",
+                message: "Authentication is required.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+    if matches!(
+        payload.action,
+        TestnetShadowRunnerControlAction::Start | TestnetShadowRunnerControlAction::Stop
+    ) && authenticated_actor.role != UserRole::Owner
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "forbidden",
+                message: "Only OWNER may start or stop the shadow runner.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let shadow_state = shadow_runtime_state(&state);
+    let state_actor = state_actor_from_authenticated(authenticated_actor);
+    let correlation_id = payload
+        .correlation_id
+        .take()
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    match apply_testnet_shadow_runner_control_action(
+        &shadow_state,
+        Some(&state_actor),
+        payload.action,
+        correlation_id,
+    )
+    .await
+    {
+        Ok((runner_state, tick)) => {
+            let _ = insert_audit_log(
+                &state.db_pool,
+                correlation_id,
+                &state_actor,
+                "exchange.testnet.shadow_runner.control",
+                "testnet_shadow_runner_state",
+                &json!({
+                    "action": payload.action.as_str(),
+                    "state": runner_state,
+                    "tick": tick,
+                }),
+            )
+            .await;
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "exchange.testnet.shadow_runner.controlled",
+                    correlation_id,
+                    state.config.app_name.clone(),
+                    json!({
+                        "action": payload.action.as_str(),
+                        "state": runner_state,
+                        "tick": tick,
+                        "actor_id": authenticated_actor.user_id,
+                    }),
+                ),
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(TestnetShadowRunnerControlResponse {
+                    state: runner_state,
+                    tick,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "failed_to_control_testnet_shadow_runner",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
     }
 }
 

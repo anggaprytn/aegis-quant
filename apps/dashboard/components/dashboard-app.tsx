@@ -25,6 +25,7 @@ import type {
   StrategyStatusView,
   SystemEventRecord,
   TestnetShadowRunResult,
+  TestnetShadowRunnerConfig,
 } from "@/lib/types";
 import {
   cn,
@@ -111,6 +112,21 @@ function riskConfigFormFromView(config?: RiskConfig): RiskConfig {
     cooldown_seconds: config?.cooldown_seconds ?? 900,
     max_signal_age_ms: config?.max_signal_age_ms ?? 5000,
     stale_feed_threshold_seconds: config?.stale_feed_threshold_seconds ?? 10,
+  };
+}
+
+function shadowRunnerConfigFormFromView(
+  config?: TestnetShadowRunnerConfig,
+): Record<string, unknown> {
+  return {
+    enabled: config?.enabled ?? false,
+    interval_seconds: config?.interval_seconds ?? 60,
+    strategies: config?.strategies ?? ["momentum_v1"],
+    symbols: config?.symbols ?? ["BTCUSDT"],
+    timeframe: config?.timeframe ?? "1m",
+    max_runs_per_tick: config?.max_runs_per_tick ?? 1,
+    stale_feed_policy: config?.stale_feed_policy ?? "SKIP",
+    notes: config?.notes ?? "",
   };
 }
 
@@ -323,6 +339,8 @@ function AuthenticatedDashboard({
   const [testnetShadowStrategyId, setTestnetShadowStrategyId] = useState("momentum_v1");
   const [testnetShadowSymbol, setTestnetShadowSymbol] = useState("BTCUSDT");
   const [testnetShadowTimeframe, setTestnetShadowTimeframe] = useState("1m");
+  const [shadowRunnerConfigForm, setShadowRunnerConfigForm] =
+    useState<Record<string, unknown>>(shadowRunnerConfigFormFromView());
   const [selectedShadowRunId, setSelectedShadowRunId] = useState<string | null>(null);
   const [privateStreamListenKey, setPrivateStreamListenKey] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
@@ -411,6 +429,20 @@ function AuthenticatedDashboard({
     enabled:
       (user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER") &&
       Boolean(selectedShadowRunId),
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetShadowRunnerStatusQuery = useQuery({
+    queryKey: ["exchange-testnet-shadow-runner-status"],
+    queryFn: api.getExchangeTestnetShadowRunnerStatus,
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetShadowRunnerConfigQuery = useQuery({
+    queryKey: ["exchange-testnet-shadow-runner-config"],
+    queryFn: api.getExchangeTestnetShadowRunnerConfig,
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 10_000,
   });
   const exchangeTestnetLifecycleQuery = useQuery({
@@ -660,6 +692,14 @@ function AuthenticatedDashboard({
   }, [riskConfigQuery.data?.config]);
 
   useEffect(() => {
+    if (exchangeTestnetShadowRunnerConfigQuery.data?.config) {
+      setShadowRunnerConfigForm(
+        shadowRunnerConfigFormFromView(exchangeTestnetShadowRunnerConfigQuery.data.config),
+      );
+    }
+  }, [exchangeTestnetShadowRunnerConfigQuery.data?.config]);
+
+  useEffect(() => {
     if (!selectedOrderId && ordersQuery.data?.orders[0]) {
       setSelectedOrderId(ordersQuery.data.orders[0].order_id);
     }
@@ -709,6 +749,8 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-orders"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-runs"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-run"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-runner-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-runner-config"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-order-lifecycle"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-order-repairs"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-runs"] }),
@@ -931,6 +973,19 @@ function AuthenticatedDashboard({
       }),
     onSuccess: async (response) => {
       setSelectedShadowRunId(response.run.run_id);
+      await refreshOperationalData();
+    },
+  });
+  const exchangeTestnetShadowRunnerConfigUpdateMutation = useMutation({
+    mutationFn: () => api.updateExchangeTestnetShadowRunnerConfig(shadowRunnerConfigForm),
+    onSuccess: refreshOperationalData,
+  });
+  const exchangeTestnetShadowRunnerControlMutation = useMutation({
+    mutationFn: (action: string) => api.controlExchangeTestnetShadowRunner({ action }),
+    onSuccess: async (response) => {
+      if (response.tick?.correlation_id) {
+        setSelectedShadowRunId(null);
+      }
       await refreshOperationalData();
     },
   });
@@ -2382,6 +2437,168 @@ function AuthenticatedDashboard({
                 <InlineStatus error={getErrorMessage(exchangeTestnetStatusQuery.error)} />
               </Panel>
               <Panel title="Shadow Run">
+                <div className="mb-4 grid gap-3 md:grid-cols-4">
+                  <HeaderStat
+                    label="Runner"
+                    value={exchangeTestnetShadowRunnerStatusQuery.data?.state.status ?? "STOPPED"}
+                    tone={
+                      exchangeTestnetShadowRunnerStatusQuery.data?.state.status === "ERROR"
+                        ? "danger"
+                        : exchangeTestnetShadowRunnerStatusQuery.data?.state.status === "RUNNING"
+                          ? "ok"
+                          : "neutral"
+                    }
+                  />
+                  <HeaderStat
+                    label="Enabled"
+                    value={
+                      exchangeTestnetShadowRunnerStatusQuery.data?.config.enabled ? "yes" : "no"
+                    }
+                    tone="neutral"
+                  />
+                  <HeaderStat
+                    label="Last Tick"
+                    value={formatRelativeAge(
+                      exchangeTestnetShadowRunnerStatusQuery.data?.state.last_tick_at,
+                    )}
+                    tone="neutral"
+                  />
+                  <HeaderStat
+                    label="Runs"
+                    value={String(
+                      exchangeTestnetShadowRunnerStatusQuery.data?.state.total_runs ?? 0,
+                    )}
+                    tone="neutral"
+                  />
+                </div>
+                <div className="mb-4 grid gap-3 md:grid-cols-4">
+                  <Field
+                    label="Interval Seconds"
+                    value={String(shadowRunnerConfigForm.interval_seconds ?? 60)}
+                    onChange={(value) =>
+                      setShadowRunnerConfigForm((current) => ({
+                        ...current,
+                        interval_seconds: Number(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Strategies"
+                    value={String((shadowRunnerConfigForm.strategies as string[] | undefined)?.join(",") ?? "")}
+                    onChange={(value) =>
+                      setShadowRunnerConfigForm((current) => ({
+                        ...current,
+                        strategies: value.split(",").map((item) => item.trim()).filter(Boolean),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Symbols"
+                    value={String((shadowRunnerConfigForm.symbols as string[] | undefined)?.join(",") ?? "")}
+                    onChange={(value) =>
+                      setShadowRunnerConfigForm((current) => ({
+                        ...current,
+                        symbols: value.split(",").map((item) => item.trim()).filter(Boolean),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Timeframe"
+                    value={String(shadowRunnerConfigForm.timeframe ?? "1m")}
+                    onChange={(value) =>
+                      setShadowRunnerConfigForm((current) => ({ ...current, timeframe: value }))
+                    }
+                  />
+                  <Field
+                    label="Max Runs / Tick"
+                    value={String(shadowRunnerConfigForm.max_runs_per_tick ?? 1)}
+                    onChange={(value) =>
+                      setShadowRunnerConfigForm((current) => ({
+                        ...current,
+                        max_runs_per_tick: Number(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Stale Feed Policy"
+                    value={String(shadowRunnerConfigForm.stale_feed_policy ?? "SKIP")}
+                    onChange={(value) =>
+                      setShadowRunnerConfigForm((current) => ({
+                        ...current,
+                        stale_feed_policy: value.toUpperCase(),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Notes"
+                    value={String(shadowRunnerConfigForm.notes ?? "")}
+                    onChange={(value) =>
+                      setShadowRunnerConfigForm((current) => ({ ...current, notes: value }))
+                    }
+                  />
+                  <label className="flex items-center gap-2 rounded-xl border border-border bg-surface/50 px-3 py-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(shadowRunnerConfigForm.enabled)}
+                      onChange={(event) =>
+                        setShadowRunnerConfigForm((current) => ({
+                          ...current,
+                          enabled: event.target.checked,
+                        }))
+                      }
+                    />
+                    Enabled
+                  </label>
+                </div>
+                <div className="mb-4 flex flex-wrap gap-2">
+                  <button
+                    className="rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 py-2 text-sm"
+                    onClick={() => exchangeTestnetShadowRunnerConfigUpdateMutation.mutate()}
+                    disabled={
+                      exchangeTestnetShadowRunnerConfigUpdateMutation.isPending ||
+                      user.role !== "OWNER"
+                    }
+                  >
+                    {exchangeTestnetShadowRunnerConfigUpdateMutation.isPending
+                      ? "Saving..."
+                      : "Save Runner Config"}
+                  </button>
+                  {[
+                    ["RUN_ONCE", "Run Once"],
+                    ["PAUSE", "Pause"],
+                    ["RESUME", "Resume"],
+                    ["START", "Start"],
+                    ["STOP", "Stop"],
+                  ].map(([action, label]) => (
+                    <button
+                      key={action}
+                      className="rounded-xl border border-border bg-surface/60 px-4 py-2 text-sm"
+                      onClick={() => exchangeTestnetShadowRunnerControlMutation.mutate(action)}
+                      disabled={
+                        exchangeTestnetShadowRunnerControlMutation.isPending ||
+                        (["START", "STOP"].includes(action)
+                          ? user.role !== "OWNER"
+                          : !(user.role === "OWNER" || user.role === "OPERATOR"))
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <InlineStatus
+                  error={
+                    getErrorMessage(exchangeTestnetShadowRunnerStatusQuery.error) ??
+                    getErrorMessage(exchangeTestnetShadowRunnerConfigUpdateMutation.error) ??
+                    getErrorMessage(exchangeTestnetShadowRunnerControlMutation.error)
+                  }
+                  success={
+                    exchangeTestnetShadowRunnerControlMutation.data?.tick
+                      ? `${exchangeTestnetShadowRunnerControlMutation.data.tick.status} ${exchangeTestnetShadowRunnerControlMutation.data.tick.correlation_id}`
+                      : exchangeTestnetShadowRunnerConfigUpdateMutation.data
+                        ? "Shadow runner config updated"
+                        : undefined
+                  }
+                />
                 <div className="grid gap-3 md:grid-cols-4">
                   <Field
                     label="Strategy"

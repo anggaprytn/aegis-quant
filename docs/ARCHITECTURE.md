@@ -195,6 +195,7 @@ Notes:
 - `POST /exchange/testnet/pipeline/preview` is an operator-visible dry run only: it requires an existing approved `risk_decision_id`, blocks on the persistent kill switch, requires fresh local price context from stored tick/candle data, and must not create `exchange_testnet_orders` or lifecycle rows.
 - `POST /exchange/testnet/pipeline/submit` is owner-only: it revalidates the preview boundary, requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`, persists only isolated testnet-order state, and must never touch paper or backtest tables.
 - `POST /exchange/testnet/shadow/run` is operator-visible shadow execution only: it runs strategy -> signal -> risk -> local-price resolution -> would-submit intent, persists only `testnet_shadow_runs`, and must never submit to Binance or create isolated lifecycle rows.
+- `GET/POST /exchange/testnet/shadow-runner/*` manages a persistent no-submit scheduler: config/state live in singleton Postgres tables, `RUN_ONCE` reuses the same shadow path, scheduled ticks never submit, and only `testnet_shadow_runs` plus runner config/state are mutated.
 - Private testnet orders do not mutate `orders`, `paper_positions`, `paper_fills`, or paper PnL tables.
 - The adapter now also manages Spot Testnet listen-key lifecycle and testnet-only user-data stream URL construction.
 - Reconciliation runs against isolated `exchange_testnet_orders`, persists `exchange_reconciliation_runs` plus `exchange_reconciliation_mismatches`, and updates local testnet status only through safe exchange-to-local mappings.
@@ -238,6 +239,25 @@ closed candles
 -> would-submit testnet intent
 -> persisted testnet_shadow_runs row
 ```
+
+Testnet shadow runner flow:
+
+```txt
+persisted testnet_shadow_runner_config + state
+-> testnet-shadow-runner daemon loop or manual RUN_ONCE control
+-> bounded strategy x symbol batch
+-> shared POST /exchange/testnet/shadow/run execution path
+-> persisted testnet_shadow_runs rows
+-> updated testnet_shadow_runner_state
+-> system_events + metrics
+```
+
+Rules:
+
+- Scheduled ticks no-op when config is disabled or persisted status is `STOPPED` or `PAUSED`.
+- Manual `RUN_ONCE` is allowed even when the scheduler is disabled or stopped; it still remains strictly no-submit.
+- Kill switch handling is per shadow run: the runner persists `SKIPPED_KILL_SWITCH` decisions rather than silently dropping configured pairs.
+- Per-pair failures are recorded into runner state and system events without creating exchange testnet orders or lifecycle rows.
 
 ## Frontend cockpit overview
 

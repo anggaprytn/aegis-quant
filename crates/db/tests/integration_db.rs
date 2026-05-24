@@ -7,7 +7,8 @@ use aegis_core::{
     ExchangeReconciliationSummary, MarketDataSource, OrderIntent, ReplayRunStatus,
     RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
     RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId, StrategySignal,
-    Symbol, TestnetExecutionState, TestnetExecutionTransitionSource,
+    Symbol, TestnetExecutionState, TestnetExecutionTransitionSource, TestnetShadowRunnerConfig,
+    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
 use db::{
@@ -22,12 +23,15 @@ use db::{
     insert_exchange_testnet_order, insert_risk_decision, insert_signal_deduped,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
-    set_kill_switch_state, test_support::TestDatabase, update_backtest_run_completed,
+    set_kill_switch_state, test_support::TestDatabase, testnet_shadow_runner_config_from_record,
+    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
     update_exchange_testnet_order_status, upsert_candle, upsert_candles_batch,
-    upsert_exchange_private_stream_state, CreateOrderError, ExchangePrivateStreamEventRecord,
+    upsert_exchange_private_stream_state, upsert_testnet_shadow_runner_config,
+    upsert_testnet_shadow_runner_state, CreateOrderError, ExchangePrivateStreamEventRecord,
     ExchangePrivateStreamStateRecord, ExchangeReconciliationMismatchRecord,
     ExchangeReconciliationRunRecord, ExchangeTestnetOrderLifecycleEventRecord,
-    ExchangeTestnetOrderRecord, StateActor,
+    ExchangeTestnetOrderRecord, StateActor, TESTNET_SHADOW_RUNNER_CONFIG_ID,
+    TESTNET_SHADOW_RUNNER_STATE_ID,
 };
 use exchange::{
     apply_testnet_transition, local_testnet_order_status_from_private_execution_report,
@@ -1414,4 +1418,66 @@ async fn lifecycle_event_listing_is_scoped_to_client_order_id_and_chronological(
     assert_eq!(target_events[1].created_at, lifecycle_time(41));
     assert_eq!(target_events[0].next_state, "EXCHANGE_ACKED");
     assert_eq!(target_events[1].next_state, "PARTIALLY_FILLED");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn testnet_shadow_runner_config_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let now = fixed_time();
+    let record = upsert_testnet_shadow_runner_config(
+        &test_db.pool,
+        &TestnetShadowRunnerConfig {
+            id: TESTNET_SHADOW_RUNNER_CONFIG_ID,
+            enabled: true,
+            interval_seconds: 60,
+            strategies: vec!["momentum_v1".to_string()],
+            symbols: vec!["BTCUSDT".to_string()],
+            timeframe: "1m".to_string(),
+            max_runs_per_tick: 2,
+            stale_feed_policy: TestnetShadowRunnerStaleFeedPolicy::Skip,
+            notes: Some("db test".to_string()),
+            updated_by: None,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("runner config should persist");
+
+    let mapped =
+        testnet_shadow_runner_config_from_record(&record).expect("runner config should map");
+    assert!(mapped.enabled);
+    assert_eq!(mapped.max_runs_per_tick, 2);
+    assert_eq!(mapped.symbols, vec!["BTCUSDT".to_string()]);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn testnet_shadow_runner_state_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let now = fixed_time();
+    let record = upsert_testnet_shadow_runner_state(
+        &test_db.pool,
+        &aegis_core::TestnetShadowRunnerState {
+            id: TESTNET_SHADOW_RUNNER_STATE_ID,
+            status: TestnetShadowRunnerStatus::Paused,
+            last_tick_at: Some(now),
+            last_success_at: Some(now),
+            last_error: Some("none".to_string()),
+            total_ticks: 3,
+            total_runs: 5,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("runner state should persist");
+
+    let mapped = testnet_shadow_runner_state_from_record(&record).expect("runner state should map");
+    assert_eq!(mapped.status, TestnetShadowRunnerStatus::Paused);
+    assert_eq!(mapped.total_ticks, 3);
+    assert_eq!(mapped.total_runs, 5);
 }

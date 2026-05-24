@@ -51,6 +51,10 @@ pub struct Telemetry {
     exchange_testnet_errors_total: IntCounterVec,
     exchange_testnet_pipeline_runs_total: IntCounterVec,
     exchange_testnet_shadow_runs_total: IntCounterVec,
+    exchange_testnet_shadow_runner_ticks_total: IntCounterVec,
+    exchange_testnet_shadow_runner_runs_total: IntCounterVec,
+    exchange_testnet_shadow_runner_status: IntGaugeVec,
+    exchange_testnet_shadow_runner_last_tick_age_seconds: Gauge,
     exchange_testnet_shadow_would_submit_total: IntCounterVec,
     exchange_testnet_shadow_rejections_total: IntCounterVec,
     exchange_testnet_lifecycle_transitions_total: IntCounterVec,
@@ -322,6 +326,33 @@ impl Telemetry {
             registry
         )
         .expect("exchange_testnet_shadow_runs_total should register");
+        let exchange_testnet_shadow_runner_ticks_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_shadow_runner_ticks_total",
+            "Exchange testnet shadow runner ticks by status.",
+            &["status"],
+            registry
+        )
+        .expect("exchange_testnet_shadow_runner_ticks_total should register");
+        let exchange_testnet_shadow_runner_runs_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_shadow_runner_runs_total",
+            "Exchange testnet shadow runner persisted runs by decision.",
+            &["decision"],
+            registry
+        )
+        .expect("exchange_testnet_shadow_runner_runs_total should register");
+        let exchange_testnet_shadow_runner_status = register_int_gauge_vec_with_registry!(
+            "exchange_testnet_shadow_runner_status",
+            "Current testnet shadow runner status.",
+            &["status"],
+            registry
+        )
+        .expect("exchange_testnet_shadow_runner_status should register");
+        let exchange_testnet_shadow_runner_last_tick_age_seconds = register_gauge_with_registry!(
+            "exchange_testnet_shadow_runner_last_tick_age_seconds",
+            "Age in seconds since the latest testnet shadow runner tick.",
+            registry
+        )
+        .expect("exchange_testnet_shadow_runner_last_tick_age_seconds should register");
         let exchange_testnet_shadow_would_submit_total = register_int_counter_vec_with_registry!(
             "exchange_testnet_shadow_would_submit_total",
             "Exchange testnet shadow WOULD_SUBMIT counts by strategy and symbol.",
@@ -473,6 +504,10 @@ impl Telemetry {
             exchange_testnet_errors_total,
             exchange_testnet_pipeline_runs_total,
             exchange_testnet_shadow_runs_total,
+            exchange_testnet_shadow_runner_ticks_total,
+            exchange_testnet_shadow_runner_runs_total,
+            exchange_testnet_shadow_runner_status,
+            exchange_testnet_shadow_runner_last_tick_age_seconds,
             exchange_testnet_shadow_would_submit_total,
             exchange_testnet_shadow_rejections_total,
             exchange_testnet_lifecycle_transitions_total,
@@ -740,6 +775,32 @@ impl Telemetry {
         self.exchange_testnet_shadow_runs_total
             .with_label_values(&[strategy_id, symbol, decision])
             .inc();
+    }
+
+    pub fn inc_exchange_testnet_shadow_runner_tick(&self, status: &str) {
+        self.exchange_testnet_shadow_runner_ticks_total
+            .with_label_values(&[status])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_shadow_runner_run(&self, decision: &str) {
+        self.exchange_testnet_shadow_runner_runs_total
+            .with_label_values(&[decision])
+            .inc();
+    }
+
+    pub fn set_exchange_testnet_shadow_runner_status(&self, status: &str) {
+        for candidate in ["STOPPED", "RUNNING", "PAUSED", "ERROR"] {
+            let value = if candidate == status { 1 } else { 0 };
+            self.exchange_testnet_shadow_runner_status
+                .with_label_values(&[candidate])
+                .set(value);
+        }
+    }
+
+    pub fn set_exchange_testnet_shadow_runner_last_tick_age_seconds(&self, age_seconds: f64) {
+        self.exchange_testnet_shadow_runner_last_tick_age_seconds
+            .set(age_seconds);
     }
 
     pub fn inc_exchange_testnet_shadow_would_submit(&self, strategy_id: &str, symbol: &str) {

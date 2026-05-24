@@ -202,6 +202,7 @@ Guardrails:
 - Testnet submission is isolated from paper accounting and paper orders
 - Testnet pipeline preview is operator-visible only and never submits an exchange order or persists `exchange_testnet_orders`
 - Testnet shadow mode is operator-triggered only, persists isolated `testnet_shadow_runs`, and records would-submit intents without submitting or creating `exchange_testnet_orders`
+- Testnet shadow runner is a persistent no-submit scheduler over the same shadow path, persists only runner config/state plus `testnet_shadow_runs`, and never creates exchange order or lifecycle rows
 - Testnet pipeline submit is owner-only, requires an existing approved `risk_decision_id`, and requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`
 - Submit/cancel require `OWNER`, typed confirmation `TESTNET ORDER`, an inactive kill switch, and a preapproved `risk_decision_id`
 - Reconciliation is testnet-only, persists runs plus mismatches, and never mutates paper/backtest/live tables
@@ -234,6 +235,21 @@ cargo run -p cli -- exchange testnet shadow-run \
   --timeframe 1m
 cargo run -p cli -- exchange testnet shadow-runs --limit 50
 cargo run -p cli -- exchange testnet shadow-get <run_id>
+cargo run -p cli -- exchange testnet shadow-runner status
+cargo run -p cli -- exchange testnet shadow-runner config
+cargo run -p cli -- exchange testnet shadow-runner config-update \
+  --enabled true \
+  --interval-seconds 60 \
+  --strategies momentum_v1,volatility_breakout_v1 \
+  --symbols BTCUSDT,ETHUSDT \
+  --timeframe 1m \
+  --max-runs-per-tick 4 \
+  --stale-feed-policy SKIP
+cargo run -p cli -- exchange testnet shadow-runner run-once
+cargo run -p cli -- exchange testnet shadow-runner pause
+cargo run -p cli -- exchange testnet shadow-runner resume
+cargo run -p cli -- exchange testnet shadow-runner start
+cargo run -p cli -- exchange testnet shadow-runner stop
 cargo run -p cli -- exchange testnet order-submit \
   --symbol BTCUSDT \
   --side BUY \
@@ -293,6 +309,13 @@ Private stream notes:
 - Listen keys are hashed in Postgres; the API, CLI, logs, and dashboard use masked values only.
 - The dashboard Settings page now exposes a private-stream status card, recent private events, and operator lifecycle controls.
 - The dashboard Settings page now also exposes a testnet shadow-run form, recent shadow runs, and run-detail payload inspection.
+- The dashboard Settings page also exposes persistent testnet shadow-runner status, config, and start/pause/resume/run-once controls with role gating.
+
+To run the scheduler daemon directly:
+
+```bash
+cargo run -p api --bin testnet-shadow-runner
+```
 - Preview and submit both require an existing approved `risk_decision_id`, block on an active kill switch, and require fresh local market pricing from the stored tick/candle path.
 
 ## Auth MVP

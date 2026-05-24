@@ -71,6 +71,9 @@ import type {
   StrategyToggleResponse,
   SystemEventRecord,
   TestnetShadowRunResponse,
+  TestnetShadowRunnerConfigResponse,
+  TestnetShadowRunnerControlResponse,
+  TestnetShadowRunnerStatusResponse,
   TestnetShadowRunsResponse,
 } from "@/lib/types";
 
@@ -361,6 +364,20 @@ export const api = {
     request<TestnetShadowRunsResponse>("/exchange/testnet/shadow/runs", undefined, { limit }),
   getExchangeTestnetShadowRun: (runId: string) =>
     request<TestnetShadowRunResponse>(`/exchange/testnet/shadow/runs/${runId}`),
+  getExchangeTestnetShadowRunnerStatus: () =>
+    request<TestnetShadowRunnerStatusResponse>("/exchange/testnet/shadow-runner/status"),
+  getExchangeTestnetShadowRunnerConfig: () =>
+    request<TestnetShadowRunnerConfigResponse>("/exchange/testnet/shadow-runner/config"),
+  updateExchangeTestnetShadowRunnerConfig: (payload: Record<string, unknown>) =>
+    request<TestnetShadowRunnerConfigResponse>("/exchange/testnet/shadow-runner/config/update", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  controlExchangeTestnetShadowRunner: (payload: Record<string, unknown>) =>
+    request<TestnetShadowRunnerControlResponse>("/exchange/testnet/shadow-runner/control", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   reconcileExchangeTestnetOrders: (payload: ExchangeReconciliationRequest) =>
     request<ExchangeReconciliationResultResponse>("/exchange/testnet/reconcile", {
       method: "POST",

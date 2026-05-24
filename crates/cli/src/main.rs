@@ -1,4 +1,7 @@
-use aegis_core::PaperTradingPipelineRequest;
+use aegis_core::{
+    PaperTradingPipelineRequest, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerControlRequest,
+};
 use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
@@ -9,9 +12,10 @@ use cli::api::{
 };
 use cli::cli::{
     AuthCommands, BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands,
-    ExchangeTestnetCommands, ExchangeTestnetPrivateStreamCommands, MarketCommands, OrderCommands,
-    PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
-    StrategyConfigCommands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ExchangeTestnetCommands, ExchangeTestnetPrivateStreamCommands,
+    ExchangeTestnetShadowRunnerCommands, MarketCommands, OrderCommands, PaperCommands,
+    PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -531,6 +535,110 @@ async fn main() -> anyhow::Result<()> {
                         output::print_testnet_shadow_run(&response.run);
                     }
                 }
+                ExchangeTestnetCommands::ShadowRunner(command) => match command {
+                    ExchangeTestnetShadowRunnerCommands::Status => {
+                        let response = client.exchange_testnet_shadow_runner_status().await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_status(&response);
+                        }
+                    }
+                    ExchangeTestnetShadowRunnerCommands::Config => {
+                        let response = client.exchange_testnet_shadow_runner_config().await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_config(&response.config);
+                        }
+                    }
+                    ExchangeTestnetShadowRunnerCommands::ConfigUpdate(args) => {
+                        let payload = args.try_into()?;
+                        let response = client
+                            .exchange_testnet_shadow_runner_config_update(&payload)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_config(&response.config);
+                        }
+                    }
+                    ExchangeTestnetShadowRunnerCommands::RunOnce => {
+                        let response = client
+                            .exchange_testnet_shadow_runner_control(
+                                &TestnetShadowRunnerControlRequest {
+                                    action: TestnetShadowRunnerControlAction::RunOnce,
+                                    correlation_id: None,
+                                },
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_control(&response);
+                        }
+                    }
+                    ExchangeTestnetShadowRunnerCommands::Pause => {
+                        let response = client
+                            .exchange_testnet_shadow_runner_control(
+                                &TestnetShadowRunnerControlRequest {
+                                    action: TestnetShadowRunnerControlAction::Pause,
+                                    correlation_id: None,
+                                },
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_control(&response);
+                        }
+                    }
+                    ExchangeTestnetShadowRunnerCommands::Resume => {
+                        let response = client
+                            .exchange_testnet_shadow_runner_control(
+                                &TestnetShadowRunnerControlRequest {
+                                    action: TestnetShadowRunnerControlAction::Resume,
+                                    correlation_id: None,
+                                },
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_control(&response);
+                        }
+                    }
+                    ExchangeTestnetShadowRunnerCommands::Start => {
+                        let response = client
+                            .exchange_testnet_shadow_runner_control(
+                                &TestnetShadowRunnerControlRequest {
+                                    action: TestnetShadowRunnerControlAction::Start,
+                                    correlation_id: None,
+                                },
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_control(&response);
+                        }
+                    }
+                    ExchangeTestnetShadowRunnerCommands::Stop => {
+                        let response = client
+                            .exchange_testnet_shadow_runner_control(
+                                &TestnetShadowRunnerControlRequest {
+                                    action: TestnetShadowRunnerControlAction::Stop,
+                                    correlation_id: None,
+                                },
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_testnet_shadow_runner_control(&response);
+                        }
+                    }
+                },
                 ExchangeTestnetCommands::Balances => {
                     let response = client.exchange_testnet_balances().await?;
                     if cli.json {

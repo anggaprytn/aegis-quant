@@ -10,8 +10,9 @@ use aegis_core::{
     RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session, Side, SignalReason,
     StrategyConfig, StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal,
     Symbol, TestnetExecutionState, TestnetShadowDecision, TestnetShadowIntent,
-    TestnetShadowRejectionReason, TestnetShadowRunResult, TestnetShadowStatus, User, UserRole,
-    UserStatus,
+    TestnetShadowRejectionReason, TestnetShadowRunResult, TestnetShadowRunnerConfig,
+    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState, TestnetShadowRunnerStatus,
+    TestnetShadowStatus, User, UserRole, UserStatus,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -26,6 +27,10 @@ use uuid::Uuid;
 pub const MIGRATIONS_DIR: &str = "crates/db/migrations";
 const GLOBAL_SYSTEM_STATE_KEY: &str = "global";
 const GLOBAL_RISK_CONFIG_KEY: &str = "global";
+pub const TESTNET_SHADOW_RUNNER_CONFIG_ID: Uuid =
+    Uuid::from_u128(0x0180_0000_0000_0000_0000_0000_0000_0001);
+pub const TESTNET_SHADOW_RUNNER_STATE_ID: Uuid =
+    Uuid::from_u128(0x0180_0000_0000_0000_0000_0000_0000_0002);
 pub use sqlx::PgPool;
 pub mod test_support;
 
@@ -269,6 +274,33 @@ pub struct TestnetShadowRunRecord {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestnetShadowRunnerConfigRecord {
+    pub id: Uuid,
+    pub enabled: bool,
+    pub interval_seconds: i32,
+    pub strategies: Value,
+    pub symbols: Value,
+    pub timeframe: String,
+    pub max_runs_per_tick: i32,
+    pub stale_feed_policy: String,
+    pub notes: Option<String>,
+    pub updated_by: Option<Uuid>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestnetShadowRunnerStateRecord {
+    pub id: Uuid,
+    pub status: String,
+    pub last_tick_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub total_ticks: i64,
+    pub total_runs: i64,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2143,6 +2175,226 @@ pub async fn get_testnet_shadow_run_by_id(
     .await?;
 
     Ok(row.as_ref().map(map_testnet_shadow_run))
+}
+
+pub fn default_testnet_shadow_runner_config(now: DateTime<Utc>) -> TestnetShadowRunnerConfig {
+    TestnetShadowRunnerConfig {
+        id: TESTNET_SHADOW_RUNNER_CONFIG_ID,
+        enabled: false,
+        interval_seconds: 60,
+        strategies: vec!["momentum_v1".to_string()],
+        symbols: vec!["BTCUSDT".to_string()],
+        timeframe: "1m".to_string(),
+        max_runs_per_tick: 1,
+        stale_feed_policy: TestnetShadowRunnerStaleFeedPolicy::Skip,
+        notes: None,
+        updated_by: None,
+        updated_at: now,
+    }
+}
+
+pub fn default_testnet_shadow_runner_state(now: DateTime<Utc>) -> TestnetShadowRunnerState {
+    TestnetShadowRunnerState {
+        id: TESTNET_SHADOW_RUNNER_STATE_ID,
+        status: TestnetShadowRunnerStatus::Stopped,
+        last_tick_at: None,
+        last_success_at: None,
+        last_error: None,
+        total_ticks: 0,
+        total_runs: 0,
+        updated_at: now,
+    }
+}
+
+pub async fn upsert_testnet_shadow_runner_config(
+    pool: &PgPool,
+    config: &TestnetShadowRunnerConfig,
+) -> Result<TestnetShadowRunnerConfigRecord> {
+    let strategies = serde_json::to_value(&config.strategies)?;
+    let symbols = serde_json::to_value(&config.symbols)?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO testnet_shadow_runner_config (
+            id,
+            enabled,
+            interval_seconds,
+            strategies,
+            symbols,
+            timeframe,
+            max_runs_per_tick,
+            stale_feed_policy,
+            notes,
+            updated_by,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (id) DO UPDATE
+        SET
+            enabled = EXCLUDED.enabled,
+            interval_seconds = EXCLUDED.interval_seconds,
+            strategies = EXCLUDED.strategies,
+            symbols = EXCLUDED.symbols,
+            timeframe = EXCLUDED.timeframe,
+            max_runs_per_tick = EXCLUDED.max_runs_per_tick,
+            stale_feed_policy = EXCLUDED.stale_feed_policy,
+            notes = EXCLUDED.notes,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = EXCLUDED.updated_at
+        RETURNING
+            id,
+            enabled,
+            interval_seconds,
+            strategies,
+            symbols,
+            timeframe,
+            max_runs_per_tick,
+            stale_feed_policy,
+            notes,
+            updated_by,
+            updated_at
+        "#,
+    )
+    .bind(config.id)
+    .bind(config.enabled)
+    .bind(config.interval_seconds)
+    .bind(strategies)
+    .bind(symbols)
+    .bind(&config.timeframe)
+    .bind(config.max_runs_per_tick)
+    .bind(config.stale_feed_policy.as_str())
+    .bind(&config.notes)
+    .bind(config.updated_by)
+    .bind(config.updated_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_testnet_shadow_runner_config(&row))
+}
+
+pub async fn get_testnet_shadow_runner_config(
+    pool: &PgPool,
+) -> Result<Option<TestnetShadowRunnerConfigRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            enabled,
+            interval_seconds,
+            strategies,
+            symbols,
+            timeframe,
+            max_runs_per_tick,
+            stale_feed_policy,
+            notes,
+            updated_by,
+            updated_at
+        FROM testnet_shadow_runner_config
+        WHERE id = $1
+        "#,
+    )
+    .bind(TESTNET_SHADOW_RUNNER_CONFIG_ID)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_testnet_shadow_runner_config))
+}
+
+pub async fn ensure_testnet_shadow_runner_config(
+    pool: &PgPool,
+) -> Result<TestnetShadowRunnerConfigRecord> {
+    if let Some(record) = get_testnet_shadow_runner_config(pool).await? {
+        return Ok(record);
+    }
+
+    let config = default_testnet_shadow_runner_config(Utc::now());
+    upsert_testnet_shadow_runner_config(pool, &config).await
+}
+
+pub async fn upsert_testnet_shadow_runner_state(
+    pool: &PgPool,
+    state: &TestnetShadowRunnerState,
+) -> Result<TestnetShadowRunnerStateRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO testnet_shadow_runner_state (
+            id,
+            status,
+            last_tick_at,
+            last_success_at,
+            last_error,
+            total_ticks,
+            total_runs,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (id) DO UPDATE
+        SET
+            status = EXCLUDED.status,
+            last_tick_at = EXCLUDED.last_tick_at,
+            last_success_at = EXCLUDED.last_success_at,
+            last_error = EXCLUDED.last_error,
+            total_ticks = EXCLUDED.total_ticks,
+            total_runs = EXCLUDED.total_runs,
+            updated_at = EXCLUDED.updated_at
+        RETURNING
+            id,
+            status,
+            last_tick_at,
+            last_success_at,
+            last_error,
+            total_ticks,
+            total_runs,
+            updated_at
+        "#,
+    )
+    .bind(state.id)
+    .bind(state.status.as_str())
+    .bind(state.last_tick_at)
+    .bind(state.last_success_at)
+    .bind(&state.last_error)
+    .bind(state.total_ticks)
+    .bind(state.total_runs)
+    .bind(state.updated_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_testnet_shadow_runner_state(&row))
+}
+
+pub async fn get_testnet_shadow_runner_state(
+    pool: &PgPool,
+) -> Result<Option<TestnetShadowRunnerStateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            status,
+            last_tick_at,
+            last_success_at,
+            last_error,
+            total_ticks,
+            total_runs,
+            updated_at
+        FROM testnet_shadow_runner_state
+        WHERE id = $1
+        "#,
+    )
+    .bind(TESTNET_SHADOW_RUNNER_STATE_ID)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_testnet_shadow_runner_state))
+}
+
+pub async fn ensure_testnet_shadow_runner_state(
+    pool: &PgPool,
+) -> Result<TestnetShadowRunnerStateRecord> {
+    if let Some(record) = get_testnet_shadow_runner_state(pool).await? {
+        return Ok(record);
+    }
+
+    let state = default_testnet_shadow_runner_state(Utc::now());
+    upsert_testnet_shadow_runner_state(pool, &state).await
 }
 
 pub async fn list_exchange_testnet_orders_for_reconciliation(
@@ -6577,6 +6829,37 @@ fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
     }
 }
 
+fn map_testnet_shadow_runner_config(
+    row: &sqlx::postgres::PgRow,
+) -> TestnetShadowRunnerConfigRecord {
+    TestnetShadowRunnerConfigRecord {
+        id: row.get("id"),
+        enabled: row.get("enabled"),
+        interval_seconds: row.get("interval_seconds"),
+        strategies: row.get("strategies"),
+        symbols: row.get("symbols"),
+        timeframe: row.get("timeframe"),
+        max_runs_per_tick: row.get("max_runs_per_tick"),
+        stale_feed_policy: row.get("stale_feed_policy"),
+        notes: row.get("notes"),
+        updated_by: row.get("updated_by"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_testnet_shadow_runner_state(row: &sqlx::postgres::PgRow) -> TestnetShadowRunnerStateRecord {
+    TestnetShadowRunnerStateRecord {
+        id: row.get("id"),
+        status: row.get("status"),
+        last_tick_at: row.get("last_tick_at"),
+        last_success_at: row.get("last_success_at"),
+        last_error: row.get("last_error"),
+        total_ticks: row.get("total_ticks"),
+        total_runs: row.get("total_runs"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
 pub fn testnet_shadow_run_result_from_record(
     record: &TestnetShadowRunRecord,
 ) -> Result<TestnetShadowRunResult> {
@@ -6605,6 +6888,41 @@ pub fn testnet_shadow_run_result_from_record(
         status: record.status.parse::<TestnetShadowStatus>()?,
         created_at: record.created_at,
         correlation_id: record.correlation_id.unwrap_or(record.id),
+    })
+}
+
+pub fn testnet_shadow_runner_config_from_record(
+    record: &TestnetShadowRunnerConfigRecord,
+) -> Result<TestnetShadowRunnerConfig> {
+    Ok(TestnetShadowRunnerConfig {
+        id: record.id,
+        enabled: record.enabled,
+        interval_seconds: record.interval_seconds,
+        strategies: serde_json::from_value(record.strategies.clone())?,
+        symbols: serde_json::from_value(record.symbols.clone())?,
+        timeframe: record.timeframe.clone(),
+        max_runs_per_tick: record.max_runs_per_tick,
+        stale_feed_policy: record
+            .stale_feed_policy
+            .parse::<TestnetShadowRunnerStaleFeedPolicy>()?,
+        notes: record.notes.clone(),
+        updated_by: record.updated_by,
+        updated_at: record.updated_at,
+    })
+}
+
+pub fn testnet_shadow_runner_state_from_record(
+    record: &TestnetShadowRunnerStateRecord,
+) -> Result<TestnetShadowRunnerState> {
+    Ok(TestnetShadowRunnerState {
+        id: record.id,
+        status: record.status.parse::<TestnetShadowRunnerStatus>()?,
+        last_tick_at: record.last_tick_at,
+        last_success_at: record.last_success_at,
+        last_error: record.last_error.clone(),
+        total_ticks: record.total_ticks,
+        total_runs: record.total_runs,
+        updated_at: record.updated_at,
     })
 }
 

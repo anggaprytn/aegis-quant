@@ -25,6 +25,8 @@ use strategy_engine::build_default_strategy_configs;
 use uuid::Uuid;
 
 pub mod pipeline;
+pub mod testnet_shadow;
+pub mod testnet_shadow_runner;
 
 pub const DEFAULT_PAPER_ACCOUNT_NAME: &str = "Default Paper";
 pub const DEFAULT_PAPER_ACCOUNT_BASE_CURRENCY: &str = "USDT";

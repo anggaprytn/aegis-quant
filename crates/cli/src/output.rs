@@ -20,6 +20,7 @@ use crate::api::{
     RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
     StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDryRunResponse, StrategyListResponse, StrategyStatusResponse,
+    TestnetShadowRunnerControlResponse, TestnetShadowRunnerStatusResponse,
     TestnetShadowRunsResponse,
 };
 
@@ -325,6 +326,84 @@ pub fn print_testnet_shadow_runs(response: &TestnetShadowRunsResponse) {
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "-".to_string())
         );
+    }
+}
+
+pub fn print_testnet_shadow_runner_status(response: &TestnetShadowRunnerStatusResponse) {
+    println!(
+        "Status: {}  Enabled: {}  Interval: {}s  Tick total: {}  Run total: {}",
+        response.state.status.as_str(),
+        response.config.enabled,
+        response.config.interval_seconds,
+        response.state.total_ticks,
+        response.state.total_runs
+    );
+    println!(
+        "Last tick: {}  Last success: {}",
+        response
+            .state
+            .last_tick_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        response
+            .state
+            .last_success_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Strategies: {}  Symbols: {}  Timeframe: {}  Max runs/tick: {}",
+        response.config.strategies.join(","),
+        response.config.symbols.join(","),
+        response.config.timeframe,
+        response.config.max_runs_per_tick
+    );
+    println!(
+        "Stale feed policy: {}  Last error: {}",
+        response.config.stale_feed_policy.as_str(),
+        response.state.last_error.as_deref().unwrap_or("-")
+    );
+}
+
+pub fn print_testnet_shadow_runner_config(config: &aegis_core::TestnetShadowRunnerConfig) {
+    println!("Enabled: {}", config.enabled);
+    println!("Interval seconds: {}", config.interval_seconds);
+    println!("Strategies: {}", config.strategies.join(","));
+    println!("Symbols: {}", config.symbols.join(","));
+    println!("Timeframe: {}", config.timeframe);
+    println!("Max runs per tick: {}", config.max_runs_per_tick);
+    println!("Stale feed policy: {}", config.stale_feed_policy.as_str());
+    println!("Notes: {}", config.notes.as_deref().unwrap_or("-"));
+    println!(
+        "Updated by: {}  Updated at: {}",
+        config
+            .updated_by
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        config.updated_at
+    );
+}
+
+pub fn print_testnet_shadow_runner_control(response: &TestnetShadowRunnerControlResponse) {
+    println!("Status: {}", response.state.status.as_str());
+    println!("Total ticks: {}", response.state.total_ticks);
+    println!("Total runs: {}", response.state.total_runs);
+    println!(
+        "Last error: {}",
+        response.state.last_error.as_deref().unwrap_or("-")
+    );
+    if let Some(tick) = &response.tick {
+        println!(
+            "Tick: {} attempted={} completed={} failed={} correlation={}",
+            tick.status.as_str(),
+            tick.attempted_runs,
+            tick.completed_runs,
+            tick.failed_runs,
+            tick.correlation_id
+        );
+        if let Some(message) = &tick.message {
+            println!("Tick message: {}", message);
+        }
     }
 }
 

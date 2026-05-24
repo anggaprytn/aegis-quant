@@ -32,7 +32,7 @@
 - Completed: isolated testnet execution lifecycle bridge with deterministic transitions across submit ACK, private stream, reconciliation, and cancel flows
 - Completed: isolated testnet operator repair controls with typed confirmation, owner/operator role gates, repair history persistence, and API/CLI/dashboard surfaces
 - Completed: gated testnet pipeline preview/submit boundary with approved-risk gating, owner-confirmed submit, isolated persistence, and no paper/backtest mutation
-- Completed: testnet shadow mode runner with persisted would-submit decisions, API/CLI/dashboard inspection, isolated telemetry, and no exchange submission
+- Completed: testnet shadow mode runner with persistent scheduler config/state, daemon loop, manual run-once controls, API/CLI/dashboard inspection, isolated telemetry, and no exchange submission
 - Current focus: tighten reconciliation and operator visibility across paper/testnet boundaries before any live execution surface area
 
 ## Next implementation steps

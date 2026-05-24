@@ -7,6 +7,8 @@ use aegis_core::{
     RiskConfigValidationResult, RiskConfigVersion, StrategyConfigAuditEntry,
     StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
     StrategyDryRunRequest, StrategyDryRunResult, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -764,6 +766,44 @@ impl ApiClient {
             .await
     }
 
+    pub async fn exchange_testnet_shadow_runner_status(
+        &self,
+    ) -> Result<TestnetShadowRunnerStatusResponse, ApiClientError> {
+        self.get("/exchange/testnet/shadow-runner/status", &[])
+            .await
+    }
+
+    pub async fn exchange_testnet_shadow_runner_config(
+        &self,
+    ) -> Result<TestnetShadowRunnerConfigResponse, ApiClientError> {
+        self.get("/exchange/testnet/shadow-runner/config", &[])
+            .await
+    }
+
+    pub async fn exchange_testnet_shadow_runner_config_validate(
+        &self,
+        request: &TestnetShadowRunnerConfigInput,
+    ) -> Result<TestnetShadowRunnerConfigValidationResponse, ApiClientError> {
+        self.post("/exchange/testnet/shadow-runner/config/validate", request)
+            .await
+    }
+
+    pub async fn exchange_testnet_shadow_runner_config_update(
+        &self,
+        request: &TestnetShadowRunnerConfigInput,
+    ) -> Result<TestnetShadowRunnerConfigResponse, ApiClientError> {
+        self.post("/exchange/testnet/shadow-runner/config/update", request)
+            .await
+    }
+
+    pub async fn exchange_testnet_shadow_runner_control(
+        &self,
+        request: &TestnetShadowRunnerControlRequest,
+    ) -> Result<TestnetShadowRunnerControlResponse, ApiClientError> {
+        self.post("/exchange/testnet/shadow-runner/control", request)
+            .await
+    }
+
     pub async fn exchange_testnet_order_cancel(
         &self,
         client_order_id: &str,
@@ -1511,6 +1551,40 @@ pub struct TestnetShadowRunResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TestnetShadowRunsResponse {
     pub runs: Vec<TestnetShadowRunResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowRunnerStatusResponse {
+    pub config: TestnetShadowRunnerConfig,
+    pub state: TestnetShadowRunnerState,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowRunnerConfigResponse {
+    pub config: TestnetShadowRunnerConfig,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowRunnerConfigValidationResponse {
+    pub validation: Value,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowRunnerControlResponse {
+    pub state: TestnetShadowRunnerState,
+    pub tick: Option<TestnetShadowRunnerTickResult>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

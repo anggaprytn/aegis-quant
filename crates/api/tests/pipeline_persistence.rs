@@ -5,9 +5,17 @@ use aegis_core::{
     MarketTick, PaperCloseMode, PaperClosePositionRequest, PaperCloseStatus,
     PaperCloseValidationIssue, PaperPositionStatusFilter, PaperTradingPipelineRequest,
     PipelineDecision, PipelineStepStatus, StrategyConfig, StrategyId, StrategyMode, Symbol,
+    TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use api::{
-    close_paper_position, pipeline::run_paper_pipeline, AppConfig, AppState, StrategyRuntimeConfig,
+    close_paper_position,
+    pipeline::run_paper_pipeline,
+    testnet_shadow_runner::{
+        apply_testnet_shadow_runner_control_action, load_testnet_shadow_runner_snapshot,
+        persist_testnet_shadow_runner_config, run_shadow_runner_tick, RunnerTickMode,
+    },
+    AppConfig, AppState, StrategyRuntimeConfig,
 };
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use db::{
@@ -133,6 +141,28 @@ fn sample_market_tick(price: Decimal, received_at: chrono::DateTime<Utc>) -> Mar
         received_at,
         raw_payload: None,
     }
+}
+
+fn runner_config_input(enabled: bool) -> TestnetShadowRunnerConfigInput {
+    TestnetShadowRunnerConfigInput {
+        enabled,
+        interval_seconds: 60,
+        strategies: vec!["momentum_v1".to_string()],
+        symbols: vec!["BTCUSDT".to_string()],
+        timeframe: "1m".to_string(),
+        max_runs_per_tick: 1,
+        stale_feed_policy: TestnetShadowRunnerStaleFeedPolicy::Skip,
+        notes: Some("integration".to_string()),
+    }
+}
+
+async fn count_rows(pool: &db::PgPool, table: &str) -> i64 {
+    let query = format!("SELECT COUNT(*) AS count FROM {table}");
+    sqlx::query(&query)
+        .fetch_one(pool)
+        .await
+        .expect("count query should succeed")
+        .get::<i64, _>("count")
 }
 
 async fn seed_open_position(
@@ -815,4 +845,103 @@ async fn paper_position_filters_reflect_closed_positions() {
     assert!(all_positions
         .iter()
         .any(|position| position.id == open_position.id));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn shadow_runner_run_once_persists_shadow_runs_without_exchange_side_effects() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    seed_pipeline_happy_path(&test_db.pool).await;
+    insert_market_tick(
+        &test_db.pool,
+        &sample_market_tick(Decimal::new(103_500, 0), Utc::now()),
+    )
+    .await
+    .expect("market tick should persist");
+
+    let state = app_state(test_db.pool.clone());
+    persist_testnet_shadow_runner_config(&state, &runner_config_input(false), None)
+        .await
+        .expect("runner config should persist");
+
+    let before_orders = count_rows(&test_db.pool, "exchange_testnet_orders").await;
+    let before_lifecycle =
+        count_rows(&test_db.pool, "exchange_testnet_order_lifecycle_events").await;
+    let before_shadow_runs = count_rows(&test_db.pool, "testnet_shadow_runs").await;
+
+    let tick = run_shadow_runner_tick(
+        &state,
+        Some(&StateActor::system("integration-test")),
+        Some(Uuid::from_u128(0xd01)),
+        RunnerTickMode::ManualRunOnce,
+    )
+    .await
+    .expect("manual run once should succeed");
+
+    assert_eq!(tick.attempted_runs, 1);
+    assert!(
+        count_rows(&test_db.pool, "testnet_shadow_runs").await > before_shadow_runs,
+        "runner should persist at least one shadow run"
+    );
+    assert_eq!(
+        count_rows(&test_db.pool, "exchange_testnet_orders").await,
+        before_orders
+    );
+    assert_eq!(
+        count_rows(&test_db.pool, "exchange_testnet_order_lifecycle_events").await,
+        before_lifecycle
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn shadow_runner_config_and_state_persist_across_control_actions() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let state = app_state(test_db.pool.clone());
+    let actor = StateActor::system("integration-test");
+
+    let config = persist_testnet_shadow_runner_config(&state, &runner_config_input(true), None)
+        .await
+        .expect("runner config should persist");
+    assert!(config.enabled);
+
+    let (running_state, _) = apply_testnet_shadow_runner_control_action(
+        &state,
+        Some(&actor),
+        TestnetShadowRunnerControlAction::Start,
+        Uuid::from_u128(0xd11),
+    )
+    .await
+    .expect("start should succeed");
+    assert_eq!(running_state.status, TestnetShadowRunnerStatus::Running);
+
+    let (paused_state, _) = apply_testnet_shadow_runner_control_action(
+        &state,
+        Some(&actor),
+        TestnetShadowRunnerControlAction::Pause,
+        Uuid::from_u128(0xd12),
+    )
+    .await
+    .expect("pause should succeed");
+    assert_eq!(paused_state.status, TestnetShadowRunnerStatus::Paused);
+
+    let (resumed_state, _) = apply_testnet_shadow_runner_control_action(
+        &state,
+        Some(&actor),
+        TestnetShadowRunnerControlAction::Resume,
+        Uuid::from_u128(0xd13),
+    )
+    .await
+    .expect("resume should succeed");
+    assert_eq!(resumed_state.status, TestnetShadowRunnerStatus::Running);
+
+    let snapshot = load_testnet_shadow_runner_snapshot(&state)
+        .await
+        .expect("runner snapshot should load");
+    assert!(snapshot.config.enabled);
+    assert_eq!(snapshot.state.status, TestnetShadowRunnerStatus::Running);
 }
