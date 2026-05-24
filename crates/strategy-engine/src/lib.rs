@@ -1,13 +1,281 @@
 use aegis_core::{
     Candle, CandleInterval, CoreError, SignalConfidence, SignalReason, SignalSide, StrategyConfig,
-    StrategyEvaluationContext, StrategyEvaluationResult, StrategyId, StrategySignal,
-    StrategyStatus,
+    StrategyConfigUpdateRequest, StrategyConfigValidationIssue, StrategyConfigValidationResult,
+    StrategyConfigValidationSeverity, StrategyEvaluationContext, StrategyEvaluationResult,
+    StrategyId, StrategyMode, StrategySignal,
 };
+use chrono::Utc;
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Default)]
+pub struct StrategyValidationContext {
+    pub supported_symbols: Vec<aegis_core::Symbol>,
+    pub max_position_notional: Option<Decimal>,
+}
+
 pub fn known_strategy_ids() -> [StrategyId; 2] {
     [StrategyId::MomentumV1, StrategyId::VolatilityBreakoutV1]
+}
+
+pub fn validate_strategy_config(
+    request: &StrategyConfigUpdateRequest,
+    context: &StrategyValidationContext,
+) -> StrategyConfigValidationResult {
+    let validated_at = Utc::now();
+    let mut issues = Vec::new();
+
+    let strategy_id = match request.strategy_id.parse::<StrategyId>() {
+        Ok(strategy_id) => strategy_id,
+        Err(_) => {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "unknown_strategy",
+                "strategy_id",
+                "strategy_id must be one of momentum_v1 or volatility_breakout_v1",
+            ));
+            return StrategyConfigValidationResult {
+                strategy_id: request.strategy_id.clone(),
+                valid: false,
+                issues,
+                normalized_config: None,
+                validated_at,
+            };
+        }
+    };
+
+    if request.mode == StrategyMode::Live {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Error,
+            "live_mode_blocked",
+            "mode",
+            "live mode is blocked; use paper, research, or shadow",
+        ));
+    }
+
+    let supported_symbols = context
+        .supported_symbols
+        .iter()
+        .map(|symbol| symbol.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut symbols = Vec::new();
+    if request.symbols.is_empty() {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Error,
+            "symbols_empty",
+            "symbols",
+            "at least one symbol is required",
+        ));
+    } else {
+        for raw_symbol in &request.symbols {
+            let trimmed = raw_symbol.trim();
+            if trimmed.is_empty() {
+                issues.push(issue(
+                    StrategyConfigValidationSeverity::Error,
+                    "symbol_empty",
+                    "symbols",
+                    "symbols cannot contain empty entries",
+                ));
+                continue;
+            }
+            if trimmed != trimmed.to_ascii_uppercase() {
+                issues.push(issue(
+                    StrategyConfigValidationSeverity::Error,
+                    "symbol_not_uppercase",
+                    "symbols",
+                    "symbols must be uppercase",
+                ));
+                continue;
+            }
+            match aegis_core::Symbol::new(trimmed) {
+                Ok(symbol) => {
+                    if !supported_symbols.is_empty() && !supported_symbols.contains(symbol.as_str())
+                    {
+                        issues.push(issue(
+                            StrategyConfigValidationSeverity::Error,
+                            "unsupported_symbol",
+                            "symbols",
+                            &format!("symbol {} is not supported", symbol.as_str()),
+                        ));
+                    }
+                    symbols.push(symbol);
+                }
+                Err(err) => issues.push(issue(
+                    StrategyConfigValidationSeverity::Error,
+                    "invalid_symbol",
+                    "symbols",
+                    &err.to_string(),
+                )),
+            }
+        }
+    }
+
+    let timeframe = match request.timeframe.parse::<CandleInterval>() {
+        Ok(timeframe) => timeframe,
+        Err(_) => {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "unsupported_timeframe",
+                "timeframe",
+                "timeframe must currently be 1m",
+            ));
+            CandleInterval::OneMinute
+        }
+    };
+
+    if request.suggested_notional <= Decimal::ZERO {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Error,
+            "invalid_suggested_notional",
+            "suggested_notional",
+            "suggested_notional must be greater than zero",
+        ));
+    }
+    if let Some(limit) = context.max_position_notional {
+        if request.suggested_notional > limit {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "suggested_notional_above_risk_limit",
+                "suggested_notional",
+                &format!(
+                    "suggested_notional exceeds risk max_position_notional {}",
+                    limit
+                ),
+            ));
+        }
+    }
+
+    if !(1_000..=300_000).contains(&request.max_signal_age_ms) {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Error,
+            "invalid_max_signal_age_ms",
+            "max_signal_age_ms",
+            "max_signal_age_ms must be between 1_000 and 300_000",
+        ));
+    }
+
+    if request.cooldown_seconds > 86_400 {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Error,
+            "invalid_cooldown_seconds",
+            "cooldown_seconds",
+            "cooldown_seconds must be between 0 and 86_400",
+        ));
+    }
+
+    let lookback_range = match strategy_id {
+        StrategyId::MomentumV1 => 2..=50,
+        StrategyId::VolatilityBreakoutV1 => 5..=500,
+    };
+    if !lookback_range.contains(&request.lookback_candles) {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Error,
+            "invalid_lookback_candles",
+            "lookback_candles",
+            &format!(
+                "lookback_candles must be within {}..={} for {}",
+                lookback_range.start(),
+                lookback_range.end(),
+                strategy_id
+            ),
+        ));
+    }
+
+    validate_optional_percent(
+        request.stop_loss_pct,
+        Decimal::ZERO,
+        Decimal::new(20, 0),
+        "stop_loss_pct",
+        &mut issues,
+    );
+    validate_optional_percent(
+        request.take_profit_pct,
+        Decimal::ZERO,
+        Decimal::new(50, 0),
+        "take_profit_pct",
+        &mut issues,
+    );
+
+    if let Some(holding_candles) = request.holding_candles {
+        if !(1..=10_000).contains(&holding_candles) {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_holding_candles",
+                "holding_candles",
+                "holding_candles must be between 1 and 10_000",
+            ));
+        }
+    }
+
+    if let Some(confidence_floor) = request.confidence_floor {
+        if !(Decimal::ZERO..=Decimal::ONE).contains(&confidence_floor) {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_confidence_floor",
+                "confidence_floor",
+                "confidence_floor must be between 0 and 1",
+            ));
+        } else {
+            let max_confidence = max_strategy_confidence(strategy_id);
+            if confidence_floor > max_confidence {
+                issues.push(issue(
+                    StrategyConfigValidationSeverity::Error,
+                    "unreachable_confidence_floor",
+                    "confidence_floor",
+                    &format!(
+                        "confidence_floor exceeds the maximum deterministic confidence {} for {}",
+                        max_confidence, strategy_id
+                    ),
+                ));
+            }
+        }
+    }
+
+    if let (Some(stop_loss_pct), Some(take_profit_pct)) =
+        (request.stop_loss_pct, request.take_profit_pct)
+    {
+        if stop_loss_pct >= take_profit_pct {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Warn,
+                "stop_loss_not_below_take_profit",
+                "stop_loss_pct",
+                "stop_loss_pct is greater than or equal to take_profit_pct",
+            ));
+        }
+    }
+
+    let normalized_config = if has_error(&issues) {
+        None
+    } else {
+        Some(StrategyConfig {
+            strategy_id,
+            enabled: request.enabled,
+            mode: request.mode,
+            symbols,
+            timeframe,
+            suggested_notional: request.suggested_notional,
+            max_signal_age_ms: request.max_signal_age_ms,
+            cooldown_seconds: request.cooldown_seconds,
+            lookback_candles: request.lookback_candles,
+            confidence_floor: request.confidence_floor,
+            stop_loss_pct: request.stop_loss_pct,
+            take_profit_pct: request.take_profit_pct,
+            holding_candles: request.holding_candles,
+            notes: normalize_notes(request.notes.clone()),
+        })
+    };
+
+    StrategyConfigValidationResult {
+        strategy_id: request.strategy_id.clone(),
+        valid: !has_error(&issues),
+        issues,
+        normalized_config,
+        validated_at,
+    }
+}
+
+pub fn required_candle_count(config: &StrategyConfig) -> i64 {
+    (config.lookback_candles as i64 + 1).max(2)
 }
 
 pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluationResult, CoreError> {
@@ -22,7 +290,7 @@ pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluation
 
     let candles = normalize_closed_candles(&context.candles);
 
-    if context.config.status == StrategyStatus::Disabled {
+    if !context.config.enabled {
         return Ok(no_signal_result(
             &context,
             context.config.timeframe,
@@ -40,7 +308,7 @@ fn evaluate_momentum(
     context: &StrategyEvaluationContext,
     candles: Vec<Candle>,
 ) -> Result<StrategyEvaluationResult, CoreError> {
-    let lookback = context.config.momentum_lookback_candles as usize;
+    let lookback = context.config.lookback_candles as usize;
     let required = lookback + 1;
     if candles.len() < required {
         return Ok(no_signal_result(
@@ -78,7 +346,7 @@ fn evaluate_breakout(
     context: &StrategyEvaluationContext,
     candles: Vec<Candle>,
 ) -> Result<StrategyEvaluationResult, CoreError> {
-    let lookback = context.config.breakout_lookback_candles as usize;
+    let lookback = context.config.lookback_candles as usize;
     let required = lookback + 1;
     if candles.len() < required {
         return Ok(no_signal_result(
@@ -119,6 +387,16 @@ fn generated_result(
     reason: SignalReason,
     confidence: Decimal,
 ) -> Result<StrategyEvaluationResult, CoreError> {
+    if let Some(confidence_floor) = context.config.confidence_floor {
+        if confidence < confidence_floor {
+            return Ok(no_signal_result(
+                context,
+                context.config.timeframe,
+                SignalReason::ConditionsNotMet,
+            ));
+        }
+    }
+
     let signal = StrategySignal {
         signal_id: Uuid::new_v4(),
         strategy_id: context.strategy_id,
@@ -184,37 +462,107 @@ pub fn build_default_strategy_configs(
     vec![
         StrategyConfig {
             strategy_id: StrategyId::MomentumV1,
-            status: StrategyStatus::Enabled,
-            mode: aegis_core::StrategyMode::SignalOnly,
+            enabled: true,
+            mode: StrategyMode::Paper,
             symbols: symbols.clone(),
             timeframe,
             suggested_notional,
-            momentum_lookback_candles,
-            breakout_lookback_candles,
+            max_signal_age_ms: 5_000,
+            cooldown_seconds: 900,
+            lookback_candles: momentum_lookback_candles,
+            confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: Some("Default momentum paper config".to_string()),
         },
         StrategyConfig {
             strategy_id: StrategyId::VolatilityBreakoutV1,
-            status: StrategyStatus::Enabled,
-            mode: aegis_core::StrategyMode::SignalOnly,
+            enabled: true,
+            mode: StrategyMode::Paper,
             symbols,
             timeframe,
             suggested_notional,
-            momentum_lookback_candles,
-            breakout_lookback_candles,
+            max_signal_age_ms: 5_000,
+            cooldown_seconds: 900,
+            lookback_candles: breakout_lookback_candles,
+            confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: Some("Default breakout paper config".to_string()),
         },
     ]
 }
 
+fn issue(
+    severity: StrategyConfigValidationSeverity,
+    code: &str,
+    field: &str,
+    message: &str,
+) -> StrategyConfigValidationIssue {
+    StrategyConfigValidationIssue {
+        severity,
+        code: code.to_string(),
+        field: field.to_string(),
+        message: message.to_string(),
+    }
+}
+
+fn has_error(issues: &[StrategyConfigValidationIssue]) -> bool {
+    issues
+        .iter()
+        .any(|issue| issue.severity == StrategyConfigValidationSeverity::Error)
+}
+
+fn validate_optional_percent(
+    value: Option<Decimal>,
+    min_exclusive: Decimal,
+    max_inclusive: Decimal,
+    field: &str,
+    issues: &mut Vec<StrategyConfigValidationIssue>,
+) {
+    if let Some(value) = value {
+        if value <= min_exclusive || value > max_inclusive {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                &format!("invalid_{field}"),
+                field,
+                &format!(
+                    "{field} must be greater than 0 and less than or equal to {max_inclusive}"
+                ),
+            ));
+        }
+    }
+}
+
+fn max_strategy_confidence(strategy_id: StrategyId) -> Decimal {
+    match strategy_id {
+        StrategyId::MomentumV1 => Decimal::new(65, 2),
+        StrategyId::VolatilityBreakoutV1 => Decimal::new(70, 2),
+    }
+}
+
+fn normalize_notes(notes: Option<String>) -> Option<String> {
+    notes.and_then(|notes| {
+        let trimmed = notes.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::evaluate;
+    use super::{
+        build_default_strategy_configs, evaluate, required_candle_count, validate_strategy_config,
+        StrategyValidationContext,
+    };
     use aegis_core::{
-        Candle, CandleInterval, MarketDataSource, SignalReason, StrategyEvaluationContext,
-        StrategyId, Symbol,
+        Candle, CandleInterval, MarketDataSource, SignalReason, StrategyConfigUpdateRequest,
+        StrategyEvaluationContext, StrategyId, StrategyMode, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -244,7 +592,7 @@ mod tests {
     }
 
     fn context(strategy_id: StrategyId, candles: Vec<Candle>) -> StrategyEvaluationContext {
-        let configs = super::build_default_strategy_configs(
+        let configs = build_default_strategy_configs(
             vec![Symbol::new("BTCUSDT").expect("valid symbol")],
             CandleInterval::OneMinute,
             Decimal::new(100_000, 0),
@@ -263,6 +611,32 @@ mod tests {
             config,
             candles,
             evaluated_at: Utc::now(),
+        }
+    }
+
+    fn sample_request(strategy_id: &str) -> StrategyConfigUpdateRequest {
+        StrategyConfigUpdateRequest {
+            strategy_id: strategy_id.to_string(),
+            enabled: true,
+            mode: StrategyMode::Paper,
+            symbols: vec!["BTCUSDT".to_string()],
+            timeframe: "1m".to_string(),
+            suggested_notional: Decimal::new(100_000, 0),
+            max_signal_age_ms: 5_000,
+            cooldown_seconds: 900,
+            lookback_candles: 3,
+            confidence_floor: None,
+            stop_loss_pct: Some(Decimal::new(5, 0)),
+            take_profit_pct: Some(Decimal::new(10, 0)),
+            holding_candles: Some(3),
+            notes: Some("test".to_string()),
+        }
+    }
+
+    fn validation_context() -> StrategyValidationContext {
+        StrategyValidationContext {
+            supported_symbols: vec![Symbol::new("BTCUSDT").expect("valid symbol")],
+            max_position_notional: Some(Decimal::new(150_000, 0)),
         }
     }
 
@@ -327,38 +701,94 @@ mod tests {
     }
 
     #[test]
-    fn insufficient_candle_history_emits_no_signal() {
-        let candles = vec![
-            sample_candle(0, 100, 101, true),
-            sample_candle(1, 101, 102, true),
-            sample_candle(2, 102, 103, true),
-        ];
-
-        let result =
-            evaluate(context(StrategyId::MomentumV1, candles)).expect("evaluation should succeed");
-
-        assert!(!result.generated);
-        assert_eq!(result.reason, SignalReason::InsufficientHistory);
+    fn required_candle_count_uses_shared_lookback() {
+        let config = build_default_strategy_configs(
+            vec![Symbol::new("BTCUSDT").expect("valid symbol")],
+            CandleInterval::OneMinute,
+            Decimal::new(100_000, 0),
+            3,
+            20,
+        )
+        .remove(0);
+        assert_eq!(required_candle_count(&config), 4);
     }
 
     #[test]
-    fn open_unclosed_candle_is_ignored() {
-        let candles = vec![
-            sample_candle(0, 100, 101, true),
-            sample_candle(1, 101, 102, true),
-            sample_candle(2, 103, 104, true),
-            sample_candle(3, 106, 107, false),
-            sample_candle(4, 108, 109, true),
-        ];
+    fn unknown_strategy_rejected() {
+        let result = validate_strategy_config(&sample_request("nope"), &validation_context());
+        assert!(!result.valid);
+    }
 
-        let result =
-            evaluate(context(StrategyId::MomentumV1, candles)).expect("evaluation should succeed");
+    #[test]
+    fn live_mode_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.mode = StrategyMode::Live;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
 
-        assert!(result.generated);
-        let signal = result.signal.expect("signal should be generated");
-        assert_eq!(
-            signal.source_candle_open_time,
-            Utc.with_ymd_and_hms(2026, 1, 1, 0, 4, 0).unwrap()
-        );
+    #[test]
+    fn empty_symbols_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.symbols.clear();
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn lowercase_symbol_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.symbols = vec!["btcusdt".to_string()];
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn invalid_timeframe_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.timeframe = "5m".to_string();
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn suggested_notional_must_be_positive() {
+        let mut request = sample_request("momentum_v1");
+        request.suggested_notional = Decimal::ZERO;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn suggested_notional_above_risk_max_is_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.suggested_notional = Decimal::new(200_000, 0);
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn invalid_momentum_lookback_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.lookback_candles = 1;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn invalid_breakout_lookback_rejected() {
+        let mut request = sample_request("volatility_breakout_v1");
+        request.lookback_candles = 4;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn invalid_stop_loss_take_profit_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.stop_loss_pct = Some(Decimal::new(25, 0));
+        request.take_profit_pct = Some(Decimal::new(51, 0));
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
     }
 }

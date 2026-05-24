@@ -14,6 +14,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Replay/backtest must stay isolated from live and paper execution tables
 - Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
 - Paper accounting is simulated only and never submits exchange orders
+- Strategy config changes are audited, versioned, and emitted as system events; live mode remains blocked even in config validation/update paths
 - `/metrics` exposes operational state only, not secrets, but it should still be restricted at the network boundary in production
 
 ## TODO boundaries

@@ -4,7 +4,6 @@ use aegis_core::{
     PaperTradingPipelineRequest, PaperTradingPipelineResult, PipelineDecision,
     PipelineRejectionReason, PipelineStepStatus, RiskCheckContext, RiskEvaluationDecision, Side,
     SignalReason, SignalSide, StrategyEvaluationContext, StrategyRiskExecutionTrace,
-    StrategyStatus,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -16,7 +15,7 @@ use db::{
 use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
 use serde_json::json;
-use strategy_engine::evaluate as evaluate_strategy;
+use strategy_engine::{evaluate as evaluate_strategy, required_candle_count};
 use telemetry::telemetry;
 use uuid::Uuid;
 
@@ -42,7 +41,7 @@ pub async fn run_paper_pipeline(
     .await?;
 
     let config = ensure_strategy_config(state, strategy_id).await?;
-    if config.status == StrategyStatus::Disabled {
+    if !config.enabled {
         telemetry().inc_strategy_disabled(request.strategy_id.as_str());
         telemetry().inc_paper_pipeline_run(
             request.strategy_id.as_str(),
@@ -140,7 +139,7 @@ pub async fn run_paper_pipeline(
         return Ok(result);
     }
 
-    let required_candles = required_candle_count(strategy_id, &config);
+    let required_candles = required_candle_count(&config);
     let candles = get_recent_closed_candles(&state.db_pool, &symbol, timeframe, required_candles)
         .await
         .context("failed to query closed candles")?;
@@ -593,17 +592,6 @@ fn terminal_result(
         correlation_id,
         trace,
     }
-}
-
-fn required_candle_count(
-    strategy_id: aegis_core::StrategyId,
-    config: &aegis_core::StrategyConfig,
-) -> i64 {
-    match strategy_id {
-        aegis_core::StrategyId::MomentumV1 => config.momentum_lookback_candles as i64 + 1,
-        aegis_core::StrategyId::VolatilityBreakoutV1 => config.breakout_lookback_candles as i64 + 1,
-    }
-    .max(2)
 }
 
 async fn feed_stop_reason(

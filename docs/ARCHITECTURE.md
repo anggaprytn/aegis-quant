@@ -85,6 +85,8 @@ Notes:
 
 - Strategy evaluation reads stored candles only and ignores open candles.
 - `momentum_v1` and `volatility_breakout_v1` are deterministic library strategies with explicit config.
+- Strategy configs are validated before update, versioned in Postgres, and audited with the old config, new config, validation issues, actor placeholder, and correlation ID.
+- Dry-run evaluation loads recent closed candles and executes the strategy without mutating `signals`, `risk_decisions`, `orders`, paper accounting tables, or backtest tables.
 - Duplicate signals for the same strategy, symbol, timeframe, side, reason, and closed candle are deduped in Postgres.
 - Every signal passed into the pipeline reaches an explicit `APPROVED` or `REJECTED` risk decision in `risk_decisions`.
 - Risk rejection is machine-readable and emits `risk.approved` or `risk.rejected` system events.
@@ -130,6 +132,7 @@ stored closed candles
 Notes:
 
 - Replay reads only stored closed candles from Postgres for the requested symbol, timeframe, and time range.
+- Replay/backtest uses the persisted validated strategy config by default, with an optional validated per-run override isolated to the backtest request payload.
 - Strategy evaluation sees only candles available up to the replay point; no lookahead into future candles is allowed.
 - Entries execute at the next candle open with fixed deterministic slippage and fee assumptions.
 - Exits use deterministic TP/SL threshold checks or a fixed holding-candle fallback.

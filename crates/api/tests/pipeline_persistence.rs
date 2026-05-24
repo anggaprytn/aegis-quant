@@ -3,7 +3,7 @@ use std::{net::SocketAddr, time::Duration};
 use aegis_core::{
     Candle, CandleInterval, DataFreshnessStatus, FeedStatus, MarketDataSource, MarketMode,
     PaperTradingPipelineRequest, PipelineDecision, PipelineStepStatus, StrategyConfig, StrategyId,
-    StrategyMode, StrategyStatus, Symbol,
+    StrategyMode, Symbol,
 };
 use api::{pipeline::run_paper_pipeline, AppConfig, AppState, StrategyRuntimeConfig};
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
@@ -30,15 +30,19 @@ fn runtime_config() -> StrategyRuntimeConfig {
 fn strategy_config() -> StrategyConfig {
     StrategyConfig {
         strategy_id: StrategyId::MomentumV1,
-        status: StrategyStatus::Enabled,
-        mode: StrategyMode::SignalOnly,
+        enabled: true,
+        mode: StrategyMode::Paper,
         symbols: vec![Symbol::new("BTCUSDT").expect("valid symbol")],
         timeframe: CandleInterval::OneMinute,
         suggested_notional: Decimal::new(100_000, 0),
-        momentum_lookback_candles: 3,
-        breakout_lookback_candles: 20,
+        max_signal_age_ms: 5_000,
+        cooldown_seconds: 900,
+        lookback_candles: 3,
+        confidence_floor: None,
         stop_loss_pct: None,
         take_profit_pct: None,
+        holding_candles: Some(3),
+        notes: None,
     }
 }
 

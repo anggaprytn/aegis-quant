@@ -101,6 +101,7 @@ fn sample_backtest_request() -> BacktestRequest {
         slippage_bps: Decimal::new(5, 0),
         correlation_id: Some(Uuid::from_u128(0x901)),
         holding_candles: Some(3),
+        strategy_config_override: None,
     }
 }
 

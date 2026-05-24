@@ -12,7 +12,9 @@ use db::{
 };
 use rust_decimal::Decimal;
 use serde_json::json;
-use strategy_engine::evaluate as evaluate_strategy;
+use strategy_engine::{
+    evaluate as evaluate_strategy, validate_strategy_config, StrategyValidationContext,
+};
 use telemetry::telemetry;
 use uuid::Uuid;
 
@@ -181,8 +183,23 @@ impl ReplayEngine {
             .await?
             .map(|status| status.config)
             .ok_or_else(|| anyhow!("persisted strategy config not found"))?;
-        let strategy_config = strategy_config_from_record(&config_record)
-            .context("invalid persisted strategy config")?;
+        let strategy_config = if let Some(override_request) = &request.strategy_config_override {
+            let validation = validate_strategy_config(
+                override_request,
+                &StrategyValidationContext {
+                    supported_symbols: vec![symbol.clone()],
+                    max_position_notional: Some(
+                        aegis_core::RiskConfig::default().max_position_notional,
+                    ),
+                },
+            );
+            validation
+                .normalized_config
+                .ok_or_else(|| anyhow!("invalid strategy_config_override for backtest"))?
+        } else {
+            strategy_config_from_record(&config_record)
+                .context("invalid persisted strategy config")?
+        };
 
         let candles = get_closed_candles_range(
             &self.pool,
@@ -680,7 +697,7 @@ mod tests {
     use super::simulate_backtest;
     use aegis_core::{
         BacktestRequest, Candle, CandleInterval, MarketDataSource, StrategyConfig, StrategyId,
-        StrategyMode, StrategyStatus, Symbol,
+        StrategyMode, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -700,21 +717,26 @@ mod tests {
             slippage_bps: Decimal::ZERO,
             correlation_id: Some(Uuid::from_u128(0xabc)),
             holding_candles: Some(3),
+            strategy_config_override: None,
         }
     }
 
     fn sample_strategy_config() -> StrategyConfig {
         StrategyConfig {
             strategy_id: StrategyId::MomentumV1,
-            status: StrategyStatus::Enabled,
-            mode: StrategyMode::SignalOnly,
+            enabled: true,
+            mode: StrategyMode::Paper,
             symbols: vec![Symbol::new("BTCUSDT").unwrap()],
             timeframe: CandleInterval::OneMinute,
             suggested_notional: Decimal::new(100_000, 0),
-            momentum_lookback_candles: 3,
-            breakout_lookback_candles: 20,
+            max_signal_age_ms: 5_000,
+            cooldown_seconds: 900,
+            lookback_candles: 3,
+            confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: None,
         }
     }
 

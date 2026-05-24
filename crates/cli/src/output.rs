@@ -7,8 +7,9 @@ use crate::api::{
     CandleBackfillRunsResponse, FeedStatusResponse, HealthResponse, OrderRecord,
     PaperAccountResponse, PaperEquityResponse, PaperPnlResponse, PaperPositionRecord,
     PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse,
-    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyListResponse,
-    StrategyStatusResponse,
+    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
+    StrategyConfigValidationResponse, StrategyConfigVersionsResponse, StrategyDryRunResponse,
+    StrategyListResponse, StrategyStatusResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -125,13 +126,15 @@ pub fn print_pipeline_result(result: &PaperTradingPipelineResult) {
 pub fn print_strategy_list(response: &StrategyListResponse) {
     for strategy in &response.strategies {
         println!(
-            "{}  status={} mode={} timeframe={} symbols={} notional={}",
+            "{}  enabled={} mode={} timeframe={} symbols={} notional={} lookback={} version={}",
             strategy.strategy_id,
-            strategy.status,
+            strategy.enabled,
             strategy.mode,
             strategy.timeframe,
             strategy.symbols.join(","),
-            strategy.suggested_notional
+            strategy.suggested_notional,
+            strategy.lookback_candles,
+            strategy.config_version
         );
     }
 }
@@ -139,11 +142,15 @@ pub fn print_strategy_list(response: &StrategyListResponse) {
 pub fn print_strategy_status(response: &StrategyStatusResponse) {
     let strategy = &response.strategy;
     println!("Strategy ID: {}", strategy.strategy_id);
-    println!("Status: {}", strategy.status);
+    println!("Enabled: {}", strategy.enabled);
     println!("Mode: {}", strategy.mode);
     println!("Timeframe: {}", strategy.timeframe);
     println!("Symbols: {}", strategy.symbols.join(", "));
     println!("Suggested notional: {}", strategy.suggested_notional);
+    println!("Lookback candles: {}", strategy.lookback_candles);
+    println!("Max signal age ms: {}", strategy.max_signal_age_ms);
+    println!("Cooldown seconds: {}", strategy.cooldown_seconds);
+    println!("Config version: {}", strategy.config_version);
     println!(
         "Last evaluated at: {}",
         strategy
@@ -154,6 +161,72 @@ pub fn print_strategy_status(response: &StrategyStatusResponse) {
     println!(
         "Last signal ID: {}",
         display_option(strategy.last_signal_id)
+    );
+}
+
+pub fn print_strategy_config_validation(response: &StrategyConfigValidationResponse) {
+    println!("Strategy ID: {}", response.validation.strategy_id);
+    println!("Valid: {}", response.validation.valid);
+    for issue in &response.validation.issues {
+        println!(
+            "{}  {} {} {}",
+            issue.severity.as_str(),
+            issue.code,
+            issue.field,
+            issue.message
+        );
+    }
+}
+
+pub fn print_strategy_config_versions(response: &StrategyConfigVersionsResponse) {
+    for version in &response.versions {
+        println!(
+            "v{}  strategy={} mode={} enabled={} timeframe={} symbols={}",
+            version.version,
+            version.strategy_id,
+            version.config.mode.as_str(),
+            version.config.enabled,
+            version.config.timeframe.as_str(),
+            version
+                .config
+                .symbols
+                .iter()
+                .map(|symbol| symbol.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+}
+
+pub fn print_strategy_config_audit(response: &StrategyConfigAuditResponse) {
+    for entry in &response.audit {
+        println!(
+            "{}  strategy={} version={} issues={}",
+            entry.created_at.to_rfc3339(),
+            entry.strategy_id,
+            entry
+                .version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            entry.validation_issues.len()
+        );
+    }
+}
+
+pub fn print_strategy_dry_run(response: &StrategyDryRunResponse) {
+    let result = &response.result;
+    println!("Strategy ID: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Config valid: {}", result.config_valid);
+    println!("Would generate signal: {}", result.would_generate_signal);
+    println!("Reason: {}", result.reason);
+    println!(
+        "Confidence: {}",
+        result
+            .confidence
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
     );
 }
 

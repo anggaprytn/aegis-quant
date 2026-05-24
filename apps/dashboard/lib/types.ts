@@ -217,13 +217,20 @@ export type FeedStatusResponse = {
 
 export type StrategyStatusView = {
   strategy_id: string;
-  status: string;
+  enabled: boolean;
   mode: string;
   symbols: string[];
   timeframe: string;
   suggested_notional: string;
-  momentum_lookback_candles: number;
-  breakout_lookback_candles: number;
+  max_signal_age_ms: number;
+  cooldown_seconds: number;
+  lookback_candles: number;
+  confidence_floor: string | null;
+  stop_loss_pct: string | null;
+  take_profit_pct: string | null;
+  holding_candles: number | null;
+  notes: string | null;
+  config_version: number;
   last_evaluated_at: string | null;
   last_evaluation_reason: string | null;
   last_signal_id: string | null;
@@ -245,6 +252,101 @@ export type StrategyStatusResponse = {
 };
 
 export type StrategyToggleResponse = StrategyStatusResponse;
+
+export type StrategyConfigUpdateRequest = {
+  strategy_id: string;
+  enabled: boolean;
+  mode: string;
+  symbols: string[];
+  timeframe: string;
+  suggested_notional: string;
+  max_signal_age_ms: number;
+  cooldown_seconds: number;
+  lookback_candles: number;
+  confidence_floor?: string | null;
+  stop_loss_pct?: string | null;
+  take_profit_pct?: string | null;
+  holding_candles?: number | null;
+  notes?: string | null;
+};
+
+export type StrategyConfigValidationIssue = {
+  severity: "ERROR" | "WARN";
+  code: string;
+  field: string;
+  message: string;
+};
+
+export type StrategyConfigValidationResult = {
+  strategy_id: string;
+  valid: boolean;
+  issues: StrategyConfigValidationIssue[];
+  normalized_config: StrategyConfigUpdateRequest | null;
+  validated_at: string;
+};
+
+export type StrategyConfigValidationResponse = {
+  validation: StrategyConfigValidationResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyConfigVersion = {
+  strategy_id: string;
+  version: number;
+  config: StrategyConfigUpdateRequest;
+  actor_id: string | null;
+  correlation_id: string;
+  created_at: string;
+};
+
+export type StrategyConfigVersionsResponse = {
+  versions: StrategyConfigVersion[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyConfigAuditEntry = {
+  audit_id: string;
+  strategy_id: string;
+  version: number | null;
+  old_config: StrategyConfigUpdateRequest | null;
+  new_config: StrategyConfigUpdateRequest | null;
+  validation_issues: StrategyConfigValidationIssue[];
+  actor_id: string | null;
+  correlation_id: string;
+  created_at: string;
+};
+
+export type StrategyConfigAuditResponse = {
+  audit: StrategyConfigAuditEntry[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyDryRunResult = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  config_valid: boolean;
+  validation_issues: StrategyConfigValidationIssue[];
+  would_generate_signal: boolean;
+  reason: string;
+  source_candle_open_time: string | null;
+  confidence: string | null;
+  correlation_id: string;
+  evaluated_at: string;
+};
+
+export type StrategyDryRunResponse = {
+  result: StrategyDryRunResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
 
 export type EvaluateStrategyResponse = {
   strategy_id: string;

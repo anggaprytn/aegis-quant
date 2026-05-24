@@ -27,6 +27,9 @@ pub struct Telemetry {
     strategy_evaluations_total: IntCounterVec,
     strategy_signals_total: IntCounterVec,
     strategy_disabled_total: IntCounterVec,
+    strategy_config_validations_total: IntCounterVec,
+    strategy_config_updates_total: IntCounterVec,
+    strategy_dry_runs_total: IntCounterVec,
     risk_decisions_total: IntCounterVec,
     risk_rejections_total: IntCounterVec,
     kill_switch_active: IntGauge,
@@ -132,6 +135,27 @@ impl Telemetry {
             registry
         )
         .expect("strategy_disabled_total should register");
+        let strategy_config_validations_total = register_int_counter_vec_with_registry!(
+            "strategy_config_validations_total",
+            "Strategy config validations by result.",
+            &["strategy_id", "result"],
+            registry
+        )
+        .expect("strategy_config_validations_total should register");
+        let strategy_config_updates_total = register_int_counter_vec_with_registry!(
+            "strategy_config_updates_total",
+            "Strategy config updates by result.",
+            &["strategy_id", "result"],
+            registry
+        )
+        .expect("strategy_config_updates_total should register");
+        let strategy_dry_runs_total = register_int_counter_vec_with_registry!(
+            "strategy_dry_runs_total",
+            "Strategy dry-runs by result.",
+            &["strategy_id", "result"],
+            registry
+        )
+        .expect("strategy_dry_runs_total should register");
         let risk_decisions_total = register_int_counter_vec_with_registry!(
             "risk_decisions_total",
             "Persisted risk decisions by decision and primary reason.",
@@ -240,6 +264,9 @@ impl Telemetry {
             strategy_evaluations_total,
             strategy_signals_total,
             strategy_disabled_total,
+            strategy_config_validations_total,
+            strategy_config_updates_total,
+            strategy_dry_runs_total,
             risk_decisions_total,
             risk_rejections_total,
             kill_switch_active,
@@ -354,6 +381,24 @@ impl Telemetry {
     pub fn inc_strategy_disabled(&self, strategy_id: &str) {
         self.strategy_disabled_total
             .with_label_values(&[strategy_id])
+            .inc();
+    }
+
+    pub fn inc_strategy_config_validation(&self, strategy_id: &str, result: &str) {
+        self.strategy_config_validations_total
+            .with_label_values(&[strategy_id, result])
+            .inc();
+    }
+
+    pub fn inc_strategy_config_update(&self, strategy_id: &str, result: &str) {
+        self.strategy_config_updates_total
+            .with_label_values(&[strategy_id, result])
+            .inc();
+    }
+
+    pub fn inc_strategy_dry_run(&self, strategy_id: &str, result: &str) {
+        self.strategy_dry_runs_total
+            .with_label_values(&[strategy_id, result])
             .inc();
     }
 

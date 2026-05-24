@@ -23,6 +23,7 @@
 - Completed: local/operator CLI fallback over the existing HTTP API for status, kill switch control, paper pipeline runs, strategies, orders, events, risk decisions, and backtests
 - Completed: paper account, position, fill, journal, mark-to-market, and equity snapshot accounting for operational paper trading
 - Completed: Prometheus-compatible telemetry, `/metrics`, CLI metrics fetch, and dashboard telemetry inspection
+- Completed: strategy config validation, version history, audit logging, dry-run evaluation, and operator-facing config controls in API/CLI/dashboard
 - Current focus: tighten operator visibility, reconciliation, and truthful paper-state inspection before any live execution surface area
 
 ## Next implementation steps

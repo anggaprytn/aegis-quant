@@ -2,12 +2,13 @@ use aegis_core::PaperTradingPipelineRequest;
 use anyhow::Context;
 use clap::Parser;
 use cli::api::{
-    build_backtest_request, build_candle_backfill_request, build_pipeline_request, ApiClient,
-    RecentEventsQuery, RiskDecisionsQuery,
+    build_backtest_request, build_candle_backfill_request, build_pipeline_request,
+    build_strategy_config_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands, PaperCommands,
-    PipelineCommands, RiskCommands, StrategyCommands, RESUME_CONFIRMATION_TEXT,
+    PipelineCommands, RiskCommands, StrategyCommands, StrategyConfigCommands,
+    RESUME_CONFIRMATION_TEXT,
 };
 use cli::config::CliConfig;
 use cli::output;
@@ -87,6 +88,64 @@ async fn main() -> anyhow::Result<()> {
                     output::print_json(&response)?;
                 } else {
                     output::print_strategy_list(&response);
+                }
+            }
+            StrategyCommands::Config(command) => match command {
+                StrategyConfigCommands::Get { strategy_id } => {
+                    let response = client.strategy_config(&strategy_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_status(&response);
+                    }
+                }
+                StrategyConfigCommands::Validate(args) => {
+                    let request = build_strategy_config_request(&args)?;
+                    let response = client
+                        .validate_strategy_config(&args.strategy_id, &request)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_config_validation(&response);
+                    }
+                }
+                StrategyConfigCommands::Update(args) => {
+                    let request = build_strategy_config_request(&args)?;
+                    let response = client
+                        .update_strategy_config(&args.strategy_id, &request)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_status(&response);
+                    }
+                }
+                StrategyConfigCommands::Versions { strategy_id } => {
+                    let response = client.strategy_config_versions(&strategy_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_config_versions(&response);
+                    }
+                }
+                StrategyConfigCommands::Audit { strategy_id } => {
+                    let response = client.strategy_config_audit(&strategy_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_config_audit(&response);
+                    }
+                }
+            },
+            StrategyCommands::DryRun(args) => {
+                let response = client
+                    .strategy_dry_run(&args.strategy_id, args.symbol, args.timeframe)
+                    .await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_strategy_dry_run(&response);
                 }
             }
             StrategyCommands::Enable { strategy_id } => {

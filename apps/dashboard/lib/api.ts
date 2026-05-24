@@ -32,6 +32,11 @@ import type {
   RiskStatusResponse,
   StatusResponse,
   StrategyListResponse,
+  StrategyConfigAuditResponse,
+  StrategyConfigUpdateRequest,
+  StrategyConfigValidationResponse,
+  StrategyConfigVersionsResponse,
+  StrategyDryRunResponse,
   StrategyStatusResponse,
   StrategyToggleResponse,
   SystemEventRecord,
@@ -164,6 +169,30 @@ export const api = {
   getStrategyList: () => request<StrategyListResponse>("/strategy/list"),
   getStrategyStatus: (id: string) =>
     request<StrategyStatusResponse>(`/strategy/${id}/status`),
+  getStrategyConfig: (id: string) =>
+    request<StrategyStatusResponse>(`/strategy/${id}/config`),
+  validateStrategyConfig: (id: string, payload: StrategyConfigUpdateRequest) =>
+    request<StrategyConfigValidationResponse>(`/strategy/${id}/config/validate`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateStrategyConfig: (id: string, payload: StrategyConfigUpdateRequest) =>
+    request<StrategyStatusResponse>(`/strategy/${id}/config/update`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getStrategyConfigVersions: (id: string) =>
+    request<StrategyConfigVersionsResponse>(`/strategy/${id}/config/versions`),
+  getStrategyConfigAudit: (id: string) =>
+    request<StrategyConfigAuditResponse>(`/strategy/${id}/config/audit`),
+  dryRunStrategy: (
+    id: string,
+    payload: { symbol?: string; timeframe?: string; config_override?: StrategyConfigUpdateRequest },
+  ) =>
+    request<StrategyDryRunResponse>(`/strategy/${id}/dry-run`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   enableStrategy: (id: string) =>
     request<StrategyToggleResponse>(`/strategy/${id}/enable`, { method: "POST" }),
   disableStrategy: (id: string) =>

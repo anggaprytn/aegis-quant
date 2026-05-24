@@ -16,6 +16,7 @@ This repository foundation includes:
 - Deterministic paper trading pipeline from closed candles to risk-gated paper order lifecycle
 - Paper account, position, fill, journal, and equity snapshot accounting for operational paper trading
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
+- Strategy config validation, versioning, audit logging, and dry-run evaluation before pipeline/backtest use
 - Minimal Next.js operational dashboard shell for paper-only inspection and control
 - Event model and publisher trait skeleton
 - Postgres migration baseline
@@ -49,6 +50,9 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/market/backfill/runs?limit=20'`
    `curl 'http://127.0.0.1:3000/market/feed-status'`
    `curl 'http://127.0.0.1:3000/strategy/list'`
+   `curl 'http://127.0.0.1:3000/strategy/momentum_v1/config'`
+   `curl -X POST http://127.0.0.1:3000/strategy/momentum_v1/config/validate -H 'content-type: application/json' -d '{"strategy_id":"momentum_v1","enabled":true,"mode":"paper","symbols":["BTCUSDT"],"timeframe":"1m","suggested_notional":"100000","max_signal_age_ms":5000,"cooldown_seconds":900,"lookback_candles":3}'`
+   `curl -X POST http://127.0.0.1:3000/strategy/momentum_v1/dry-run -H 'content-type: application/json' -d '{"symbol":"BTCUSDT","timeframe":"1m"}'`
    `curl 'http://127.0.0.1:3000/signals/recent?symbol=BTCUSDT&limit=50'`
    `curl 'http://127.0.0.1:3000/risk/decisions?symbol=BTCUSDT&limit=50'`
    `curl 'http://127.0.0.1:3000/risk/decisions/<risk_decision_id>'`
@@ -113,6 +117,9 @@ cargo run -p cli -- resume --confirm "RESUME TRADING"
 cargo run -p cli -- pipeline run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m
 cargo run -p cli -- strategy list
 cargo run -p cli -- strategy disable momentum_v1
+cargo run -p cli -- strategy config get momentum_v1
+cargo run -p cli -- strategy config validate momentum_v1 --symbol BTCUSDT --timeframe 1m --suggested-notional 100000 --lookback-candles 3 --max-signal-age-ms 5000 --cooldown-seconds 900
+cargo run -p cli -- strategy dry-run momentum_v1 --symbol BTCUSDT --timeframe 1m
 cargo run -p cli -- orders list --limit 20
 cargo run -p cli -- orders get 00000000-0000-0000-0000-000000000000
 cargo run -p cli -- paper account

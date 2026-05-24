@@ -5,8 +5,8 @@ use aegis_core::{
     MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus,
     PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition, PaperPriceStatus,
     PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig, StrategyId,
-    StrategySignal, Symbol,
+    RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal, Symbol,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -267,17 +267,46 @@ pub struct MarketFeedStatusRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyConfigRecord {
     pub strategy_id: String,
-    pub status: String,
+    pub enabled: bool,
     pub mode: String,
     pub symbols: String,
     pub timeframe: String,
     pub suggested_notional: Decimal,
-    pub momentum_lookback_candles: i32,
-    pub breakout_lookback_candles: i32,
+    pub max_signal_age_ms: i64,
+    pub cooldown_seconds: i32,
+    pub lookback_candles: i32,
+    pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
+    pub holding_candles: Option<i32>,
+    pub notes: Option<String>,
+    pub current_version: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyConfigVersionRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub version: i32,
+    pub config: Value,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyConfigAuditRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub version: Option<i32>,
+    pub old_config: Option<Value>,
+    pub new_config: Option<Value>,
+    pub validation_issues: Value,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2712,6 +2741,21 @@ pub async fn upsert_strategy_config(
     pool: &PgPool,
     config: &StrategyConfig,
 ) -> Result<StrategyConfigRecord> {
+    let mut tx = pool.begin().await?;
+    let current_version = get_strategy_config_tx(&mut tx, config.strategy_id)
+        .await?
+        .map(|record| record.current_version)
+        .unwrap_or(1);
+    let record = upsert_strategy_config_tx(&mut tx, config, current_version).await?;
+    tx.commit().await?;
+    Ok(record)
+}
+
+async fn upsert_strategy_config_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    config: &StrategyConfig,
+    current_version: i32,
+) -> Result<StrategyConfigRecord> {
     let symbols = config
         .symbols
         .iter()
@@ -2723,60 +2767,115 @@ pub async fn upsert_strategy_config(
         r#"
         INSERT INTO strategy_configs (
             strategy_id,
-            status,
+            enabled,
             mode,
             symbols,
             timeframe,
             suggested_notional,
-            momentum_lookback_candles,
-            breakout_lookback_candles,
+            max_signal_age_ms,
+            cooldown_seconds,
+            lookback_candles,
+            confidence_floor,
             stop_loss_pct,
             take_profit_pct,
+            holding_candles,
+            notes,
+            current_version,
             created_at,
             updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
         ON CONFLICT (strategy_id) DO UPDATE
         SET
-            status = EXCLUDED.status,
+            enabled = EXCLUDED.enabled,
             mode = EXCLUDED.mode,
             symbols = EXCLUDED.symbols,
             timeframe = EXCLUDED.timeframe,
             suggested_notional = EXCLUDED.suggested_notional,
-            momentum_lookback_candles = EXCLUDED.momentum_lookback_candles,
-            breakout_lookback_candles = EXCLUDED.breakout_lookback_candles,
+            max_signal_age_ms = EXCLUDED.max_signal_age_ms,
+            cooldown_seconds = EXCLUDED.cooldown_seconds,
+            lookback_candles = EXCLUDED.lookback_candles,
+            confidence_floor = EXCLUDED.confidence_floor,
             stop_loss_pct = EXCLUDED.stop_loss_pct,
             take_profit_pct = EXCLUDED.take_profit_pct,
+            holding_candles = EXCLUDED.holding_candles,
+            notes = EXCLUDED.notes,
+            current_version = EXCLUDED.current_version,
             updated_at = NOW()
         RETURNING
             strategy_id,
-            status,
+            enabled,
             mode,
             symbols,
             timeframe,
             suggested_notional,
-            momentum_lookback_candles,
-            breakout_lookback_candles,
+            max_signal_age_ms,
+            cooldown_seconds,
+            lookback_candles,
+            confidence_floor,
             stop_loss_pct,
             take_profit_pct,
+            holding_candles,
+            notes,
+            current_version,
             created_at,
             updated_at
         "#,
     )
     .bind(config.strategy_id.as_str())
-    .bind(config.status.as_str())
+    .bind(config.enabled)
     .bind(config.mode.as_str())
     .bind(symbols)
     .bind(config.timeframe.as_str())
     .bind(config.suggested_notional)
-    .bind(config.momentum_lookback_candles as i32)
-    .bind(config.breakout_lookback_candles as i32)
+    .bind(config.max_signal_age_ms)
+    .bind(config.cooldown_seconds as i32)
+    .bind(config.lookback_candles as i32)
+    .bind(config.confidence_floor)
     .bind(config.stop_loss_pct)
     .bind(config.take_profit_pct)
-    .fetch_one(pool)
+    .bind(config.holding_candles.map(|value| value as i32))
+    .bind(config.notes.clone())
+    .bind(current_version)
+    .fetch_one(&mut **tx)
     .await?;
 
     Ok(map_strategy_config(&row))
+}
+
+async fn get_strategy_config_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    strategy_id: StrategyId,
+) -> Result<Option<StrategyConfigRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            strategy_id,
+            enabled,
+            mode,
+            symbols,
+            timeframe,
+            suggested_notional,
+            max_signal_age_ms,
+            cooldown_seconds,
+            lookback_candles,
+            confidence_floor,
+            stop_loss_pct,
+            take_profit_pct,
+            holding_candles,
+            notes,
+            current_version,
+            created_at,
+            updated_at
+        FROM strategy_configs
+        WHERE strategy_id = $1
+        "#,
+    )
+    .bind(strategy_id.as_str())
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(row.as_ref().map(map_strategy_config))
 }
 
 pub async fn get_strategy_config(
@@ -2787,15 +2886,20 @@ pub async fn get_strategy_config(
         r#"
         SELECT
             strategy_id,
-            status,
+            enabled,
             mode,
             symbols,
             timeframe,
             suggested_notional,
-            momentum_lookback_candles,
-            breakout_lookback_candles,
+            max_signal_age_ms,
+            cooldown_seconds,
+            lookback_candles,
+            confidence_floor,
             stop_loss_pct,
             take_profit_pct,
+            holding_candles,
+            notes,
+            current_version,
             created_at,
             updated_at
         FROM strategy_configs
@@ -3064,15 +3168,20 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
         r#"
         SELECT
             c.strategy_id AS config_strategy_id,
-            c.status,
+            c.enabled,
             c.mode,
             c.symbols,
             c.timeframe,
             c.suggested_notional,
-            c.momentum_lookback_candles,
-            c.breakout_lookback_candles,
+            c.max_signal_age_ms,
+            c.cooldown_seconds,
+            c.lookback_candles,
+            c.confidence_floor,
             c.stop_loss_pct,
             c.take_profit_pct,
+            c.holding_candles,
+            c.notes,
+            c.current_version,
             c.created_at AS config_created_at,
             c.updated_at AS config_updated_at,
             s.strategy_id AS state_strategy_id,
@@ -3095,15 +3204,20 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
         .map(|row| StrategyStatusRecord {
             config: StrategyConfigRecord {
                 strategy_id: row.get("config_strategy_id"),
-                status: row.get("status"),
+                enabled: row.get("enabled"),
                 mode: row.get("mode"),
                 symbols: row.get("symbols"),
                 timeframe: row.get("timeframe"),
                 suggested_notional: row.get("suggested_notional"),
-                momentum_lookback_candles: row.get("momentum_lookback_candles"),
-                breakout_lookback_candles: row.get("breakout_lookback_candles"),
+                max_signal_age_ms: row.get("max_signal_age_ms"),
+                cooldown_seconds: row.get("cooldown_seconds"),
+                lookback_candles: row.get("lookback_candles"),
+                confidence_floor: row.get("confidence_floor"),
                 stop_loss_pct: row.get("stop_loss_pct"),
                 take_profit_pct: row.get("take_profit_pct"),
+                holding_candles: row.get("holding_candles"),
+                notes: row.get("notes"),
+                current_version: row.get("current_version"),
                 created_at: row.get("config_created_at"),
                 updated_at: row.get("config_updated_at"),
             },
@@ -3130,18 +3244,245 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let config = StrategyConfig {
         strategy_id: record.strategy_id.parse()?,
-        status: record.status.parse()?,
+        enabled: record.enabled,
         mode: record.mode.parse()?,
         symbols,
         timeframe: record.timeframe.parse()?,
         suggested_notional: record.suggested_notional,
-        momentum_lookback_candles: record.momentum_lookback_candles as u32,
-        breakout_lookback_candles: record.breakout_lookback_candles as u32,
+        max_signal_age_ms: record.max_signal_age_ms,
+        cooldown_seconds: record.cooldown_seconds as u32,
+        lookback_candles: record.lookback_candles as u32,
+        confidence_floor: record.confidence_floor,
         stop_loss_pct: record.stop_loss_pct,
         take_profit_pct: record.take_profit_pct,
+        holding_candles: record.holding_candles.map(|value| value as u32),
+        notes: record.notes.clone(),
     };
     config.validate()?;
     Ok(config)
+}
+
+pub async fn persist_strategy_config_version(
+    pool: &PgPool,
+    config: &StrategyConfig,
+    actor_id: Option<Uuid>,
+    correlation_id: Uuid,
+) -> Result<StrategyConfigRecord> {
+    let mut tx = pool.begin().await?;
+    let existing = get_strategy_config_tx(&mut tx, config.strategy_id).await?;
+    let next_version = existing
+        .as_ref()
+        .map(|record| record.current_version + 1)
+        .unwrap_or(1);
+    let record = upsert_strategy_config_tx(&mut tx, config, next_version).await?;
+    let config_json = strategy_config_to_value(config)?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO strategy_config_versions (
+            id,
+            strategy_id,
+            version,
+            config,
+            actor_id,
+            correlation_id,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(config.strategy_id.as_str())
+    .bind(next_version)
+    .bind(config_json.clone())
+    .bind(actor_id)
+    .bind(correlation_id)
+    .execute(&mut *tx)
+    .await?;
+
+    insert_strategy_config_audit_tx(
+        &mut tx,
+        &StrategyConfigAuditEntry {
+            audit_id: Uuid::new_v4(),
+            strategy_id: config.strategy_id.to_string(),
+            version: Some(next_version),
+            old_config: existing
+                .as_ref()
+                .map(strategy_config_from_record)
+                .transpose()?,
+            new_config: Some(config.clone()),
+            validation_issues: Vec::new(),
+            actor_id,
+            correlation_id,
+            created_at: Utc::now(),
+        },
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(record)
+}
+
+pub async fn insert_strategy_config_audit(
+    pool: &PgPool,
+    entry: &StrategyConfigAuditEntry,
+) -> Result<StrategyConfigAuditRecord> {
+    let mut tx = pool.begin().await?;
+    let record = insert_strategy_config_audit_tx(&mut tx, entry).await?;
+    tx.commit().await?;
+    Ok(record)
+}
+
+pub async fn list_strategy_config_versions(
+    pool: &PgPool,
+    strategy_id: StrategyId,
+) -> Result<Vec<StrategyConfigVersionRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            version,
+            config,
+            actor_id,
+            correlation_id,
+            created_at
+        FROM strategy_config_versions
+        WHERE strategy_id = $1
+        ORDER BY version DESC, created_at DESC
+        "#,
+    )
+    .bind(strategy_id.as_str())
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_strategy_config_version).collect())
+}
+
+pub async fn list_strategy_config_audit(
+    pool: &PgPool,
+    strategy_id: StrategyId,
+) -> Result<Vec<StrategyConfigAuditRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            version,
+            old_config,
+            new_config,
+            validation_issues,
+            actor_id,
+            correlation_id,
+            created_at
+        FROM strategy_config_audit
+        WHERE strategy_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(strategy_id.as_str())
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_strategy_config_audit).collect())
+}
+
+pub fn strategy_config_version_from_record(
+    record: &StrategyConfigVersionRecord,
+) -> Result<StrategyConfigVersion> {
+    Ok(StrategyConfigVersion {
+        strategy_id: record.strategy_id.clone(),
+        version: record.version,
+        config: serde_json::from_value(record.config.clone())?,
+        actor_id: record.actor_id,
+        correlation_id: record.correlation_id,
+        created_at: record.created_at,
+    })
+}
+
+pub fn strategy_config_audit_from_record(
+    record: &StrategyConfigAuditRecord,
+) -> Result<StrategyConfigAuditEntry> {
+    Ok(StrategyConfigAuditEntry {
+        audit_id: record.id,
+        strategy_id: record.strategy_id.clone(),
+        version: record.version,
+        old_config: record
+            .old_config
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()?,
+        new_config: record
+            .new_config
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()?,
+        validation_issues: serde_json::from_value(record.validation_issues.clone())?,
+        actor_id: record.actor_id,
+        correlation_id: record.correlation_id,
+        created_at: record.created_at,
+    })
+}
+
+async fn insert_strategy_config_audit_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    entry: &StrategyConfigAuditEntry,
+) -> Result<StrategyConfigAuditRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_config_audit (
+            id,
+            strategy_id,
+            version,
+            old_config,
+            new_config,
+            validation_issues,
+            actor_id,
+            correlation_id,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING
+            id,
+            strategy_id,
+            version,
+            old_config,
+            new_config,
+            validation_issues,
+            actor_id,
+            correlation_id,
+            created_at
+        "#,
+    )
+    .bind(entry.audit_id)
+    .bind(&entry.strategy_id)
+    .bind(entry.version)
+    .bind(
+        entry
+            .old_config
+            .as_ref()
+            .map(strategy_config_to_value)
+            .transpose()?,
+    )
+    .bind(
+        entry
+            .new_config
+            .as_ref()
+            .map(strategy_config_to_value)
+            .transpose()?,
+    )
+    .bind(serde_json::to_value(&entry.validation_issues)?)
+    .bind(entry.actor_id)
+    .bind(entry.correlation_id)
+    .bind(entry.created_at)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(map_strategy_config_audit(&row))
+}
+
+fn strategy_config_to_value(config: &StrategyConfig) -> Result<Value> {
+    Ok(serde_json::to_value(config)?)
 }
 
 pub async fn upsert_market_feed_status(
@@ -3495,17 +3836,48 @@ fn map_market_feed_status(row: &sqlx::postgres::PgRow) -> MarketFeedStatusRecord
 fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
     StrategyConfigRecord {
         strategy_id: row.get("strategy_id"),
-        status: row.get("status"),
+        enabled: row.get("enabled"),
         mode: row.get("mode"),
         symbols: row.get("symbols"),
         timeframe: row.get("timeframe"),
         suggested_notional: row.get("suggested_notional"),
-        momentum_lookback_candles: row.get("momentum_lookback_candles"),
-        breakout_lookback_candles: row.get("breakout_lookback_candles"),
+        max_signal_age_ms: row.get("max_signal_age_ms"),
+        cooldown_seconds: row.get("cooldown_seconds"),
+        lookback_candles: row.get("lookback_candles"),
+        confidence_floor: row.get("confidence_floor"),
         stop_loss_pct: row.get("stop_loss_pct"),
         take_profit_pct: row.get("take_profit_pct"),
+        holding_candles: row.get("holding_candles"),
+        notes: row.get("notes"),
+        current_version: row.get("current_version"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_strategy_config_version(row: &sqlx::postgres::PgRow) -> StrategyConfigVersionRecord {
+    StrategyConfigVersionRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        version: row.get("version"),
+        config: row.get("config"),
+        actor_id: row.get("actor_id"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_strategy_config_audit(row: &sqlx::postgres::PgRow) -> StrategyConfigAuditRecord {
+    StrategyConfigAuditRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        version: row.get("version"),
+        old_config: row.get("old_config"),
+        new_config: row.get("new_config"),
+        validation_issues: row.get("validation_issues"),
+        actor_id: row.get("actor_id"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
     }
 }
 

@@ -19,6 +19,7 @@ import type {
   OrderRecord,
   PaperPositionRecord,
   RiskDecisionRecord,
+  StrategyConfigUpdateRequest,
   StrategyStatusView,
   SystemEventRecord,
 } from "@/lib/types";
@@ -74,6 +75,27 @@ const DEFAULT_BACKFILL_FORM: CandleBackfillRequest = {
   end_time: "2026-05-02T00:00:00Z",
   limit_per_request: 1000,
 };
+
+function strategyConfigFormFromStatus(
+  strategy?: StrategyStatusView,
+): StrategyConfigUpdateRequest {
+  return {
+    strategy_id: strategy?.strategy_id ?? "momentum_v1",
+    enabled: strategy?.enabled ?? true,
+    mode: strategy?.mode ?? "paper",
+    symbols: strategy?.symbols ?? ["BTCUSDT"],
+    timeframe: strategy?.timeframe ?? "1m",
+    suggested_notional: strategy?.suggested_notional ?? "100000",
+    max_signal_age_ms: strategy?.max_signal_age_ms ?? 5000,
+    cooldown_seconds: strategy?.cooldown_seconds ?? 900,
+    lookback_candles: strategy?.lookback_candles ?? 3,
+    confidence_floor: strategy?.confidence_floor ?? null,
+    stop_loss_pct: strategy?.stop_loss_pct ?? null,
+    take_profit_pct: strategy?.take_profit_pct ?? null,
+    holding_candles: strategy?.holding_candles ?? 3,
+    notes: strategy?.notes ?? "",
+  };
+}
 
 type TelemetrySnapshot = {
   reachable: boolean;
@@ -162,6 +184,8 @@ export function DashboardApp() {
   const [selectedBackfillRunId, setSelectedBackfillRunId] = useState<string | null>(null);
   const [lastBackfillResult, setLastBackfillResult] =
     useState<CandleBackfillResult | null>(null);
+  const [strategyConfigForm, setStrategyConfigForm] =
+    useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
 
   const healthQuery = useQuery({
     queryKey: ["system-health"],
@@ -286,7 +310,17 @@ export function DashboardApp() {
 
   const selectedStrategyStatusQuery = useQuery({
     queryKey: ["strategy-status", selectedStrategyId],
-    queryFn: () => api.getStrategyStatus(selectedStrategyId),
+    queryFn: () => api.getStrategyConfig(selectedStrategyId),
+    enabled: Boolean(selectedStrategyId),
+  });
+  const strategyConfigVersionsQuery = useQuery({
+    queryKey: ["strategy-config-versions", selectedStrategyId],
+    queryFn: () => api.getStrategyConfigVersions(selectedStrategyId),
+    enabled: Boolean(selectedStrategyId),
+  });
+  const strategyConfigAuditQuery = useQuery({
+    queryKey: ["strategy-config-audit", selectedStrategyId],
+    queryFn: () => api.getStrategyConfigAudit(selectedStrategyId),
     enabled: Boolean(selectedStrategyId),
   });
 
@@ -350,6 +384,14 @@ export function DashboardApp() {
     selectedStrategyId,
     strategiesQuery.data?.strategies,
   ]);
+
+  useEffect(() => {
+    if (selectedStrategyStatusQuery.data?.strategy) {
+      setStrategyConfigForm(
+        strategyConfigFormFromStatus(selectedStrategyStatusQuery.data.strategy),
+      );
+    }
+  }, [selectedStrategyStatusQuery.data?.strategy]);
 
   useEffect(() => {
     if (!selectedOrderId && ordersQuery.data?.orders[0]) {
@@ -436,6 +478,33 @@ export function DashboardApp() {
     }) =>
       enabled ? api.enableStrategy(strategyId) : api.disableStrategy(strategyId),
     onSuccess: refreshOperationalData,
+  });
+
+  const validateStrategyConfigMutation = useMutation({
+    mutationFn: () => api.validateStrategyConfig(selectedStrategyId, strategyConfigForm),
+  });
+
+  const updateStrategyConfigMutation = useMutation({
+    mutationFn: () => api.updateStrategyConfig(selectedStrategyId, strategyConfigForm),
+    onSuccess: async () => {
+      await refreshOperationalData();
+      await queryClient.invalidateQueries({ queryKey: ["strategy-status", selectedStrategyId] });
+      await queryClient.invalidateQueries({
+        queryKey: ["strategy-config-versions", selectedStrategyId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["strategy-config-audit", selectedStrategyId],
+      });
+    },
+  });
+
+  const strategyDryRunMutation = useMutation({
+    mutationFn: () =>
+      api.dryRunStrategy(selectedStrategyId, {
+        symbol: strategyConfigForm.symbols[0],
+        timeframe: strategyConfigForm.timeframe,
+        config_override: strategyConfigForm,
+      }),
   });
 
   const runBacktestMutation = useMutation({
@@ -1036,39 +1105,224 @@ export function DashboardApp() {
                 />
               </Panel>
               <Panel className="xl:col-span-5" title="Selected Strategy Status">
-                <KeyValue
-                  items={[
-                    [
-                      "Strategy",
-                      selectedStrategyStatusQuery.data?.strategy.strategy_id ?? "N/A",
-                    ],
-                    [
-                      "Status",
-                      selectedStrategyStatusQuery.data?.strategy.status ?? "N/A",
-                    ],
-                    [
-                      "Mode",
-                      selectedStrategyStatusQuery.data?.strategy.mode ?? "N/A",
-                    ],
-                    [
-                      "Timeframe",
-                      selectedStrategyStatusQuery.data?.strategy.timeframe ?? "N/A",
-                    ],
-                    [
-                      "Last Evaluated",
-                      formatDateTime(
-                        selectedStrategyStatusQuery.data?.strategy.last_evaluated_at,
-                      ),
-                    ],
-                    [
-                      "Last Reason",
-                      selectedStrategyStatusQuery.data?.strategy.last_evaluation_reason ??
-                        "N/A",
-                    ],
-                  ]}
-                  loading={selectedStrategyStatusQuery.isLoading}
-                  error={getErrorMessage(selectedStrategyStatusQuery.error)}
-                />
+                <div className="space-y-3">
+                  <KeyValue
+                    items={[
+                      [
+                        "Strategy",
+                        selectedStrategyStatusQuery.data?.strategy.strategy_id ?? "N/A",
+                      ],
+                      [
+                        "Enabled",
+                        String(selectedStrategyStatusQuery.data?.strategy.enabled ?? false),
+                      ],
+                      ["Mode", selectedStrategyStatusQuery.data?.strategy.mode ?? "N/A"],
+                      [
+                        "Version",
+                        String(
+                          selectedStrategyStatusQuery.data?.strategy.config_version ?? "N/A",
+                        ),
+                      ],
+                      [
+                        "Last Evaluated",
+                        formatDateTime(
+                          selectedStrategyStatusQuery.data?.strategy.last_evaluated_at,
+                        ),
+                      ],
+                    ]}
+                    loading={selectedStrategyStatusQuery.isLoading}
+                    error={getErrorMessage(selectedStrategyStatusQuery.error)}
+                  />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <Field
+                      label="Mode"
+                      value={strategyConfigForm.mode}
+                      as="select"
+                      options={["paper", "research", "shadow"]}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({ ...current, mode: value }))
+                      }
+                    />
+                    <Field
+                      label="Enabled"
+                      value={String(strategyConfigForm.enabled)}
+                      as="select"
+                      options={["true", "false"]}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          enabled: value === "true",
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Symbols"
+                      value={strategyConfigForm.symbols.join(",")}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          symbols: value.split(",").map((item) => item.trim()).filter(Boolean),
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Timeframe"
+                      value={strategyConfigForm.timeframe}
+                      as="select"
+                      options={["1m"]}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({ ...current, timeframe: value }))
+                      }
+                    />
+                    <Field
+                      label="Suggested Notional"
+                      value={strategyConfigForm.suggested_notional}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          suggested_notional: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Lookback Candles"
+                      value={String(strategyConfigForm.lookback_candles)}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          lookback_candles: Number(value) || 0,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Max Signal Age"
+                      value={String(strategyConfigForm.max_signal_age_ms)}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          max_signal_age_ms: Number(value) || 0,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Cooldown Seconds"
+                      value={String(strategyConfigForm.cooldown_seconds)}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          cooldown_seconds: Number(value) || 0,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Confidence Floor"
+                      value={strategyConfigForm.confidence_floor ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          confidence_floor: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Stop Loss %"
+                      value={strategyConfigForm.stop_loss_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          stop_loss_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Take Profit %"
+                      value={strategyConfigForm.take_profit_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          take_profit_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Holding Candles"
+                      value={String(strategyConfigForm.holding_candles ?? "")}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          holding_candles: value ? Number(value) : null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Notes"
+                      value={strategyConfigForm.notes ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          notes: value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <ActionButton
+                      label="Validate"
+                      onClick={() => validateStrategyConfigMutation.mutate()}
+                      busy={validateStrategyConfigMutation.isPending}
+                    />
+                    <ActionButton
+                      label="Update"
+                      onClick={() => updateStrategyConfigMutation.mutate()}
+                      busy={updateStrategyConfigMutation.isPending}
+                    />
+                    <ActionButton
+                      label="Dry Run"
+                      onClick={() => strategyDryRunMutation.mutate()}
+                      busy={strategyDryRunMutation.isPending}
+                    />
+                  </div>
+                  <InlineStatus
+                    error={
+                      getErrorMessage(validateStrategyConfigMutation.error) ??
+                      getErrorMessage(updateStrategyConfigMutation.error) ??
+                      getErrorMessage(strategyDryRunMutation.error)
+                    }
+                    success={
+                      validateStrategyConfigMutation.data
+                        ? `validation: ${validateStrategyConfigMutation.data.validation.valid ? "valid" : "rejected"}`
+                        : strategyDryRunMutation.data
+                          ? `dry-run: ${strategyDryRunMutation.data.result.reason}`
+                          : updateStrategyConfigMutation.data
+                            ? "config updated"
+                            : undefined
+                    }
+                  />
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                    {(validateStrategyConfigMutation.data?.validation.issues ?? []).map((issue) => (
+                      <div key={`${issue.field}-${issue.code}`}>
+                        {issue.severity} {issue.field}: {issue.message}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Config Versions</div>
+                    {(strategyConfigVersionsQuery.data?.versions ?? []).slice(0, 5).map((entry) => (
+                      <div key={`${entry.strategy_id}-${entry.version}`}>
+                        v{entry.version} {entry.config.mode} enabled={String(entry.config.enabled)}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Recent Config Audit</div>
+                    {(strategyConfigAuditQuery.data?.audit ?? []).slice(0, 5).map((entry) => (
+                      <div key={entry.audit_id}>
+                        {formatDateTime(entry.created_at)} v{entry.version ?? "-"} issues=
+                        {entry.validation_issues.length}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </Panel>
               <Panel className="xl:col-span-12" title="Recent Signals">
                 <SignalsTable signals={recentSignals} />
@@ -1801,7 +2055,7 @@ function StrategiesTable({
   return (
     <div className="space-y-2">
       {strategies.map((strategy) => {
-        const enabled = strategy.status === "enabled";
+        const enabled = strategy.enabled;
         return (
           <div
             key={strategy.strategy_id}
@@ -1822,7 +2076,7 @@ function StrategiesTable({
               </button>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-border px-2 py-1 text-xs">
-                  {strategy.status}
+                  {enabled ? "enabled" : "disabled"}
                 </span>
                 <ActionButton
                   label={enabled ? "Disable" : "Enable"}

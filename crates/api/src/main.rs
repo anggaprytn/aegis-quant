@@ -9,7 +9,9 @@ use aegis_core::{
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, CandleInterval, MarketMode,
     OrderIntent, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
     RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyConfig, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
 };
 use api::{ensure_default_paper_account, persist_paper_fill_accounting};
 use axum::{
@@ -28,13 +30,15 @@ use db::{
     get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
     get_risk_decision_by_id, get_strategy_status, get_system_event, get_system_state,
     insert_paper_account, insert_paper_equity_snapshot, insert_risk_evaluation,
-    insert_signal_deduped, insert_system_event, list_backtest_runs, list_candle_backfill_runs,
-    list_candles, list_market_feed_statuses, list_open_paper_positions, list_orders,
-    list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
+    insert_signal_deduped, insert_strategy_config_audit, insert_system_event, list_backtest_runs,
+    list_candle_backfill_runs, list_candles, list_market_feed_statuses, list_open_paper_positions,
+    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
     list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_strategy_status, load_risk_state_snapshot, paper_account_from_record,
-    paper_equity_snapshot_from_record, paper_position_from_record, set_kill_switch_state,
-    strategy_config_from_record, update_strategy_state, upsert_paper_position,
+    list_strategy_config_audit, list_strategy_config_versions, list_strategy_status,
+    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
+    paper_position_from_record, persist_strategy_config_version, set_kill_switch_state,
+    strategy_config_audit_from_record, strategy_config_from_record,
+    strategy_config_version_from_record, update_strategy_state, upsert_paper_position,
     upsert_strategy_config, BacktestEquityPointRecord, BacktestTradeRecord,
     CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig, InsertSignalOutcome,
     MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
@@ -50,7 +54,10 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use strategy_engine::{build_default_strategy_configs, evaluate as evaluate_strategy};
+use strategy_engine::{
+    build_default_strategy_configs, evaluate as evaluate_strategy, required_candle_count,
+    validate_strategy_config, StrategyValidationContext,
+};
 use telemetry::telemetry;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -585,6 +592,38 @@ struct StrategyToggleResponse {
 }
 
 #[derive(Serialize)]
+struct StrategyConfigValidationResponse {
+    validation: StrategyConfigValidationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyConfigVersionsResponse {
+    versions: Vec<StrategyConfigVersion>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyConfigAuditResponse {
+    audit: Vec<StrategyConfigAuditEntry>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyDryRunResponse {
+    result: StrategyDryRunResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct PaperAccountView {
     id: Uuid,
     name: String,
@@ -709,13 +748,20 @@ struct PaperTradeJournalResponse {
 #[derive(Serialize)]
 struct StrategyStatusView {
     strategy_id: String,
-    status: String,
+    enabled: bool,
     mode: String,
     symbols: Vec<String>,
     timeframe: String,
     suggested_notional: String,
-    momentum_lookback_candles: i32,
-    breakout_lookback_candles: i32,
+    max_signal_age_ms: i64,
+    cooldown_seconds: i32,
+    lookback_candles: i32,
+    confidence_floor: Option<String>,
+    stop_loss_pct: Option<String>,
+    take_profit_pct: Option<String>,
+    holding_candles: Option<i32>,
+    notes: Option<String>,
+    config_version: i32,
     last_evaluated_at: Option<chrono::DateTime<Utc>>,
     last_evaluation_reason: Option<String>,
     last_signal_id: Option<Uuid>,
@@ -839,9 +885,27 @@ async fn main() {
         .route("/market/feed-status", get(get_market_feed_status))
         .route("/strategy/list", get(get_strategy_list))
         .route("/strategy/:id/status", get(get_strategy_by_id))
+        .route("/strategy/:id/config", get(get_strategy_config_handler))
+        .route(
+            "/strategy/:id/config/validate",
+            post(validate_strategy_config_handler),
+        )
+        .route(
+            "/strategy/:id/config/update",
+            post(update_strategy_config_handler),
+        )
+        .route(
+            "/strategy/:id/config/versions",
+            get(get_strategy_config_versions_handler),
+        )
+        .route(
+            "/strategy/:id/config/audit",
+            get(get_strategy_config_audit_handler),
+        )
         .route("/strategy/:id/enable", post(enable_strategy))
         .route("/strategy/:id/disable", post(disable_strategy))
         .route("/strategy/:id/evaluate", post(evaluate_strategy_handler))
+        .route("/strategy/:id/dry-run", post(strategy_dry_run_handler))
         .route("/signals/recent", get(get_recent_signals))
         .layer(middleware::from_fn(request_context_middleware))
         .with_state(state);
@@ -1136,7 +1200,7 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
     let state = record.state;
     StrategyStatusView {
         strategy_id: record.config.strategy_id,
-        status: record.config.status,
+        enabled: record.config.enabled,
         mode: record.config.mode,
         symbols: record
             .config
@@ -1147,14 +1211,54 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
             .collect(),
         timeframe: record.config.timeframe,
         suggested_notional: record.config.suggested_notional.to_string(),
-        momentum_lookback_candles: record.config.momentum_lookback_candles,
-        breakout_lookback_candles: record.config.breakout_lookback_candles,
+        max_signal_age_ms: record.config.max_signal_age_ms,
+        cooldown_seconds: record.config.cooldown_seconds,
+        lookback_candles: record.config.lookback_candles,
+        confidence_floor: record
+            .config
+            .confidence_floor
+            .map(|value| value.to_string()),
+        stop_loss_pct: record.config.stop_loss_pct.map(|value| value.to_string()),
+        take_profit_pct: record.config.take_profit_pct.map(|value| value.to_string()),
+        holding_candles: record.config.holding_candles,
+        notes: record.config.notes,
+        config_version: record.config.current_version,
         last_evaluated_at: state.as_ref().and_then(|state| state.last_evaluated_at),
         last_evaluation_reason: state
             .as_ref()
             .and_then(|state| state.last_evaluation_reason.clone()),
         last_signal_id: state.as_ref().and_then(|state| state.last_signal_id),
         last_signal_at: state.as_ref().and_then(|state| state.last_signal_at),
+    }
+}
+
+fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfigUpdateRequest {
+    StrategyConfigUpdateRequest {
+        strategy_id: config.strategy_id.to_string(),
+        enabled: config.enabled,
+        mode: config.mode,
+        symbols: config
+            .symbols
+            .iter()
+            .map(|symbol| symbol.as_str().to_string())
+            .collect(),
+        timeframe: config.timeframe.as_str().to_string(),
+        suggested_notional: config.suggested_notional,
+        max_signal_age_ms: config.max_signal_age_ms,
+        cooldown_seconds: config.cooldown_seconds,
+        lookback_candles: config.lookback_candles,
+        confidence_floor: config.confidence_floor,
+        stop_loss_pct: config.stop_loss_pct,
+        take_profit_pct: config.take_profit_pct,
+        holding_candles: config.holding_candles,
+        notes: config.notes.clone(),
+    }
+}
+
+fn strategy_validation_context(state: &AppState) -> StrategyValidationContext {
+    StrategyValidationContext {
+        supported_symbols: state.market_config.symbols.clone(),
+        max_position_notional: Some(aegis_core::RiskConfig::default().max_position_notional),
     }
 }
 
@@ -3836,6 +3940,535 @@ async fn get_strategy_by_id(
     }
 }
 
+async fn get_strategy_config_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    get_strategy_by_id(State(state), Path(id), request).await
+}
+
+async fn validate_strategy_config_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+    Json(mut payload): Json<StrategyConfigUpdateRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    payload.strategy_id = id.clone();
+    let validation = validate_strategy_config(&payload, &strategy_validation_context(&state));
+    telemetry().inc_strategy_config_validation(
+        payload.strategy_id.as_str(),
+        if validation.valid {
+            "valid"
+        } else {
+            "rejected"
+        },
+    );
+    let event_type = if validation.valid {
+        "strategy.config.validated"
+    } else {
+        "strategy.config.rejected"
+    };
+    let _ = insert_system_event(
+        &state.db_pool,
+        &events::EventEnvelope::new(
+            event_type,
+            request
+                .correlation_id
+                .parse()
+                .unwrap_or_else(|_| Uuid::new_v4()),
+            state.config.app_name.clone(),
+            json!({
+                "strategy_id": payload.strategy_id,
+                "issues": validation.issues,
+            }),
+        ),
+    )
+    .await;
+
+    let status = if validation.valid {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    (
+        status,
+        Json(StrategyConfigValidationResponse {
+            validation,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+}
+
+async fn update_strategy_config_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+    Json(mut payload): Json<StrategyConfigUpdateRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    payload.strategy_id = id;
+    let validation = validate_strategy_config(&payload, &strategy_validation_context(&state));
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let current_config = ensure_strategy_config(&state, strategy_id).await.ok();
+    telemetry().inc_strategy_config_validation(
+        strategy_id.as_str(),
+        if validation.valid {
+            "valid"
+        } else {
+            "rejected"
+        },
+    );
+
+    if !validation.valid {
+        telemetry().inc_strategy_config_update(strategy_id.as_str(), "rejected");
+        let _ = insert_strategy_config_audit(
+            &state.db_pool,
+            &StrategyConfigAuditEntry {
+                audit_id: Uuid::new_v4(),
+                strategy_id: strategy_id.to_string(),
+                version: None,
+                old_config: current_config.clone(),
+                new_config: None,
+                validation_issues: validation.issues.clone(),
+                actor_id: None,
+                correlation_id,
+                created_at: Utc::now(),
+            },
+        )
+        .await;
+        let _ = insert_system_event(
+            &state.db_pool,
+            &events::EventEnvelope::new(
+                "strategy.config.rejected",
+                correlation_id,
+                state.config.app_name.clone(),
+                json!({
+                    "strategy_id": strategy_id,
+                    "issues": validation.issues,
+                }),
+            ),
+        )
+        .await;
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(StrategyConfigValidationResponse {
+                validation,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let config = validation
+        .normalized_config
+        .clone()
+        .expect("valid config must be present");
+    let _ = insert_system_event(
+        &state.db_pool,
+        &events::EventEnvelope::new(
+            "strategy.config.validated",
+            correlation_id,
+            state.config.app_name.clone(),
+            json!({ "strategy_id": strategy_id }),
+        ),
+    )
+    .await;
+
+    match persist_strategy_config_version(&state.db_pool, &config, None, correlation_id).await {
+        Ok(_) => {
+            telemetry().inc_strategy_config_update(strategy_id.as_str(), "updated");
+            let _ = insert_system_event(
+                &state.db_pool,
+                &events::EventEnvelope::new(
+                    "strategy.config.updated",
+                    correlation_id,
+                    state.config.app_name.clone(),
+                    json!({ "strategy_id": strategy_id }),
+                ),
+            )
+            .await;
+            match get_strategy_status(&state.db_pool, strategy_id).await {
+                Ok(Some(strategy)) => (
+                    StatusCode::OK,
+                    Json(StrategyStatusResponse {
+                        strategy: strategy_status_view(strategy),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Ok(None) => (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "strategy_not_found",
+                        message: "Strategy configuration was not found.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_strategy_status",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_update_strategy_config",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_config_versions_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match list_strategy_config_versions(&state.db_pool, strategy_id).await {
+        Ok(records) => (
+            StatusCode::OK,
+            Json(StrategyConfigVersionsResponse {
+                versions: records
+                    .iter()
+                    .map(strategy_config_version_from_record)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_config_versions",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_config_audit_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match list_strategy_config_audit(&state.db_pool, strategy_id).await {
+        Ok(records) => (
+            StatusCode::OK,
+            Json(StrategyConfigAuditResponse {
+                audit: records
+                    .iter()
+                    .map(strategy_config_audit_from_record)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_config_audit",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn strategy_dry_run_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<StrategyDryRunRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let persisted = match ensure_strategy_config(&state, strategy_id).await {
+        Ok(config) => config,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_strategy_config",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let validation = if let Some(override_request) = payload.config_override.clone() {
+        validate_strategy_config(&override_request, &strategy_validation_context(&state))
+    } else {
+        validate_strategy_config(
+            &strategy_update_request_from_config(&persisted),
+            &strategy_validation_context(&state),
+        )
+    };
+    let symbol = match payload
+        .symbol
+        .clone()
+        .map(Symbol::new)
+        .transpose()
+        .map_err(|err| err.to_string())
+    {
+        Ok(Some(symbol)) => symbol,
+        Ok(None) => default_strategy_symbol(&persisted),
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let config = validation
+        .normalized_config
+        .clone()
+        .unwrap_or_else(|| persisted.clone());
+    let timeframe = if let Some(raw) = payload.timeframe.as_deref() {
+        match raw.parse::<CandleInterval>() {
+            Ok(timeframe) => timeframe,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_timeframe",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        config.timeframe
+    };
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    let result = if !validation.valid {
+        telemetry().inc_strategy_dry_run(strategy_id.as_str(), "rejected");
+        StrategyDryRunResult {
+            strategy_id: strategy_id.to_string(),
+            symbol: symbol.as_str().to_string(),
+            timeframe: timeframe.as_str().to_string(),
+            config_valid: false,
+            validation_issues: validation.issues.clone(),
+            would_generate_signal: false,
+            reason: "config_invalid".to_string(),
+            source_candle_open_time: None,
+            confidence: None,
+            correlation_id,
+            evaluated_at: Utc::now(),
+        }
+    } else {
+        let candles = match get_recent_closed_candles(
+            &state.db_pool,
+            &symbol,
+            timeframe,
+            required_candle_count(&config),
+        )
+        .await
+        {
+            Ok(candles) => candles,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_closed_candles",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let evaluation = match evaluate_strategy(StrategyEvaluationContext {
+            correlation_id,
+            strategy_id,
+            symbol: symbol.clone(),
+            config: StrategyConfig {
+                timeframe,
+                ..config.clone()
+            },
+            candles,
+            evaluated_at: Utc::now(),
+        }) {
+            Ok(evaluation) => evaluation,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_evaluate_strategy",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        telemetry().inc_strategy_dry_run(
+            strategy_id.as_str(),
+            if evaluation.generated {
+                "signal"
+            } else {
+                "no_signal"
+            },
+        );
+        StrategyDryRunResult {
+            strategy_id: strategy_id.to_string(),
+            symbol: symbol.as_str().to_string(),
+            timeframe: timeframe.as_str().to_string(),
+            config_valid: true,
+            validation_issues: validation.issues.clone(),
+            would_generate_signal: evaluation.generated,
+            reason: evaluation.reason.as_str().to_string(),
+            source_candle_open_time: evaluation
+                .signal
+                .as_ref()
+                .map(|signal| signal.source_candle_open_time),
+            confidence: evaluation
+                .signal
+                .as_ref()
+                .map(|signal| signal.confidence.value),
+            correlation_id,
+            evaluated_at: evaluation.evaluated_at,
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(StrategyDryRunResponse {
+            result,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
 async fn enable_strategy(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -3899,20 +4532,44 @@ async fn toggle_strategy_status(
                 .into_response();
         }
     };
-    config.status = status;
+    config.enabled = status == StrategyStatus::Enabled;
 
-    match upsert_strategy_config(&state.db_pool, &config).await {
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let _ = insert_system_event(
+        &state.db_pool,
+        &events::EventEnvelope::new(
+            "strategy.config.validated",
+            correlation_id,
+            state.config.app_name.clone(),
+            json!({ "strategy_id": strategy_id }),
+        ),
+    )
+    .await;
+
+    match persist_strategy_config_version(&state.db_pool, &config, None, correlation_id).await {
         Ok(_) => match get_strategy_status(&state.db_pool, strategy_id).await {
-            Ok(Some(strategy)) => (
-                StatusCode::OK,
-                Json(StrategyToggleResponse {
-                    strategy: strategy_status_view(strategy),
-                    request_id: request.request_id,
-                    correlation_id: request.correlation_id,
-                    timestamp: Utc::now(),
-                }),
-            )
-                .into_response(),
+            Ok(Some(strategy)) => {
+                let _ = insert_system_event(
+                    &state.db_pool,
+                    &events::EventEnvelope::new(
+                        "strategy.config.updated",
+                        correlation_id,
+                        state.config.app_name.clone(),
+                        json!({ "strategy_id": strategy_id }),
+                    ),
+                )
+                .await;
+                (
+                    StatusCode::OK,
+                    Json(StrategyToggleResponse {
+                        strategy: strategy_status_view(strategy),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
             Ok(None) => (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
@@ -4098,15 +4755,12 @@ async fn evaluate_strategy_handler(
     let correlation_id = payload
         .correlation_id
         .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
-    let required_candles = match strategy_id {
-        StrategyId::MomentumV1 => config.momentum_lookback_candles as i64 + 1,
-        StrategyId::VolatilityBreakoutV1 => config.breakout_lookback_candles as i64 + 1,
-    };
+    let required_candles = strategy_engine::required_candle_count(&config);
     let candles = match get_recent_closed_candles(
         &state.db_pool,
         &symbol,
         config.timeframe,
-        required_candles.max(2),
+        required_candles,
     )
     .await
     {

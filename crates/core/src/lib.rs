@@ -278,13 +278,19 @@ impl std::str::FromStr for StrategyStatus {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StrategyMode {
-    SignalOnly,
+    Paper,
+    Research,
+    Shadow,
+    Live,
 }
 
 impl StrategyMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::SignalOnly => "signal_only",
+            Self::Paper => "paper",
+            Self::Research => "research",
+            Self::Shadow => "shadow",
+            Self::Live => "live",
         }
     }
 }
@@ -294,10 +300,47 @@ impl std::str::FromStr for StrategyMode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "signal_only" => Ok(Self::SignalOnly),
+            "paper" => Ok(Self::Paper),
+            "research" => Ok(Self::Research),
+            "shadow" => Ok(Self::Shadow),
+            "live" => Ok(Self::Live),
+            "signal_only" => Ok(Self::Paper),
             other => Err(CoreError::UnsupportedStrategyMode(other.to_string())),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyConfigValidationSeverity {
+    Error,
+    Warn,
+}
+
+impl StrategyConfigValidationSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "ERROR",
+            Self::Warn => "WARN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrategyConfigValidationIssue {
+    pub severity: StrategyConfigValidationSeverity,
+    pub code: String,
+    pub field: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyConfigValidationResult {
+    pub strategy_id: String,
+    pub valid: bool,
+    pub issues: Vec<StrategyConfigValidationIssue>,
+    pub normalized_config: Option<StrategyConfig>,
+    pub validated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -395,15 +438,19 @@ impl SignalConfidence {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyConfig {
     pub strategy_id: StrategyId,
-    pub status: StrategyStatus,
+    pub enabled: bool,
     pub mode: StrategyMode,
     pub symbols: Vec<Symbol>,
     pub timeframe: CandleInterval,
     pub suggested_notional: Decimal,
-    pub momentum_lookback_candles: u32,
-    pub breakout_lookback_candles: u32,
+    pub max_signal_age_ms: i64,
+    pub cooldown_seconds: u32,
+    pub lookback_candles: u32,
+    pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
+    pub holding_candles: Option<u32>,
+    pub notes: Option<String>,
 }
 
 impl StrategyConfig {
@@ -412,8 +459,82 @@ impl StrategyConfig {
             return Err(CoreError::InvalidStrategyNotional);
         }
 
+        if self.max_signal_age_ms <= 0 {
+            return Err(CoreError::InvalidStrategyMaxSignalAgeMs(
+                self.max_signal_age_ms,
+            ));
+        }
+
+        if self.symbols.is_empty() {
+            return Err(CoreError::EmptyStrategySymbols);
+        }
+
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyConfigUpdateRequest {
+    pub strategy_id: String,
+    pub enabled: bool,
+    pub mode: StrategyMode,
+    pub symbols: Vec<String>,
+    pub timeframe: String,
+    pub suggested_notional: Decimal,
+    pub max_signal_age_ms: i64,
+    pub cooldown_seconds: u32,
+    pub lookback_candles: u32,
+    pub confidence_floor: Option<Decimal>,
+    pub stop_loss_pct: Option<Decimal>,
+    pub take_profit_pct: Option<Decimal>,
+    pub holding_candles: Option<u32>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyDryRunRequest {
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub config_override: Option<StrategyConfigUpdateRequest>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyDryRunResult {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub config_valid: bool,
+    pub validation_issues: Vec<StrategyConfigValidationIssue>,
+    pub would_generate_signal: bool,
+    pub reason: String,
+    pub source_candle_open_time: Option<DateTime<Utc>>,
+    pub confidence: Option<Decimal>,
+    pub correlation_id: Uuid,
+    pub evaluated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyConfigVersion {
+    pub strategy_id: String,
+    pub version: i32,
+    pub config: StrategyConfig,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyConfigAuditEntry {
+    pub audit_id: Uuid,
+    pub strategy_id: String,
+    pub version: Option<i32>,
+    pub old_config: Option<StrategyConfig>,
+    pub new_config: Option<StrategyConfig>,
+    pub validation_issues: Vec<StrategyConfigValidationIssue>,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -567,6 +688,7 @@ pub struct BacktestRequest {
     pub slippage_bps: Decimal,
     pub correlation_id: Option<Uuid>,
     pub holding_candles: Option<u32>,
+    pub strategy_config_override: Option<StrategyConfigUpdateRequest>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1562,6 +1684,10 @@ pub enum CoreError {
     InvalidLimitPrice,
     #[error("strategy suggested notional must be greater than zero")]
     InvalidStrategyNotional,
+    #[error("strategy max_signal_age_ms must be greater than zero: {0}")]
+    InvalidStrategyMaxSignalAgeMs(i64),
+    #[error("strategy symbols cannot be empty")]
+    EmptyStrategySymbols,
     #[error("signal confidence must be between 0 and 1: {0}")]
     InvalidSignalConfidence(String),
     #[error("market trade price must be greater than zero")]

@@ -1,6 +1,8 @@
 use aegis_core::{
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
-    PaperTradingPipelineResult,
+    PaperTradingPipelineResult, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
+    StrategyDryRunResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -292,6 +294,66 @@ impl ApiClient {
         self.get("/strategy/list", &[]).await
     }
 
+    pub async fn strategy_config(
+        &self,
+        strategy_id: &str,
+    ) -> Result<StrategyStatusResponse, ApiClientError> {
+        self.get(&format!("/strategy/{strategy_id}/config"), &[])
+            .await
+    }
+
+    pub async fn validate_strategy_config(
+        &self,
+        strategy_id: &str,
+        request: &StrategyConfigUpdateRequest,
+    ) -> Result<StrategyConfigValidationResponse, ApiClientError> {
+        self.post(&format!("/strategy/{strategy_id}/config/validate"), request)
+            .await
+    }
+
+    pub async fn update_strategy_config(
+        &self,
+        strategy_id: &str,
+        request: &StrategyConfigUpdateRequest,
+    ) -> Result<StrategyStatusResponse, ApiClientError> {
+        self.post(&format!("/strategy/{strategy_id}/config/update"), request)
+            .await
+    }
+
+    pub async fn strategy_config_versions(
+        &self,
+        strategy_id: &str,
+    ) -> Result<StrategyConfigVersionsResponse, ApiClientError> {
+        self.get(&format!("/strategy/{strategy_id}/config/versions"), &[])
+            .await
+    }
+
+    pub async fn strategy_config_audit(
+        &self,
+        strategy_id: &str,
+    ) -> Result<StrategyConfigAuditResponse, ApiClientError> {
+        self.get(&format!("/strategy/{strategy_id}/config/audit"), &[])
+            .await
+    }
+
+    pub async fn strategy_dry_run(
+        &self,
+        strategy_id: &str,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+    ) -> Result<StrategyDryRunResponse, ApiClientError> {
+        self.post(
+            &format!("/strategy/{strategy_id}/dry-run"),
+            &StrategyDryRunRequest {
+                symbol,
+                timeframe,
+                config_override: None,
+                correlation_id: None,
+            },
+        )
+        .await
+    }
+
     pub async fn enable_strategy(
         &self,
         strategy_id: &str,
@@ -550,13 +612,20 @@ pub struct CandleBackfillRunResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyStatusView {
     pub strategy_id: String,
-    pub status: String,
+    pub enabled: bool,
     pub mode: String,
     pub symbols: Vec<String>,
     pub timeframe: String,
     pub suggested_notional: String,
-    pub momentum_lookback_candles: i32,
-    pub breakout_lookback_candles: i32,
+    pub max_signal_age_ms: i64,
+    pub cooldown_seconds: i32,
+    pub lookback_candles: i32,
+    pub confidence_floor: Option<String>,
+    pub stop_loss_pct: Option<String>,
+    pub take_profit_pct: Option<String>,
+    pub holding_candles: Option<i32>,
+    pub notes: Option<String>,
+    pub config_version: i32,
     pub last_evaluated_at: Option<DateTime<Utc>>,
     pub last_evaluation_reason: Option<String>,
     pub last_signal_id: Option<Uuid>,
@@ -574,6 +643,38 @@ pub struct StrategyListResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyStatusResponse {
     pub strategy: StrategyStatusView,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyConfigValidationResponse {
+    pub validation: StrategyConfigValidationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyConfigVersionsResponse {
+    pub versions: Vec<StrategyConfigVersion>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyConfigAuditResponse {
+    pub audit: Vec<StrategyConfigAuditEntry>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyDryRunResponse {
+    pub result: StrategyDryRunResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -857,9 +958,31 @@ pub fn build_backtest_request(
         slippage_bps: args.slippage_bps,
         correlation_id: args.correlation_id,
         holding_candles: args.holding_candles,
+        strategy_config_override: None,
     };
     request.validate().context("invalid backtest request")?;
     Ok(request)
+}
+
+pub fn build_strategy_config_request(
+    args: &crate::cli::StrategyConfigArgs,
+) -> anyhow::Result<StrategyConfigUpdateRequest> {
+    Ok(StrategyConfigUpdateRequest {
+        strategy_id: args.strategy_id.clone(),
+        enabled: args.enabled,
+        mode: args.mode.parse().context("invalid strategy mode")?,
+        symbols: args.symbols.clone(),
+        timeframe: args.timeframe.clone(),
+        suggested_notional: args.suggested_notional,
+        max_signal_age_ms: args.max_signal_age_ms,
+        cooldown_seconds: args.cooldown_seconds,
+        lookback_candles: args.lookback_candles,
+        confidence_floor: args.confidence_floor,
+        stop_loss_pct: args.stop_loss_pct,
+        take_profit_pct: args.take_profit_pct,
+        holding_candles: args.holding_candles,
+        notes: args.notes.clone(),
+    })
 }
 
 pub fn build_pipeline_request(args: &crate::cli::PipelineRunArgs) -> PaperTradingPipelineRequest {
