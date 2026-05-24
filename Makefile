@@ -1,9 +1,12 @@
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: fmt check test test-no-run-db dashboard-typecheck dashboard-build verify demo compose-up compose-down
+.PHONY: fmt fmt-check check test test-no-run-db dashboard-typecheck dashboard-build demo-syntax diff-check verify demo compose-up compose-down
 
 fmt:
 	cargo fmt --all
+
+fmt-check:
+	cargo fmt --all --check
 
 check:
 	cargo check
@@ -21,7 +24,13 @@ dashboard-typecheck:
 dashboard-build:
 	npm --prefix apps/dashboard run build
 
-verify: fmt check test test-no-run-db dashboard-typecheck dashboard-build
+demo-syntax:
+	bash -n scripts/demo-v0.1.sh
+
+diff-check:
+	git diff --check
+
+verify: fmt-check check test test-no-run-db dashboard-typecheck dashboard-build demo-syntax diff-check
 
 demo:
 	./scripts/demo-v0.1.sh

@@ -22,7 +22,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
@@ -60,18 +62,87 @@ struct ClientAuthState {
     persist_session: bool,
 }
 
-#[derive(Debug, Clone)]
+type ResponseFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(StatusCode, Vec<u8>), String>> + Send + 'a>>;
+
+trait HttpExecutor: Send + Sync {
+    fn execute<'a>(&'a self, request: reqwest::Request) -> ResponseFuture<'a>;
+}
+
+struct ReqwestExecutor {
+    client: reqwest::Client,
+}
+
+impl HttpExecutor for ReqwestExecutor {
+    fn execute<'a>(&'a self, request: reqwest::Request) -> ResponseFuture<'a> {
+        Box::pin(async move {
+            let endpoint = request.url().path().to_string();
+            let response = self
+                .client
+                .execute(request)
+                .await
+                .map_err(|err| format!("{endpoint}: {err}"))?;
+            let status = response.status();
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|err| format!("{endpoint}: {err}"))?;
+            Ok((status, bytes.to_vec()))
+        })
+    }
+}
+
+#[derive(Clone)]
 pub struct ApiClient {
     base_url: Url,
-    http: reqwest::Client,
+    request_builder: reqwest::Client,
+    http: Arc<dyn HttpExecutor>,
     auth: Arc<Mutex<Option<ClientAuthState>>>,
+}
+
+impl std::fmt::Debug for ApiClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiClient")
+            .field("base_url", &self.base_url)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ApiClient {
     pub fn new(base_url: Url) -> Self {
+        let request_builder = reqwest::Client::new();
         Self {
             base_url,
-            http: reqwest::Client::new(),
+            request_builder: request_builder.clone(),
+            http: Arc::new(ReqwestExecutor {
+                client: request_builder,
+            }),
+            auth: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_test_handler<F>(base_url: Url, handler: F) -> Self
+    where
+        F: Fn(reqwest::Request) -> Result<(StatusCode, Vec<u8>), String> + Send + Sync + 'static,
+    {
+        struct TestExecutor<F> {
+            handler: F,
+        }
+
+        impl<F> HttpExecutor for TestExecutor<F>
+        where
+            F: Fn(reqwest::Request) -> Result<(StatusCode, Vec<u8>), String> + Send + Sync,
+        {
+            fn execute<'a>(&'a self, request: reqwest::Request) -> ResponseFuture<'a> {
+                Box::pin(async move { (self.handler)(request) })
+            }
+        }
+
+        Self {
+            base_url,
+            request_builder: reqwest::Client::new(),
+            http: Arc::new(TestExecutor { handler }),
             auth: Arc::new(Mutex::new(None)),
         }
     }
@@ -180,14 +251,14 @@ impl ApiClient {
         Ok(())
     }
 
-    async fn send_request(
+    fn build_request(
         &self,
         method: Method,
         endpoint: &str,
         query: &[(&str, String)],
         body: Option<&Value>,
         cli_auth: bool,
-    ) -> Result<reqwest::Response, ApiClientError> {
+    ) -> Result<reqwest::Request, ApiClientError> {
         let mut url = self.endpoint_url(endpoint)?;
         {
             let mut pairs = url.query_pairs_mut();
@@ -198,7 +269,7 @@ impl ApiClient {
             }
         }
 
-        let mut request = self.http.request(method, url);
+        let mut request = self.request_builder.request(method, url);
         if body.is_some() {
             request = request.header("content-type", "application/json");
         }
@@ -212,29 +283,28 @@ impl ApiClient {
             request = request.json(payload);
         }
 
-        request
-            .send()
-            .await
-            .map_err(|err| ApiClientError::Transport {
-                endpoint: endpoint.to_string(),
-                message: err.to_string(),
-            })
+        request.build().map_err(|err| ApiClientError::Transport {
+            endpoint: endpoint.to_string(),
+            message: err.to_string(),
+        })
     }
 
-    async fn read_response(
+    async fn execute_json_request(
         &self,
+        method: Method,
         endpoint: &str,
-        response: reqwest::Response,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        cli_auth: bool,
     ) -> Result<(StatusCode, Vec<u8>), ApiClientError> {
-        let status = response.status();
-        let bytes = response
-            .bytes()
+        let request = self.build_request(method, endpoint, query, body, cli_auth)?;
+        self.http
+            .execute(request)
             .await
             .map_err(|err| ApiClientError::Transport {
                 endpoint: endpoint.to_string(),
-                message: err.to_string(),
-            })?;
-        Ok((status, bytes.to_vec()))
+                message: err,
+            })
     }
 
     fn http_error(endpoint: &str, status: StatusCode, bytes: &[u8]) -> ApiClientError {
@@ -294,10 +364,9 @@ impl ApiClient {
             endpoint: "/auth/refresh".to_string(),
             message: format!("failed to encode refresh request: {err}"),
         })?;
-        let response = self
-            .send_request(Method::POST, "/auth/refresh", &[], Some(&payload), true)
+        let (status, bytes) = self
+            .execute_json_request(Method::POST, "/auth/refresh", &[], Some(&payload), true)
             .await?;
-        let (status, bytes) = self.read_response("/auth/refresh", response).await?;
         if !status.is_success() {
             return Err(ApiClientError::LoginRequired {
                 message: "login required: stored session could not be refreshed; run `aegis auth login` again".to_string(),
@@ -339,16 +408,14 @@ impl ApiClient {
                 message: format!("failed to encode request body: {err}"),
             }
         })?;
-        let response = self
-            .send_request(method.clone(), endpoint, query, body.as_ref(), false)
+        let (status, bytes) = self
+            .execute_json_request(method.clone(), endpoint, query, body.as_ref(), false)
             .await?;
-        let (status, bytes) = self.read_response(endpoint, response).await?;
         if status == StatusCode::UNAUTHORIZED && self.should_auto_refresh(endpoint) {
             self.try_auto_refresh().await?;
-            let response = self
-                .send_request(method, endpoint, query, body.as_ref(), false)
+            let (status, bytes) = self
+                .execute_json_request(method, endpoint, query, body.as_ref(), false)
                 .await?;
-            let (status, bytes) = self.read_response(endpoint, response).await?;
             if !status.is_success() {
                 return Err(Self::http_error(endpoint, status, &bytes));
             }
@@ -373,16 +440,14 @@ impl ApiClient {
         endpoint: &str,
         query: &[(&str, String)],
     ) -> Result<String, ApiClientError> {
-        let response = self
-            .send_request(method.clone(), endpoint, query, None, false)
+        let (status, bytes) = self
+            .execute_json_request(method.clone(), endpoint, query, None, false)
             .await?;
-        let (status, bytes) = self.read_response(endpoint, response).await?;
         if status == StatusCode::UNAUTHORIZED && self.should_auto_refresh(endpoint) {
             self.try_auto_refresh().await?;
-            let response = self
-                .send_request(method, endpoint, query, None, false)
+            let (status, bytes) = self
+                .execute_json_request(method, endpoint, query, None, false)
                 .await?;
-            let (status, bytes) = self.read_response(endpoint, response).await?;
             if !status.is_success() {
                 return Err(Self::http_error(endpoint, status, &bytes));
             }
@@ -412,10 +477,9 @@ impl ApiClient {
             endpoint: "/auth/login".to_string(),
             message: format!("failed to encode login request: {err}"),
         })?;
-        let response = self
-            .send_request(Method::POST, "/auth/login", &[], Some(&payload), true)
+        let (status, bytes) = self
+            .execute_json_request(Method::POST, "/auth/login", &[], Some(&payload), true)
             .await?;
-        let (status, bytes) = self.read_response("/auth/login", response).await?;
         if !status.is_success() {
             return Err(Self::http_error("/auth/login", status, &bytes));
         }
@@ -2455,18 +2519,13 @@ mod tests {
     use super::{
         build_auth_refresh_request, build_backtest_request, build_candle_backfill_request,
         build_pipeline_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
+        CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
     };
     use crate::cli::{BacktestRunArgs, MarketBackfillArgs, PipelineRunArgs};
     use crate::config::{clear_token_file, load_token_file, StoredAuthSession, StoredUserSummary};
     use aegis_core::{User, UserRole, UserStatus};
-    use axum::{
-        extract::State,
-        http::{header::AUTHORIZATION, HeaderMap, StatusCode},
-        response::IntoResponse,
-        routing::{get, post},
-        Json, Router,
-    };
     use chrono::{TimeZone, Utc};
+    use reqwest::{header::AUTHORIZATION, Method, StatusCode};
     use rust_decimal::Decimal;
     use std::{
         path::PathBuf,
@@ -2476,11 +2535,6 @@ mod tests {
         },
     };
     use uuid::Uuid;
-
-    #[derive(Clone)]
-    struct MockAuthState {
-        protected_hits: Arc<AtomicUsize>,
-    }
 
     fn sample_user() -> User {
         User {
@@ -2510,6 +2564,22 @@ mod tests {
             std::process::id(),
             Uuid::new_v4()
         ))
+    }
+
+    fn test_base_url() -> reqwest::Url {
+        reqwest::Url::parse("http://aegis.test").expect("valid base url")
+    }
+
+    fn request_json<T: for<'de> serde::Deserialize<'de>>(request: &reqwest::Request) -> T {
+        let body = request
+            .body()
+            .and_then(|body| body.as_bytes())
+            .expect("request body should be available");
+        serde_json::from_slice(body).expect("request body should be valid json")
+    }
+
+    fn json_response(value: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&value).expect("response should serialize")
     }
 
     #[test]
@@ -2623,77 +2693,67 @@ mod tests {
 
     #[tokio::test]
     async fn auto_refresh_retries_once_and_persists_rotated_session() {
-        async fn protected(
-            headers: HeaderMap,
-            State(state): State<MockAuthState>,
-        ) -> impl IntoResponse {
-            state.protected_hits.fetch_add(1, Ordering::SeqCst);
-            let token = headers
-                .get(AUTHORIZATION)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default();
-            if token == "Bearer refreshed-access-token" {
-                (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
-            } else {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({ "error": "expired" })),
-                )
-                    .into_response()
-            }
-        }
-
-        async fn refresh(
-            headers: HeaderMap,
-            Json(payload): Json<super::AuthRefreshRequestPayload>,
-        ) -> impl IntoResponse {
-            let auth_mode = headers
-                .get(super::CLI_AUTH_MODE_HEADER)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default();
-            if auth_mode != super::CLI_AUTH_MODE_VALUE || payload.refresh_token != "refresh-token-1"
-            {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(serde_json::json!({ "error": "invalid_refresh" })),
-                )
-                    .into_response();
-            }
-
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "user": sample_user(),
-                    "access_token": "refreshed-access-token",
-                    "expires_at": Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
-                    "refresh_token": "refresh-token-2"
-                })),
-            )
-                .into_response()
-        }
-
-        let state = MockAuthState {
-            protected_hits: Arc::new(AtomicUsize::new(0)),
-        };
-        let app = Router::new()
-            .route("/protected", get(protected))
-            .route("/auth/refresh", post(refresh))
-            .with_state(state.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener");
-        let addr = listener.local_addr().expect("local addr");
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("server should run");
-        });
-
+        let protected_hits = Arc::new(AtomicUsize::new(0));
         let token_path = temp_token_path("auto-refresh");
         let stored = sample_stored_session();
         crate::config::save_token_file(&token_path, &stored).expect("token file save");
 
-        let client =
-            ApiClient::new(reqwest::Url::parse(&format!("http://{}", addr)).expect("base url"))
-                .with_auth_session(stored, token_path.clone(), true);
+        let hits = Arc::clone(&protected_hits);
+        let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
+            match (request.method().as_str(), request.url().path()) {
+                ("GET", "/protected") => {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let token = request
+                        .headers()
+                        .get(AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    if token == "Bearer refreshed-access-token" {
+                        Ok((
+                            StatusCode::OK,
+                            json_response(serde_json::json!({ "ok": true })),
+                        ))
+                    } else {
+                        Ok((
+                            StatusCode::UNAUTHORIZED,
+                            json_response(serde_json::json!({ "error": "expired" })),
+                        ))
+                    }
+                }
+                ("POST", "/auth/refresh") => {
+                    let auth_mode = request
+                        .headers()
+                        .get(CLI_AUTH_MODE_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    let payload: super::AuthRefreshRequestPayload = request_json(&request);
+                    if auth_mode != CLI_AUTH_MODE_VALUE
+                        || payload.refresh_token != "refresh-token-1"
+                    {
+                        return Ok((
+                            StatusCode::UNAUTHORIZED,
+                            json_response(serde_json::json!({ "error": "invalid_refresh" })),
+                        ));
+                    }
+
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "user": sample_user(),
+                            "access_token": "refreshed-access-token",
+                            "expires_at": Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
+                            "refresh_token": "refresh-token-2"
+                        })),
+                    ))
+                }
+                _ => Err(format!(
+                    "unexpected request {} {}",
+                    request.method(),
+                    request.url()
+                )),
+            }
+        })
+        .with_auth_session(stored, token_path.clone(), true);
 
         let response = client
             .get_value("/protected", &[])
@@ -2701,21 +2761,25 @@ mod tests {
             .expect("protected request should succeed");
 
         assert_eq!(response["ok"], true);
-        assert_eq!(state.protected_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(protected_hits.load(Ordering::SeqCst), 2);
 
         let rotated = load_token_file(&token_path).expect("rotated token file");
         assert_eq!(rotated.access_token, "refreshed-access-token");
         assert_eq!(rotated.refresh_token.as_deref(), Some("refresh-token-2"));
 
         clear_token_file(&token_path).expect("token file clear");
-        server.abort();
     }
 
     #[tokio::test]
     async fn shadow_promotion_preview_serializes_expected_request_body() {
-        async fn preview(
-            Json(payload): Json<aegis_core::TestnetShadowPromotionRequest>,
-        ) -> impl IntoResponse {
+        let client = ApiClient::new_with_test_handler(test_base_url(), |request| {
+            assert_eq!(request.method(), Method::POST);
+            assert_eq!(
+                request.url().path(),
+                "/exchange/testnet/shadow/promotions/preview"
+            );
+
+            let payload: aegis_core::TestnetShadowPromotionRequest = request_json(&request);
             assert_eq!(
                 payload.shadow_run_id,
                 Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("valid uuid")
@@ -2725,9 +2789,9 @@ mod tests {
                 Some(Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid"))
             );
 
-            (
+            Ok((
                 StatusCode::OK,
-                Json(serde_json::json!({
+                json_response(serde_json::json!({
                     "promotion": {
                         "promotion_id": "11111111-1111-1111-1111-111111111111",
                         "shadow_run_id": payload.shadow_run_id,
@@ -2763,20 +2827,8 @@ mod tests {
                     "correlation_id": "corr-1",
                     "timestamp": "2026-05-24T00:00:00Z"
                 })),
-            )
-        }
-
-        let app = Router::new().route("/exchange/testnet/shadow/promotions/preview", post(preview));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener");
-        let addr = listener.local_addr().expect("local addr");
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("server should run");
+            ))
         });
-
-        let client =
-            ApiClient::new(reqwest::Url::parse(&format!("http://{}", addr)).expect("base url"));
         let response = client
             .exchange_testnet_shadow_promotion_preview(&aegis_core::TestnetShadowPromotionRequest {
                 shadow_run_id: Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -2789,121 +2841,95 @@ mod tests {
             .expect("preview should succeed");
 
         assert_eq!(response.promotion.symbol, "BTCUSDT");
-        server.abort();
     }
 
     #[tokio::test]
     async fn shadow_promotion_client_uses_expected_paths() {
-        async fn list() -> impl IntoResponse {
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "promotions": [],
-                    "request_id": "req-list",
-                    "correlation_id": "corr-list",
-                    "timestamp": "2026-05-24T00:00:00Z"
-                })),
-            )
-        }
-
-        async fn get_promotion(
-            axum::extract::Path(promotion_id): axum::extract::Path<Uuid>,
-        ) -> impl IntoResponse {
-            assert_eq!(
-                promotion_id,
-                Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("valid uuid")
-            );
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "promotion": {
-                        "promotion_id": promotion_id,
-                        "shadow_run_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                        "strategy_id": "momentum_v1",
-                        "symbol": "BTCUSDT",
-                        "timeframe": "1m",
-                        "signal_id": null,
-                        "risk_decision_id": "22222222-2222-2222-2222-222222222222",
-                        "would_submit_payload": {
-                            "exchange": "binance",
-                            "environment": "testnet",
-                            "symbol": "BTCUSDT",
-                            "side": "BUY",
-                            "order_type": "MARKET",
-                            "time_in_force": null,
-                            "quantity": null,
-                            "quote_notional": "100000",
-                            "limit_price": null,
-                            "risk_decision_id": "22222222-2222-2222-2222-222222222222"
-                        },
-                        "resolved_price": "100000",
-                        "price_source": "market_tick",
-                        "expires_at": "2026-05-24T00:05:00Z",
-                        "reasons": [],
-                        "status": "PREVIEWED",
-                        "correlation_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                        "created_at": "2026-05-24T00:00:00Z",
-                        "submitted_at": null,
-                        "testnet_order_id": null,
-                        "client_order_id": null
-                    },
-                    "request_id": "req-get",
-                    "correlation_id": "corr-get",
-                    "timestamp": "2026-05-24T00:00:00Z"
-                })),
-            )
-        }
-
-        async fn submit(
-            axum::extract::Path(promotion_id): axum::extract::Path<Uuid>,
-            Json(payload): Json<aegis_core::TestnetShadowPromotionSubmitRequest>,
-        ) -> impl IntoResponse {
-            assert_eq!(
-                promotion_id,
-                Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("valid uuid")
-            );
-            assert_eq!(payload.confirmation_text, "PROMOTE TESTNET BTCUSDT");
-
-            (
-                StatusCode::CREATED,
-                Json(serde_json::json!({
-                    "result": {
-                        "promotion_id": promotion_id,
-                        "shadow_run_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                        "testnet_order_id": "44444444-4444-4444-4444-444444444444",
-                        "client_order_id": "aegis-testnet-1",
-                        "execution_state": "EXCHANGE_ACKED",
-                        "correlation_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-                    },
-                    "request_id": "req-submit",
-                    "correlation_id": "corr-submit",
-                    "timestamp": "2026-05-24T00:00:00Z"
-                })),
-            )
-        }
-
-        let app = Router::new()
-            .route("/exchange/testnet/shadow/promotions", get(list))
-            .route(
-                "/exchange/testnet/shadow/promotions/:id",
-                get(get_promotion),
-            )
-            .route(
-                "/exchange/testnet/shadow/promotions/:id/submit",
-                post(submit),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener");
-        let addr = listener.local_addr().expect("local addr");
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("server should run");
-        });
-
-        let client =
-            ApiClient::new(reqwest::Url::parse(&format!("http://{}", addr)).expect("base url"));
         let promotion_id =
             Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("valid uuid");
+        let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
+            match (request.method().as_str(), request.url().path()) {
+                ("GET", "/exchange/testnet/shadow/promotions") => {
+                    assert_eq!(request.url().query(), Some("limit=25"));
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "promotions": [],
+                            "request_id": "req-list",
+                            "correlation_id": "corr-list",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                ("GET", "/exchange/testnet/shadow/promotions/33333333-3333-3333-3333-333333333333") => {
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "promotion": {
+                                "promotion_id": promotion_id,
+                                "shadow_run_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                                "strategy_id": "momentum_v1",
+                                "symbol": "BTCUSDT",
+                                "timeframe": "1m",
+                                "signal_id": null,
+                                "risk_decision_id": "22222222-2222-2222-2222-222222222222",
+                                "would_submit_payload": {
+                                    "exchange": "binance",
+                                    "environment": "testnet",
+                                    "symbol": "BTCUSDT",
+                                    "side": "BUY",
+                                    "order_type": "MARKET",
+                                    "time_in_force": null,
+                                    "quantity": null,
+                                    "quote_notional": "100000",
+                                    "limit_price": null,
+                                    "risk_decision_id": "22222222-2222-2222-2222-222222222222"
+                                },
+                                "resolved_price": "100000",
+                                "price_source": "market_tick",
+                                "expires_at": "2026-05-24T00:05:00Z",
+                                "reasons": [],
+                                "status": "PREVIEWED",
+                                "correlation_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                                "created_at": "2026-05-24T00:00:00Z",
+                                "submitted_at": null,
+                                "testnet_order_id": null,
+                                "client_order_id": null
+                            },
+                            "request_id": "req-get",
+                            "correlation_id": "corr-get",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                ("POST", "/exchange/testnet/shadow/promotions/33333333-3333-3333-3333-333333333333/submit") => {
+                    let payload: aegis_core::TestnetShadowPromotionSubmitRequest =
+                        request_json(&request);
+                    assert_eq!(payload.confirmation_text, "PROMOTE TESTNET BTCUSDT");
+                    Ok((
+                        StatusCode::CREATED,
+                        json_response(serde_json::json!({
+                            "result": {
+                                "promotion_id": promotion_id,
+                                "shadow_run_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                                "testnet_order_id": "44444444-4444-4444-4444-444444444444",
+                                "client_order_id": "aegis-testnet-1",
+                                "execution_state": "EXCHANGE_ACKED",
+                                "correlation_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                            },
+                            "request_id": "req-submit",
+                            "correlation_id": "corr-submit",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                _ => Err(format!(
+                    "unexpected request {} {}",
+                    request.method(),
+                    request.url()
+                )),
+            }
+        });
 
         let list_response = client
             .exchange_testnet_shadow_promotions(25)
@@ -2928,7 +2954,5 @@ mod tests {
             .await
             .expect("submit should succeed");
         assert_eq!(submit_response.result.promotion_id, promotion_id);
-
-        server.abort();
     }
 }
