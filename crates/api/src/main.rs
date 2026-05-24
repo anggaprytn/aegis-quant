@@ -13,8 +13,8 @@ use aegis_core::{
 };
 use api::{ensure_default_paper_account, persist_paper_fill_accounting};
 use axum::{
-    extract::{Path, Query, Request, State},
-    http::{HeaderName, HeaderValue, StatusCode},
+    extract::{MatchedPath, Path, Query, Request, State},
+    http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -46,10 +46,12 @@ use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
 use replay_engine::ReplayEngine;
 use risk_engine::RiskEvaluator;
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use strategy_engine::{build_default_strategy_configs, evaluate as evaluate_strategy};
+use telemetry::telemetry;
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -791,6 +793,7 @@ async fn main() {
         .route("/system/health", get(health))
         .route("/system/status", get(status))
         .route("/system/db-health", get(db_health))
+        .route("/metrics", get(metrics))
         .route("/events/recent", get(recent_events))
         .route("/events/:id", get(event_by_id))
         .route("/risk/status", get(risk_status))
@@ -885,8 +888,28 @@ async fn request_context_middleware(mut request: Request, next: Next) -> Respons
     });
 
     let method = request.method().clone();
-    let path = request.uri().path().to_string();
+    let path = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .map(normalize_route_label)
+        .unwrap_or_else(|| normalize_route_label(request.uri().path()));
     let mut response = next.run(request).await;
+    let duration = started_at.elapsed();
+
+    telemetry().observe_api_request(
+        method.as_str(),
+        path.as_str(),
+        response.status().as_u16(),
+        duration,
+    );
+
+    if path == "/system/health" {
+        telemetry().set_system_health(response.status().is_success());
+    }
+    if path == "/system/db-health" {
+        telemetry().set_db_health(response.status().is_success());
+    }
 
     response.headers_mut().insert(
         REQUEST_ID_HEADER.clone(),
@@ -904,7 +927,7 @@ async fn request_context_middleware(mut request: Request, next: Next) -> Respons
         method = %method,
         path = %path,
         status = response.status().as_u16(),
-        latency_ms = started_at.elapsed().as_millis(),
+        latency_ms = duration.as_millis(),
         "request completed"
     );
 
@@ -917,6 +940,114 @@ fn get_or_create_header(headers: &axum::http::HeaderMap, name: &HeaderName) -> S
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+fn normalize_route_label(path: &str) -> String {
+    if path.is_empty() {
+        return "/".to_string();
+    }
+
+    let trimmed = path.trim();
+    if trimmed == "/" {
+        return "/".to_string();
+    }
+
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+async fn refresh_metrics_snapshot(state: &AppState) -> anyhow::Result<()> {
+    let metrics = telemetry();
+
+    match get_system_state(&state.db_pool).await {
+        Ok(system_state) => metrics.set_kill_switch_active(system_state.kill_switch_enabled),
+        Err(err) => {
+            metrics.record_db_query_error("get_system_state");
+            return Err(err.into());
+        }
+    }
+
+    let now = Utc::now();
+    match list_market_feed_statuses(&state.db_pool).await {
+        Ok(feeds) => {
+            let mut by_symbol = std::collections::BTreeMap::new();
+            for feed in feeds {
+                by_symbol.insert(feed.symbol.clone(), feed);
+            }
+
+            for symbol in &state.market_config.symbols {
+                let symbol_str = symbol.as_str();
+                let exchange = state.market_config.exchange.as_str();
+                if let Some(feed) = by_symbol.get(symbol_str) {
+                    let status = feed.status.to_ascii_lowercase();
+                    let age_seconds = feed.last_event_at.map(|timestamp| {
+                        now.signed_duration_since(timestamp).num_milliseconds() as f64 / 1000.0
+                    });
+                    metrics.set_market_feed_status(exchange, symbol_str, status.as_str());
+                    metrics.set_market_feed_last_event_age_seconds(
+                        exchange,
+                        symbol_str,
+                        age_seconds,
+                    );
+                } else {
+                    metrics.set_market_feed_status(exchange, symbol_str, "unknown");
+                    metrics.set_market_feed_last_event_age_seconds(exchange, symbol_str, None);
+                }
+            }
+        }
+        Err(err) => {
+            metrics.record_db_query_error("list_market_feed_statuses");
+            return Err(err.into());
+        }
+    }
+
+    let paper_account = match get_default_paper_account(&state.db_pool).await {
+        Ok(account) => account,
+        Err(err) => {
+            metrics.record_db_query_error("get_default_paper_account");
+            return Err(err.into());
+        }
+    };
+
+    match paper_account.as_ref() {
+        Some(account) => metrics.set_paper_account_values(
+            account.current_equity.to_f64().unwrap_or(0.0),
+            account.realized_pnl.to_f64().unwrap_or(0.0),
+            account.unrealized_pnl.to_f64().unwrap_or(0.0),
+        ),
+        None => metrics.set_paper_account_values(0.0, 0.0, 0.0),
+    }
+
+    match paper_account {
+        Some(account) => match list_open_paper_positions(&state.db_pool, account.id).await {
+            Ok(positions) => {
+                let mut counts = std::collections::BTreeMap::<String, i64>::new();
+                for position in positions {
+                    *counts.entry(position.symbol).or_insert(0) += 1;
+                }
+                metrics.set_paper_positions_open(counts.into_iter());
+            }
+            Err(err) => {
+                metrics.record_db_query_error("list_open_paper_positions");
+                return Err(err.into());
+            }
+        },
+        None => metrics.set_paper_positions_open(std::iter::empty()),
+    }
+
+    match check_health(&state.db_pool).await {
+        Ok(()) => metrics.set_db_health(true),
+        Err(err) => {
+            metrics.record_db_query_error("check_health");
+            metrics.set_db_health(false);
+            return Err(err.into());
+        }
+    }
+
+    Ok(())
 }
 
 fn request_context(request: Option<Extension<RequestContext>>) -> RequestContext {
@@ -1340,6 +1471,32 @@ async fn db_health(
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
                 }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    telemetry().set_system_health(true);
+
+    if let Err(err) = refresh_metrics_snapshot(&state).await {
+        error!(error = %err, "failed to refresh telemetry snapshot gauges");
+    }
+
+    match telemetry().encode() {
+        Ok(body) => (
+            StatusCode::OK,
+            [(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+            body,
+        )
+            .into_response(),
+        Err(err) => {
+            error!(error = %err, "failed to encode prometheus metrics");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+                "failed to encode metrics".to_string(),
             )
                 .into_response()
         }
@@ -1840,6 +1997,22 @@ async fn evaluate_risk(
 
     let evaluator = RiskEvaluator::new(aegis_core::RiskConfig::default());
     let evaluation = evaluator.evaluate(&context, &snapshot);
+    telemetry().inc_risk_decision(
+        match evaluation.decision {
+            RiskEvaluationDecision::Approved => "approved",
+            RiskEvaluationDecision::Rejected => "rejected",
+        },
+        evaluation
+            .reasons
+            .first()
+            .map(|reason| reason_code(*reason))
+            .unwrap_or("none"),
+    );
+    if evaluation.decision == RiskEvaluationDecision::Rejected {
+        for reason in &evaluation.reasons {
+            telemetry().inc_risk_rejection(reason_code(*reason));
+        }
+    }
 
     if let Err(err) = insert_risk_evaluation(
         &state.db_pool,
@@ -1973,6 +2146,10 @@ async fn create_order(
     .await
     {
         Ok(outcome) => {
+            telemetry().inc_paper_order(
+                outcome.order.symbol.as_str(),
+                outcome.order.status.to_ascii_lowercase().as_str(),
+            );
             if let Err(err) = persist_paper_fill_accounting(&state.db_pool, &outcome.order).await {
                 error!(
                     request_id = %request.request_id,
@@ -3992,6 +4169,7 @@ async fn evaluate_strategy_handler(
     };
 
     if let Some(signal) = evaluation.signal.clone() {
+        telemetry().inc_strategy_evaluation(id.as_str(), symbol.as_str(), "signal_generated");
         let insert_outcome = match insert_signal_deduped(&state.db_pool, &signal).await {
             Ok(outcome) => outcome,
             Err(err) => {
@@ -4049,6 +4227,7 @@ async fn evaluate_strategy_handler(
         }
 
         if insert_outcome.inserted {
+            telemetry().inc_strategy_signal(id.as_str(), symbol.as_str(), signal.side.as_str());
             let event_publisher = PostgresEventPublisher::new(state.db_pool.clone());
             let event = SystemEventType::SignalGenerated.into_event(
                 insert_outcome.signal.correlation_id,
@@ -4102,6 +4281,7 @@ async fn evaluate_strategy_handler(
         )
             .into_response();
     }
+    telemetry().inc_strategy_evaluation(id.as_str(), symbol.as_str(), "no_signal");
 
     if let Err(err) = update_strategy_state(
         &state.db_pool,
@@ -4152,15 +4332,26 @@ async fn evaluate_strategy_handler(
 mod tests {
     use super::{
         bounded_recent_events_limit, bounded_risk_decisions_limit, is_valid_resume_confirmation,
-        order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
-        risk_decision_not_found_error, RequestContext, DEFAULT_RECENT_EVENTS_LIMIT,
-        DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
+        metrics, normalize_route_label, order_view, parse_correlation_id_filter,
+        parse_order_intent, parse_risk_check_context, request_context_middleware,
+        risk_decision_not_found_error, AppConfig, AppState, RequestContext, StrategyRuntimeConfig,
+        DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
+        MAX_RISK_DECISIONS_LIMIT,
     };
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
-    use aegis_core::Side;
+    use aegis_core::{CandleInterval, MarketDataSource, MarketMode, Side, Symbol};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
     use chrono::Utc;
     use db::OrderRecord;
+    use market_ingest::MarketIngestConfig;
     use rust_decimal::Decimal;
+    use telemetry::telemetry;
+    use tower::util::ServiceExt;
     use uuid::Uuid;
 
     #[test]
@@ -4327,5 +4518,96 @@ mod tests {
         assert_eq!(error.message, "Risk decision was not found.");
         assert_eq!(error.request_id, "req-1");
         assert_eq!(error.correlation_id, "corr-1");
+    }
+
+    #[test]
+    fn normalize_route_label_preserves_template_paths() {
+        assert_eq!(normalize_route_label("/orders/:id"), "/orders/:id");
+        assert_eq!(normalize_route_label("metrics"), "/metrics");
+    }
+
+    #[tokio::test]
+    async fn metrics_route_returns_prometheus_text() {
+        let app = Router::new()
+            .route("/metrics", get(metrics))
+            .with_state(test_app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain; version=0.0.4; charset=utf-8")
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(text.contains("aegis_system_health_status"));
+    }
+
+    #[tokio::test]
+    async fn request_middleware_uses_template_paths_for_metrics() {
+        let app = Router::new()
+            .route("/orders/:id", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(request_context_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/orders/123e4567-e89b-12d3-a456-426614174000")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let encoded = telemetry().encode().expect("metrics encode");
+        assert!(encoded.contains("path=\"/orders/:id\""));
+        assert!(!encoded.contains("path=\"/orders/123e4567-e89b-12d3-a456-426614174000\""));
+    }
+
+    fn test_app_state() -> AppState {
+        AppState {
+            config: AppConfig {
+                app_name: "aegis-test-api".to_string(),
+                environment: "test".to_string(),
+                bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
+                database_url: "postgres://postgres:postgres@127.0.0.1:5432/aegis".to_string(),
+                database_max_connections: 1,
+            },
+            db_pool: db::PgPool::connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/aegis")
+                .expect("lazy pool"),
+            started_at: Utc::now(),
+            market_mode: MarketMode::Paper,
+            market_config: MarketIngestConfig {
+                exchange: MarketDataSource::Binance,
+                symbols: vec![Symbol::new("BTCUSDT").expect("symbol")],
+                stale_threshold: std::time::Duration::from_secs(10),
+                binance_ws_base_url: "wss://example.invalid".to_string(),
+                binance_rest_base_url: "https://example.invalid".to_string(),
+            },
+            strategy_runtime: StrategyRuntimeConfig {
+                default_symbols: vec![Symbol::new("BTCUSDT").expect("symbol")],
+                default_timeframe: CandleInterval::OneMinute,
+                default_notional: Decimal::new(100_000, 0),
+                momentum_lookback_candles: 3,
+                breakout_lookback_candles: 20,
+            },
+        }
     }
 }

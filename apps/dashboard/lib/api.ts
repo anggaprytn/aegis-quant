@@ -94,6 +94,26 @@ async function request<T>(
   return (await response.json()) as T;
 }
 
+async function requestText(
+  path: string,
+  init?: RequestInit,
+  query?: Record<string, string | number | undefined>,
+): Promise<string> {
+  const response = await fetch(withQuery(path, query), {
+    ...init,
+    headers: {
+      ...(init?.headers ?? {}),
+    },
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new HttpError(response.status, `Request failed with status ${response.status}`);
+  }
+
+  return response.text();
+}
+
 export function getErrorMessage(error: unknown) {
   if (!error) {
     return undefined;
@@ -106,6 +126,7 @@ export function getErrorMessage(error: unknown) {
 
 export const api = {
   getSystemHealth: () => request<HealthResponse>("/system/health"),
+  getMetricsText: () => requestText("/metrics"),
   getSystemStatus: () => request<StatusResponse>("/system/status"),
   getRiskStatus: () => request<RiskStatusResponse>("/risk/status"),
   activateKillSwitch: (reason?: string) =>

@@ -9,6 +9,7 @@ authors.workspace = true
 aegis-core = { path = "../core" }
 db = { path = "../db" }
 events = { path = "../events" }
+telemetry = { path = "../telemetry" }
 anyhow.workspace = true
 chrono.workspace = true
 futures-util = "0.3"

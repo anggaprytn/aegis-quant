@@ -13,6 +13,7 @@ members = [
     "crates/replay-engine",
     "crates/risk-engine",
     "crates/strategy-engine",
+    "crates/telemetry",
 ]
 resolver = "2"
 
@@ -41,3 +42,4 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+prometheus = "0.13"

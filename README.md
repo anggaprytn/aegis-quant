@@ -41,6 +41,7 @@ This repository foundation includes:
    `curl http://127.0.0.1:3000/system/health`
    `curl http://127.0.0.1:3000/system/status`
    `curl http://127.0.0.1:3000/system/db-health`
+   `curl http://127.0.0.1:3000/metrics`
    `curl 'http://127.0.0.1:3000/market/symbols'`
    `curl 'http://127.0.0.1:3000/market/ticks/latest?symbol=BTCUSDT'`
    `curl 'http://127.0.0.1:3000/market/candles?symbol=BTCUSDT&interval=1m&limit=100'`
@@ -139,6 +140,8 @@ cargo run -p cli -- market backfill \
   --start 2026-05-01T00:00:00Z \
   --end 2026-05-02T00:00:00Z
 cargo run -p cli -- market backfills
+cargo run -p cli -- metrics
+cargo run -p cli -- metrics --grep paper
 ```
 
 Notes:
@@ -147,6 +150,35 @@ Notes:
 - `resume` refuses locally unless `--confirm "RESUME TRADING"` matches exactly.
 - `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
 - The CLI does not implement live trading, exchange private APIs, auth, API keys, or any TUI layer.
+
+## Telemetry
+
+Aegis exposes Prometheus-compatible telemetry at `GET /metrics`.
+
+Examples:
+
+```bash
+curl http://127.0.0.1:3000/metrics
+cargo run -p cli -- metrics
+cargo run -p cli -- metrics --grep risk
+docker compose -f infra/docker-compose.yml --profile prometheus up -d prometheus
+```
+
+Current metric coverage includes:
+
+- API request counters and latency histograms
+- System and database health gauges
+- Market tick, candle close, feed freshness, and backfill counters
+- Strategy evaluation and signal counters
+- Risk decision and rejection counters
+- Kill switch, paper pipeline, paper order, paper position, and paper PnL gauges
+- Backtest run, duration, and trade counters
+
+Notes:
+
+- `/metrics` is unauthenticated for now and should be network-restricted in production.
+- Scrape-time gauges read current operational state from Postgres and do not mutate state.
+- Metrics never expose API keys or private exchange credentials because those are not part of this MVP.
 
 ## Historical candle backfill
 

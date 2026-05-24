@@ -67,6 +67,14 @@ impl ApiClient {
         self.get(endpoint, query).await
     }
 
+    pub async fn get_text(
+        &self,
+        endpoint: &str,
+        query: &[(&str, String)],
+    ) -> Result<String, ApiClientError> {
+        self.request_text(Method::GET, endpoint, query).await
+    }
+
     fn endpoint_url(&self, endpoint: &str) -> Result<Url, ApiClientError> {
         let path = endpoint.trim_start_matches('/');
         self.base_url
@@ -148,8 +156,71 @@ impl ApiClient {
         })
     }
 
+    async fn request_text(
+        &self,
+        method: Method,
+        endpoint: &str,
+        query: &[(&str, String)],
+    ) -> Result<String, ApiClientError> {
+        let mut url = self.endpoint_url(endpoint)?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (key, value) in query {
+                if !value.is_empty() {
+                    pairs.append_pair(key, value);
+                }
+            }
+        }
+
+        let mut request = self.http.request(method, url);
+        if let Some(auth_header) = &self.auth_header {
+            request = request.header("authorization", auth_header);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|err| ApiClientError::Transport {
+                endpoint: endpoint.to_string(),
+                message: err.to_string(),
+            })?;
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|err| ApiClientError::Transport {
+                endpoint: endpoint.to_string(),
+                message: err.to_string(),
+            })?;
+
+        if !status.is_success() {
+            let safe_body = String::from_utf8_lossy(&bytes).trim().to_string();
+            let message = if safe_body.is_empty() {
+                format!("request failed with status {status}")
+            } else {
+                safe_body.clone()
+            };
+            return Err(ApiClientError::Http {
+                endpoint: endpoint.to_string(),
+                status,
+                message,
+                body: if safe_body.is_empty() {
+                    None
+                } else {
+                    Some(safe_body)
+                },
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     pub async fn system_health(&self) -> Result<HealthResponse, ApiClientError> {
         self.get("/system/health", &[]).await
+    }
+
+    pub async fn metrics(&self) -> Result<String, ApiClientError> {
+        self.get_text("/metrics", &[]).await
     }
 
     pub async fn system_status(&self) -> Result<StatusResponse, ApiClientError> {

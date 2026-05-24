@@ -51,5 +51,20 @@ services:
     ports:
       - "3001:3001"
 
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: aegis-quant-prometheus
+    profiles: ["prometheus"]
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
 volumes:
   postgres_data:

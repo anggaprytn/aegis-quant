@@ -9,6 +9,7 @@ authors.workspace = true
 aegis-core = { path = "../core" }
 db = { path = "../db" }
 strategy-engine = { path = "../strategy-engine" }
+telemetry = { path = "../telemetry" }
 anyhow.workspace = true
 chrono.workspace = true
 rust_decimal.workspace = true

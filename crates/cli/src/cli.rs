@@ -31,6 +31,7 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     Status,
+    Metrics(MetricsArgs),
     Kill {
         #[arg(long)]
         reason: Option<String>,
@@ -60,6 +61,12 @@ pub struct ResumeArgs {
     pub confirm: Option<String>,
     #[arg(long)]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct MetricsArgs {
+    #[arg(long, help = "Filter exposed metric lines by substring")]
+    pub grep: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -216,7 +223,7 @@ pub struct BacktestListArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, RESUME_CONFIRMATION_TEXT};
+    use super::{Cli, Commands, RESUME_CONFIRMATION_TEXT};
     use clap::Parser;
 
     #[test]
@@ -240,5 +247,12 @@ mod tests {
             .expect("cli parses");
 
         assert!(cli.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_command_parses_optional_grep() {
+        let cli = Cli::try_parse_from(["aegis", "metrics", "--grep", "paper"]).expect("cli parses");
+
+        assert!(matches!(cli.command, Commands::Metrics(_)));
     }
 }

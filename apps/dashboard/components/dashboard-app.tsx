@@ -75,6 +75,67 @@ const DEFAULT_BACKFILL_FORM: CandleBackfillRequest = {
   limit_per_request: 1000,
 };
 
+type TelemetrySnapshot = {
+  reachable: boolean;
+  killSwitchActive?: string;
+  openPositions?: string;
+  paperEquity?: string;
+  maxFeedAgeSeconds?: string;
+  raw: string;
+};
+
+function readMetricValue(metricsText: string, metricName: string) {
+  const line = metricsText
+    .split("\n")
+    .find((entry) => entry.startsWith(`${metricName} `) && !entry.startsWith("#"));
+  if (!line) {
+    return undefined;
+  }
+
+  const parts = line.trim().split(/\s+/);
+  return parts[parts.length - 1];
+}
+
+function sumMetricValues(metricsText: string, metricName: string) {
+  const lines = metricsText
+    .split("\n")
+    .filter((entry) => entry.startsWith(`${metricName}{`));
+  if (!lines.length) {
+    return undefined;
+  }
+
+  let total = 0;
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/);
+    const value = Number(parts[parts.length - 1]);
+    if (Number.isFinite(value)) {
+      total += value;
+    }
+  }
+
+  return String(total);
+}
+
+function readMaxFeedAgeSeconds(metricsText: string) {
+  const lines = metricsText
+    .split("\n")
+    .filter((entry) => entry.startsWith("aegis_market_feed_last_event_age_seconds{"));
+  if (!lines.length) {
+    return undefined;
+  }
+
+  let maxValue: number | undefined;
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/);
+    const value = Number(parts[parts.length - 1]);
+    if (Number.isFinite(value)) {
+      maxValue = maxValue === undefined ? value : Math.max(maxValue, value);
+    }
+  }
+
+  return maxValue === undefined ? undefined : String(maxValue);
+}
+
 export function DashboardApp() {
   const queryClient = useQueryClient();
   const [section, setSection] = useState<SectionId>("command-center");
@@ -126,6 +187,11 @@ export function DashboardApp() {
     queryKey: ["feed-status"],
     queryFn: api.getMarketFeedStatus,
     refetchInterval: 5_000,
+  });
+  const metricsQuery = useQuery({
+    queryKey: ["metrics-text"],
+    queryFn: api.getMetricsText,
+    refetchInterval: 15_000,
   });
   const strategiesQuery = useQuery({
     queryKey: ["strategies"],
@@ -413,6 +479,25 @@ export function DashboardApp() {
   const backtestRuns = backtestRunsQuery.data?.runs ?? [];
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
+  const telemetrySnapshot = useMemo<TelemetrySnapshot>(
+    () => ({
+      reachable: Boolean(metricsQuery.data),
+      killSwitchActive: metricsQuery.data
+        ? readMetricValue(metricsQuery.data, "aegis_kill_switch_active")
+        : undefined,
+      openPositions: metricsQuery.data
+        ? sumMetricValues(metricsQuery.data, "aegis_paper_positions_open")
+        : undefined,
+      paperEquity: metricsQuery.data
+        ? readMetricValue(metricsQuery.data, "aegis_paper_equity")
+        : undefined,
+      maxFeedAgeSeconds: metricsQuery.data
+        ? readMaxFeedAgeSeconds(metricsQuery.data)
+        : undefined,
+      raw: metricsQuery.data ?? "",
+    }),
+    [metricsQuery.data],
+  );
 
   const latestTicks = DEFAULT_SYMBOLS.map((symbol, index) => ({
     symbol,
@@ -579,6 +664,23 @@ export function DashboardApp() {
 
               <Panel className="xl:col-span-4" title="Feed Status">
                 <FeedTable feeds={feeds} loading={feedQuery.isLoading} error={getErrorMessage(feedQuery.error)} />
+              </Panel>
+
+              <Panel className="xl:col-span-8" title="Telemetry">
+                <KeyValue
+                  items={[
+                    ["Metrics Reachable", telemetrySnapshot.reachable ? "YES" : "NO"],
+                    ["Kill Switch Active", telemetrySnapshot.killSwitchActive ?? "N/A"],
+                    ["Open Positions", telemetrySnapshot.openPositions ?? "N/A"],
+                    ["Paper Equity", telemetrySnapshot.paperEquity ?? "N/A"],
+                    ["Max Feed Age Seconds", telemetrySnapshot.maxFeedAgeSeconds ?? "N/A"],
+                  ]}
+                  loading={metricsQuery.isLoading}
+                  error={getErrorMessage(metricsQuery.error)}
+                />
+                <pre className="mt-3 max-h-64 overflow-auto rounded-xl border border-border bg-surface/80 p-3 text-xs text-copy/80">
+                  {telemetrySnapshot.raw || "# metrics unavailable"}
+                </pre>
               </Panel>
 
               {latestTicks.map((tickCard) => (

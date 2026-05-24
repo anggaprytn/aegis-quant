@@ -38,6 +38,19 @@ async fn main() -> anyhow::Result<()> {
                 output::print_status(&health, &status, &risk, &feed);
             }
         }
+        Commands::Metrics(args) => {
+            let response = client.metrics().await?;
+            let filtered = if let Some(pattern) = args.grep.as_deref() {
+                response
+                    .lines()
+                    .filter(|line| line.contains(pattern))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                response
+            };
+            println!("{filtered}");
+        }
         Commands::Kill { reason } => {
             let response = client.activate_kill_switch(reason).await?;
             if cli.json {

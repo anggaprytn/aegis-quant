@@ -13,6 +13,7 @@ use db::{
 use rust_decimal::Decimal;
 use serde_json::json;
 use strategy_engine::evaluate as evaluate_strategy;
+use telemetry::telemetry;
 use uuid::Uuid;
 
 const BPS_DENOMINATOR: i64 = 10_000;
@@ -51,6 +52,8 @@ impl ReplayEngine {
 
     pub async fn run_backtest(&self, request: BacktestRequest) -> Result<BacktestExecution> {
         request.validate()?;
+        let started_at = std::time::Instant::now();
+        let metrics = telemetry();
 
         let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
         let run_id = Uuid::new_v4();
@@ -89,6 +92,11 @@ impl ReplayEngine {
         {
             Ok(execution) => execution,
             Err(err) => {
+                metrics.inc_backtest_run(
+                    request.strategy_id.as_str(),
+                    request.symbol.as_str(),
+                    "failed",
+                );
                 let failed = failure_result(run_id, created_at, Some(correlation_id), &request);
                 let _ = update_backtest_run_completed(&self.pool, &failed, &config).await;
                 let _ = self
@@ -134,6 +142,21 @@ impl ReplayEngine {
             }),
         )
         .await?;
+        metrics.inc_backtest_run(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            execution.result.status.as_str(),
+        );
+        metrics.observe_backtest_duration(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            started_at.elapsed(),
+        );
+        metrics.add_backtest_trades(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            execution.result.trade_count.max(0) as u64,
+        );
 
         Ok(execution)
     }

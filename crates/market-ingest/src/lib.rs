@@ -17,6 +17,7 @@ use reqwest::Url;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use telemetry::telemetry;
 use thiserror::Error;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
@@ -388,6 +389,14 @@ impl MarketIngestService {
             self.reconnect_count,
         )
         .await?;
+        telemetry().inc_market_ticks(tick.exchange.as_str(), tick.symbol.as_str());
+        if let Some(closed) = update.closed.as_ref() {
+            telemetry().inc_market_candles_closed(
+                closed.exchange.as_str(),
+                closed.symbol.as_str(),
+                closed.interval.as_str(),
+            );
+        }
 
         Ok(())
     }
@@ -676,8 +685,38 @@ impl HistoricalCandleBackfillService {
         .await;
 
         match execution {
-            Ok(result) => Ok(result),
+            Ok(result) => {
+                telemetry().inc_market_backfill_run(
+                    result.exchange.as_str(),
+                    result.symbol.as_str(),
+                    result.status.as_str(),
+                );
+                telemetry().add_market_backfill_candles(
+                    result.exchange.as_str(),
+                    result.symbol.as_str(),
+                    "inserted",
+                    result.inserted_candles.max(0) as u64,
+                );
+                telemetry().add_market_backfill_candles(
+                    result.exchange.as_str(),
+                    result.symbol.as_str(),
+                    "updated",
+                    result.updated_candles.max(0) as u64,
+                );
+                telemetry().add_market_backfill_candles(
+                    result.exchange.as_str(),
+                    result.symbol.as_str(),
+                    "skipped",
+                    result.skipped_candles.max(0) as u64,
+                );
+                Ok(result)
+            }
             Err(err) => {
+                telemetry().inc_market_backfill_run(
+                    request.exchange.as_str(),
+                    symbol.as_str(),
+                    "failed",
+                );
                 let _ = fail_candle_backfill_run(&self.pool, run_id, &err.to_string(), Utc::now())
                     .await;
                 let _ = event_publisher

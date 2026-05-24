@@ -17,6 +17,7 @@ use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
 use serde_json::json;
 use strategy_engine::evaluate as evaluate_strategy;
+use telemetry::telemetry;
 use uuid::Uuid;
 
 pub async fn run_paper_pipeline(
@@ -42,6 +43,12 @@ pub async fn run_paper_pipeline(
 
     let config = ensure_strategy_config(state, strategy_id).await?;
     if config.status == StrategyStatus::Disabled {
+        telemetry().inc_strategy_disabled(request.strategy_id.as_str());
+        telemetry().inc_paper_pipeline_run(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            "strategy_disabled",
+        );
         let result = terminal_result(
             PipelineDecision::StrategyDisabled,
             &request,
@@ -66,6 +73,11 @@ pub async fn run_paper_pipeline(
     }
 
     if config.timeframe != timeframe {
+        telemetry().inc_paper_pipeline_run(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            "safety_stopped",
+        );
         let result = terminal_result(
             PipelineDecision::SafetyStopped,
             &request,
@@ -95,6 +107,11 @@ pub async fn run_paper_pipeline(
     }
 
     if let Some(reason) = feed_stop_reason(state, &symbol).await? {
+        telemetry().inc_paper_pipeline_run(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            "safety_stopped",
+        );
         let result = terminal_result(
             PipelineDecision::SafetyStopped,
             &request,
@@ -139,9 +156,21 @@ pub async fn run_paper_pipeline(
     .context("failed to evaluate strategy")?;
 
     if let Some(signal) = evaluation.signal.clone() {
+        telemetry().inc_strategy_evaluation(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            "signal_generated",
+        );
         let signal_outcome = insert_signal_deduped(&state.db_pool, &signal)
             .await
             .context("failed to persist signal")?;
+        if signal_outcome.inserted {
+            telemetry().inc_strategy_signal(
+                request.strategy_id.as_str(),
+                request.symbol.as_str(),
+                signal.side.as_str(),
+            );
+        }
 
         update_strategy_state(
             &state.db_pool,
@@ -198,8 +227,24 @@ pub async fn run_paper_pipeline(
         )
         .await
         .context("failed to persist risk decision")?;
+        let decision_label = match risk_evaluation.decision {
+            RiskEvaluationDecision::Approved => "approved",
+            RiskEvaluationDecision::Rejected => "rejected",
+        };
+        telemetry().inc_risk_decision(
+            decision_label,
+            primary_risk_reason_label(&risk_evaluation.reasons),
+        );
 
         if risk_evaluation.decision == RiskEvaluationDecision::Rejected {
+            for reason in &risk_evaluation.reasons {
+                telemetry().inc_risk_rejection(crate::reason_code(*reason));
+            }
+            telemetry().inc_paper_pipeline_run(
+                request.strategy_id.as_str(),
+                request.symbol.as_str(),
+                "risk_rejected",
+            );
             let result = PaperTradingPipelineResult {
                 pipeline_decision: PipelineDecision::RiskRejected,
                 strategy_id: request.strategy_id,
@@ -265,6 +310,11 @@ pub async fn run_paper_pipeline(
             .await
             .context("failed to query existing paper order by idempotency key")?
         {
+            telemetry().inc_paper_pipeline_run(
+                request.strategy_id.as_str(),
+                request.symbol.as_str(),
+                "paper_order_reused",
+            );
             let result = PaperTradingPipelineResult {
                 pipeline_decision: PipelineDecision::PaperOrderReused,
                 strategy_id: request.strategy_id,
@@ -332,6 +382,11 @@ pub async fn run_paper_pipeline(
                     .await
                     .context("failed to load duplicate-safe paper order")?
                     .ok_or_else(|| anyhow!("duplicate idempotency key without existing order"))?;
+                telemetry().inc_paper_pipeline_run(
+                    request.strategy_id.as_str(),
+                    request.symbol.as_str(),
+                    "paper_order_reused",
+                );
                 let result = PaperTradingPipelineResult {
                     pipeline_decision: PipelineDecision::PaperOrderReused,
                     strategy_id: request.strategy_id,
@@ -374,6 +429,15 @@ pub async fn run_paper_pipeline(
             }
             Err(err) => return Err(err.into()),
         };
+        telemetry().inc_paper_pipeline_run(
+            request.strategy_id.as_str(),
+            request.symbol.as_str(),
+            "paper_order_created",
+        );
+        telemetry().inc_paper_order(
+            request.symbol.as_str(),
+            order_outcome.order.status.to_ascii_lowercase().as_str(),
+        );
 
         let result = PaperTradingPipelineResult {
             pipeline_decision: PipelineDecision::PaperOrderCreated,
@@ -455,6 +519,16 @@ pub async fn run_paper_pipeline(
         .await?;
         return Ok(result);
     }
+    telemetry().inc_strategy_evaluation(
+        request.strategy_id.as_str(),
+        request.symbol.as_str(),
+        "no_signal",
+    );
+    telemetry().inc_paper_pipeline_run(
+        request.strategy_id.as_str(),
+        request.symbol.as_str(),
+        "no_signal",
+    );
 
     update_strategy_state(
         &state.db_pool,
@@ -566,6 +640,13 @@ fn signal_reason_to_pipeline_reason(reason: SignalReason) -> PipelineRejectionRe
         SignalReason::StrategyDisabled => PipelineRejectionReason::StrategyDisabled,
         _ => PipelineRejectionReason::UnsupportedState,
     }
+}
+
+fn primary_risk_reason_label(reasons: &[aegis_core::RiskRejectionReason]) -> &'static str {
+    reasons
+        .first()
+        .map(|reason| crate::reason_code(*reason))
+        .unwrap_or("none")
 }
 
 fn parse_signal_side(value: &str) -> Result<Side> {

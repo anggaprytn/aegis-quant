@@ -189,6 +189,48 @@ Operational intent:
 - Risk rejection review is read-only and does not mutate risk state
 - Event inspection remains append-only and filterable for operator triage
 
+## Telemetry flow
+
+Operational metrics are exposed from the API at `GET /metrics` in Prometheus text format.
+
+The telemetry design has two layers:
+
+```txt
+event-time instrumentation
+-> counters / histograms updated when deterministic actions complete
+
+scrape-time snapshot
+-> lightweight current-state queries
+-> gauges refreshed just before metrics exposition
+```
+
+Event-time coverage:
+
+- API request count and duration
+- persisted market ticks
+- closed candles produced by the deterministic candle builder
+- strategy evaluations and generated signals
+- persisted risk decisions and rejections
+- completed paper pipeline outcomes
+- created/reused paper orders
+- completed backfill runs and candle totals
+- completed backtest runs, durations, and trade counts
+
+Scrape-time gauge coverage:
+
+- kill switch active state
+- DB health state
+- market feed status and last-event age
+- open paper positions by symbol
+- paper equity, realized PnL, and unrealized PnL
+
+Constraints:
+
+- Route labels use bounded template paths like `/orders/:id`, not raw IDs.
+- Metrics do not include idempotency keys, correlation IDs, UUIDs, or raw user input as labels.
+- Scrape-time queries target current-state tables only and avoid historical scans.
+- `/metrics` is currently unauthenticated and should be isolated at the network boundary in production.
+
 ## CLI fallback
 
 `crates/cli` adds an operator-local fallback path for the same paper-only operational surface area when the Next.js dashboard is unavailable.
