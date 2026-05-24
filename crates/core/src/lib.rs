@@ -1430,6 +1430,193 @@ impl std::str::FromStr for PaperPriceStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperCloseMode {
+    MarketSimulated,
+}
+
+impl Default for PaperCloseMode {
+    fn default() -> Self {
+        Self::MarketSimulated
+    }
+}
+
+impl PaperCloseMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MarketSimulated => "market_simulated",
+        }
+    }
+}
+
+impl std::str::FromStr for PaperCloseMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "market_simulated" => Ok(Self::MarketSimulated),
+            other => Err(CoreError::UnsupportedPaperCloseMode(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperCloseReason {
+    ManualOperatorExit,
+    RiskOperatorExit,
+    EmergencyExit,
+}
+
+impl PaperCloseReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ManualOperatorExit => "manual_operator_exit",
+            Self::RiskOperatorExit => "risk_operator_exit",
+            Self::EmergencyExit => "emergency_exit",
+        }
+    }
+}
+
+impl std::str::FromStr for PaperCloseReason {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "manual_operator_exit" => Ok(Self::ManualOperatorExit),
+            "risk_operator_exit" => Ok(Self::RiskOperatorExit),
+            "emergency_exit" => Ok(Self::EmergencyExit),
+            other => Err(CoreError::UnsupportedPaperCloseReason(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperCloseValidationIssue {
+    PositionNotFound,
+    AccountNotFound,
+    PositionNotOpen,
+    WrongConfirmationText,
+    MissingMarketPrice,
+    StaleMarketPrice,
+    AlreadyClosed,
+    UnsupportedCloseMode,
+}
+
+impl PaperCloseValidationIssue {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PositionNotFound => "position_not_found",
+            Self::AccountNotFound => "account_not_found",
+            Self::PositionNotOpen => "position_not_open",
+            Self::WrongConfirmationText => "wrong_confirmation_text",
+            Self::MissingMarketPrice => "missing_market_price",
+            Self::StaleMarketPrice => "stale_market_price",
+            Self::AlreadyClosed => "already_closed",
+            Self::UnsupportedCloseMode => "unsupported_close_mode",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperCloseStatus {
+    Closed,
+    AlreadyClosed,
+}
+
+impl PaperCloseStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::AlreadyClosed => "already_closed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperClosePositionRequest {
+    pub position_id: Uuid,
+    pub confirmation_text: String,
+    pub reason: Option<PaperCloseReason>,
+    #[serde(default)]
+    pub close_mode: PaperCloseMode,
+    pub correlation_id: Option<Uuid>,
+    #[serde(default)]
+    pub allow_stale_price: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperPositionCloseSummary {
+    pub status: PaperCloseStatus,
+    pub position_id: Uuid,
+    pub account_id: Uuid,
+    pub symbol: String,
+    pub quantity: Decimal,
+    pub entry_price: Decimal,
+    pub exit_price: Decimal,
+    pub realized_pnl: Decimal,
+    pub fee: Decimal,
+    pub slippage_cost: Decimal,
+    pub closed_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+    pub journal_entry_id: Uuid,
+    pub close_fill_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperClosePositionResult {
+    pub position_id: Uuid,
+    pub account_id: Uuid,
+    pub symbol: String,
+    pub quantity: Decimal,
+    pub entry_price: Decimal,
+    pub exit_price: Decimal,
+    pub realized_pnl: Decimal,
+    pub fee: Decimal,
+    pub slippage_cost: Decimal,
+    pub closed_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+    pub journal_entry_id: Uuid,
+    pub close_fill_id: Uuid,
+    pub summary: PaperPositionCloseSummary,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperPositionStatusFilter {
+    Open,
+    Closed,
+    All,
+}
+
+impl PaperPositionStatusFilter {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::All => "all",
+        }
+    }
+}
+
+impl std::str::FromStr for PaperPositionStatusFilter {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "open" => Ok(Self::Open),
+            "closed" => Ok(Self::Closed),
+            "all" => Ok(Self::All),
+            other => Err(CoreError::UnsupportedPaperPositionStatusFilter(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PaperAccount {
     pub id: Uuid,
@@ -1646,6 +1833,12 @@ pub enum CoreError {
     UnsupportedPnlCalculationMode(String),
     #[error("unsupported paper price status: {0}")]
     UnsupportedPaperPriceStatus(String),
+    #[error("unsupported paper close mode: {0}")]
+    UnsupportedPaperCloseMode(String),
+    #[error("unsupported paper close reason: {0}")]
+    UnsupportedPaperCloseReason(String),
+    #[error("unsupported paper position status filter: {0}")]
+    UnsupportedPaperPositionStatusFilter(String),
     #[error("unsupported candle backfill status: {0}")]
     UnsupportedCandleBackfillStatus(String),
     #[error("unsupported candle backfill source: {0}")]

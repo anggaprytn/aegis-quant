@@ -21,14 +21,14 @@
 - Completed: Binance public REST historical candle backfill with persisted run tracking, CLI/API entrypoints, and dashboard inspection
 - Completed: cockpit inspection APIs for persisted risk decisions, enriched order inspection, and filtered recent events
 - Completed: local/operator CLI fallback over the existing HTTP API for status, kill switch control, paper pipeline runs, strategies, orders, events, risk decisions, and backtests
-- Completed: paper account, position, fill, journal, mark-to-market, and equity snapshot accounting for operational paper trading
+- Completed: paper account, position, fill, journal, mark-to-market, manual close flow, and equity snapshot accounting for operational paper trading
 - Completed: Prometheus-compatible telemetry, `/metrics`, CLI metrics fetch, and dashboard telemetry inspection
 - Completed: strategy config validation, version history, audit logging, dry-run evaluation, and operator-facing config controls in API/CLI/dashboard
 - Current focus: tighten operator visibility, reconciliation, and truthful paper-state inspection before any live execution surface area
 
 ## Next implementation steps
 
-1. Add paper trading reconciliation and close/exit lifecycle extensions
+1. Add paper trading reconciliation on top of the new close/exit lifecycle
 2. Add richer risk rules using data freshness, open position state, and paper account drawdown
 3. Add monitoring polish and alerting guidance on top of the new telemetry surface
 4. Add strategy scheduling and bounded automation around the existing pipeline

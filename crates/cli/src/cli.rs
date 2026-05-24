@@ -23,6 +23,11 @@ impl Cli {
                 );
             }
         }
+        if let Commands::Paper(PaperCommands::Close(args)) = &self.command {
+            if args.confirm.is_none() {
+                anyhow::bail!("paper close requires --confirm \"CLOSE <SYMBOL>\"");
+            }
+        }
 
         Ok(())
     }
@@ -233,6 +238,7 @@ pub enum BacktestCommands {
 pub enum PaperCommands {
     Account,
     Positions(PaperListArgs),
+    Close(PaperCloseArgs),
     Pnl,
     Equity(PaperListArgs),
     Journal(PaperListArgs),
@@ -243,6 +249,17 @@ pub enum PaperCommands {
 pub struct PaperListArgs {
     #[arg(long, default_value_t = 50)]
     pub limit: i64,
+    #[arg(long, default_value = "ALL")]
+    pub status: String,
+}
+
+#[derive(Debug, Args)]
+pub struct PaperCloseArgs {
+    pub position_id: Uuid,
+    #[arg(long, help = "Must match CLOSE <SYMBOL> exactly")]
+    pub confirm: Option<String>,
+    #[arg(long)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Args)]

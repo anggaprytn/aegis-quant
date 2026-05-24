@@ -1,29 +1,82 @@
 use std::{env, net::SocketAddr};
 
 use accounting::{
-    apply_paper_order_fill, create_default_paper_account_if_missing, PaperAccountingConfig,
+    apply_paper_order_fill, close_position_market_simulated,
+    create_default_paper_account_if_missing, PaperAccountingConfig,
 };
 use aegis_core::{
-    CandleInterval, MarketMode, PaperAccount, PaperFill, PositionSide, RiskRejectionReason,
-    StrategyConfig, StrategyId, Symbol,
+    CandleInterval, MarketMode, PaperAccount, PaperCloseMode, PaperClosePositionRequest,
+    PaperCloseStatus, PaperCloseValidationIssue, PaperFill, PaperPositionCloseSummary,
+    PositionSide, PositionStatus, RiskRejectionReason, StrategyConfig, StrategyId, Symbol,
 };
 use anyhow::Result;
 use chrono::Utc;
 use db::{
-    get_default_paper_account, get_open_paper_position, get_strategy_status, insert_paper_account,
-    insert_paper_equity_snapshot, insert_paper_fill, insert_paper_trade_journal_entry,
-    paper_account_from_record, paper_position_from_record, strategy_config_from_record,
-    upsert_paper_position, upsert_strategy_config, OrderRecord, PgPool, StateActor,
+    close_paper_position_transactional, get_default_paper_account, get_latest_mark_price,
+    get_open_paper_position, get_paper_close_summary, get_paper_position, get_strategy_status,
+    insert_paper_account, insert_paper_equity_snapshot, insert_paper_fill,
+    insert_paper_trade_journal_entry, paper_account_from_record, paper_position_from_record,
+    strategy_config_from_record, upsert_paper_position, upsert_strategy_config, OrderRecord,
+    PgPool, StateActor,
 };
 use market_ingest::MarketIngestConfig;
 use rust_decimal::Decimal;
 use strategy_engine::build_default_strategy_configs;
+use uuid::Uuid;
 
 pub mod pipeline;
 
 pub const DEFAULT_PAPER_ACCOUNT_NAME: &str = "Default Paper";
 pub const DEFAULT_PAPER_ACCOUNT_BASE_CURRENCY: &str = "USDT";
 pub const DEFAULT_PAPER_ACCOUNT_INITIAL_EQUITY: i64 = 1_000_000;
+
+#[derive(Debug)]
+pub enum ClosePaperPositionError {
+    Validation(PaperCloseValidationIssue),
+    Unexpected(anyhow::Error),
+}
+
+pub fn expected_paper_close_confirmation(symbol: &str) -> String {
+    format!("CLOSE {}", symbol.trim().to_ascii_uppercase())
+}
+
+pub fn validate_paper_close_confirmation(
+    symbol: &str,
+    confirmation_text: &str,
+) -> std::result::Result<(), PaperCloseValidationIssue> {
+    if confirmation_text == expected_paper_close_confirmation(symbol) {
+        Ok(())
+    } else {
+        Err(PaperCloseValidationIssue::WrongConfirmationText)
+    }
+}
+
+pub fn validate_paper_close_status(
+    status: PositionStatus,
+) -> std::result::Result<(), PaperCloseValidationIssue> {
+    match status {
+        PositionStatus::Open => Ok(()),
+        PositionStatus::Closed => Err(PaperCloseValidationIssue::AlreadyClosed),
+    }
+}
+
+pub fn validate_mark_price_freshness(
+    received_at: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+    stale_threshold: std::time::Duration,
+    allow_stale_price: bool,
+) -> std::result::Result<(), PaperCloseValidationIssue> {
+    let is_stale = now
+        .signed_duration_since(received_at)
+        .to_std()
+        .map(|age| age > stale_threshold)
+        .unwrap_or(false);
+    if is_stale && !allow_stale_price {
+        Err(PaperCloseValidationIssue::StaleMarketPrice)
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -254,4 +307,154 @@ pub async fn persist_paper_fill_accounting(
     .await?;
 
     Ok(Some(paper_account_from_record(&account_record)?))
+}
+
+pub async fn close_paper_position(
+    pool: &PgPool,
+    market_config: &MarketIngestConfig,
+    actor: &StateActor,
+    request: PaperClosePositionRequest,
+) -> std::result::Result<PaperPositionCloseSummary, ClosePaperPositionError> {
+    if request.close_mode != PaperCloseMode::MarketSimulated {
+        return Err(ClosePaperPositionError::Validation(
+            PaperCloseValidationIssue::UnsupportedCloseMode,
+        ));
+    }
+
+    let account = ensure_default_paper_account(pool)
+        .await
+        .map_err(ClosePaperPositionError::Unexpected)?;
+    let Some(position_record) = get_paper_position(pool, account.id, request.position_id)
+        .await
+        .map_err(ClosePaperPositionError::Unexpected)?
+    else {
+        return Err(ClosePaperPositionError::Validation(
+            PaperCloseValidationIssue::PositionNotFound,
+        ));
+    };
+    let position = paper_position_from_record(&position_record)
+        .map_err(|err| ClosePaperPositionError::Unexpected(err.into()))?;
+    validate_paper_close_confirmation(&position.symbol, &request.confirmation_text)
+        .map_err(ClosePaperPositionError::Validation)?;
+    if position.status == PositionStatus::Closed {
+        let Some(summary) = get_paper_close_summary(pool, account.id, position.id)
+            .await
+            .map_err(ClosePaperPositionError::Unexpected)?
+        else {
+            return Err(ClosePaperPositionError::Validation(
+                PaperCloseValidationIssue::AlreadyClosed,
+            ));
+        };
+        return Ok(summary);
+    }
+    validate_paper_close_status(position.status).map_err(|issue| match issue {
+        PaperCloseValidationIssue::AlreadyClosed => {
+            ClosePaperPositionError::Validation(PaperCloseValidationIssue::AlreadyClosed)
+        }
+        _ => ClosePaperPositionError::Validation(PaperCloseValidationIssue::PositionNotOpen),
+    })?;
+
+    let Some(mark_tick) = get_latest_mark_price(pool, &position.symbol)
+        .await
+        .map_err(ClosePaperPositionError::Unexpected)?
+    else {
+        return Err(ClosePaperPositionError::Validation(
+            PaperCloseValidationIssue::MissingMarketPrice,
+        ));
+    };
+    let now = Utc::now();
+    validate_mark_price_freshness(
+        mark_tick.received_at,
+        now,
+        market_config.stale_threshold,
+        request.allow_stale_price,
+    )
+    .map_err(ClosePaperPositionError::Validation)?;
+
+    let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
+    let application = close_position_market_simulated(
+        &account,
+        &position,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        mark_tick.price,
+        Decimal::ZERO,
+        Decimal::ZERO,
+        now,
+        correlation_id,
+    )
+    .map_err(ClosePaperPositionError::Unexpected)?;
+    let summary = close_paper_position_transactional(
+        pool,
+        "api.paper_close",
+        actor,
+        &account,
+        &position,
+        &application.close_result,
+        &application.account,
+        &application.position,
+        &application.fill,
+        &application.snapshot,
+        &application.journal_entries,
+    )
+    .await
+    .map_err(ClosePaperPositionError::Unexpected)?;
+
+    Ok(PaperPositionCloseSummary {
+        status: PaperCloseStatus::Closed,
+        ..summary
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        expected_paper_close_confirmation, validate_mark_price_freshness,
+        validate_paper_close_confirmation, validate_paper_close_status,
+    };
+    use aegis_core::{PaperCloseValidationIssue, PositionStatus};
+    use chrono::{TimeZone, Utc};
+    use std::time::Duration;
+
+    #[test]
+    fn close_confirmation_requires_exact_text() {
+        assert_eq!(
+            expected_paper_close_confirmation("btcusdt"),
+            "CLOSE BTCUSDT"
+        );
+        assert_eq!(
+            validate_paper_close_confirmation("BTCUSDT", "close BTCUSDT"),
+            Err(PaperCloseValidationIssue::WrongConfirmationText)
+        );
+    }
+
+    #[test]
+    fn close_rejects_stale_mark_price_without_override() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 24, 0, 0, 30).unwrap();
+        let stale_at = Utc.with_ymd_and_hms(2026, 5, 24, 0, 0, 0).unwrap();
+
+        assert_eq!(
+            validate_mark_price_freshness(stale_at, now, Duration::from_secs(10), false),
+            Err(PaperCloseValidationIssue::StaleMarketPrice)
+        );
+    }
+
+    #[test]
+    fn close_accepts_fresh_mark_price() {
+        let now = Utc.with_ymd_and_hms(2026, 5, 24, 0, 0, 5).unwrap();
+        let fresh_at = Utc.with_ymd_and_hms(2026, 5, 24, 0, 0, 0).unwrap();
+
+        assert!(
+            validate_mark_price_freshness(fresh_at, now, Duration::from_secs(10), false).is_ok()
+        );
+    }
+
+    #[test]
+    fn close_rejects_already_closed_status() {
+        assert_eq!(
+            validate_paper_close_status(PositionStatus::Closed),
+            Err(PaperCloseValidationIssue::AlreadyClosed)
+        );
+    }
 }

@@ -14,7 +14,7 @@ This repository foundation includes:
 - Binance public REST historical candle backfill into closed stored candles
 - Deterministic candle-only strategy evaluation for `momentum_v1` and `volatility_breakout_v1`
 - Deterministic paper trading pipeline from closed candles to risk-gated paper order lifecycle
-- Paper account, position, fill, journal, and equity snapshot accounting for operational paper trading
+- Paper account, position, fill, journal, equity snapshot, and manual close accounting for operational paper trading
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
 - Strategy config validation, versioning, audit logging, and dry-run evaluation before pipeline/backtest use
 - Minimal Next.js operational dashboard shell for paper-only inspection and control
@@ -59,7 +59,8 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/orders'`
    `curl 'http://127.0.0.1:3000/orders/<order_id>'`
    `curl 'http://127.0.0.1:3000/paper/account'`
-   `curl 'http://127.0.0.1:3000/paper/positions?limit=50'`
+   `curl 'http://127.0.0.1:3000/paper/positions?status=OPEN&limit=50'`
+   `curl -X POST http://127.0.0.1:3000/paper/positions/<position_id>/close -H 'content-type: application/json' -d '{"confirmation_text":"CLOSE BTCUSDT","reason":"manual_operator_exit","close_mode":"MARKET_SIMULATED"}'`
    `curl 'http://127.0.0.1:3000/paper/pnl/daily'`
    `curl 'http://127.0.0.1:3000/paper/equity?limit=50'`
    `curl 'http://127.0.0.1:3000/paper/trade-journal?limit=50'`
@@ -123,7 +124,8 @@ cargo run -p cli -- strategy dry-run momentum_v1 --symbol BTCUSDT --timeframe 1m
 cargo run -p cli -- orders list --limit 20
 cargo run -p cli -- orders get 00000000-0000-0000-0000-000000000000
 cargo run -p cli -- paper account
-cargo run -p cli -- paper positions --limit 50
+cargo run -p cli -- paper positions --status OPEN --limit 50
+cargo run -p cli -- paper close 00000000-0000-0000-0000-000000000000 --confirm "CLOSE BTCUSDT" --reason manual_operator_exit
 cargo run -p cli -- paper pnl
 cargo run -p cli -- paper equity --limit 50
 cargo run -p cli -- paper journal --limit 50
@@ -178,7 +180,7 @@ Current metric coverage includes:
 - Market tick, candle close, feed freshness, and backfill counters
 - Strategy evaluation and signal counters
 - Risk decision and rejection counters
-- Kill switch, paper pipeline, paper order, paper position, and paper PnL gauges
+- Kill switch, paper pipeline, paper order/fill/close, paper position, and paper PnL gauges
 - Backtest run, duration, and trade counters
 
 Notes:
@@ -256,13 +258,24 @@ Examples:
 
 ```bash
 curl http://127.0.0.1:3000/paper/account
-curl http://127.0.0.1:3000/paper/positions?limit=50
+curl http://127.0.0.1:3000/paper/positions?status=ALL&limit=50
 curl -X POST http://127.0.0.1:3000/paper/account/mark-to-market
+curl -X POST http://127.0.0.1:3000/paper/positions/<position_id>/close \
+  -H 'content-type: application/json' \
+  -d '{"confirmation_text":"CLOSE BTCUSDT","reason":"manual_operator_exit","close_mode":"MARKET_SIMULATED"}'
 
 cargo run -p cli -- paper account
+cargo run -p cli -- paper positions --status OPEN --limit 50
 cargo run -p cli -- paper pnl
 cargo run -p cli -- paper mark
 ```
+
+Paper close rules:
+
+- Manual close is simulated only and never calls a private exchange API.
+- Operators must type `CLOSE <SYMBOL>` exactly, for example `CLOSE BTCUSDT`.
+- Close uses the latest stored public market tick as the mark price and rejects missing/stale price data by default.
+- A successful close writes a closing fill, closes the position, updates realized PnL/equity, snapshots equity, writes the trade journal, and emits audit/system events transactionally.
 
 ## Dashboard shell
 

@@ -437,6 +437,7 @@ pub async fn run_paper_pipeline(
             request.symbol.as_str(),
             order_outcome.order.status.to_ascii_lowercase().as_str(),
         );
+        telemetry().inc_paper_fill(request.symbol.as_str(), "buy");
 
         let result = PaperTradingPipelineResult {
             pipeline_decision: PipelineDecision::PaperOrderCreated,

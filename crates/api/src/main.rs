@@ -7,13 +7,18 @@ use accounting::{
 };
 use aegis_core::{
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, CandleInterval, MarketMode,
-    OrderIntent, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
+    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyEvaluationContext, StrategyId,
+    StrategyStatus, Symbol,
 };
-use api::{ensure_default_paper_account, persist_paper_fill_accounting};
+use api::{
+    close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
+    ClosePaperPositionError,
+};
 use axum::{
     extract::{MatchedPath, Path, Query, Request, State},
     http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode},
@@ -249,6 +254,7 @@ struct BacktestRunsQuery {
 #[derive(Deserialize)]
 struct PaperListQuery {
     limit: Option<i64>,
+    status: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -684,6 +690,34 @@ struct PaperPositionResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Deserialize)]
+struct PaperClosePositionPayload {
+    confirmation_text: String,
+    reason: Option<String>,
+    close_mode: Option<String>,
+    correlation_id: Option<Uuid>,
+    allow_stale_price: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct PaperClosePositionResponse {
+    status: String,
+    position_id: Uuid,
+    symbol: String,
+    entry_price: String,
+    exit_price: String,
+    quantity: String,
+    realized_pnl: String,
+    fee: String,
+    slippage_cost: String,
+    close_fill_id: Uuid,
+    journal_entry_id: Uuid,
+    correlation_id: Uuid,
+    closed_at: chrono::DateTime<Utc>,
+    request_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[derive(Serialize)]
 struct PaperPnlSummaryView {
     realized_pnl: String,
@@ -857,6 +891,10 @@ async fn main() {
         )
         .route("/paper/positions", get(get_paper_positions))
         .route("/paper/positions/:id", get(get_paper_position))
+        .route(
+            "/paper/positions/:id/close",
+            post(close_paper_position_handler),
+        )
         .route("/paper/pnl/daily", get(get_paper_pnl_daily))
         .route("/paper/equity", get(get_paper_equity))
         .route("/paper/trade-journal", get(get_paper_trade_journal))
@@ -1495,6 +1533,29 @@ fn paper_trade_journal_view(record: PaperTradeJournalRecord) -> PaperTradeJourna
         payload: record.payload,
         created_at: record.created_at,
         correlation_id: record.correlation_id,
+    }
+}
+
+fn paper_close_position_view(
+    summary: PaperPositionCloseSummary,
+    request_id: String,
+) -> PaperClosePositionResponse {
+    PaperClosePositionResponse {
+        status: summary.status.as_str().to_ascii_uppercase(),
+        position_id: summary.position_id,
+        symbol: summary.symbol,
+        entry_price: summary.entry_price.to_string(),
+        exit_price: summary.exit_price.to_string(),
+        quantity: summary.quantity.to_string(),
+        realized_pnl: summary.realized_pnl.to_string(),
+        fee: summary.fee.to_string(),
+        slippage_cost: summary.slippage_cost.to_string(),
+        close_fill_id: summary.close_fill_id,
+        journal_entry_id: summary.journal_entry_id,
+        correlation_id: summary.correlation_id,
+        closed_at: summary.closed_at,
+        request_id,
+        timestamp: Utc::now(),
     }
 }
 
@@ -2254,6 +2315,7 @@ async fn create_order(
                 outcome.order.symbol.as_str(),
                 outcome.order.status.to_ascii_lowercase().as_str(),
             );
+            telemetry().inc_paper_fill(outcome.order.symbol.as_str(), "buy");
             if let Err(err) = persist_paper_fill_accounting(&state.db_pool, &outcome.order).await {
                 error!(
                     request_id = %request.request_id,
@@ -2847,11 +2909,37 @@ async fn get_paper_positions(
     request: Option<Extension<RequestContext>>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let status_filter = match query
+        .status
+        .as_deref()
+        .unwrap_or("all")
+        .parse::<PaperPositionStatusFilter>()
+    {
+        Ok(filter) => filter,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_paper_position_status",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     match load_or_create_default_paper_account_record(&state.db_pool).await {
         Ok(account) => {
-            match list_paper_positions(&state.db_pool, account.id, bounded_paper_limit(query.limit))
-                .await
+            match list_paper_positions(
+                &state.db_pool,
+                account.id,
+                status_filter,
+                bounded_paper_limit(query.limit),
+            )
+            .await
             {
                 Ok(positions) => (
                     StatusCode::OK,
@@ -2880,6 +2968,101 @@ async fn get_paper_positions(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_query_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn close_paper_position_handler(
+    State(state): State<AppState>,
+    Path(position_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<PaperClosePositionPayload>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let reason = match payload.reason {
+        Some(reason) => match reason.parse::<PaperCloseReason>() {
+            Ok(reason) => Some(reason),
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_paper_close_reason",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let close_mode = match payload.close_mode {
+        Some(mode) => match mode.parse::<PaperCloseMode>() {
+            Ok(mode) => mode,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_paper_close_mode",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => PaperCloseMode::MarketSimulated,
+    };
+
+    match close_paper_position(
+        &state.db_pool,
+        &state.market_config,
+        &default_actor(),
+        PaperClosePositionRequest {
+            position_id,
+            confirmation_text: payload.confirmation_text,
+            reason,
+            close_mode,
+            correlation_id: payload.correlation_id,
+            allow_stale_price: payload.allow_stale_price.unwrap_or(false),
+        },
+    )
+    .await
+    {
+        Ok(summary) => {
+            telemetry().inc_paper_position_close(summary.symbol.as_str(), summary.status.as_str());
+            telemetry().inc_paper_fill(summary.symbol.as_str(), "sell");
+            (
+                StatusCode::OK,
+                Json(paper_close_position_view(summary, request.request_id)),
+            )
+                .into_response()
+        }
+        Err(ClosePaperPositionError::Validation(issue)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: issue.as_str(),
+                message: issue.as_str().replace('_', " "),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(ClosePaperPositionError::Unexpected(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_close_paper_position",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

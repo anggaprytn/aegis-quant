@@ -507,6 +507,31 @@ export type PaperPositionsResponse = {
   timestamp: string;
 };
 
+export type PaperClosePositionRequest = {
+  confirmation_text: string;
+  reason?: string | null;
+  close_mode?: "MARKET_SIMULATED";
+  correlation_id?: string;
+};
+
+export type PaperClosePositionResponse = {
+  status: string;
+  position_id: string;
+  symbol: string;
+  entry_price: string;
+  exit_price: string;
+  quantity: string;
+  realized_pnl: string;
+  fee: string;
+  slippage_cost: string;
+  close_fill_id: string;
+  journal_entry_id: string;
+  correlation_id: string;
+  closed_at: string;
+  request_id: string;
+  timestamp: string;
+};
+
 export type PaperPnlSummaryRecord = {
   realized_pnl: string;
   unrealized_pnl: string;

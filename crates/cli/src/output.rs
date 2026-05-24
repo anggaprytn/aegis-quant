@@ -5,11 +5,11 @@ use serde::Serialize;
 use crate::api::{
     BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
     CandleBackfillRunsResponse, FeedStatusResponse, HealthResponse, OrderRecord,
-    PaperAccountResponse, PaperEquityResponse, PaperPnlResponse, PaperPositionRecord,
-    PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse,
-    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
-    StrategyConfigValidationResponse, StrategyConfigVersionsResponse, StrategyDryRunResponse,
-    StrategyListResponse, StrategyStatusResponse,
+    PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse,
+    PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse,
+    RiskActionResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
+    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
+    StrategyDryRunResponse, StrategyListResponse, StrategyStatusResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -322,6 +322,21 @@ pub fn print_paper_pnl(response: &PaperPnlResponse) {
     println!("Drawdown %: {}", pnl.drawdown_pct);
     println!("Price status: {}", pnl.price_status);
     println!("Open positions: {}", pnl.open_positions_count);
+}
+
+pub fn print_paper_close(response: &PaperClosePositionResponse) {
+    println!("Status: {}", response.status);
+    println!("Position ID: {}", response.position_id);
+    println!("Symbol: {}", response.symbol);
+    println!("Quantity: {}", response.quantity);
+    println!("Entry price: {}", response.entry_price);
+    println!("Exit price: {}", response.exit_price);
+    println!("Realized PnL: {}", response.realized_pnl);
+    println!("Fee: {}", response.fee);
+    println!("Slippage: {}", response.slippage_cost);
+    println!("Close fill ID: {}", response.close_fill_id);
+    println!("Journal entry ID: {}", response.journal_entry_id);
+    println!("Correlation ID: {}", response.correlation_id);
 }
 
 pub fn print_paper_equity(response: &PaperEquityResponse) {

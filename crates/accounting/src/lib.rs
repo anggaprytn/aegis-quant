@@ -1,7 +1,7 @@
 use aegis_core::{
-    PaperAccount, PaperAccountStatus, PaperEquitySnapshot, PaperFill, PaperPnlSummary,
-    PaperPosition, PaperPriceStatus, PaperTradeJournalEntry, PnlCalculationMode, PositionSide,
-    PositionStatus,
+    PaperAccount, PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus,
+    PaperEquitySnapshot, PaperFill, PaperPnlSummary, PaperPosition, PaperPositionCloseSummary,
+    PaperPriceStatus, PaperTradeJournalEntry, PnlCalculationMode, PositionSide, PositionStatus,
 };
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -48,6 +48,17 @@ pub struct FillApplication {
     pub fill: PaperFill,
     pub journal_entries: Vec<PaperTradeJournalEntry>,
     pub summary: PaperPnlSummary,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClosePositionApplication {
+    pub account: PaperAccount,
+    pub position: PaperPosition,
+    pub fill: PaperFill,
+    pub snapshot: PaperEquitySnapshot,
+    pub journal_entries: Vec<PaperTradeJournalEntry>,
+    pub summary: PaperPnlSummary,
+    pub close_result: PaperClosePositionResult,
 }
 
 pub fn create_default_paper_account_if_missing(
@@ -307,6 +318,215 @@ pub fn close_position(
     Ok((updated_account, updated_position, summary))
 }
 
+pub fn compute_realized_pnl_for_close(
+    position: &PaperPosition,
+    exit_price: Decimal,
+    quantity: Decimal,
+    fee: Decimal,
+    slippage_cost: Decimal,
+) -> Result<Decimal> {
+    if position.status != PositionStatus::Open {
+        return Err(anyhow!("paper position must be open to close"));
+    }
+    if quantity <= Decimal::ZERO || quantity != position.quantity {
+        return Err(anyhow!(
+            "paper position close quantity must exactly match the open quantity in MVP"
+        ));
+    }
+    if exit_price <= Decimal::ZERO {
+        return Err(anyhow!("paper close exit price must be greater than zero"));
+    }
+    if fee < Decimal::ZERO || slippage_cost < Decimal::ZERO {
+        return Err(anyhow!("paper close fee and slippage must be non-negative"));
+    }
+
+    Ok(compute_realized_pnl(
+        position.side,
+        position.entry_price,
+        exit_price,
+        quantity,
+        fee + slippage_cost,
+    ))
+}
+
+pub fn create_closing_paper_fill(
+    account: &PaperAccount,
+    position: &PaperPosition,
+    order_id: Uuid,
+    close_fill_id: Uuid,
+    exit_price: Decimal,
+    fee: Decimal,
+    slippage_cost: Decimal,
+    filled_at: DateTime<Utc>,
+    correlation_id: Uuid,
+) -> Result<PaperFill> {
+    if position.status != PositionStatus::Open {
+        return Err(anyhow!(
+            "paper position must be open to create a closing fill"
+        ));
+    }
+
+    Ok(PaperFill {
+        id: close_fill_id,
+        account_id: account.id,
+        order_id,
+        position_id: Some(position.id),
+        symbol: position.symbol.clone(),
+        side: position.side,
+        price: exit_price,
+        quantity: position.quantity,
+        notional: exit_price * position.quantity,
+        fee,
+        slippage_cost,
+        filled_at,
+        strategy_id: position.strategy_id.clone(),
+        signal_id: position.signal_id,
+        risk_decision_id: position.risk_decision_id,
+        correlation_id,
+    })
+}
+
+pub fn close_position_market_simulated(
+    account: &PaperAccount,
+    position: &PaperPosition,
+    order_id: Uuid,
+    close_fill_id: Uuid,
+    journal_entry_id: Uuid,
+    exit_price: Decimal,
+    fee: Decimal,
+    slippage_cost: Decimal,
+    closed_at: DateTime<Utc>,
+    correlation_id: Uuid,
+) -> Result<ClosePositionApplication> {
+    let fill = create_closing_paper_fill(
+        account,
+        position,
+        order_id,
+        close_fill_id,
+        exit_price,
+        fee,
+        slippage_cost,
+        closed_at,
+        correlation_id,
+    )?;
+    let realized_pnl = compute_realized_pnl_for_close(
+        position,
+        exit_price,
+        position.quantity,
+        fee,
+        slippage_cost,
+    )?;
+    let (updated_account, updated_position, summary) = close_position(
+        account,
+        position,
+        exit_price,
+        position.quantity,
+        closed_at,
+        fee + slippage_cost,
+    )?;
+    let snapshot = PaperEquitySnapshot {
+        id: Uuid::new_v4(),
+        account_id: account.id,
+        equity: summary.equity,
+        realized_pnl: summary.realized_pnl,
+        unrealized_pnl: summary.unrealized_pnl,
+        drawdown_pct: summary.drawdown_pct,
+        snapshot_at: closed_at,
+    };
+    let close_summary = PaperPositionCloseSummary {
+        status: PaperCloseStatus::Closed,
+        position_id: position.id,
+        account_id: account.id,
+        symbol: position.symbol.clone(),
+        quantity: position.quantity,
+        entry_price: position.entry_price,
+        exit_price,
+        realized_pnl,
+        fee,
+        slippage_cost,
+        closed_at,
+        correlation_id,
+        journal_entry_id,
+        close_fill_id,
+    };
+    let close_result = PaperClosePositionResult {
+        position_id: position.id,
+        account_id: account.id,
+        symbol: position.symbol.clone(),
+        quantity: position.quantity,
+        entry_price: position.entry_price,
+        exit_price,
+        realized_pnl,
+        fee,
+        slippage_cost,
+        closed_at,
+        correlation_id,
+        journal_entry_id,
+        close_fill_id,
+        summary: close_summary.clone(),
+    };
+    let journal_entries = vec![
+        PaperTradeJournalEntry {
+            id: Uuid::new_v4(),
+            account_id: account.id,
+            position_id: Some(position.id),
+            order_id: Some(order_id),
+            event_type: "paper.fill.created".to_string(),
+            symbol: Some(position.symbol.clone()),
+            pnl: Some(realized_pnl),
+            payload: serde_json::json!({
+                "fill_id": fill.id,
+                "quantity": fill.quantity,
+                "price": fill.price,
+                "notional": fill.notional,
+                "fee": fill.fee,
+                "slippage_cost": fill.slippage_cost,
+                "action": "simulated_close_sell",
+            }),
+            created_at: closed_at,
+            correlation_id,
+        },
+        PaperTradeJournalEntry {
+            id: journal_entry_id,
+            account_id: account.id,
+            position_id: Some(position.id),
+            order_id: Some(order_id),
+            event_type: "paper.position.closed".to_string(),
+            symbol: Some(position.symbol.clone()),
+            pnl: Some(realized_pnl),
+            payload: serde_json::to_value(&close_summary)?,
+            created_at: closed_at,
+            correlation_id,
+        },
+        PaperTradeJournalEntry {
+            id: Uuid::new_v4(),
+            account_id: account.id,
+            position_id: Some(position.id),
+            order_id: Some(order_id),
+            event_type: "paper.equity.updated".to_string(),
+            symbol: Some(position.symbol.clone()),
+            pnl: Some(summary.equity),
+            payload: serde_json::json!({
+                "equity": summary.equity,
+                "realized_pnl": summary.realized_pnl,
+                "unrealized_pnl": summary.unrealized_pnl,
+            }),
+            created_at: closed_at,
+            correlation_id,
+        },
+    ];
+
+    Ok(ClosePositionApplication {
+        account: updated_account,
+        position: updated_position,
+        fill,
+        snapshot,
+        journal_entries,
+        summary,
+        close_result,
+    })
+}
+
 pub fn mark_positions_to_market(
     account: &PaperAccount,
     positions: &[PaperPosition],
@@ -449,8 +669,9 @@ fn rebuild_account_summary(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_paper_order_fill, compute_unrealized_pnl, create_default_paper_account_if_missing,
-        mark_positions_to_market, PaperAccountingConfig, PaperMarkPriceInput,
+        apply_paper_order_fill, close_position_market_simulated, compute_unrealized_pnl,
+        create_default_paper_account_if_missing, mark_positions_to_market, PaperAccountingConfig,
+        PaperMarkPriceInput,
     };
     use aegis_core::{
         PaperAccount, PaperAccountStatus, PaperFill, PaperPosition, PaperPriceStatus, PositionSide,
@@ -604,5 +825,102 @@ mod tests {
         .expect("existing account should return");
 
         assert_eq!(result.id, account.id);
+    }
+
+    fn sample_position(account: &PaperAccount) -> PaperPosition {
+        let now = Utc.with_ymd_and_hms(2026, 5, 24, 0, 1, 0).unwrap();
+        PaperPosition {
+            id: Uuid::new_v4(),
+            account_id: account.id,
+            symbol: "BTCUSDT".to_string(),
+            side: PositionSide::Long,
+            quantity: Decimal::ONE,
+            entry_price: Decimal::new(100_000, 0),
+            mark_price: Some(Decimal::new(100_000, 0)),
+            price_status: PaperPriceStatus::Live,
+            notional: Decimal::new(100_000, 0),
+            realized_pnl: Decimal::ZERO,
+            unrealized_pnl: Decimal::ZERO,
+            status: PositionStatus::Open,
+            opened_at: now,
+            closed_at: None,
+            strategy_id: Some("momentum_v1".to_string()),
+            signal_id: Some(Uuid::new_v4()),
+            risk_decision_id: Some(Uuid::new_v4()),
+            order_id: Some(Uuid::new_v4()),
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn close_computes_positive_realized_pnl() {
+        let account = sample_account();
+        let position = sample_position(&account);
+        let result = close_position_market_simulated(
+            &account,
+            &position,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Decimal::new(101_000, 0),
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Utc.with_ymd_and_hms(2026, 5, 24, 0, 2, 0).unwrap(),
+            Uuid::new_v4(),
+        )
+        .expect("close should succeed");
+
+        assert_eq!(result.close_result.realized_pnl, Decimal::new(1_000, 0));
+        assert_eq!(result.account.realized_pnl, Decimal::new(1_000, 0));
+        assert_eq!(result.position.status, PositionStatus::Closed);
+    }
+
+    #[test]
+    fn close_computes_negative_realized_pnl() {
+        let account = sample_account();
+        let position = sample_position(&account);
+        let result = close_position_market_simulated(
+            &account,
+            &position,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Decimal::new(99_000, 0),
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Utc.with_ymd_and_hms(2026, 5, 24, 0, 2, 0).unwrap(),
+            Uuid::new_v4(),
+        )
+        .expect("close should succeed");
+
+        assert_eq!(result.close_result.realized_pnl, Decimal::new(-1_000, 0));
+        assert_eq!(result.account.current_equity, Decimal::new(999_000, 0));
+    }
+
+    #[test]
+    fn close_creates_fill_and_journal_summary() {
+        let account = sample_account();
+        let position = sample_position(&account);
+        let result = close_position_market_simulated(
+            &account,
+            &position,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Decimal::new(101_500, 0),
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Utc.with_ymd_and_hms(2026, 5, 24, 0, 2, 0).unwrap(),
+            Uuid::new_v4(),
+        )
+        .expect("close should succeed");
+
+        assert_eq!(result.fill.quantity, Decimal::ONE);
+        assert_eq!(result.journal_entries.len(), 3);
+        assert_eq!(result.close_result.close_fill_id, result.fill.id);
+        assert_eq!(
+            result.journal_entries[1].event_type,
+            "paper.position.closed".to_string()
+        );
     }
 }

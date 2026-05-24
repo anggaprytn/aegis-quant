@@ -385,9 +385,31 @@ impl ApiClient {
     pub async fn paper_positions(
         &self,
         limit: i64,
+        status: &str,
     ) -> Result<PaperPositionsResponse, ApiClientError> {
-        self.get("/paper/positions", &[("limit", limit.to_string())])
-            .await
+        self.get(
+            "/paper/positions",
+            &[("limit", limit.to_string()), ("status", status.to_string())],
+        )
+        .await
+    }
+
+    pub async fn paper_close(
+        &self,
+        position_id: Uuid,
+        confirmation_text: &str,
+        reason: Option<String>,
+    ) -> Result<PaperClosePositionResponse, ApiClientError> {
+        self.post(
+            &format!("/paper/positions/{position_id}/close"),
+            &PaperClosePositionRequest {
+                confirmation_text: confirmation_text.to_string(),
+                reason,
+                close_mode: "MARKET_SIMULATED".to_string(),
+                correlation_id: None,
+            },
+        )
+        .await
     }
 
     pub async fn paper_pnl(&self) -> Result<PaperPnlResponse, ApiClientError> {
@@ -493,6 +515,14 @@ struct KillSwitchRequest {
 struct ResumeRequest {
     confirmation_text: String,
     reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PaperClosePositionRequest {
+    confirmation_text: String,
+    reason: Option<String>,
+    close_mode: String,
+    correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -779,6 +809,25 @@ pub struct PaperPositionsResponse {
     pub positions: Vec<PaperPositionRecord>,
     pub request_id: String,
     pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperClosePositionResponse {
+    pub status: String,
+    pub position_id: Uuid,
+    pub symbol: String,
+    pub entry_price: String,
+    pub exit_price: String,
+    pub quantity: String,
+    pub realized_pnl: String,
+    pub fee: String,
+    pub slippage_cost: String,
+    pub close_fill_id: Uuid,
+    pub journal_entry_id: Uuid,
+    pub correlation_id: Uuid,
+    pub closed_at: DateTime<Utc>,
+    pub request_id: String,
     pub timestamp: DateTime<Utc>,
 }
 

@@ -19,6 +19,8 @@ import type {
   OrderResponse,
   OrdersResponse,
   PaperAccountResponse,
+  PaperClosePositionRequest,
+  PaperClosePositionResponse,
   PaperEquityResponse,
   PaperPipelineRequest,
   PaperPipelineResult,
@@ -216,8 +218,13 @@ export const api = {
   getOrders: () => request<OrdersResponse>("/orders"),
   getOrder: (id: string) => request<OrderResponse>(`/orders/${id}`),
   getPaperAccount: () => request<PaperAccountResponse>("/paper/account"),
-  getPaperPositions: (limit = 50) =>
-    request<PaperPositionsResponse>("/paper/positions", undefined, { limit }),
+  getPaperPositions: (limit = 50, status = "ALL") =>
+    request<PaperPositionsResponse>("/paper/positions", undefined, { limit, status }),
+  closePaperPosition: (positionId: string, payload: PaperClosePositionRequest) =>
+    request<PaperClosePositionResponse>(`/paper/positions/${positionId}/close`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getPaperPnl: () => request<PaperPnlResponse>("/paper/pnl/daily"),
   getPaperEquity: (limit = 50) =>
     request<PaperEquityResponse>("/paper/equity", undefined, { limit }),

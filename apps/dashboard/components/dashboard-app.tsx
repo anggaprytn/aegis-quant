@@ -166,6 +166,10 @@ export function DashboardApp() {
   const [pipelineStrategyId, setPipelineStrategyId] = useState("momentum_v1");
   const [pipelineSymbol, setPipelineSymbol] = useState("BTCUSDT");
   const [pipelineTimeframe, setPipelineTimeframe] = useState("1m");
+  const [paperPositionStatus, setPaperPositionStatus] = useState("OPEN");
+  const [closeTarget, setCloseTarget] = useState<PaperPositionRecord | null>(null);
+  const [closeConfirmation, setCloseConfirmation] = useState("");
+  const [closeReason, setCloseReason] = useState("manual_operator_exit");
   const [killSwitchReason, setKillSwitchReason] = useState("");
   const [resumeReason, setResumeReason] = useState("");
   const [resumeConfirmation, setResumeConfirmation] = useState("");
@@ -238,8 +242,8 @@ export function DashboardApp() {
     refetchInterval: 10_000,
   });
   const paperPositionsQuery = useQuery({
-    queryKey: ["paper-positions"],
-    queryFn: () => api.getPaperPositions(50),
+    queryKey: ["paper-positions", paperPositionStatus],
+    queryFn: () => api.getPaperPositions(50, paperPositionStatus),
     refetchInterval: 10_000,
   });
   const paperPnlQuery = useQuery({
@@ -535,6 +539,28 @@ export function DashboardApp() {
       queryClient.invalidateQueries({ queryKey: ["paper-journal"] });
     },
   });
+  const paperCloseMutation = useMutation({
+    mutationFn: async () => {
+      if (!closeTarget) {
+        throw new Error("No paper position selected for simulated close.");
+      }
+      return api.closePaperPosition(closeTarget.id, {
+        confirmation_text: closeConfirmation,
+        reason: closeReason,
+        close_mode: "MARKET_SIMULATED",
+      });
+    },
+    onSuccess: () => {
+      setCloseConfirmation("");
+      setCloseTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["paper-account"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-positions"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-pnl"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-equity"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-journal"] });
+      queryClient.invalidateQueries({ queryKey: ["metrics-text"] });
+    },
+  });
 
   const strategies = strategiesQuery.data?.strategies ?? [];
   const orders = ordersQuery.data?.orders ?? [];
@@ -811,7 +837,10 @@ export function DashboardApp() {
               </Panel>
 
               <Panel className="xl:col-span-12" title="Open Paper Positions">
-                <PaperPositionsTable positions={paperPositions.filter((position) => position.status === "open")} />
+                <PaperPositionsTable
+                  positions={paperPositions.filter((position) => position.status === "open")}
+                  onClose={setCloseTarget}
+                />
                 <InlineStatus error={getErrorMessage(paperPositionsQuery.error)} />
               </Panel>
 
@@ -1535,7 +1564,75 @@ export function DashboardApp() {
                 />
               </Panel>
               <Panel className="xl:col-span-8" title="Paper Positions">
-                <PaperPositionsTable positions={paperPositions} />
+                <div className="mb-3 flex items-center gap-3">
+                  <select
+                    className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-slate-100"
+                    value={paperPositionStatus}
+                    onChange={(event) => setPaperPositionStatus(event.target.value)}
+                  >
+                    {["OPEN", "CLOSED", "ALL"].map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-xs uppercase tracking-[0.2em] text-muted">
+                    Simulated paper positions only
+                  </span>
+                </div>
+                {closeTarget ? (
+                  <div className="mb-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4">
+                    <div className="text-sm font-semibold text-amber-100">
+                      Close {closeTarget.symbol} paper position
+                    </div>
+                    <div className="mt-1 text-xs text-amber-50/80">
+                      Type <code>CLOSE {closeTarget.symbol}</code> to submit a simulated market close.
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-[2fr,1fr,auto,auto]">
+                      <input
+                        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-slate-100"
+                        value={closeConfirmation}
+                        onChange={(event) => setCloseConfirmation(event.target.value)}
+                        placeholder={`CLOSE ${closeTarget.symbol}`}
+                      />
+                      <select
+                        className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-slate-100"
+                        value={closeReason}
+                        onChange={(event) => setCloseReason(event.target.value)}
+                      >
+                        {["manual_operator_exit", "risk_operator_exit", "emergency_exit"].map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                      <ActionButton
+                        label="Close Paper Position"
+                        onClick={() => paperCloseMutation.mutate()}
+                        busy={paperCloseMutation.isPending}
+                      />
+                      <button
+                        className="rounded-lg border border-border px-3 py-2 text-sm text-slate-100"
+                        onClick={() => {
+                          setCloseTarget(null);
+                          setCloseConfirmation("");
+                        }}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <InlineStatus
+                      error={getErrorMessage(paperCloseMutation.error)}
+                      success={
+                        paperCloseMutation.data
+                          ? `Simulated close booked with realized PnL ${paperCloseMutation.data.realized_pnl}`
+                          : undefined
+                      }
+                    />
+                  </div>
+                ) : null}
+                <PaperPositionsTable positions={paperPositions} onClose={setCloseTarget} />
                 <InlineStatus error={getErrorMessage(paperPositionsQuery.error)} />
               </Panel>
               <Panel className="xl:col-span-4" title="Paper Journal">
@@ -2171,7 +2268,13 @@ function OrdersTable({
   );
 }
 
-function PaperPositionsTable({ positions }: { positions: PaperPositionRecord[] }) {
+function PaperPositionsTable({
+  positions,
+  onClose,
+}: {
+  positions: PaperPositionRecord[];
+  onClose?: (position: PaperPositionRecord) => void;
+}) {
   if (!positions.length) {
     return <EmptyState label="No paper positions." />;
   }
@@ -2189,6 +2292,7 @@ function PaperPositionsTable({ positions }: { positions: PaperPositionRecord[] }
         "Status",
         "Strategy",
         "Signal",
+        "Action",
       ]}
       rows={positions.map((position) => [
         position.symbol,
@@ -2201,6 +2305,17 @@ function PaperPositionsTable({ positions }: { positions: PaperPositionRecord[] }
         position.status,
         position.strategy_id ?? "N/A",
         position.signal_id ? shortenId(position.signal_id) : "N/A",
+        position.status === "open" && onClose ? (
+          <button
+            className="rounded-md border border-amber-400/40 px-2 py-1 text-xs uppercase tracking-[0.2em] text-amber-100"
+            onClick={() => onClose(position)}
+            type="button"
+          >
+            Sim Close
+          </button>
+        ) : (
+          "Closed"
+        ),
       ])}
     />
   );

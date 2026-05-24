@@ -112,9 +112,29 @@ Notes:
 
 - Only paper orders in `PAPER_FILLED` state create accounting artifacts.
 - Spot long-only is the current MVP assumption: buy opens/increases a paper long position.
-- Mark-to-market reads the latest stored public market tick, then the latest stored closed candle as fallback.
+- Manual simulated close is full-position only in MVP and requires typed confirmation `CLOSE <SYMBOL>`.
+- Manual close reads the latest stored public market tick and rejects missing/stale price data by default.
+- Manual close persists a synthetic approved paper close decision and a simulated sell order record so fills, journal entries, and events remain auditable without introducing live execution.
 - Missing price does not fabricate PnL; the position/account is marked with explicit missing or stale price state.
 - Replay/backtest tables remain separate and must not be mutated by paper accounting.
+
+Current paper open/close accounting path:
+
+```txt
+paper order filled
+-> paper fill
+-> paper long position open/update
+
+manual simulated close request
+-> typed confirmation check
+-> latest public mark price freshness check
+-> simulated close fill
+-> position status CLOSED
+-> realized PnL / account equity update
+-> equity snapshot
+-> trade journal
+-> paper.position.close_requested / paper.fill.created / paper.position.closed / paper.equity.updated
+```
 
 ## Replay and backtest flow
 
@@ -226,6 +246,7 @@ Scrape-time gauge coverage:
 - market feed status and last-event age
 - open paper positions by symbol
 - paper equity, realized PnL, and unrealized PnL
+- paper position closes by symbol/result and paper fills by symbol/side
 
 Constraints:
 
@@ -251,7 +272,7 @@ Supported control and inspection flow:
 - `aegis status` aggregates `/system/health`, `/system/status`, `/risk/status`, and `/market/feed-status`
 - `aegis kill` and `aegis resume --confirm "RESUME TRADING"` call the existing risk endpoints and preserve typed confirmation
 - `aegis pipeline run`, `strategy list|enable|disable`, `orders list|get`, `events list`, `risk decisions`, and `backtest run|list|get` map directly onto the existing read and paper-only control APIs
-- `aegis paper account|positions|pnl|equity|journal|mark` maps directly onto the paper accounting HTTP APIs
+- `aegis paper account|positions|close|pnl|equity|journal|mark` maps directly onto the paper accounting HTTP APIs
 
 Operational intent:
 

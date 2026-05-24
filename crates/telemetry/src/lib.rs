@@ -35,6 +35,8 @@ pub struct Telemetry {
     kill_switch_active: IntGauge,
     paper_pipeline_runs_total: IntCounterVec,
     paper_orders_total: IntCounterVec,
+    paper_position_closes_total: IntCounterVec,
+    paper_fills_total: IntCounterVec,
     paper_positions_open: IntGaugeVec,
     paper_equity: Gauge,
     paper_realized_pnl: Gauge,
@@ -190,6 +192,20 @@ impl Telemetry {
             registry
         )
         .expect("paper_orders_total should register");
+        let paper_position_closes_total = register_int_counter_vec_with_registry!(
+            "paper_position_closes_total",
+            "Paper position close attempts by symbol and result.",
+            &["symbol", "result"],
+            registry
+        )
+        .expect("paper_position_closes_total should register");
+        let paper_fills_total = register_int_counter_vec_with_registry!(
+            "paper_fills_total",
+            "Paper fills by symbol and side.",
+            &["symbol", "side"],
+            registry
+        )
+        .expect("paper_fills_total should register");
         let paper_positions_open = register_int_gauge_vec_with_registry!(
             "paper_positions_open",
             "Open paper positions by symbol.",
@@ -272,6 +288,8 @@ impl Telemetry {
             kill_switch_active,
             paper_pipeline_runs_total,
             paper_orders_total,
+            paper_position_closes_total,
+            paper_fills_total,
             paper_positions_open,
             paper_equity,
             paper_realized_pnl,
@@ -427,6 +445,18 @@ impl Telemetry {
     pub fn inc_paper_order(&self, symbol: &str, status: &str) {
         self.paper_orders_total
             .with_label_values(&[symbol, status])
+            .inc();
+    }
+
+    pub fn inc_paper_position_close(&self, symbol: &str, result: &str) {
+        self.paper_position_closes_total
+            .with_label_values(&[symbol, result])
+            .inc();
+    }
+
+    pub fn inc_paper_fill(&self, symbol: &str, side: &str) {
+        self.paper_fills_total
+            .with_label_values(&[symbol, side])
             .inc();
     }
 

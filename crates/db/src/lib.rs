@@ -3,7 +3,8 @@ use aegis_core::{
     CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult, CandleBackfillStatus,
     CandleInterval, DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus,
     MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus,
-    PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition, PaperPriceStatus,
+    PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder,
+    PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
     PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
     RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig,
     StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal, Symbol,
@@ -202,6 +203,14 @@ pub struct MarketTickRecord {
     pub trade_time: DateTime<Utc>,
     pub received_at: DateTime<Utc>,
     pub raw_payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperCloseArtifacts {
+    pub risk_decision_id: Uuid,
+    pub order_id: Uuid,
+    pub fill_id: Uuid,
+    pub journal_entry_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1503,6 +1512,7 @@ pub async fn insert_paper_trade_journal_entry(
 pub async fn list_paper_positions(
     pool: &PgPool,
     account_id: Uuid,
+    status_filter: PaperPositionStatusFilter,
     limit: i64,
 ) -> Result<Vec<PaperPositionRecord>> {
     let rows = sqlx::query(
@@ -1530,11 +1540,13 @@ pub async fn list_paper_positions(
             updated_at
         FROM paper_positions
         WHERE account_id = $1
+          AND ($2 = 'all' OR status = $2)
         ORDER BY opened_at DESC
-        LIMIT $2
+        LIMIT $3
         "#,
     )
     .bind(account_id)
+    .bind(status_filter.as_str())
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -1580,6 +1592,14 @@ pub async fn get_paper_position_by_id(
     .await?;
 
     Ok(row.as_ref().map(map_paper_position))
+}
+
+pub async fn get_paper_position(
+    pool: &PgPool,
+    account_id: Uuid,
+    position_id: Uuid,
+) -> Result<Option<PaperPositionRecord>> {
+    get_paper_position_by_id(pool, account_id, position_id).await
 }
 
 pub async fn list_open_paper_positions(
@@ -1749,6 +1769,363 @@ pub async fn get_latest_market_tick(
     .await?;
 
     Ok(row.as_ref().map(map_market_tick))
+}
+
+pub async fn get_latest_mark_price(
+    pool: &PgPool,
+    symbol: &str,
+) -> Result<Option<MarketTickRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            price,
+            quantity,
+            trade_time,
+            received_at,
+            raw_payload
+        FROM market_ticks
+        WHERE symbol = $1
+        ORDER BY trade_time DESC, received_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(symbol)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_market_tick))
+}
+
+pub async fn get_paper_close_summary(
+    pool: &PgPool,
+    account_id: Uuid,
+    position_id: Uuid,
+) -> Result<Option<PaperPositionCloseSummary>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            p.id AS position_id,
+            p.account_id,
+            p.symbol,
+            f.quantity,
+            p.entry_price,
+            f.price AS exit_price,
+            p.realized_pnl,
+            f.fee,
+            f.slippage_cost,
+            p.closed_at,
+            j.correlation_id,
+            j.id AS journal_entry_id,
+            f.id AS close_fill_id
+        FROM paper_positions p
+        JOIN paper_fills f
+          ON f.position_id = p.id
+        JOIN paper_trade_journal j
+          ON j.position_id = p.id
+         AND j.event_type = 'paper.position.closed'
+        WHERE p.account_id = $1
+          AND p.id = $2
+          AND p.status = 'closed'
+        ORDER BY f.filled_at DESC, j.created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .bind(position_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| PaperPositionCloseSummary {
+        status: PaperCloseStatus::AlreadyClosed,
+        position_id: row.get("position_id"),
+        account_id: row.get("account_id"),
+        symbol: row.get("symbol"),
+        quantity: row.get("quantity"),
+        entry_price: row.get("entry_price"),
+        exit_price: row.get("exit_price"),
+        realized_pnl: row.get("realized_pnl"),
+        fee: row.get("fee"),
+        slippage_cost: row.get("slippage_cost"),
+        closed_at: row.get("closed_at"),
+        correlation_id: row.get("correlation_id"),
+        journal_entry_id: row.get("journal_entry_id"),
+        close_fill_id: row.get("close_fill_id"),
+    }))
+}
+
+pub async fn close_paper_position_transactional(
+    pool: &PgPool,
+    source: &str,
+    actor: &StateActor,
+    account: &PaperAccount,
+    position: &PaperPosition,
+    close_result: &PaperClosePositionResult,
+    updated_account: &PaperAccount,
+    updated_position: &PaperPosition,
+    fill: &PaperFill,
+    snapshot: &PaperEquitySnapshot,
+    journal_entries: &[PaperTradeJournalEntry],
+) -> Result<PaperPositionCloseSummary> {
+    let mut tx = pool.begin().await?;
+    let rationale = serde_json::to_string(&json!({
+        "strategy_id": position.strategy_id,
+        "symbol": position.symbol,
+        "side": "SELL",
+        "reason": "paper_position_close",
+        "approved_notional": fill.notional,
+        "close_position_id": position.id,
+    }))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO risk_decisions (id, correlation_id, signal_id, decision, rationale, decided_at)
+        VALUES ($1, $2, $3, 'APPROVED', $4, $5)
+        "#,
+    )
+    .bind(close_result.close_fill_id)
+    .bind(close_result.correlation_id)
+    .bind(position.signal_id)
+    .bind(&rationale)
+    .bind(close_result.closed_at)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO orders (
+            id,
+            correlation_id,
+            risk_decision_id,
+            idempotency_key,
+            symbol,
+            side,
+            quantity,
+            limit_price,
+            market_mode,
+            status,
+            execution_state,
+            status_reason,
+            filled_price,
+            submitted_at,
+            filled_at,
+            cancelled_at,
+            rejected_at,
+            expired_at,
+            expires_at,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, 'SELL', $6, $7, 'PAPER', 'FILLED', 'PAPER_FILLED', NULL, $7, $8, $8, NULL, NULL, NULL, NULL, $8, $8
+        )
+        "#,
+    )
+    .bind(fill.order_id)
+    .bind(close_result.correlation_id)
+    .bind(close_result.close_fill_id)
+    .bind(format!("paper-close:{}", position.id))
+    .bind(&position.symbol)
+    .bind(position.quantity)
+    .bind(fill.price)
+    .bind(close_result.closed_at)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE paper_positions
+        SET
+            quantity = $2,
+            mark_price = $3,
+            price_status = $4,
+            notional = $5,
+            realized_pnl = $6,
+            unrealized_pnl = $7,
+            status = $8,
+            closed_at = $9,
+            order_id = $10,
+            updated_at = $11
+        WHERE id = $1
+        "#,
+    )
+    .bind(updated_position.id)
+    .bind(updated_position.quantity)
+    .bind(updated_position.mark_price)
+    .bind(updated_position.price_status.as_str())
+    .bind(updated_position.notional)
+    .bind(updated_position.realized_pnl)
+    .bind(updated_position.unrealized_pnl)
+    .bind(updated_position.status.as_str())
+    .bind(updated_position.closed_at)
+    .bind(fill.order_id)
+    .bind(updated_position.updated_at)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        UPDATE paper_accounts
+        SET
+            current_equity = $2,
+            realized_pnl = $3,
+            unrealized_pnl = $4,
+            updated_at = $5
+        WHERE id = $1
+        "#,
+    )
+    .bind(updated_account.id)
+    .bind(updated_account.current_equity)
+    .bind(updated_account.realized_pnl)
+    .bind(updated_account.unrealized_pnl)
+    .bind(updated_account.updated_at)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO paper_fills (
+            id, account_id, order_id, position_id, symbol, side, price, quantity, notional,
+            fee, slippage_cost, filled_at, strategy_id, signal_id, risk_decision_id, correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9,
+            $10, $11, $12, $13, $14, $15, $16
+        )
+        "#,
+    )
+    .bind(fill.id)
+    .bind(fill.account_id)
+    .bind(fill.order_id)
+    .bind(fill.position_id)
+    .bind(&fill.symbol)
+    .bind(fill.side.as_str())
+    .bind(fill.price)
+    .bind(fill.quantity)
+    .bind(fill.notional)
+    .bind(fill.fee)
+    .bind(fill.slippage_cost)
+    .bind(fill.filled_at)
+    .bind(&fill.strategy_id)
+    .bind(fill.signal_id)
+    .bind(close_result.close_fill_id)
+    .bind(fill.correlation_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO paper_equity_snapshots (
+            id, account_id, equity, realized_pnl, unrealized_pnl, drawdown_pct, snapshot_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "#,
+    )
+    .bind(snapshot.id)
+    .bind(snapshot.account_id)
+    .bind(snapshot.equity)
+    .bind(snapshot.realized_pnl)
+    .bind(snapshot.unrealized_pnl)
+    .bind(snapshot.drawdown_pct)
+    .bind(snapshot.snapshot_at)
+    .execute(&mut *tx)
+    .await?;
+
+    for entry in journal_entries {
+        sqlx::query(
+            r#"
+            INSERT INTO paper_trade_journal (
+                id, account_id, position_id, order_id, event_type, symbol, pnl, payload, created_at, correlation_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "#,
+        )
+        .bind(entry.id)
+        .bind(entry.account_id)
+        .bind(entry.position_id)
+        .bind(entry.order_id)
+        .bind(&entry.event_type)
+        .bind(&entry.symbol)
+        .bind(entry.pnl)
+        .bind(&entry.payload)
+        .bind(entry.created_at)
+        .bind(entry.correlation_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let close_requested_payload = json!({
+        "position_id": position.id,
+        "account_id": account.id,
+        "symbol": position.symbol,
+        "quantity": position.quantity,
+    });
+    let fill_payload = json!({
+        "fill_id": fill.id,
+        "position_id": position.id,
+        "symbol": position.symbol,
+        "price": fill.price,
+        "quantity": fill.quantity,
+    });
+    let closed_payload = serde_json::to_value(&close_result.summary)?;
+    let equity_payload = json!({
+        "account_id": updated_account.id,
+        "equity": updated_account.current_equity,
+        "realized_pnl": updated_account.realized_pnl,
+        "unrealized_pnl": updated_account.unrealized_pnl,
+    });
+    for (event_type, payload) in [
+        ("paper.position.close_requested", close_requested_payload),
+        ("paper.fill.created", fill_payload),
+        ("paper.position.closed", closed_payload),
+        ("paper.equity.updated", equity_payload),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO system_events (id, correlation_id, event_type, source, payload, occurred_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(close_result.correlation_id)
+        .bind(event_type)
+        .bind(source)
+        .bind(payload)
+        .bind(close_result.closed_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let metadata = json!({
+        "account_id": account.id,
+        "position_id": position.id,
+        "symbol": position.symbol,
+        "close_fill_id": fill.id,
+        "order_id": fill.order_id,
+        "correlation_id": close_result.correlation_id,
+    });
+    sqlx::query(
+        r#"
+        INSERT INTO audit_logs (id, correlation_id, actor, action, target, metadata)
+        VALUES ($1, $2, $3, 'paper.position.close', $4, $5)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(close_result.correlation_id)
+    .bind(&actor.actor)
+    .bind(format!("paper_position:{}", position.id))
+    .bind(metadata)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(PaperPositionCloseSummary {
+        status: PaperCloseStatus::Closed,
+        ..close_result.summary.clone()
+    })
 }
 
 pub async fn upsert_candle(pool: &PgPool, candle: &Candle) -> Result<CandleRecord> {

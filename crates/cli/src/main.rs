@@ -289,11 +289,25 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             PaperCommands::Positions(args) => {
-                let response = client.paper_positions(args.limit).await?;
+                let response = client.paper_positions(args.limit, &args.status).await?;
                 if cli.json {
                     output::print_json(&response)?;
                 } else {
                     output::print_paper_positions(&response);
+                }
+            }
+            PaperCommands::Close(args) => {
+                let response = client
+                    .paper_close(
+                        args.position_id,
+                        args.confirm.as_deref().expect("validated confirm"),
+                        args.reason,
+                    )
+                    .await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_paper_close(&response);
                 }
             }
             PaperCommands::Pnl => {
