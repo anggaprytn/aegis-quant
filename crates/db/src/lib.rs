@@ -2,9 +2,11 @@ use aegis_core::{
     BacktestConfig, BacktestEquityPoint, BacktestResult, BacktestTrade, Candle,
     CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult, CandleBackfillStatus,
     CandleInterval, DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus,
-    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperOrder, ReplayRunStatus,
-    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason,
-    StrategyConfig, StrategyId, StrategySignal, Symbol,
+    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus,
+    PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition, PaperPriceStatus,
+    PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig, StrategyId,
+    StrategySignal, Symbol,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -104,6 +106,90 @@ pub struct OrderRecord {
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperAccountRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub base_currency: String,
+    pub initial_equity: Decimal,
+    pub current_equity: Decimal,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperPositionRecord {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub symbol: String,
+    pub side: String,
+    pub quantity: Decimal,
+    pub entry_price: Decimal,
+    pub mark_price: Option<Decimal>,
+    pub price_status: String,
+    pub notional: Decimal,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub status: String,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub strategy_id: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub order_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperFillRecord {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub order_id: Uuid,
+    pub position_id: Option<Uuid>,
+    pub symbol: String,
+    pub side: String,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub notional: Decimal,
+    pub fee: Decimal,
+    pub slippage_cost: Decimal,
+    pub filled_at: DateTime<Utc>,
+    pub strategy_id: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperEquitySnapshotRecord {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub equity: Decimal,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub drawdown_pct: Decimal,
+    pub snapshot_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperTradeJournalRecord {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub position_id: Option<Uuid>,
+    pub order_id: Option<Uuid>,
+    pub event_type: String,
+    pub symbol: Option<String>,
+    pub pnl: Option<Decimal>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1004,6 +1090,567 @@ pub async fn get_order_by_idempotency_key(
     .await?;
 
     Ok(row.as_ref().map(map_order))
+}
+
+pub async fn get_default_paper_account(pool: &PgPool) -> Result<Option<PaperAccountRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            name,
+            base_currency,
+            initial_equity,
+            current_equity,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            created_at,
+            updated_at
+        FROM paper_accounts
+        ORDER BY created_at ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_paper_account))
+}
+
+pub async fn insert_paper_account(
+    pool: &PgPool,
+    account: &PaperAccount,
+) -> Result<PaperAccountRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO paper_accounts (
+            id,
+            name,
+            base_currency,
+            initial_equity,
+            current_equity,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO UPDATE
+        SET
+            name = EXCLUDED.name,
+            base_currency = EXCLUDED.base_currency,
+            initial_equity = EXCLUDED.initial_equity,
+            current_equity = EXCLUDED.current_equity,
+            realized_pnl = EXCLUDED.realized_pnl,
+            unrealized_pnl = EXCLUDED.unrealized_pnl,
+            status = EXCLUDED.status,
+            updated_at = EXCLUDED.updated_at
+        RETURNING
+            id,
+            name,
+            base_currency,
+            initial_equity,
+            current_equity,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(account.id)
+    .bind(&account.name)
+    .bind(&account.base_currency)
+    .bind(account.initial_equity)
+    .bind(account.current_equity)
+    .bind(account.realized_pnl)
+    .bind(account.unrealized_pnl)
+    .bind(account.status.as_str())
+    .bind(account.created_at)
+    .bind(account.updated_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_paper_account(&row))
+}
+
+pub async fn get_open_paper_position(
+    pool: &PgPool,
+    account_id: Uuid,
+    symbol: &str,
+    side: PositionSide,
+) -> Result<Option<PaperPositionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            account_id,
+            symbol,
+            side,
+            quantity,
+            entry_price,
+            mark_price,
+            price_status,
+            notional,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            opened_at,
+            closed_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            order_id,
+            created_at,
+            updated_at
+        FROM paper_positions
+        WHERE account_id = $1
+          AND symbol = $2
+          AND side = $3
+          AND status = 'open'
+        LIMIT 1
+        "#,
+    )
+    .bind(account_id)
+    .bind(symbol)
+    .bind(side.as_str())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_paper_position))
+}
+
+pub async fn upsert_paper_position(
+    pool: &PgPool,
+    position: &PaperPosition,
+) -> Result<PaperPositionRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO paper_positions (
+            id,
+            account_id,
+            symbol,
+            side,
+            quantity,
+            entry_price,
+            mark_price,
+            price_status,
+            notional,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            opened_at,
+            closed_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            order_id,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET
+            quantity = EXCLUDED.quantity,
+            entry_price = EXCLUDED.entry_price,
+            mark_price = EXCLUDED.mark_price,
+            price_status = EXCLUDED.price_status,
+            notional = EXCLUDED.notional,
+            realized_pnl = EXCLUDED.realized_pnl,
+            unrealized_pnl = EXCLUDED.unrealized_pnl,
+            status = EXCLUDED.status,
+            closed_at = EXCLUDED.closed_at,
+            strategy_id = EXCLUDED.strategy_id,
+            signal_id = EXCLUDED.signal_id,
+            risk_decision_id = EXCLUDED.risk_decision_id,
+            order_id = EXCLUDED.order_id,
+            updated_at = EXCLUDED.updated_at
+        RETURNING
+            id,
+            account_id,
+            symbol,
+            side,
+            quantity,
+            entry_price,
+            mark_price,
+            price_status,
+            notional,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            opened_at,
+            closed_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            order_id,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(position.id)
+    .bind(position.account_id)
+    .bind(&position.symbol)
+    .bind(position.side.as_str())
+    .bind(position.quantity)
+    .bind(position.entry_price)
+    .bind(position.mark_price)
+    .bind(position.price_status.as_str())
+    .bind(position.notional)
+    .bind(position.realized_pnl)
+    .bind(position.unrealized_pnl)
+    .bind(position.status.as_str())
+    .bind(position.opened_at)
+    .bind(position.closed_at)
+    .bind(&position.strategy_id)
+    .bind(position.signal_id)
+    .bind(position.risk_decision_id)
+    .bind(position.order_id)
+    .bind(position.updated_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_paper_position(&row))
+}
+
+pub async fn insert_paper_fill(pool: &PgPool, fill: &PaperFill) -> Result<PaperFillRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO paper_fills (
+            id,
+            account_id,
+            order_id,
+            position_id,
+            symbol,
+            side,
+            price,
+            quantity,
+            notional,
+            fee,
+            slippage_cost,
+            filled_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+        )
+        ON CONFLICT (order_id) DO UPDATE
+        SET
+            position_id = EXCLUDED.position_id
+        RETURNING
+            id,
+            account_id,
+            order_id,
+            position_id,
+            symbol,
+            side,
+            price,
+            quantity,
+            notional,
+            fee,
+            slippage_cost,
+            filled_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            correlation_id,
+            created_at
+        "#,
+    )
+    .bind(fill.id)
+    .bind(fill.account_id)
+    .bind(fill.order_id)
+    .bind(fill.position_id)
+    .bind(&fill.symbol)
+    .bind(fill.side.as_str())
+    .bind(fill.price)
+    .bind(fill.quantity)
+    .bind(fill.notional)
+    .bind(fill.fee)
+    .bind(fill.slippage_cost)
+    .bind(fill.filled_at)
+    .bind(&fill.strategy_id)
+    .bind(fill.signal_id)
+    .bind(fill.risk_decision_id)
+    .bind(fill.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_paper_fill(&row))
+}
+
+pub async fn insert_paper_equity_snapshot(
+    pool: &PgPool,
+    snapshot: &PaperEquitySnapshot,
+) -> Result<PaperEquitySnapshotRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO paper_equity_snapshots (
+            id,
+            account_id,
+            equity,
+            realized_pnl,
+            unrealized_pnl,
+            drawdown_pct,
+            snapshot_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING
+            id,
+            account_id,
+            equity,
+            realized_pnl,
+            unrealized_pnl,
+            drawdown_pct,
+            snapshot_at
+        "#,
+    )
+    .bind(snapshot.id)
+    .bind(snapshot.account_id)
+    .bind(snapshot.equity)
+    .bind(snapshot.realized_pnl)
+    .bind(snapshot.unrealized_pnl)
+    .bind(snapshot.drawdown_pct)
+    .bind(snapshot.snapshot_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_paper_equity_snapshot(&row))
+}
+
+pub async fn insert_paper_trade_journal_entry(
+    pool: &PgPool,
+    entry: &PaperTradeJournalEntry,
+) -> Result<PaperTradeJournalRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO paper_trade_journal (
+            id,
+            account_id,
+            position_id,
+            order_id,
+            event_type,
+            symbol,
+            pnl,
+            payload,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING
+            id,
+            account_id,
+            position_id,
+            order_id,
+            event_type,
+            symbol,
+            pnl,
+            payload,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(entry.id)
+    .bind(entry.account_id)
+    .bind(entry.position_id)
+    .bind(entry.order_id)
+    .bind(&entry.event_type)
+    .bind(&entry.symbol)
+    .bind(entry.pnl)
+    .bind(&entry.payload)
+    .bind(entry.created_at)
+    .bind(entry.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_paper_trade_journal(&row))
+}
+
+pub async fn list_paper_positions(
+    pool: &PgPool,
+    account_id: Uuid,
+    limit: i64,
+) -> Result<Vec<PaperPositionRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            account_id,
+            symbol,
+            side,
+            quantity,
+            entry_price,
+            mark_price,
+            price_status,
+            notional,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            opened_at,
+            closed_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            order_id,
+            created_at,
+            updated_at
+        FROM paper_positions
+        WHERE account_id = $1
+        ORDER BY opened_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(account_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_paper_position).collect())
+}
+
+pub async fn get_paper_position_by_id(
+    pool: &PgPool,
+    account_id: Uuid,
+    position_id: Uuid,
+) -> Result<Option<PaperPositionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            account_id,
+            symbol,
+            side,
+            quantity,
+            entry_price,
+            mark_price,
+            price_status,
+            notional,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            opened_at,
+            closed_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            order_id,
+            created_at,
+            updated_at
+        FROM paper_positions
+        WHERE account_id = $1 AND id = $2
+        "#,
+    )
+    .bind(account_id)
+    .bind(position_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_paper_position))
+}
+
+pub async fn list_open_paper_positions(
+    pool: &PgPool,
+    account_id: Uuid,
+) -> Result<Vec<PaperPositionRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            account_id,
+            symbol,
+            side,
+            quantity,
+            entry_price,
+            mark_price,
+            price_status,
+            notional,
+            realized_pnl,
+            unrealized_pnl,
+            status,
+            opened_at,
+            closed_at,
+            strategy_id,
+            signal_id,
+            risk_decision_id,
+            order_id,
+            created_at,
+            updated_at
+        FROM paper_positions
+        WHERE account_id = $1 AND status = 'open'
+        ORDER BY opened_at DESC
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_paper_position).collect())
+}
+
+pub async fn list_paper_equity_snapshots(
+    pool: &PgPool,
+    account_id: Uuid,
+    limit: i64,
+) -> Result<Vec<PaperEquitySnapshotRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            account_id,
+            equity,
+            realized_pnl,
+            unrealized_pnl,
+            drawdown_pct,
+            snapshot_at
+        FROM paper_equity_snapshots
+        WHERE account_id = $1
+        ORDER BY snapshot_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(account_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_paper_equity_snapshot).collect())
+}
+
+pub async fn list_paper_trade_journal(
+    pool: &PgPool,
+    account_id: Uuid,
+    limit: i64,
+) -> Result<Vec<PaperTradeJournalRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            account_id,
+            position_id,
+            order_id,
+            event_type,
+            symbol,
+            pnl,
+            payload,
+            created_at,
+            correlation_id
+        FROM paper_trade_journal
+        WHERE account_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(account_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_paper_trade_journal).collect())
 }
 
 pub async fn insert_market_tick(pool: &PgPool, tick: &MarketTick) -> Result<MarketTickRecord> {
@@ -3088,6 +3735,184 @@ fn map_order(row: &sqlx::postgres::PgRow) -> OrderRecord {
         expires_at: row.get("expires_at"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_paper_account(row: &sqlx::postgres::PgRow) -> PaperAccountRecord {
+    PaperAccountRecord {
+        id: row.get("id"),
+        name: row.get("name"),
+        base_currency: row.get("base_currency"),
+        initial_equity: row.get("initial_equity"),
+        current_equity: row.get("current_equity"),
+        realized_pnl: row.get("realized_pnl"),
+        unrealized_pnl: row.get("unrealized_pnl"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_paper_position(row: &sqlx::postgres::PgRow) -> PaperPositionRecord {
+    PaperPositionRecord {
+        id: row.get("id"),
+        account_id: row.get("account_id"),
+        symbol: row.get("symbol"),
+        side: row.get("side"),
+        quantity: row.get("quantity"),
+        entry_price: row.get("entry_price"),
+        mark_price: row.get("mark_price"),
+        price_status: row.get("price_status"),
+        notional: row.get("notional"),
+        realized_pnl: row.get("realized_pnl"),
+        unrealized_pnl: row.get("unrealized_pnl"),
+        status: row.get("status"),
+        opened_at: row.get("opened_at"),
+        closed_at: row.get("closed_at"),
+        strategy_id: row.get("strategy_id"),
+        signal_id: row.get("signal_id"),
+        risk_decision_id: row.get("risk_decision_id"),
+        order_id: row.get("order_id"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_paper_fill(row: &sqlx::postgres::PgRow) -> PaperFillRecord {
+    PaperFillRecord {
+        id: row.get("id"),
+        account_id: row.get("account_id"),
+        order_id: row.get("order_id"),
+        position_id: row.get("position_id"),
+        symbol: row.get("symbol"),
+        side: row.get("side"),
+        price: row.get("price"),
+        quantity: row.get("quantity"),
+        notional: row.get("notional"),
+        fee: row.get("fee"),
+        slippage_cost: row.get("slippage_cost"),
+        filled_at: row.get("filled_at"),
+        strategy_id: row.get("strategy_id"),
+        signal_id: row.get("signal_id"),
+        risk_decision_id: row.get("risk_decision_id"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_paper_equity_snapshot(row: &sqlx::postgres::PgRow) -> PaperEquitySnapshotRecord {
+    PaperEquitySnapshotRecord {
+        id: row.get("id"),
+        account_id: row.get("account_id"),
+        equity: row.get("equity"),
+        realized_pnl: row.get("realized_pnl"),
+        unrealized_pnl: row.get("unrealized_pnl"),
+        drawdown_pct: row.get("drawdown_pct"),
+        snapshot_at: row.get("snapshot_at"),
+    }
+}
+
+fn map_paper_trade_journal(row: &sqlx::postgres::PgRow) -> PaperTradeJournalRecord {
+    PaperTradeJournalRecord {
+        id: row.get("id"),
+        account_id: row.get("account_id"),
+        position_id: row.get("position_id"),
+        order_id: row.get("order_id"),
+        event_type: row.get("event_type"),
+        symbol: row.get("symbol"),
+        pnl: row.get("pnl"),
+        payload: row.get("payload"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+pub fn paper_account_from_record(record: &PaperAccountRecord) -> Result<PaperAccount> {
+    Ok(PaperAccount {
+        id: record.id,
+        name: record.name.clone(),
+        base_currency: record.base_currency.clone(),
+        initial_equity: record.initial_equity,
+        current_equity: record.current_equity,
+        realized_pnl: record.realized_pnl,
+        unrealized_pnl: record.unrealized_pnl,
+        status: record.status.parse::<PaperAccountStatus>()?,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    })
+}
+
+pub fn paper_position_from_record(record: &PaperPositionRecord) -> Result<PaperPosition> {
+    Ok(PaperPosition {
+        id: record.id,
+        account_id: record.account_id,
+        symbol: record.symbol.clone(),
+        side: record.side.parse::<PositionSide>()?,
+        quantity: record.quantity,
+        entry_price: record.entry_price,
+        mark_price: record.mark_price,
+        price_status: record.price_status.parse::<PaperPriceStatus>()?,
+        notional: record.notional,
+        realized_pnl: record.realized_pnl,
+        unrealized_pnl: record.unrealized_pnl,
+        status: record.status.parse::<PositionStatus>()?,
+        opened_at: record.opened_at,
+        closed_at: record.closed_at,
+        strategy_id: record.strategy_id.clone(),
+        signal_id: record.signal_id,
+        risk_decision_id: record.risk_decision_id,
+        order_id: record.order_id,
+        updated_at: record.updated_at,
+    })
+}
+
+pub fn paper_fill_from_record(record: &PaperFillRecord) -> Result<PaperFill> {
+    Ok(PaperFill {
+        id: record.id,
+        account_id: record.account_id,
+        order_id: record.order_id,
+        position_id: record.position_id,
+        symbol: record.symbol.clone(),
+        side: record.side.parse::<PositionSide>()?,
+        price: record.price,
+        quantity: record.quantity,
+        notional: record.notional,
+        fee: record.fee,
+        slippage_cost: record.slippage_cost,
+        filled_at: record.filled_at,
+        strategy_id: record.strategy_id.clone(),
+        signal_id: record.signal_id,
+        risk_decision_id: record.risk_decision_id,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub fn paper_equity_snapshot_from_record(
+    record: &PaperEquitySnapshotRecord,
+) -> PaperEquitySnapshot {
+    PaperEquitySnapshot {
+        id: record.id,
+        account_id: record.account_id,
+        equity: record.equity,
+        realized_pnl: record.realized_pnl,
+        unrealized_pnl: record.unrealized_pnl,
+        drawdown_pct: record.drawdown_pct,
+        snapshot_at: record.snapshot_at,
+    }
+}
+
+pub fn paper_trade_journal_from_record(record: &PaperTradeJournalRecord) -> PaperTradeJournalEntry {
+    PaperTradeJournalEntry {
+        id: record.id,
+        account_id: record.account_id,
+        position_id: record.position_id,
+        order_id: record.order_id,
+        event_type: record.event_type.clone(),
+        symbol: record.symbol.clone(),
+        pnl: record.pnl,
+        payload: record.payload.clone(),
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
     }
 }
 

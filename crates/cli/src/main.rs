@@ -6,7 +6,7 @@ use cli::api::{
     RecentEventsQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
-    BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands,
+    BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands, PaperCommands,
     PipelineCommands, RiskCommands, StrategyCommands, RESUME_CONFIRMATION_TEXT,
 };
 use cli::config::CliConfig;
@@ -204,6 +204,56 @@ async fn main() -> anyhow::Result<()> {
                     output::print_json(&response)?;
                 } else {
                     output::print_backtest_run(&response.run);
+                }
+            }
+        },
+        Commands::Paper(command) => match command {
+            PaperCommands::Account => {
+                let response = client.paper_account().await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_paper_account(&response);
+                }
+            }
+            PaperCommands::Positions(args) => {
+                let response = client.paper_positions(args.limit).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_paper_positions(&response);
+                }
+            }
+            PaperCommands::Pnl => {
+                let response = client.paper_pnl().await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_paper_pnl(&response);
+                }
+            }
+            PaperCommands::Equity(args) => {
+                let response = client.paper_equity(args.limit).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_paper_equity(&response);
+                }
+            }
+            PaperCommands::Journal(args) => {
+                let response = client.paper_journal(args.limit).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_paper_journal(&response);
+                }
+            }
+            PaperCommands::Mark => {
+                let response = client.paper_mark().await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_paper_pnl(&response);
                 }
             }
         },

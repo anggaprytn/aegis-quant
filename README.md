@@ -14,6 +14,7 @@ This repository foundation includes:
 - Binance public REST historical candle backfill into closed stored candles
 - Deterministic candle-only strategy evaluation for `momentum_v1` and `volatility_breakout_v1`
 - Deterministic paper trading pipeline from closed candles to risk-gated paper order lifecycle
+- Paper account, position, fill, journal, and equity snapshot accounting for operational paper trading
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
 - Minimal Next.js operational dashboard shell for paper-only inspection and control
 - Event model and publisher trait skeleton
@@ -52,6 +53,12 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/risk/decisions/<risk_decision_id>'`
    `curl 'http://127.0.0.1:3000/orders'`
    `curl 'http://127.0.0.1:3000/orders/<order_id>'`
+   `curl 'http://127.0.0.1:3000/paper/account'`
+   `curl 'http://127.0.0.1:3000/paper/positions?limit=50'`
+   `curl 'http://127.0.0.1:3000/paper/pnl/daily'`
+   `curl 'http://127.0.0.1:3000/paper/equity?limit=50'`
+   `curl 'http://127.0.0.1:3000/paper/trade-journal?limit=50'`
+   `curl -X POST http://127.0.0.1:3000/paper/account/mark-to-market`
    `curl 'http://127.0.0.1:3000/events/recent?limit=100&event_type=risk.rejected&source=aegis-quant-api'`
    `curl 'http://127.0.0.1:3000/backtest/runs?limit=10'`
 8. Start the dashboard:
@@ -107,6 +114,12 @@ cargo run -p cli -- strategy list
 cargo run -p cli -- strategy disable momentum_v1
 cargo run -p cli -- orders list --limit 20
 cargo run -p cli -- orders get 00000000-0000-0000-0000-000000000000
+cargo run -p cli -- paper account
+cargo run -p cli -- paper positions --limit 50
+cargo run -p cli -- paper pnl
+cargo run -p cli -- paper equity --limit 50
+cargo run -p cli -- paper journal --limit 50
+cargo run -p cli -- paper mark
 cargo run -p cli -- events list --limit 50 --event-type risk.rejected
 cargo run -p cli -- risk decisions --limit 50 --symbol BTCUSDT
 cargo run -p cli -- backtest run \
@@ -176,6 +189,40 @@ cargo run -p cli -- backtest run \
   --initial-capital 1000000 \
   --fee-bps 10 \
   --slippage-bps 5
+```
+
+## Paper accounting
+
+Operational paper trading now persists a separate accounting surface:
+
+- `paper_accounts`
+- `paper_positions`
+- `paper_fills`
+- `paper_equity_snapshots`
+- `paper_trade_journal`
+
+The flow is deterministic and paper-only:
+
+```txt
+paper order filled
+-> paper fill
+-> paper position open/update
+-> realized/unrealized PnL
+-> account equity update
+-> equity snapshot
+-> trade journal
+```
+
+Examples:
+
+```bash
+curl http://127.0.0.1:3000/paper/account
+curl http://127.0.0.1:3000/paper/positions?limit=50
+curl -X POST http://127.0.0.1:3000/paper/account/mark-to-market
+
+cargo run -p cli -- paper account
+cargo run -p cli -- paper pnl
+cargo run -p cli -- paper mark
 ```
 
 ## Dashboard shell

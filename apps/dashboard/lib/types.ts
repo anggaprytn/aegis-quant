@@ -356,6 +356,110 @@ export type OrderResponse = {
   timestamp: string;
 };
 
+export type PaperAccountRecord = {
+  id: string;
+  name: string;
+  base_currency: string;
+  initial_equity: string;
+  current_equity: string;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PaperAccountResponse = {
+  account: PaperAccountRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type PaperPositionRecord = {
+  id: string;
+  account_id: string;
+  symbol: string;
+  side: string;
+  quantity: string;
+  entry_price: string;
+  mark_price: string | null;
+  price_status: string;
+  notional: string;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  status: string;
+  opened_at: string;
+  closed_at: string | null;
+  strategy_id: string | null;
+  signal_id: string | null;
+  risk_decision_id: string | null;
+  order_id: string | null;
+  updated_at: string;
+};
+
+export type PaperPositionsResponse = {
+  positions: PaperPositionRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type PaperPnlSummaryRecord = {
+  realized_pnl: string;
+  unrealized_pnl: string;
+  equity: string;
+  daily_pnl: string;
+  drawdown_pct: string;
+  price_status: string;
+  open_positions_count: number;
+  calculated_at: string;
+};
+
+export type PaperPnlResponse = {
+  pnl: PaperPnlSummaryRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type PaperEquitySnapshotRecord = {
+  id: string;
+  account_id: string;
+  equity: string;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  drawdown_pct: string;
+  snapshot_at: string;
+};
+
+export type PaperEquityResponse = {
+  equity: PaperEquitySnapshotRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type PaperTradeJournalRecord = {
+  id: string;
+  account_id: string;
+  position_id: string | null;
+  order_id: string | null;
+  event_type: string;
+  symbol: string | null;
+  pnl: string | null;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+  correlation_id: string;
+};
+
+export type PaperTradeJournalResponse = {
+  journal: PaperTradeJournalRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type BacktestRunAcceptedResponse = {
   run_id: string;
   status: string;

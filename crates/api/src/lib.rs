@@ -1,18 +1,29 @@
 use std::{env, net::SocketAddr};
 
+use accounting::{
+    apply_paper_order_fill, create_default_paper_account_if_missing, PaperAccountingConfig,
+};
 use aegis_core::{
-    CandleInterval, MarketMode, RiskRejectionReason, StrategyConfig, StrategyId, Symbol,
+    CandleInterval, MarketMode, PaperAccount, PaperFill, PositionSide, RiskRejectionReason,
+    StrategyConfig, StrategyId, Symbol,
 };
 use anyhow::Result;
 use chrono::Utc;
 use db::{
-    get_strategy_status, strategy_config_from_record, upsert_strategy_config, PgPool, StateActor,
+    get_default_paper_account, get_open_paper_position, get_strategy_status, insert_paper_account,
+    insert_paper_equity_snapshot, insert_paper_fill, insert_paper_trade_journal_entry,
+    paper_account_from_record, paper_position_from_record, strategy_config_from_record,
+    upsert_paper_position, upsert_strategy_config, OrderRecord, PgPool, StateActor,
 };
 use market_ingest::MarketIngestConfig;
 use rust_decimal::Decimal;
 use strategy_engine::build_default_strategy_configs;
 
 pub mod pipeline;
+
+pub const DEFAULT_PAPER_ACCOUNT_NAME: &str = "Default Paper";
+pub const DEFAULT_PAPER_ACCOUNT_BASE_CURRENCY: &str = "USDT";
+pub const DEFAULT_PAPER_ACCOUNT_INITIAL_EQUITY: i64 = 1_000_000;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -154,4 +165,93 @@ pub fn reason_code(reason: RiskRejectionReason) -> &'static str {
         RiskRejectionReason::PositionNotionalExceeded => "position_notional_exceeded",
         RiskRejectionReason::UnsupportedState => "unsupported_state",
     }
+}
+
+pub async fn ensure_default_paper_account(pool: &PgPool) -> Result<PaperAccount> {
+    let existing = get_default_paper_account(pool)
+        .await?
+        .map(|record| paper_account_from_record(&record))
+        .transpose()?;
+    let now = Utc::now();
+    let account = create_default_paper_account_if_missing(
+        existing,
+        DEFAULT_PAPER_ACCOUNT_NAME,
+        DEFAULT_PAPER_ACCOUNT_BASE_CURRENCY,
+        rust_decimal::Decimal::new(DEFAULT_PAPER_ACCOUNT_INITIAL_EQUITY, 0),
+        now,
+    )?;
+    let record = insert_paper_account(pool, &account).await?;
+    paper_account_from_record(&record)
+}
+
+pub async fn persist_paper_fill_accounting(
+    pool: &PgPool,
+    order: &OrderRecord,
+) -> Result<Option<PaperAccount>> {
+    if order.execution_state != "PAPER_FILLED" {
+        return Ok(None);
+    }
+
+    let account = ensure_default_paper_account(pool).await?;
+    let existing_position =
+        get_open_paper_position(pool, account.id, &order.symbol, PositionSide::Long)
+            .await?
+            .map(|record| paper_position_from_record(&record))
+            .transpose()?;
+    let price = order
+        .filled_price
+        .or(order.avg_fill_price)
+        .or(order.limit_price)
+        .unwrap_or(order.quantity);
+    let fill = PaperFill {
+        id: uuid::Uuid::new_v4(),
+        account_id: account.id,
+        order_id: order.order_id,
+        position_id: existing_position.as_ref().map(|position| position.id),
+        symbol: order.symbol.clone(),
+        side: PositionSide::Long,
+        price,
+        quantity: order.filled_qty,
+        notional: price * order.filled_qty,
+        fee: rust_decimal::Decimal::ZERO,
+        slippage_cost: rust_decimal::Decimal::ZERO,
+        filled_at: order.filled_at.unwrap_or_else(Utc::now),
+        strategy_id: order.strategy_id.clone(),
+        signal_id: order.signal_id,
+        risk_decision_id: Some(order.risk_decision_id),
+        correlation_id: order.correlation_id,
+    };
+
+    let application = apply_paper_order_fill(
+        &account,
+        existing_position.as_ref(),
+        &fill,
+        PaperAccountingConfig::default(),
+    )?;
+
+    let position_record = upsert_paper_position(pool, &application.position).await?;
+    let fill = PaperFill {
+        position_id: Some(position_record.id),
+        ..application.fill
+    };
+    insert_paper_fill(pool, &fill).await?;
+    let account_record = insert_paper_account(pool, &application.account).await?;
+    for entry in application.journal_entries {
+        insert_paper_trade_journal_entry(pool, &entry).await?;
+    }
+    insert_paper_equity_snapshot(
+        pool,
+        &aegis_core::PaperEquitySnapshot {
+            id: uuid::Uuid::new_v4(),
+            account_id: account.id,
+            equity: application.summary.equity,
+            realized_pnl: application.summary.realized_pnl,
+            unrealized_pnl: application.summary.unrealized_pnl,
+            drawdown_pct: application.summary.drawdown_pct,
+            snapshot_at: fill.filled_at,
+        },
+    )
+    .await?;
+
+    Ok(Some(paper_account_from_record(&account_record)?))
 }

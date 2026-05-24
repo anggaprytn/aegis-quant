@@ -50,6 +50,8 @@ pub enum Commands {
     Market(MarketCommands),
     #[command(subcommand)]
     Backtest(BacktestCommands),
+    #[command(subcommand)]
+    Paper(PaperCommands),
 }
 
 #[derive(Debug, Args)]
@@ -162,6 +164,22 @@ pub enum BacktestCommands {
     Run(BacktestRunArgs),
     List(BacktestListArgs),
     Get { run_id: Uuid },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PaperCommands {
+    Account,
+    Positions(PaperListArgs),
+    Pnl,
+    Equity(PaperListArgs),
+    Journal(PaperListArgs),
+    Mark,
+}
+
+#[derive(Debug, Args)]
+pub struct PaperListArgs {
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Args)]

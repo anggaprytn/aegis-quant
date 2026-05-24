@@ -1,4 +1,4 @@
-use crate::{default_actor, ensure_strategy_config, AppState};
+use crate::{default_actor, ensure_strategy_config, persist_paper_fill_accounting, AppState};
 use aegis_core::{
     Candle, CandleInterval, DataFreshnessStatus, EventEnvelope, OrderIntentSource,
     PaperTradingPipelineRequest, PaperTradingPipelineResult, PipelineDecision,
@@ -385,7 +385,7 @@ pub async fn run_paper_pipeline(
             signal_id: Some(signal_outcome.signal.id),
             risk_decision_id: Some(persisted_risk.risk_decision_id),
             paper_order_id: Some(order_outcome.order.order_id),
-            execution_state: Some(order_outcome.order.execution_state),
+            execution_state: Some(order_outcome.order.execution_state.clone()),
             reasons: Vec::new(),
             correlation_id,
             trace: StrategyRiskExecutionTrace {
@@ -400,6 +400,45 @@ pub async fn run_paper_pipeline(
                 order_intent_source: Some(OrderIntentSource::StrategySignal),
             },
         };
+        let paper_account = persist_paper_fill_accounting(&state.db_pool, &order_outcome.order)
+            .await
+            .context("failed to persist paper accounting artifacts")?;
+        if let Some(account) = paper_account {
+            insert_pipeline_event(
+                state,
+                correlation_id,
+                "paper.fill.created",
+                json!({
+                    "account_id": account.id,
+                    "order_id": order_outcome.order.order_id,
+                    "symbol": order_outcome.order.symbol,
+                }),
+            )
+            .await?;
+            insert_pipeline_event(
+                state,
+                correlation_id,
+                "paper.position.opened",
+                json!({
+                    "account_id": account.id,
+                    "order_id": order_outcome.order.order_id,
+                    "symbol": order_outcome.order.symbol,
+                }),
+            )
+            .await?;
+            insert_pipeline_event(
+                state,
+                correlation_id,
+                "paper.equity.updated",
+                json!({
+                    "account_id": account.id,
+                    "equity": account.current_equity,
+                    "realized_pnl": account.realized_pnl,
+                    "unrealized_pnl": account.unrealized_pnl,
+                }),
+            )
+            .await?;
+        }
         insert_pipeline_event(
             state,
             correlation_id,

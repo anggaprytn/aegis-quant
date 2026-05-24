@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+accounting = { path = "../accounting" }
 aegis-core = { path = "../core" }
 db = { path = "../db" }
 events = { path = "../events" }

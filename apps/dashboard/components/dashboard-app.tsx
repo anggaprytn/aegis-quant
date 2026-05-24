@@ -17,6 +17,7 @@ import type {
   CandleBackfillResult,
   MarketFeedStatusRecord,
   OrderRecord,
+  PaperPositionRecord,
   RiskDecisionRecord,
   StrategyStatusView,
   SystemEventRecord,
@@ -140,6 +141,31 @@ export function DashboardApp() {
     queryKey: ["orders"],
     queryFn: api.getOrders,
     refetchInterval: 10_000,
+  });
+  const paperAccountQuery = useQuery({
+    queryKey: ["paper-account"],
+    queryFn: api.getPaperAccount,
+    refetchInterval: 10_000,
+  });
+  const paperPositionsQuery = useQuery({
+    queryKey: ["paper-positions"],
+    queryFn: () => api.getPaperPositions(50),
+    refetchInterval: 10_000,
+  });
+  const paperPnlQuery = useQuery({
+    queryKey: ["paper-pnl"],
+    queryFn: api.getPaperPnl,
+    refetchInterval: 10_000,
+  });
+  const paperEquityQuery = useQuery({
+    queryKey: ["paper-equity"],
+    queryFn: () => api.getPaperEquity(50),
+    refetchInterval: 15_000,
+  });
+  const paperJournalQuery = useQuery({
+    queryKey: ["paper-journal"],
+    queryFn: () => api.getPaperTradeJournal(50),
+    refetchInterval: 15_000,
   });
   const riskDecisionsQuery = useQuery({
     queryKey: ["risk-decisions", selectedSymbol],
@@ -364,9 +390,22 @@ export function DashboardApp() {
       await queryClient.invalidateQueries({ queryKey: ["candles"] });
     },
   });
+  const paperMarkMutation = useMutation({
+    mutationFn: api.markPaperToMarket,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["paper-account"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-positions"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-pnl"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-equity"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-journal"] });
+    },
+  });
 
   const strategies = strategiesQuery.data?.strategies ?? [];
   const orders = ordersQuery.data?.orders ?? [];
+  const paperAccount = paperAccountQuery.data?.account;
+  const paperPositions = paperPositionsQuery.data?.positions ?? [];
+  const paperPnl = paperPnlQuery.data?.pnl;
   const riskDecisions = riskDecisionsQuery.data?.decisions ?? [];
   const latestRiskDecisions = latestRiskDecisionsQuery.data?.decisions ?? [];
   const events = eventsQuery.data?.events ?? [];
@@ -572,6 +611,37 @@ export function DashboardApp() {
                   selectedId={selectedOrderId}
                 />
                 <InlineStatus error={getErrorMessage(ordersQuery.error)} />
+              </Panel>
+
+              <Panel className="xl:col-span-6" title="Paper Account">
+                <KeyValue
+                  items={[
+                    ["Equity", formatNumber(paperAccount?.current_equity)],
+                    ["Realized PnL", formatNumber(paperAccount?.realized_pnl)],
+                    ["Unrealized PnL", formatNumber(paperAccount?.unrealized_pnl)],
+                    ["Daily PnL", formatNumber(paperPnl?.daily_pnl)],
+                    ["Open Positions", String(paperPnl?.open_positions_count ?? 0)],
+                    ["Drawdown %", formatNumber(paperPnl?.drawdown_pct)],
+                  ]}
+                  loading={paperAccountQuery.isLoading || paperPnlQuery.isLoading}
+                  error={getErrorMessage(paperAccountQuery.error) ?? getErrorMessage(paperPnlQuery.error)}
+                />
+                <div className="mt-3 flex items-center gap-3">
+                  <ActionButton
+                    label="Mark To Market"
+                    onClick={() => paperMarkMutation.mutate()}
+                    busy={paperMarkMutation.isPending}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(paperMarkMutation.error)}
+                    success={paperMarkMutation.data ? "Paper equity refreshed" : undefined}
+                  />
+                </div>
+              </Panel>
+
+              <Panel className="xl:col-span-12" title="Open Paper Positions">
+                <PaperPositionsTable positions={paperPositions.filter((position) => position.status === "open")} />
+                <InlineStatus error={getErrorMessage(paperPositionsQuery.error)} />
               </Panel>
 
               <Panel className="xl:col-span-6" title="Recent Backtest Runs">
@@ -1107,6 +1177,20 @@ export function DashboardApp() {
                   loading={selectedOrderQuery.isLoading}
                   error={getErrorMessage(selectedOrderQuery.error)}
                 />
+              </Panel>
+              <Panel className="xl:col-span-8" title="Paper Positions">
+                <PaperPositionsTable positions={paperPositions} />
+                <InlineStatus error={getErrorMessage(paperPositionsQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-4" title="Paper Journal">
+                <SimpleList
+                  items={(paperJournalQuery.data?.journal ?? []).slice(0, 10).map((entry) => {
+                    const symbol = entry.symbol ? ` ${entry.symbol}` : "";
+                    const pnl = entry.pnl ? ` pnl=${entry.pnl}` : "";
+                    return `${entry.event_type}${symbol}${pnl}`;
+                  })}
+                />
+                <InlineStatus error={getErrorMessage(paperJournalQuery.error)} />
               </Panel>
             </section>
           )}
@@ -1728,6 +1812,41 @@ function OrdersTable({
         </button>
       ))}
     </div>
+  );
+}
+
+function PaperPositionsTable({ positions }: { positions: PaperPositionRecord[] }) {
+  if (!positions.length) {
+    return <EmptyState label="No paper positions." />;
+  }
+
+  return (
+    <Table
+      headers={[
+        "Symbol",
+        "Side",
+        "Quantity",
+        "Entry",
+        "Mark",
+        "Unrealized",
+        "Realized",
+        "Status",
+        "Strategy",
+        "Signal",
+      ]}
+      rows={positions.map((position) => [
+        position.symbol,
+        position.side,
+        position.quantity,
+        position.entry_price,
+        position.mark_price ?? position.price_status,
+        position.unrealized_pnl,
+        position.realized_pnl,
+        position.status,
+        position.strategy_id ?? "N/A",
+        position.signal_id ? shortenId(position.signal_id) : "N/A",
+      ])}
+    />
   );
 }
 

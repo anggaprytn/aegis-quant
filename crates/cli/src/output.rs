@@ -5,8 +5,10 @@ use serde::Serialize;
 use crate::api::{
     BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
     CandleBackfillRunsResponse, FeedStatusResponse, HealthResponse, OrderRecord,
-    RecentEventsResponse, RiskActionResponse, RiskDecisionsResponse, RiskStatusResponse,
-    StatusResponse, StrategyListResponse, StrategyStatusResponse,
+    PaperAccountResponse, PaperEquityResponse, PaperPnlResponse, PaperPositionRecord,
+    PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse,
+    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyListResponse,
+    StrategyStatusResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -203,6 +205,76 @@ pub fn print_order_detail(order: &OrderRecord) {
         order.status_reason.as_deref().unwrap_or("-")
     );
     println!("Correlation ID: {}", order.correlation_id);
+}
+
+pub fn print_paper_account(response: &PaperAccountResponse) {
+    let account = &response.account;
+    println!("Account: {} ({})", account.name, account.id);
+    println!("Base currency: {}", account.base_currency);
+    println!("Initial equity: {}", account.initial_equity);
+    println!("Current equity: {}", account.current_equity);
+    println!("Realized PnL: {}", account.realized_pnl);
+    println!("Unrealized PnL: {}", account.unrealized_pnl);
+    println!("Status: {}", account.status);
+}
+
+pub fn print_paper_positions(response: &PaperPositionsResponse) {
+    for position in &response.positions {
+        print_paper_position(position);
+    }
+}
+
+pub fn print_paper_position(position: &PaperPositionRecord) {
+    println!(
+        "{} {} qty={} entry={} mark={} unrealized={} realized={} status={} strategy={} signal={}",
+        position.symbol,
+        position.side,
+        position.quantity,
+        position.entry_price,
+        position.mark_price.as_deref().unwrap_or("-"),
+        position.unrealized_pnl,
+        position.realized_pnl,
+        position.status,
+        position.strategy_id.as_deref().unwrap_or("-"),
+        display_option(position.signal_id)
+    );
+}
+
+pub fn print_paper_pnl(response: &PaperPnlResponse) {
+    let pnl = &response.pnl;
+    println!("Equity: {}", pnl.equity);
+    println!("Realized PnL: {}", pnl.realized_pnl);
+    println!("Unrealized PnL: {}", pnl.unrealized_pnl);
+    println!("Daily PnL: {}", pnl.daily_pnl);
+    println!("Drawdown %: {}", pnl.drawdown_pct);
+    println!("Price status: {}", pnl.price_status);
+    println!("Open positions: {}", pnl.open_positions_count);
+}
+
+pub fn print_paper_equity(response: &PaperEquityResponse) {
+    for point in &response.equity {
+        println!(
+            "{} equity={} realized={} unrealized={} drawdown_pct={}",
+            point.snapshot_at.to_rfc3339(),
+            point.equity,
+            point.realized_pnl,
+            point.unrealized_pnl,
+            point.drawdown_pct
+        );
+    }
+}
+
+pub fn print_paper_journal(response: &PaperTradeJournalResponse) {
+    for entry in &response.journal {
+        println!(
+            "{} {} symbol={} pnl={} corr={}",
+            entry.created_at.to_rfc3339(),
+            entry.event_type,
+            entry.symbol.as_deref().unwrap_or("-"),
+            entry.pnl.as_deref().unwrap_or("-"),
+            entry.correlation_id
+        );
+    }
 }
 
 pub fn print_events(response: &RecentEventsResponse) {

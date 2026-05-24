@@ -76,6 +76,9 @@ closed candles from Postgres
 -> persisted risk_decision
 -> order intent with deterministic idempotency key
 -> paper order lifecycle
+-> paper fill
+-> paper position update
+-> paper PnL and equity snapshot
 ```
 
 Notes:
@@ -89,6 +92,27 @@ Notes:
 - Order idempotency is deterministic from `strategy_id + signal_id + risk_decision_id + symbol + side + source_candle_open_time`.
 - Duplicate pipeline runs reuse the existing paper order instead of creating a second active order for the same idempotency key.
 - If the strategy is disabled, the market feed is stale/degraded, the kill switch is active, or the signal is stale, the pipeline stops safely without creating a paper order.
+
+## Paper accounting flow
+
+Operational paper accounting is isolated from replay/backtest state:
+
+```txt
+paper order filled
+-> paper_fills
+-> paper_positions
+-> paper_trade_journal
+-> paper_accounts
+-> paper_equity_snapshots
+```
+
+Notes:
+
+- Only paper orders in `PAPER_FILLED` state create accounting artifacts.
+- Spot long-only is the current MVP assumption: buy opens/increases a paper long position.
+- Mark-to-market reads the latest stored public market tick, then the latest stored closed candle as fallback.
+- Missing price does not fabricate PnL; the position/account is marked with explicit missing or stale price state.
+- Replay/backtest tables remain separate and must not be mutated by paper accounting.
 
 ## Replay and backtest flow
 
@@ -182,6 +206,7 @@ Supported control and inspection flow:
 - `aegis status` aggregates `/system/health`, `/system/status`, `/risk/status`, and `/market/feed-status`
 - `aegis kill` and `aegis resume --confirm "RESUME TRADING"` call the existing risk endpoints and preserve typed confirmation
 - `aegis pipeline run`, `strategy list|enable|disable`, `orders list|get`, `events list`, `risk decisions`, and `backtest run|list|get` map directly onto the existing read and paper-only control APIs
+- `aegis paper account|positions|pnl|equity|journal|mark` maps directly onto the paper accounting HTTP APIs
 
 Operational intent:
 

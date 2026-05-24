@@ -245,6 +245,40 @@ impl ApiClient {
         self.get(&format!("/orders/{order_id}"), &[]).await
     }
 
+    pub async fn paper_account(&self) -> Result<PaperAccountResponse, ApiClientError> {
+        self.get("/paper/account", &[]).await
+    }
+
+    pub async fn paper_positions(
+        &self,
+        limit: i64,
+    ) -> Result<PaperPositionsResponse, ApiClientError> {
+        self.get("/paper/positions", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn paper_pnl(&self) -> Result<PaperPnlResponse, ApiClientError> {
+        self.get("/paper/pnl/daily", &[]).await
+    }
+
+    pub async fn paper_equity(&self, limit: i64) -> Result<PaperEquityResponse, ApiClientError> {
+        self.get("/paper/equity", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn paper_journal(
+        &self,
+        limit: i64,
+    ) -> Result<PaperTradeJournalResponse, ApiClientError> {
+        self.get("/paper/trade-journal", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn paper_mark(&self) -> Result<PaperPnlResponse, ApiClientError> {
+        self.post("/paper/account/mark-to-market", &EmptyRequest)
+            .await
+    }
+
     pub async fn recent_events(
         &self,
         query: &RecentEventsQuery,
@@ -518,6 +552,120 @@ pub struct OrdersResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct OrderResponse {
     pub order: OrderRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperAccountRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub base_currency: String,
+    pub initial_equity: String,
+    pub current_equity: String,
+    pub realized_pnl: String,
+    pub unrealized_pnl: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperAccountResponse {
+    pub account: PaperAccountRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperPositionRecord {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub symbol: String,
+    pub side: String,
+    pub quantity: String,
+    pub entry_price: String,
+    pub mark_price: Option<String>,
+    pub price_status: String,
+    pub notional: String,
+    pub realized_pnl: String,
+    pub unrealized_pnl: String,
+    pub status: String,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub strategy_id: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub order_id: Option<Uuid>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperPositionsResponse {
+    pub positions: Vec<PaperPositionRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperPnlRecord {
+    pub realized_pnl: String,
+    pub unrealized_pnl: String,
+    pub equity: String,
+    pub daily_pnl: String,
+    pub drawdown_pct: String,
+    pub price_status: String,
+    pub open_positions_count: usize,
+    pub calculated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperPnlResponse {
+    pub pnl: PaperPnlRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperEquitySnapshotRecord {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub equity: String,
+    pub realized_pnl: String,
+    pub unrealized_pnl: String,
+    pub drawdown_pct: String,
+    pub snapshot_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperEquityResponse {
+    pub equity: Vec<PaperEquitySnapshotRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperTradeJournalRecord {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub position_id: Option<Uuid>,
+    pub order_id: Option<Uuid>,
+    pub event_type: String,
+    pub symbol: Option<String>,
+    pub pnl: Option<String>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PaperTradeJournalResponse {
+    pub journal: Vec<PaperTradeJournalRecord>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

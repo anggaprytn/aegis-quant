@@ -18,8 +18,13 @@ import type {
   MarketTickResponse,
   OrderResponse,
   OrdersResponse,
+  PaperAccountResponse,
+  PaperEquityResponse,
   PaperPipelineRequest,
   PaperPipelineResult,
+  PaperPnlResponse,
+  PaperPositionsResponse,
+  PaperTradeJournalResponse,
   RecentSignalsResponse,
   RiskActionResponse,
   RiskDecisionResponse,
@@ -160,6 +165,16 @@ export const api = {
     request<RiskDecisionResponse>(`/risk/decisions/${id}`),
   getOrders: () => request<OrdersResponse>("/orders"),
   getOrder: (id: string) => request<OrderResponse>(`/orders/${id}`),
+  getPaperAccount: () => request<PaperAccountResponse>("/paper/account"),
+  getPaperPositions: (limit = 50) =>
+    request<PaperPositionsResponse>("/paper/positions", undefined, { limit }),
+  getPaperPnl: () => request<PaperPnlResponse>("/paper/pnl/daily"),
+  getPaperEquity: (limit = 50) =>
+    request<PaperEquityResponse>("/paper/equity", undefined, { limit }),
+  getPaperTradeJournal: (limit = 50) =>
+    request<PaperTradeJournalResponse>("/paper/trade-journal", undefined, { limit }),
+  markPaperToMarket: () =>
+    request<PaperPnlResponse>("/paper/account/mark-to-market", { method: "POST" }),
   runBacktest: (payload: BacktestRequest) =>
     request<BacktestRunAcceptedResponse>("/backtest/run", {
       method: "POST",

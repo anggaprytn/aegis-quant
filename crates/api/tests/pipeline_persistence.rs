@@ -8,7 +8,8 @@ use aegis_core::{
 use api::{pipeline::run_paper_pipeline, AppConfig, AppState, StrategyRuntimeConfig};
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use db::{
-    get_order_by_id, get_risk_decision, list_orders, list_recent_signals,
+    get_default_paper_account, get_order_by_id, get_risk_decision, list_open_paper_positions,
+    list_orders, list_paper_equity_snapshots, list_paper_trade_journal, list_recent_signals,
     list_recent_system_events, set_kill_switch_state, test_support::TestDatabase, upsert_candle,
     upsert_market_feed_status, upsert_strategy_config, StateActor,
 };
@@ -185,7 +186,27 @@ async fn pipeline_persists_signal_risk_order_and_trace() {
     assert!(event_types.contains(&"signal.generated"));
     assert!(event_types.contains(&"risk.approved"));
     assert!(event_types.contains(&"order.paper_filled"));
+    assert!(event_types.contains(&"paper.fill.created"));
+    assert!(event_types.contains(&"paper.position.opened"));
+    assert!(event_types.contains(&"paper.equity.updated"));
     assert!(event_types.contains(&"paper_pipeline.paper_order_created"));
+
+    let account = get_default_paper_account(&state.db_pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    let positions = list_open_paper_positions(&state.db_pool, account.id)
+        .await
+        .expect("paper positions should list");
+    assert_eq!(positions.len(), 1);
+    let equity = list_paper_equity_snapshots(&state.db_pool, account.id, 10)
+        .await
+        .expect("paper equity snapshots should list");
+    assert!(!equity.is_empty());
+    let journal = list_paper_trade_journal(&state.db_pool, account.id, 20)
+        .await
+        .expect("paper journal should list");
+    assert!(!journal.is_empty());
 }
 
 #[tokio::test]
@@ -244,6 +265,10 @@ async fn kill_switch_rejects_pipeline_without_creating_order() {
         .await
         .expect("orders should list");
     assert!(orders.is_empty());
+    let account = get_default_paper_account(&state.db_pool)
+        .await
+        .expect("paper account query should succeed");
+    assert!(account.is_none());
 
     let events = list_recent_system_events(&state.db_pool, 50)
         .await

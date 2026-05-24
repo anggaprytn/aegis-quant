@@ -9,6 +9,11 @@ use sqlx::{
 use crate::{ensure_system_state, PgPool};
 
 const TEST_TABLES: &[&str] = &[
+    "paper_trade_journal",
+    "paper_equity_snapshots",
+    "paper_fills",
+    "paper_positions",
+    "paper_accounts",
     "backtest_equity_curve",
     "backtest_trades",
     "backtest_runs",

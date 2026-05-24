@@ -2,12 +2,16 @@ mod pipeline;
 
 use std::{env, net::SocketAddr, time::Instant};
 
+use accounting::{
+    compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
+};
 use aegis_core::{
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, CandleInterval, MarketMode,
-    OrderIntent, PaperTradingPipelineRequest, RiskCheckContext, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason, StrategyConfig,
-    StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    OrderIntent, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyConfig, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
 };
+use api::{ensure_default_paper_account, persist_paper_fill_accounting};
 use axum::{
     extract::{Path, Query, Request, State},
     http::{HeaderName, HeaderValue, StatusCode},
@@ -20,17 +24,23 @@ use chrono::Utc;
 use db::{
     backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
     create_paper_order, ensure_system_state, get_backtest_equity_curve, get_backtest_run,
-    get_backtest_trades, get_candle_backfill_run, get_latest_market_tick, get_order_by_id,
-    get_recent_closed_candles, get_risk_decision_by_id, get_strategy_status, get_system_event,
-    get_system_state, insert_risk_evaluation, insert_signal_deduped, list_backtest_runs,
-    list_candle_backfill_runs, list_candles, list_market_feed_statuses, list_orders,
+    get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
+    get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
+    get_risk_decision_by_id, get_strategy_status, get_system_event, get_system_state,
+    insert_paper_account, insert_paper_equity_snapshot, insert_risk_evaluation,
+    insert_signal_deduped, insert_system_event, list_backtest_runs, list_candle_backfill_runs,
+    list_candles, list_market_feed_statuses, list_open_paper_positions, list_orders,
+    list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
     list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_strategy_status, load_risk_state_snapshot, set_kill_switch_state,
-    strategy_config_from_record, update_strategy_state, upsert_strategy_config,
-    BacktestEquityPointRecord, BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord,
-    CreateOrderError, DbConfig, InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord,
-    OrderRecord, PgPool, RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord,
-    SystemEventRecord, SystemStateRecord,
+    list_strategy_status, load_risk_state_snapshot, paper_account_from_record,
+    paper_equity_snapshot_from_record, paper_position_from_record, set_kill_switch_state,
+    strategy_config_from_record, update_strategy_state, upsert_paper_position,
+    upsert_strategy_config, BacktestEquityPointRecord, BacktestTradeRecord,
+    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig, InsertSignalOutcome,
+    MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
+    PaperEquitySnapshotRecord, PaperPositionRecord, PaperTradeJournalRecord, PgPool,
+    RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
+    SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
@@ -53,6 +63,8 @@ const DEFAULT_CANDLE_LIMIT: i64 = 100;
 const MAX_CANDLE_LIMIT: i64 = 1_000;
 const DEFAULT_BACKFILL_RUNS_LIMIT: i64 = 20;
 const MAX_BACKFILL_RUNS_LIMIT: i64 = 200;
+const DEFAULT_PAPER_LIMIT: i64 = 50;
+const MAX_PAPER_LIMIT: i64 = 500;
 
 #[derive(Clone)]
 struct AppState {
@@ -222,6 +234,11 @@ struct RiskDecisionsQuery {
 
 #[derive(Deserialize)]
 struct BacktestRunsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct PaperListQuery {
     limit: Option<i64>,
 }
 
@@ -566,6 +583,128 @@ struct StrategyToggleResponse {
 }
 
 #[derive(Serialize)]
+struct PaperAccountView {
+    id: Uuid,
+    name: String,
+    base_currency: String,
+    initial_equity: String,
+    current_equity: String,
+    realized_pnl: String,
+    unrealized_pnl: String,
+    status: String,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperAccountResponse {
+    account: PaperAccountView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperPositionView {
+    id: Uuid,
+    account_id: Uuid,
+    symbol: String,
+    side: String,
+    quantity: String,
+    entry_price: String,
+    mark_price: Option<String>,
+    price_status: String,
+    notional: String,
+    realized_pnl: String,
+    unrealized_pnl: String,
+    status: String,
+    opened_at: chrono::DateTime<Utc>,
+    closed_at: Option<chrono::DateTime<Utc>>,
+    strategy_id: Option<String>,
+    signal_id: Option<Uuid>,
+    risk_decision_id: Option<Uuid>,
+    order_id: Option<Uuid>,
+    updated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperPositionsResponse {
+    positions: Vec<PaperPositionView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperPositionResponse {
+    position: PaperPositionView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperPnlSummaryView {
+    realized_pnl: String,
+    unrealized_pnl: String,
+    equity: String,
+    daily_pnl: String,
+    drawdown_pct: String,
+    price_status: String,
+    open_positions_count: usize,
+    calculated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperPnlResponse {
+    pnl: PaperPnlSummaryView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperEquitySnapshotView {
+    id: Uuid,
+    account_id: Uuid,
+    equity: String,
+    realized_pnl: String,
+    unrealized_pnl: String,
+    drawdown_pct: String,
+    snapshot_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperEquityResponse {
+    equity: Vec<PaperEquitySnapshotView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct PaperTradeJournalView {
+    id: Uuid,
+    account_id: Uuid,
+    position_id: Option<Uuid>,
+    order_id: Option<Uuid>,
+    event_type: String,
+    symbol: Option<String>,
+    pnl: Option<String>,
+    payload: serde_json::Value,
+    created_at: chrono::DateTime<Utc>,
+    correlation_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct PaperTradeJournalResponse {
+    journal: Vec<PaperTradeJournalView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct StrategyStatusView {
     strategy_id: String,
     status: String,
@@ -662,6 +801,16 @@ async fn main() {
         .route("/risk/evaluate", post(evaluate_risk))
         .route("/paper/orders", post(create_order))
         .route("/paper/pipeline/run", post(run_paper_pipeline_handler))
+        .route("/paper/account", get(get_paper_account))
+        .route(
+            "/paper/account/mark-to-market",
+            post(mark_paper_account_to_market),
+        )
+        .route("/paper/positions", get(get_paper_positions))
+        .route("/paper/positions/:id", get(get_paper_position))
+        .route("/paper/pnl/daily", get(get_paper_pnl_daily))
+        .route("/paper/equity", get(get_paper_equity))
+        .route("/paper/trade-journal", get(get_paper_trade_journal))
         .route("/backtest/run", post(run_backtest_handler))
         .route("/backtest/runs", get(get_backtest_runs))
         .route("/backtest/runs/:id", get(get_backtest_run_handler))
@@ -808,6 +957,13 @@ fn bounded_backfill_runs_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(value) if value > 0 => value.min(MAX_BACKFILL_RUNS_LIMIT),
         _ => DEFAULT_BACKFILL_RUNS_LIMIT,
+    }
+}
+
+fn bounded_paper_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_PAPER_LIMIT),
+        _ => DEFAULT_PAPER_LIMIT,
     }
 }
 
@@ -1038,6 +1194,72 @@ fn order_view(record: OrderRecord) -> OrderView {
         expires_at: record.expires_at,
         created_at: record.created_at,
         updated_at: record.updated_at,
+    }
+}
+
+fn paper_account_view(record: PaperAccountRecord) -> PaperAccountView {
+    PaperAccountView {
+        id: record.id,
+        name: record.name,
+        base_currency: record.base_currency,
+        initial_equity: record.initial_equity.to_string(),
+        current_equity: record.current_equity.to_string(),
+        realized_pnl: record.realized_pnl.to_string(),
+        unrealized_pnl: record.unrealized_pnl.to_string(),
+        status: record.status,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
+fn paper_position_view(record: PaperPositionRecord) -> PaperPositionView {
+    PaperPositionView {
+        id: record.id,
+        account_id: record.account_id,
+        symbol: record.symbol,
+        side: record.side,
+        quantity: record.quantity.to_string(),
+        entry_price: record.entry_price.to_string(),
+        mark_price: record.mark_price.map(|value| value.to_string()),
+        price_status: record.price_status,
+        notional: record.notional.to_string(),
+        realized_pnl: record.realized_pnl.to_string(),
+        unrealized_pnl: record.unrealized_pnl.to_string(),
+        status: record.status,
+        opened_at: record.opened_at,
+        closed_at: record.closed_at,
+        strategy_id: record.strategy_id,
+        signal_id: record.signal_id,
+        risk_decision_id: record.risk_decision_id,
+        order_id: record.order_id,
+        updated_at: record.updated_at,
+    }
+}
+
+fn paper_equity_snapshot_view(record: PaperEquitySnapshotRecord) -> PaperEquitySnapshotView {
+    PaperEquitySnapshotView {
+        id: record.id,
+        account_id: record.account_id,
+        equity: record.equity.to_string(),
+        realized_pnl: record.realized_pnl.to_string(),
+        unrealized_pnl: record.unrealized_pnl.to_string(),
+        drawdown_pct: record.drawdown_pct.to_string(),
+        snapshot_at: record.snapshot_at,
+    }
+}
+
+fn paper_trade_journal_view(record: PaperTradeJournalRecord) -> PaperTradeJournalView {
+    PaperTradeJournalView {
+        id: record.id,
+        account_id: record.account_id,
+        position_id: record.position_id,
+        order_id: record.order_id,
+        event_type: record.event_type,
+        symbol: record.symbol,
+        pnl: record.pnl.map(|value| value.to_string()),
+        payload: record.payload,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
     }
 }
 
@@ -1750,16 +1972,39 @@ async fn create_order(
     )
     .await
     {
-        Ok(outcome) => (
-            StatusCode::CREATED,
-            Json(OrderResponse {
-                order: order_view(outcome.order),
-                request_id: request.request_id,
-                correlation_id: request.correlation_id,
-                timestamp: Utc::now(),
-            }),
-        )
-            .into_response(),
+        Ok(outcome) => {
+            if let Err(err) = persist_paper_fill_accounting(&state.db_pool, &outcome.order).await {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    "failed to persist paper accounting after direct paper order creation"
+                );
+
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_persist_paper_accounting",
+                        message: "Paper accounting artifacts could not be persisted.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+
+            (
+                StatusCode::CREATED,
+                Json(OrderResponse {
+                    order: order_view(outcome.order),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
         Err(CreateOrderError::RiskDecisionNotFound) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -2270,6 +2515,592 @@ async fn get_order(
                 .into_response()
         }
     }
+}
+
+async fn load_or_create_default_paper_account_record(
+    pool: &PgPool,
+) -> anyhow::Result<PaperAccountRecord> {
+    if let Some(account) = get_default_paper_account(pool).await? {
+        return Ok(account);
+    }
+    ensure_default_paper_account(pool).await?;
+    get_default_paper_account(pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("default paper account missing after creation"))
+}
+
+async fn get_paper_account(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match load_or_create_default_paper_account_record(&state.db_pool).await {
+        Ok(account) => (
+            StatusCode::OK,
+            Json(PaperAccountResponse {
+                account: paper_account_view(account),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_paper_positions(
+    State(state): State<AppState>,
+    Query(query): Query<PaperListQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match load_or_create_default_paper_account_record(&state.db_pool).await {
+        Ok(account) => {
+            match list_paper_positions(&state.db_pool, account.id, bounded_paper_limit(query.limit))
+                .await
+            {
+                Ok(positions) => (
+                    StatusCode::OK,
+                    Json(PaperPositionsResponse {
+                        positions: positions.into_iter().map(paper_position_view).collect(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_paper_positions",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_paper_position(
+    State(state): State<AppState>,
+    Path(position_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match load_or_create_default_paper_account_record(&state.db_pool).await {
+        Ok(account) => {
+            match get_paper_position_by_id(&state.db_pool, account.id, position_id).await {
+                Ok(Some(position)) => (
+                    StatusCode::OK,
+                    Json(PaperPositionResponse {
+                        position: paper_position_view(position),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Ok(None) => (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "paper_position_not_found",
+                        message: "Paper position was not found.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_paper_position",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_paper_pnl_daily(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match load_or_create_default_paper_account_record(&state.db_pool).await {
+        Ok(account) => {
+            let positions = list_open_paper_positions(&state.db_pool, account.id).await;
+            let equity = list_paper_equity_snapshots(
+                &state.db_pool,
+                account.id,
+                bounded_paper_limit(Some(500)),
+            )
+            .await;
+            match (positions, equity) {
+                (Ok(positions), Ok(equity)) => {
+                    let today = Utc::now().date_naive();
+                    let snapshots = equity
+                        .iter()
+                        .map(paper_equity_snapshot_from_record)
+                        .collect::<Vec<_>>();
+                    let daily_pnl = compute_daily_pnl(&snapshots, today).unwrap_or_default();
+                    let peak_equity = equity
+                        .iter()
+                        .map(|point| point.equity)
+                        .max()
+                        .unwrap_or(account.current_equity);
+                    let drawdown = compute_drawdown(account.current_equity, peak_equity);
+                    (
+                        StatusCode::OK,
+                        Json(PaperPnlResponse {
+                            pnl: PaperPnlSummaryView {
+                                realized_pnl: account.realized_pnl.to_string(),
+                                unrealized_pnl: account.unrealized_pnl.to_string(),
+                                equity: account.current_equity.to_string(),
+                                daily_pnl: daily_pnl.to_string(),
+                                drawdown_pct: drawdown.to_string(),
+                                price_status: if positions
+                                    .iter()
+                                    .any(|position| position.price_status == "missing")
+                                {
+                                    "missing".to_string()
+                                } else {
+                                    "live".to_string()
+                                },
+                                open_positions_count: positions.len(),
+                                calculated_at: Utc::now(),
+                            },
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+                (Err(err), _) | (_, Err(err)) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_paper_pnl",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_paper_equity(
+    State(state): State<AppState>,
+    Query(query): Query<PaperListQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match load_or_create_default_paper_account_record(&state.db_pool).await {
+        Ok(account) => match list_paper_equity_snapshots(
+            &state.db_pool,
+            account.id,
+            bounded_paper_limit(query.limit),
+        )
+        .await
+        {
+            Ok(equity) => (
+                StatusCode::OK,
+                Json(PaperEquityResponse {
+                    equity: equity.into_iter().map(paper_equity_snapshot_view).collect(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_paper_equity",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_paper_trade_journal(
+    State(state): State<AppState>,
+    Query(query): Query<PaperListQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match load_or_create_default_paper_account_record(&state.db_pool).await {
+        Ok(account) => match list_paper_trade_journal(
+            &state.db_pool,
+            account.id,
+            bounded_paper_limit(query.limit),
+        )
+        .await
+        {
+            Ok(journal) => (
+                StatusCode::OK,
+                Json(PaperTradeJournalResponse {
+                    journal: journal.into_iter().map(paper_trade_journal_view).collect(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_paper_trade_journal",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn mark_paper_account_to_market(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    let account_record = match load_or_create_default_paper_account_record(&state.db_pool).await {
+        Ok(account) => account,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_paper_account",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let account = match paper_account_from_record(&account_record) {
+        Ok(account) => account,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_paper_account",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let open_positions = match list_open_paper_positions(&state.db_pool, account.id).await {
+        Ok(positions) => positions,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_paper_positions",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let mut domain_positions = Vec::with_capacity(open_positions.len());
+    let mut prices = Vec::with_capacity(open_positions.len());
+    for position in &open_positions {
+        let domain_position = match paper_position_from_record(position) {
+            Ok(position) => position,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_paper_position",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+        let symbol = match Symbol::new(position.symbol.clone()) {
+            Ok(symbol) => symbol,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_symbol",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+        let latest_tick =
+            get_latest_market_tick(&state.db_pool, state.market_config.exchange, &symbol)
+                .await
+                .ok()
+                .flatten();
+        let latest_candle = list_candles(
+            &state.db_pool,
+            state.market_config.exchange,
+            &symbol,
+            CandleInterval::OneMinute,
+            1,
+        )
+        .await
+        .ok()
+        .and_then(|candles| candles.into_iter().next());
+        let now = Utc::now();
+        let price_input = if let Some(tick) = latest_tick {
+            let is_stale = now
+                .signed_duration_since(tick.received_at)
+                .to_std()
+                .ok()
+                .map(|age| age > state.market_config.stale_threshold)
+                .unwrap_or(false);
+            PaperMarkPriceInput {
+                symbol: position.symbol.clone(),
+                mark_price: Some(tick.price),
+                priced_at: Some(tick.received_at),
+                price_status: if is_stale {
+                    PaperPriceStatus::Stale
+                } else {
+                    PaperPriceStatus::Live
+                },
+            }
+        } else if let Some(candle) = latest_candle {
+            let is_stale = now
+                .signed_duration_since(candle.close_time)
+                .to_std()
+                .ok()
+                .map(|age| age > state.market_config.stale_threshold)
+                .unwrap_or(true);
+            PaperMarkPriceInput {
+                symbol: position.symbol.clone(),
+                mark_price: Some(candle.close),
+                priced_at: Some(candle.close_time),
+                price_status: if is_stale {
+                    PaperPriceStatus::Stale
+                } else {
+                    PaperPriceStatus::Live
+                },
+            }
+        } else {
+            PaperMarkPriceInput {
+                symbol: position.symbol.clone(),
+                mark_price: None,
+                priced_at: None,
+                price_status: PaperPriceStatus::Missing,
+            }
+        };
+        domain_positions.push(domain_position);
+        prices.push(price_input);
+    }
+
+    let snapshot_at = Utc::now();
+    let marked = mark_positions_to_market(&account, &domain_positions, &prices, snapshot_at);
+    for position in &marked.positions {
+        if let Err(err) = upsert_paper_position(&state.db_pool, position).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_update_paper_position",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    }
+    if let Err(err) = insert_paper_account(
+        &state.db_pool,
+        &aegis_core::PaperAccount {
+            current_equity: marked.summary.equity,
+            realized_pnl: account.realized_pnl,
+            unrealized_pnl: marked.summary.unrealized_pnl,
+            updated_at: snapshot_at,
+            ..account.clone()
+        },
+    )
+    .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_update_paper_account",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    if let Err(err) = insert_paper_equity_snapshot(&state.db_pool, &marked.snapshot).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_insert_paper_equity_snapshot",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    let _ = insert_system_event(
+        &state.db_pool,
+        &events::EventEnvelope::new(
+            "paper.equity.updated",
+            Uuid::parse_str(&request.correlation_id).unwrap_or_else(|_| Uuid::new_v4()),
+            &state.config.app_name,
+            json!({
+                "account_id": account.id,
+                "equity": marked.summary.equity,
+                "realized_pnl": marked.summary.realized_pnl,
+                "unrealized_pnl": marked.summary.unrealized_pnl,
+                "missing_symbols": marked.missing_symbols,
+            }),
+        ),
+    )
+    .await;
+
+    (
+        StatusCode::OK,
+        Json(PaperPnlResponse {
+            pnl: PaperPnlSummaryView {
+                realized_pnl: marked.summary.realized_pnl.to_string(),
+                unrealized_pnl: marked.summary.unrealized_pnl.to_string(),
+                equity: marked.summary.equity.to_string(),
+                daily_pnl: marked.summary.daily_pnl.to_string(),
+                drawdown_pct: marked.snapshot.drawdown_pct.to_string(),
+                price_status: if marked.missing_symbols.is_empty() {
+                    "live".to_string()
+                } else {
+                    "missing".to_string()
+                },
+                open_positions_count: marked.positions.len(),
+                calculated_at: snapshot_at,
+            },
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
 }
 
 async fn get_market_symbols(

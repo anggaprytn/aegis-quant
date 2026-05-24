@@ -1171,6 +1171,238 @@ pub struct PaperOrder {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperAccountStatus {
+    Active,
+    Disabled,
+}
+
+impl PaperAccountStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl std::str::FromStr for PaperAccountStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "disabled" => Ok(Self::Disabled),
+            other => Err(CoreError::UnsupportedPaperAccountStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PositionSide {
+    Long,
+}
+
+impl PositionSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Long => "long",
+        }
+    }
+}
+
+impl std::str::FromStr for PositionSide {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "long" => Ok(Self::Long),
+            other => Err(CoreError::UnsupportedPositionSide(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PositionStatus {
+    Open,
+    Closed,
+}
+
+impl PositionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+impl std::str::FromStr for PositionStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "open" => Ok(Self::Open),
+            "closed" => Ok(Self::Closed),
+            other => Err(CoreError::UnsupportedPositionStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PnlCalculationMode {
+    WeightedAverage,
+}
+
+impl PnlCalculationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WeightedAverage => "weighted_average",
+        }
+    }
+}
+
+impl std::str::FromStr for PnlCalculationMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "weighted_average" => Ok(Self::WeightedAverage),
+            other => Err(CoreError::UnsupportedPnlCalculationMode(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperPriceStatus {
+    Live,
+    Stale,
+    Missing,
+}
+
+impl PaperPriceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Stale => "stale",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+impl std::str::FromStr for PaperPriceStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "live" => Ok(Self::Live),
+            "stale" => Ok(Self::Stale),
+            "missing" => Ok(Self::Missing),
+            other => Err(CoreError::UnsupportedPaperPriceStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperAccount {
+    pub id: Uuid,
+    pub name: String,
+    pub base_currency: String,
+    pub initial_equity: Decimal,
+    pub current_equity: Decimal,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub status: PaperAccountStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperPosition {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub symbol: String,
+    pub side: PositionSide,
+    pub quantity: Decimal,
+    pub entry_price: Decimal,
+    pub mark_price: Option<Decimal>,
+    pub price_status: PaperPriceStatus,
+    pub notional: Decimal,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub status: PositionStatus,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub strategy_id: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub order_id: Option<Uuid>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperFill {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub order_id: Uuid,
+    pub position_id: Option<Uuid>,
+    pub symbol: String,
+    pub side: PositionSide,
+    pub price: Decimal,
+    pub quantity: Decimal,
+    pub notional: Decimal,
+    pub fee: Decimal,
+    pub slippage_cost: Decimal,
+    pub filled_at: DateTime<Utc>,
+    pub strategy_id: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperEquitySnapshot {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub equity: Decimal,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub drawdown_pct: Decimal,
+    pub snapshot_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperPnlSummary {
+    pub account_id: Uuid,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub equity: Decimal,
+    pub daily_pnl: Decimal,
+    pub drawdown_pct: Decimal,
+    pub price_status: PaperPriceStatus,
+    pub calculated_at: DateTime<Utc>,
+    pub peak_equity: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PaperTradeJournalEntry {
+    pub id: Uuid,
+    pub account_id: Uuid,
+    pub position_id: Option<Uuid>,
+    pub order_id: Option<Uuid>,
+    pub event_type: String,
+    pub symbol: Option<String>,
+    pub pnl: Option<Decimal>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
 impl PaperOrder {
     pub fn new(intent: OrderIntent) -> Result<Self, CoreError> {
         intent.validate()?;
@@ -1282,6 +1514,16 @@ pub enum CoreError {
     UnsupportedReplayRunStatus(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
+    #[error("unsupported paper account status: {0}")]
+    UnsupportedPaperAccountStatus(String),
+    #[error("unsupported position side: {0}")]
+    UnsupportedPositionSide(String),
+    #[error("unsupported position status: {0}")]
+    UnsupportedPositionStatus(String),
+    #[error("unsupported pnl calculation mode: {0}")]
+    UnsupportedPnlCalculationMode(String),
+    #[error("unsupported paper price status: {0}")]
+    UnsupportedPaperPriceStatus(String),
     #[error("unsupported candle backfill status: {0}")]
     UnsupportedCandleBackfillStatus(String),
     #[error("unsupported candle backfill source: {0}")]
