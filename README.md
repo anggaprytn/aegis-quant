@@ -1,36 +1,93 @@
 # Aegis Quant
 
-Aegis Quant is Rust-first deterministic execution infrastructure for market-data ingest, replay, risk-gated paper execution, isolated testnet workflows, and operator auditability. It is not an AI trading bot, it does not enable live trading in v0.1, and no production exchange order path is supported.
+Deterministic execution infrastructure for risk-gated autonomous market systems.
 
-## v0.1 scope
+## v0.1 disclaimer
 
-v0.1 is a local, demo-ready hardening release for:
+- Not an AI trading bot
+- Not financial advice
+- No live trading support in v0.1
+- Testnet-only exchange execution
 
-- public market-data ingest and historical backfill
-- validated strategy configuration and deterministic dry-run evaluation
-- persisted risk decisions and paper-only order lifecycle
-- paper positions, PnL, equity snapshots, and manual close
-- deterministic replay/backtest over stored candles
-- read-only readiness checks, analytics, and operator reports
-- isolated Binance Spot Testnet preview, shadow mode, reconciliation, and owner-confirmed submit path
-- dashboard cockpit, CLI fallback, Prometheus metrics, and Docker Compose for local services
+## Why it exists
 
-v0.1 does not support:
+Aegis Quant is a Rust-first execution stack for operators who care about deterministic state machines, explicit risk gates, replay and backtest, paper accounting, shadow mode, isolated testnet lifecycle and reconciliation, operational dashboard and CLI surfaces, and readiness-driven reporting.
 
-- live trading
-- production exchange private endpoints
-- automatic testnet submission
-- LLM-assisted execution
-- NATS, Kafka, or distributed orchestration
+## Quick architecture
+
+```txt
+Public Market Data
+        |
+        v
+     Candles  <----- historical backfill / deterministic candle builder
+        |
+        v
+     Strategy
+        |
+        v
+       Risk
+        |
+        v
+  +-----+-------------------+------------------------+-------------------+
+  |                         |                        |                   |
+  v                         v                        v                   v
+Paper Pipeline         Shadow Runner         Testnet Promotion      Analytics /
+(simulated only)       (does not submit)     (isolated testnet)     Reports /
+  |                         |                        |                Readiness
+  +-------------------------+------------------------+-------------------+
+
+Live Trading: not implemented
+```
+
+## What works in v0.1
+
+- [x] Auth-gated operational API
+- [x] Binance public market ingest
+- [x] Historical candle backfill
+- [x] Deterministic candle builder
+- [x] Strategy config validation
+- [x] Risk config validation
+- [x] Paper pipeline
+- [x] Paper PnL/accounting
+- [x] Replay/backtest
+- [x] Shadow runner
+- [x] Testnet order lifecycle
+- [x] Testnet reconciliation
+- [x] Private stream skeleton
+- [x] Promotion gate
+- [x] Readiness gate
+- [x] Operator report
+- [x] CLI/dashboard/Prometheus
+
+## What does not exist
+
+- No live trading
+- No production Binance trading endpoint
+- No real-money execution
+- No LLM decision-maker
+- No auto-submit from strategy
+- No HFT
+- No leverage, futures, or options
+- No financial promise
+
+## 30-second demo path
+
+```bash
+cp .env.example .env
+make verify
+./scripts/demo-v0.1.sh
+```
 
 ## Safety boundaries
 
 - Execution flow remains `market event -> signal -> risk decision -> order intent -> execution state`.
 - Strategy logic cannot submit orders directly.
 - Kill switch state is persistent.
+- Paper is simulated only.
+- Shadow mode persists would-submit state and does not submit.
+- Testnet execution is isolated from paper and uses testnet-only authenticated exchange actions.
+- Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
-- Shadow mode is no-submit by design.
-- Testnet submission is owner-confirmed only.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
 
 ## Repository layout
