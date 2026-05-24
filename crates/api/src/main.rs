@@ -62,7 +62,7 @@ use axum::{
     extract::{MatchedPath, Path, Query, Request, State},
     http::{
         header::{self, CONTENT_TYPE, COOKIE, SET_COOKIE, USER_AGENT},
-        HeaderName, HeaderValue, StatusCode,
+        HeaderName, HeaderValue, Method, StatusCode,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -133,6 +133,7 @@ use strategy_engine::{
     validate_strategy_config, StrategyValidationContext,
 };
 use telemetry::telemetry;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -166,6 +167,7 @@ const CLI_AUTH_MODE_HEADER: &str = "x-aegis-auth-mode";
 const CLI_AUTH_MODE_VALUE: &str = "cli";
 const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
 const DEFAULT_TESTNET_SHADOW_PROMOTION_TTL_SECONDS: u64 = 300;
+const DEFAULT_CORS_ALLOWED_ORIGINS: [&str; 2] = ["http://localhost:3001", "http://127.0.0.1:3001"];
 
 #[derive(Debug, Clone)]
 struct PreparedExchangeTestnetPipelinePreview {
@@ -195,6 +197,7 @@ struct AppConfig {
     bind_addr: SocketAddr,
     database_url: String,
     database_max_connections: u32,
+    cors_allowed_origins: Vec<HeaderValue>,
 }
 
 #[derive(Clone)]
@@ -270,6 +273,8 @@ impl AppConfig {
             })
             .transpose()?
             .unwrap_or(5);
+        let cors_allowed_origins =
+            parse_cors_allowed_origins(env::var("AEGIS_CORS_ALLOWED_ORIGINS").ok().as_deref())?;
 
         Ok(Self {
             app_name,
@@ -277,8 +282,56 @@ impl AppConfig {
             bind_addr,
             database_url,
             database_max_connections,
+            cors_allowed_origins,
         })
     }
+}
+
+fn parse_cors_allowed_origins(value: Option<&str>) -> Result<Vec<HeaderValue>, String> {
+    let configured = value
+        .map(str::to_owned)
+        .unwrap_or_else(|| DEFAULT_CORS_ALLOWED_ORIGINS.join(","));
+    let mut origins = Vec::new();
+
+    for candidate in configured
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if candidate == "*" {
+            return Err(
+                "AEGIS_CORS_ALLOWED_ORIGINS cannot contain '*' when credentialed auth is enabled"
+                    .to_string(),
+            );
+        }
+        if !candidate.starts_with("http://") && !candidate.starts_with("https://") {
+            return Err(format!(
+                "invalid AEGIS_CORS_ALLOWED_ORIGINS entry '{candidate}': expected http:// or https:// origin"
+            ));
+        }
+
+        let header = HeaderValue::from_str(candidate).map_err(|err| {
+            format!("invalid AEGIS_CORS_ALLOWED_ORIGINS entry '{candidate}': {err}")
+        })?;
+
+        if !origins.contains(&header) {
+            origins.push(header);
+        }
+    }
+
+    if origins.is_empty() {
+        return Err("AEGIS_CORS_ALLOWED_ORIGINS must include at least one origin".to_string());
+    }
+
+    Ok(origins)
+}
+
+fn build_cors_layer(config: &AppConfig) -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(config.cors_allowed_origins.clone()))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        .allow_credentials(true)
 }
 
 #[derive(Clone)]
@@ -1567,6 +1620,7 @@ async fn main() {
         BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig::from_env());
     let exchange_testnet_status = exchange_testnet_adapter.status();
     let exchange_testnet_environment = exchange_testnet_status.environment;
+    let cors_layer = build_cors_layer(&config);
 
     event_publisher
         .publish(SystemEventType::SystemStarted.into_event(
@@ -1864,6 +1918,7 @@ async fn main() {
             state.clone(),
             request_context_middleware,
         ))
+        .layer(cors_layer)
         .with_state(state);
 
     info!(
@@ -1872,6 +1927,7 @@ async fn main() {
         bind_addr = %config.bind_addr,
         db_max_connections = config.database_max_connections,
         auth_disabled = auth_config.disabled,
+        cors_allowed_origins = ?config.cors_allowed_origins,
         "starting api server"
     );
     if auth_config.disabled {
@@ -13071,15 +13127,15 @@ async fn evaluate_strategy_handler(
 mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
-        cancel_exchange_testnet_order, check_execution_readiness_handler,
+        build_cors_layer, cancel_exchange_testnet_order, check_execution_readiness_handler,
         generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
         get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
         is_valid_resume_confirmation, is_valid_testnet_order_confirmation,
         list_exchange_testnet_order_repairs, list_exchange_testnet_shadow_promotions_handler,
         list_exchange_testnet_shadow_runs_handler, list_execution_readiness_snapshots_handler,
         login, logout, metrics, normalize_route_label, order_view, parse_correlation_id_filter,
-        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline,
-        preview_exchange_testnet_shadow_promotion_handler,
+        parse_cors_allowed_origins, parse_order_intent, parse_risk_check_context,
+        preview_exchange_testnet_pipeline, preview_exchange_testnet_shadow_promotion_handler,
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
         repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
         route_access, run_exchange_testnet_shadow_handler, submit_exchange_testnet_pipeline,
@@ -13107,8 +13163,11 @@ mod tests {
     use axum::{
         body::Body,
         http::{
-            header::{AUTHORIZATION, SET_COOKIE},
-            Request, StatusCode,
+            header::{
+                self, ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, AUTHORIZATION,
+                ORIGIN, SET_COOKIE,
+            },
+            HeaderValue, Request, StatusCode,
         },
         middleware,
         routing::{get, post},
@@ -13190,6 +13249,82 @@ mod tests {
         assert_eq!(
             bounded_risk_decisions_limit(Some(10_000)),
             MAX_RISK_DECISIONS_LIMIT
+        );
+    }
+
+    #[test]
+    fn cors_allowed_origins_default_to_local_dashboard_hosts() {
+        let origins = parse_cors_allowed_origins(None).expect("default origins");
+
+        assert_eq!(
+            origins,
+            vec![
+                HeaderValue::from_static("http://localhost:3001"),
+                HeaderValue::from_static("http://127.0.0.1:3001"),
+            ]
+        );
+    }
+
+    #[test]
+    fn cors_allowed_origins_parse_and_dedupe() {
+        let origins = parse_cors_allowed_origins(Some(
+            " http://localhost:3001,https://aegis.anggaprytn.com,http://localhost:3001 ",
+        ))
+        .expect("parsed origins");
+
+        assert_eq!(
+            origins,
+            vec![
+                HeaderValue::from_static("http://localhost:3001"),
+                HeaderValue::from_static("https://aegis.anggaprytn.com"),
+            ]
+        );
+    }
+
+    #[test]
+    fn cors_allowed_origins_reject_wildcard() {
+        let error = parse_cors_allowed_origins(Some("*")).expect_err("wildcard rejected");
+
+        assert!(error.contains("cannot contain '*'"));
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_configured_dashboard_origin() {
+        let app = Router::new()
+            .route("/auth/login", post(|| async { StatusCode::OK }))
+            .layer(build_cors_layer(&AppConfig {
+                app_name: "aegis-test-api".to_string(),
+                environment: "test".to_string(),
+                bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
+                database_url: "postgres://unused".to_string(),
+                database_max_connections: 5,
+                cors_allowed_origins: parse_cors_allowed_origins(None).expect("origins"),
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/auth/login")
+                    .header(ORIGIN, "http://localhost:3001")
+                    .header(ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(ACCESS_CONTROL_REQUEST_HEADERS, "content-type,authorization")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("http://localhost:3001"))
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            Some(&HeaderValue::from_static("true"))
         );
     }
 
@@ -13536,6 +13671,7 @@ mod tests {
                 bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
                 database_url: "postgres://unused".to_string(),
                 database_max_connections: 5,
+                cors_allowed_origins: parse_cors_allowed_origins(None).expect("origins"),
             },
             auth_config: AuthConfig {
                 disabled: false,
@@ -17819,6 +17955,7 @@ mod tests {
                 bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
                 database_url: "postgres://postgres:postgres@127.0.0.1:5432/aegis".to_string(),
                 database_max_connections: 1,
+                cors_allowed_origins: parse_cors_allowed_origins(None).expect("origins"),
             },
             auth_config: AuthConfig {
                 disabled: true,

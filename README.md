@@ -130,6 +130,9 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 7. Optional Prometheus:
    `docker compose -f infra/docker-compose.yml --profile prometheus up -d prometheus`
 
+Local dashboard auth note:
+`AEGIS_CORS_ALLOWED_ORIGINS` defaults to `http://localhost:3001,http://127.0.0.1:3001` so the dashboard can call the API at `http://localhost:3000` and receive the refresh-token cookie on `/auth/login` and `/auth/refresh`. For production, add explicit origins such as `https://aegis.anggaprytn.com` via env instead of using `*`.
+
 ## Compose profiles
 
 Core API + DB:
@@ -137,6 +140,9 @@ Core API + DB:
 
 Dashboard:
 `docker compose -f infra/docker-compose.yml --profile dashboard up -d dashboard`
+
+If you run the dashboard outside Compose on `http://localhost:3001`, keep `AEGIS_CORS_ALLOWED_ORIGINS` aligned with the browser origin. Example:
+`AEGIS_CORS_ALLOWED_ORIGINS=http://localhost:3001,http://127.0.0.1:3001,https://aegis.anggaprytn.com`
 
 Prometheus:
 `docker compose -f infra/docker-compose.yml --profile prometheus up -d prometheus`
