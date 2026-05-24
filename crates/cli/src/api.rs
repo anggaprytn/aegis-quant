@@ -7,9 +7,10 @@ use aegis_core::{
     RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
     StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
     StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyPerformanceSummary, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    StrategyPerformanceSummary, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -765,6 +766,48 @@ impl ApiClient {
     ) -> Result<TestnetShadowRunResponse, ApiClientError> {
         self.get(&format!("/exchange/testnet/shadow/runs/{run_id}"), &[])
             .await
+    }
+
+    pub async fn exchange_testnet_shadow_promotion_preview(
+        &self,
+        request: &TestnetShadowPromotionRequest,
+    ) -> Result<TestnetShadowPromotionResponse, ApiClientError> {
+        self.post("/exchange/testnet/shadow/promotions/preview", request)
+            .await
+    }
+
+    pub async fn exchange_testnet_shadow_promotions(
+        &self,
+        limit: i64,
+    ) -> Result<TestnetShadowPromotionsResponse, ApiClientError> {
+        self.get(
+            "/exchange/testnet/shadow/promotions",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn exchange_testnet_shadow_promotion_get(
+        &self,
+        promotion_id: Uuid,
+    ) -> Result<TestnetShadowPromotionResponse, ApiClientError> {
+        self.get(
+            &format!("/exchange/testnet/shadow/promotions/{promotion_id}"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn exchange_testnet_shadow_promotion_submit(
+        &self,
+        promotion_id: Uuid,
+        request: &TestnetShadowPromotionSubmitRequest,
+    ) -> Result<TestnetShadowPromotionSubmitResponse, ApiClientError> {
+        self.post(
+            &format!("/exchange/testnet/shadow/promotions/{promotion_id}/submit"),
+            request,
+        )
+        .await
     }
 
     pub async fn exchange_testnet_shadow_runner_status(
@@ -1629,6 +1672,30 @@ pub struct TestnetShadowRunResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TestnetShadowRunsResponse {
     pub runs: Vec<TestnetShadowRunResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowPromotionResponse {
+    pub promotion: TestnetShadowPromotionPreview,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowPromotionsResponse {
+    pub promotions: Vec<TestnetShadowPromotionPreview>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetShadowPromotionSubmitResponse {
+    pub result: TestnetShadowPromotionResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -348,6 +348,8 @@ function AuthenticatedDashboard({
   const [shadowRunnerConfigForm, setShadowRunnerConfigForm] =
     useState<Record<string, unknown>>(shadowRunnerConfigFormFromView());
   const [selectedShadowRunId, setSelectedShadowRunId] = useState<string | null>(null);
+  const [selectedShadowPromotionId, setSelectedShadowPromotionId] = useState<string | null>(null);
+  const [shadowPromotionConfirmation, setShadowPromotionConfirmation] = useState("");
   const [privateStreamListenKey, setPrivateStreamListenKey] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [eventSourceFilter, setEventSourceFilter] = useState("");
@@ -435,6 +437,21 @@ function AuthenticatedDashboard({
     enabled:
       (user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER") &&
       Boolean(selectedShadowRunId),
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetShadowPromotionsQuery = useQuery({
+    queryKey: ["exchange-testnet-shadow-promotions"],
+    queryFn: () => api.getExchangeTestnetShadowPromotions(50),
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetShadowPromotionQuery = useQuery({
+    queryKey: ["exchange-testnet-shadow-promotion", selectedShadowPromotionId],
+    queryFn: () => api.getExchangeTestnetShadowPromotion(selectedShadowPromotionId ?? ""),
+    enabled:
+      (user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER") &&
+      Boolean(selectedShadowPromotionId),
     refetchInterval: 10_000,
   });
   const exchangeTestnetShadowRunnerStatusQuery = useQuery({
@@ -850,6 +867,8 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-orders"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-runs"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-run"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-promotions"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-promotion"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-runner-status"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-shadow-runner-config"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-order-lifecycle"] }),
@@ -873,6 +892,12 @@ function AuthenticatedDashboard({
     exchangeTestnetShadowRunQuery.data?.run ??
     (exchangeTestnetShadowRunsQuery.data?.runs ?? []).find(
       (item) => item.run_id === selectedShadowRunId,
+    ) ??
+    null;
+  const selectedShadowPromotion =
+    exchangeTestnetShadowPromotionQuery.data?.promotion ??
+    (exchangeTestnetShadowPromotionsQuery.data?.promotions ?? []).find(
+      (item) => item.promotion_id === selectedShadowPromotionId,
     ) ??
     null;
   const selectedTestnetOrderRepairable =
@@ -1074,6 +1099,24 @@ function AuthenticatedDashboard({
       }),
     onSuccess: async (response) => {
       setSelectedShadowRunId(response.run.run_id);
+      await refreshOperationalData();
+    },
+  });
+  const exchangeTestnetShadowPromotionPreviewMutation = useMutation({
+    mutationFn: (shadowRunId: string) =>
+      api.previewExchangeTestnetShadowPromotion({ shadow_run_id: shadowRunId }),
+    onSuccess: async (response) => {
+      setSelectedShadowPromotionId(response.promotion.promotion_id);
+      await refreshOperationalData();
+    },
+  });
+  const exchangeTestnetShadowPromotionSubmitMutation = useMutation({
+    mutationFn: (promotionId: string) =>
+      api.submitExchangeTestnetShadowPromotion(promotionId, {
+        confirmation_text: shadowPromotionConfirmation,
+      }),
+    onSuccess: async () => {
+      setShadowPromotionConfirmation("");
       await refreshOperationalData();
     },
   });
@@ -2874,29 +2917,58 @@ function AuthenticatedDashboard({
               <Panel title="Recent Shadow Runs">
                 <div className="space-y-2 text-sm text-slate-200">
                   {(exchangeTestnetShadowRunsQuery.data?.runs ?? []).map((item) => (
-                    <button
+                    <div
                       key={item.run_id}
                       className={cn(
-                        "w-full rounded-xl border bg-surface/60 px-3 py-2 text-left",
+                        "rounded-xl border bg-surface/60 px-3 py-2",
                         selectedShadowRunId === item.run_id ? "border-accent" : "border-border",
                       )}
-                      onClick={() => setSelectedShadowRunId(item.run_id)}
-                      type="button"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span>{formatDateTime(item.created_at)}</span>
-                        <span>{item.decision}</span>
-                      </div>
-                      <div className="text-slate-400">
-                        {item.strategy_id} {item.symbol} signal={shortenId(item.signal_id)} risk={shortenId(item.risk_decision_id)}
-                      </div>
-                      <div className="text-slate-400">
-                        price={item.resolved_price ?? "-"} source={item.price_source ?? "-"}
-                      </div>
-                    </button>
+                      <button
+                        className="w-full text-left"
+                        onClick={() => setSelectedShadowRunId(item.run_id)}
+                        type="button"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span>{formatDateTime(item.created_at)}</span>
+                          <span>{item.decision}</span>
+                        </div>
+                        <div className="text-slate-400">
+                          {item.strategy_id} {item.symbol} signal={shortenId(item.signal_id)} risk={shortenId(item.risk_decision_id)}
+                        </div>
+                        <div className="text-slate-400">
+                          price={item.resolved_price ?? "-"} source={item.price_source ?? "-"}
+                        </div>
+                      </button>
+                      {item.decision === "WOULD_SUBMIT" &&
+                      (user.role === "OWNER" || user.role === "OPERATOR") ? (
+                        <button
+                          className="mt-3 rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-100"
+                          disabled={exchangeTestnetShadowPromotionPreviewMutation.isPending}
+                          onClick={() =>
+                            exchangeTestnetShadowPromotionPreviewMutation.mutate(item.run_id)
+                          }
+                          type="button"
+                        >
+                          {exchangeTestnetShadowPromotionPreviewMutation.isPending
+                            ? "Previewing..."
+                            : "Preview Promotion"}
+                        </button>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
-                <InlineStatus error={getErrorMessage(exchangeTestnetShadowRunsQuery.error)} />
+                <InlineStatus
+                  error={
+                    getErrorMessage(exchangeTestnetShadowRunsQuery.error) ??
+                    getErrorMessage(exchangeTestnetShadowPromotionPreviewMutation.error)
+                  }
+                  success={
+                    exchangeTestnetShadowPromotionPreviewMutation.data
+                      ? exchangeTestnetShadowPromotionPreviewMutation.data.promotion.promotion_id
+                      : undefined
+                  }
+                />
                 {selectedShadowRun ? (
                   <div className="mt-4 rounded-xl border border-border bg-surface/40 px-3 py-3 text-xs text-slate-300">
                     <div className="font-medium text-slate-100">Shadow Run Detail</div>
@@ -2917,6 +2989,82 @@ function AuthenticatedDashboard({
                         2,
                       )}
                     </pre>
+                  </div>
+                ) : null}
+              </Panel>
+              <Panel title="Shadow Promotions">
+                <div className="space-y-2 text-sm text-slate-200">
+                  {(exchangeTestnetShadowPromotionsQuery.data?.promotions ?? []).map((item) => (
+                    <button
+                      key={item.promotion_id}
+                      className={cn(
+                        "w-full rounded-xl border bg-surface/60 px-3 py-2 text-left",
+                        selectedShadowPromotionId === item.promotion_id
+                          ? "border-accent"
+                          : "border-border",
+                      )}
+                      onClick={() => setSelectedShadowPromotionId(item.promotion_id)}
+                      type="button"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>{item.status}</span>
+                        <span>{formatDateTime(item.expires_at)}</span>
+                      </div>
+                      <div className="text-slate-400">
+                        shadow={shortenId(item.shadow_run_id)} {item.symbol} client={item.client_order_id ?? "-"}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <InlineStatus
+                  error={
+                    getErrorMessage(exchangeTestnetShadowPromotionsQuery.error) ??
+                    getErrorMessage(exchangeTestnetShadowPromotionSubmitMutation.error)
+                  }
+                  success={
+                    exchangeTestnetShadowPromotionSubmitMutation.data
+                      ? exchangeTestnetShadowPromotionSubmitMutation.data.result.client_order_id
+                      : undefined
+                  }
+                />
+                {selectedShadowPromotion ? (
+                  <div className="mt-4 rounded-xl border border-border bg-surface/40 px-3 py-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Promotion Detail</div>
+                    <div className="mt-2 space-y-1">
+                      <div>Promotion ID: {selectedShadowPromotion.promotion_id}</div>
+                      <div>Shadow Run ID: {selectedShadowPromotion.shadow_run_id}</div>
+                      <div>Risk Decision ID: {selectedShadowPromotion.risk_decision_id}</div>
+                      <div>Resolved Price: {selectedShadowPromotion.resolved_price ?? "-"}</div>
+                      <div>Price Source: {selectedShadowPromotion.price_source ?? "-"}</div>
+                      <div>Status: {selectedShadowPromotion.status}</div>
+                      <div>Expires At: {formatDateTime(selectedShadowPromotion.expires_at)}</div>
+                    </div>
+                    <pre className="mt-3 overflow-auto rounded-lg border border-border/60 bg-surface/70 p-3 text-[11px] text-slate-200">
+                      {JSON.stringify(selectedShadowPromotion.would_submit_payload, null, 2)}
+                    </pre>
+                    {user.role === "OWNER" && selectedShadowPromotion.status === "PREVIEWED" ? (
+                      <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto]">
+                        <Field
+                          label="Confirmation"
+                          value={shadowPromotionConfirmation}
+                          onChange={setShadowPromotionConfirmation}
+                          placeholder={`PROMOTE TESTNET ${selectedShadowPromotion.symbol}`}
+                        />
+                        <button
+                          className="rounded-xl border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm"
+                          disabled={exchangeTestnetShadowPromotionSubmitMutation.isPending}
+                          onClick={() =>
+                            exchangeTestnetShadowPromotionSubmitMutation.mutate(
+                              selectedShadowPromotion.promotion_id,
+                            )
+                          }
+                        >
+                          {exchangeTestnetShadowPromotionSubmitMutation.isPending
+                            ? "Submitting..."
+                            : "Submit Promotion"}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </Panel>

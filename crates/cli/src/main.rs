@@ -536,6 +536,52 @@ async fn main() -> anyhow::Result<()> {
                         output::print_testnet_shadow_run(&response.run);
                     }
                 }
+                ExchangeTestnetCommands::ShadowPromotionPreview(args) => {
+                    let response = client
+                        .exchange_testnet_shadow_promotion_preview(&args.into())
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_shadow_promotion(&response.promotion);
+                    }
+                }
+                ExchangeTestnetCommands::ShadowPromotions(args) => {
+                    let response = client
+                        .exchange_testnet_shadow_promotions(args.limit)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_shadow_promotions(&response);
+                    }
+                }
+                ExchangeTestnetCommands::ShadowPromotionGet { promotion_id } => {
+                    let response = client
+                        .exchange_testnet_shadow_promotion_get(promotion_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_shadow_promotion(&response.promotion);
+                    }
+                }
+                ExchangeTestnetCommands::ShadowPromotionSubmit(args) => {
+                    let response = client
+                        .exchange_testnet_shadow_promotion_submit(
+                            args.promotion_id,
+                            &aegis_core::TestnetShadowPromotionSubmitRequest {
+                                confirmation_text: args.confirm.expect("validated confirm"),
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_shadow_promotion_submit(&response.result);
+                    }
+                }
                 ExchangeTestnetCommands::ShadowRunner(command) => match command {
                     ExchangeTestnetShadowRunnerCommands::Status => {
                         let response = client.exchange_testnet_shadow_runner_status().await?;

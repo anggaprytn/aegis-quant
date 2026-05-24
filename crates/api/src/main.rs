@@ -2,13 +2,19 @@ mod auth;
 mod exchange_reconcile;
 mod pipeline;
 
-use std::{env, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    env,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
 };
 use aegis_core::{
-    expected_testnet_pipeline_confirmation, is_valid_testnet_pipeline_confirmation,
+    expected_testnet_pipeline_confirmation, expected_testnet_shadow_promotion_confirmation,
+    is_valid_testnet_pipeline_confirmation, is_valid_testnet_shadow_promotion_confirmation,
     validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
     AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
     CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
@@ -30,7 +36,9 @@ use aegis_core::{
     StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
     TestnetExecutionState, TestnetExecutionTransitionSource, TestnetRepairAction,
     TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
-    TestnetRepairValidationIssue, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetRepairValidationIssue, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionStatus,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
     TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlAction,
     TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
     UserRole, UserStatus,
@@ -61,32 +69,35 @@ use chrono::{DateTime, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, connect_pool, count_users,
-    create_paper_order, ensure_system_state, get_backtest_equity_curve, get_backtest_run,
-    get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
-    get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
-    get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
-    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
-    get_strategy_backtest_breakdown, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_shadow_decision_breakdown, get_strategy_status,
-    get_system_event, get_system_state, get_testnet_shadow_run_by_id, get_user_by_email,
-    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
+    create_paper_order, ensure_system_state, get_active_testnet_shadow_promotion_for_shadow_run,
+    get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
+    get_default_paper_account, get_exchange_private_stream_state,
+    get_exchange_testnet_order_by_client_order_id, get_latest_market_tick, get_order_by_id,
+    get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
+    get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_shadow_decision_breakdown, get_strategy_status, get_system_event,
+    get_system_state, get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id,
+    get_user_by_email, get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
     insert_exchange_testnet_repair_action, insert_paper_account, insert_paper_equity_snapshot,
     insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
-    insert_strategy_config_audit, insert_system_event, insert_user, list_backtest_runs,
-    list_candle_backfill_runs, list_candles, list_exchange_private_stream_events,
-    list_exchange_reconciliation_mismatches, list_exchange_reconciliation_runs,
-    list_exchange_testnet_order_lifecycle_events, list_exchange_testnet_orders,
-    list_exchange_testnet_repair_actions, list_market_feed_statuses, list_open_paper_positions,
-    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
-    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_risk_config_audit, list_risk_config_versions, list_strategy_config_audit,
-    list_strategy_config_versions, list_strategy_performance_rankings, list_strategy_status,
-    list_testnet_shadow_runs, load_risk_state_snapshot, paper_account_from_record,
-    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
-    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
-    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, update_strategy_state, update_user_last_login,
+    insert_strategy_config_audit, insert_system_event, insert_testnet_shadow_promotion,
+    insert_user, list_backtest_runs, list_candle_backfill_runs, list_candles,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
+    list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
+    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
+    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
+    list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
+    list_strategy_config_audit, list_strategy_config_versions, list_strategy_performance_rankings,
+    list_strategy_status, list_testnet_shadow_promotions, list_testnet_shadow_runs,
+    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
+    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
+    revoke_session, risk_config_audit_from_record, risk_config_from_record,
+    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
+    strategy_config_audit_from_record, strategy_config_from_record,
+    strategy_config_version_from_record, update_strategy_state,
+    update_testnet_shadow_promotion_submission, update_user_last_login,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
     upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
     CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
@@ -96,6 +107,7 @@ use db::{
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
     PaperPositionRecord, PaperTradeJournalRecord, PgPool, RiskDecisionRecord, SignalRecord,
     StateActor, StrategyStatusRecord, SystemEventRecord, SystemStateRecord,
+    TestnetShadowPromotionRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
@@ -146,6 +158,7 @@ const MAX_EXCHANGE_TESTNET_LIMIT: i64 = 200;
 const CLI_AUTH_MODE_HEADER: &str = "x-aegis-auth-mode";
 const CLI_AUTH_MODE_VALUE: &str = "cli";
 const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
+const DEFAULT_TESTNET_SHADOW_PROMOTION_TTL_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone)]
 struct PreparedExchangeTestnetPipelinePreview {
@@ -781,6 +794,30 @@ struct TestnetShadowRunsResponse {
 }
 
 #[derive(Serialize, Deserialize)]
+struct TestnetShadowPromotionResponse {
+    promotion: TestnetShadowPromotionPreview,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowPromotionsResponse {
+    promotions: Vec<TestnetShadowPromotionPreview>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetShadowPromotionSubmitResponse {
+    result: TestnetShadowPromotionResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct TestnetShadowRunnerStatusResponse {
     config: TestnetShadowRunnerConfig,
     state: TestnetShadowRunnerState,
@@ -954,6 +991,11 @@ struct ExchangeReconciliationRunsQuery {
 
 #[derive(Deserialize)]
 struct TestnetShadowRunsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestnetShadowPromotionsQuery {
     limit: Option<i64>,
 }
 
@@ -1517,6 +1559,22 @@ async fn main() {
             get(get_exchange_testnet_shadow_run_handler),
         )
         .route(
+            "/exchange/testnet/shadow/promotions/preview",
+            post(preview_exchange_testnet_shadow_promotion_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow/promotions",
+            get(list_exchange_testnet_shadow_promotions_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow/promotions/:id",
+            get(get_exchange_testnet_shadow_promotion_handler),
+        )
+        .route(
+            "/exchange/testnet/shadow/promotions/:id/submit",
+            post(submit_exchange_testnet_shadow_promotion_handler),
+        )
+        .route(
             "/exchange/testnet/shadow-runner/status",
             get(get_exchange_testnet_shadow_runner_status_handler),
         )
@@ -2005,6 +2063,15 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/shadow/run" {
         return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/exchange/testnet/shadow/promotions/preview" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST
+        && path.starts_with("/exchange/testnet/shadow/promotions/")
+        && path.ends_with("/submit")
+    {
+        return RouteAccess::Owner;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/shadow-runner/config/update"
     {
@@ -6476,6 +6543,1177 @@ async fn get_exchange_testnet_shadow_run_handler(
                 }),
             )
                 .into_response()
+        }
+    }
+}
+
+fn testnet_shadow_promotion_ttl() -> Duration {
+    env::var("TESTNET_SHADOW_PROMOTION_TTL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_TESTNET_SHADOW_PROMOTION_TTL_SECONDS))
+}
+
+async fn ensure_shadow_promotion_price_fresh(
+    state: &AppState,
+    request: &RequestContext,
+    _correlation_id: Uuid,
+    symbol_text: &str,
+) -> std::result::Result<(), Response> {
+    let symbol = Symbol::new(symbol_text.to_string()).map_err(|_| {
+        (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "invalid_symbol",
+                message: "Persisted shadow run symbol is invalid.".to_string(),
+                request_id: request.request_id.clone(),
+                correlation_id: request.correlation_id.clone(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response()
+    })?;
+
+    let latest_tick = get_latest_market_tick(&state.db_pool, state.market_config.exchange, &symbol)
+        .await
+        .map_err(|err| {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                symbol = %symbol_text,
+                "failed to load latest tick for shadow promotion"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_market_tick",
+                    message: "Latest market tick could not be loaded.".to_string(),
+                    request_id: request.request_id.clone(),
+                    correlation_id: request.correlation_id.clone(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        })?;
+
+    if let Some(tick) = latest_tick.as_ref() {
+        if tick.price > Decimal::ZERO
+            && !is_testnet_pipeline_price_stale(
+                tick.received_at,
+                Utc::now(),
+                state.market_config.stale_threshold,
+            )
+        {
+            return Ok(());
+        }
+    }
+
+    let latest_candle = list_candles(
+        &state.db_pool,
+        state.market_config.exchange,
+        &symbol,
+        CandleInterval::OneMinute,
+        1,
+    )
+    .await
+    .map_err(|err| {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            symbol = %symbol_text,
+            "failed to load fallback candle for shadow promotion"
+        );
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_market_candle",
+                message: "Latest fallback candle could not be loaded.".to_string(),
+                request_id: request.request_id.clone(),
+                correlation_id: request.correlation_id.clone(),
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response()
+    })?
+    .into_iter()
+    .find(|candle| candle.is_closed);
+
+    if let Some(candle) = latest_candle {
+        if candle.close > Decimal::ZERO
+            && !is_testnet_pipeline_price_stale(
+                candle.close_time,
+                Utc::now(),
+                state.market_config.stale_threshold,
+            )
+        {
+            return Ok(());
+        }
+    }
+
+    Err((
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: "stale_price",
+            message: "A fresh local testnet reference price is required before shadow promotion."
+                .to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response())
+}
+
+async fn exchange_testnet_shadow_promotion_rejected_response(
+    state: &AppState,
+    actor: &StateActor,
+    request: &RequestContext,
+    correlation_id: Uuid,
+    shadow_run_id: Option<Uuid>,
+    symbol: Option<&str>,
+    error_code: &'static str,
+    message: &str,
+) -> Response {
+    let target = shadow_run_id
+        .map(|value| value.to_string())
+        .or_else(|| symbol.map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        actor,
+        "exchange.testnet.shadow_promotion.rejected",
+        &target,
+        &json!({
+            "shadow_run_id": shadow_run_id,
+            "symbol": symbol,
+            "error": error_code,
+            "message": message,
+        }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.shadow_promotion.rejected",
+            correlation_id,
+            &state.config.app_name,
+            json!({
+                "shadow_run_id": shadow_run_id,
+                "symbol": symbol,
+                "error": error_code,
+                "message": message,
+            }),
+        ),
+    )
+    .await;
+    telemetry().inc_exchange_testnet_shadow_promotion("rejected");
+
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: error_code,
+            message: message.to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+async fn preview_exchange_testnet_shadow_promotion_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<TestnetShadowPromotionRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    if state.exchange_testnet_environment != ExchangeEnvironment::Testnet {
+        return exchange_testnet_shadow_promotion_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            Some(payload.shadow_run_id),
+            None,
+            "invalid_exchange_environment",
+            "Only testnet environment is allowed.",
+        )
+        .await;
+    }
+
+    let shadow_run = match get_testnet_shadow_run_by_id(&state.db_pool, payload.shadow_run_id).await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "testnet_shadow_run_not_found",
+                    message: "Testnet shadow run was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load testnet shadow run for promotion preview"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_testnet_shadow_run",
+                    message: "Testnet shadow run could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if let Ok(Some(existing)) =
+        get_active_testnet_shadow_promotion_for_shadow_run(&state.db_pool, shadow_run.id).await
+    {
+        let code = if existing.status == TestnetShadowPromotionStatus::Submitted.as_str() {
+            "already_promoted"
+        } else {
+            "promotion_already_previewed"
+        };
+        return exchange_testnet_shadow_promotion_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            Some(shadow_run.id),
+            Some(&shadow_run.symbol),
+            code,
+            "A non-terminal shadow promotion already exists for this shadow run.",
+        )
+        .await;
+    }
+
+    if shadow_run.decision != "WOULD_SUBMIT" {
+        return exchange_testnet_shadow_promotion_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            Some(shadow_run.id),
+            Some(&shadow_run.symbol),
+            "shadow_decision_not_would_submit",
+            "Only persisted WOULD_SUBMIT shadow runs can be promoted.",
+        )
+        .await;
+    }
+
+    let risk_decision_id = match shadow_run.risk_decision_id {
+        Some(value) => value,
+        None => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "missing_risk_decision_id",
+                "Shadow run is missing a persisted risk_decision_id.",
+            )
+            .await;
+        }
+    };
+
+    let would_submit_payload = match shadow_run.would_submit_payload.clone() {
+        Some(value) => value,
+        None => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "missing_would_submit_payload",
+                "Shadow run is missing a persisted would-submit payload.",
+            )
+            .await;
+        }
+    };
+
+    let would_submit_payload: aegis_core::TestnetShadowIntent =
+        match serde_json::from_value(would_submit_payload) {
+            Ok(value) => value,
+            Err(err) => {
+                return exchange_testnet_shadow_promotion_rejected_response(
+                    &state,
+                    &actor,
+                    &request,
+                    correlation_id,
+                    Some(shadow_run.id),
+                    Some(&shadow_run.symbol),
+                    "invalid_would_submit_payload",
+                    &format!("Persisted would-submit payload is invalid: {err}"),
+                )
+                .await;
+            }
+        };
+
+    match get_system_state(&state.db_pool).await {
+        Ok(system_state) if system_state.kill_switch_enabled => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "kill_switch_active",
+                "Global kill switch is active.",
+            )
+            .await;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load system state for shadow promotion preview"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_read_system_state",
+                    message: "System state could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    match get_risk_decision_by_id(&state.db_pool, risk_decision_id).await {
+        Ok(Some(record)) if record.decision == "APPROVED" => {}
+        Ok(Some(_)) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "risk_decision_not_approved",
+                "risk_decision_id must still reference an APPROVED risk decision.",
+            )
+            .await;
+        }
+        Ok(None) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "risk_decision_not_found",
+                "risk_decision_id must reference an existing persisted risk decision.",
+            )
+            .await;
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load risk decision for shadow promotion preview"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_risk_decision",
+                    message: "Risk decision could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let strategy_id = match shadow_run.strategy_id.parse::<StrategyId>() {
+        Ok(value) => value,
+        Err(err) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "invalid_strategy_id",
+                &err.to_string(),
+            )
+            .await;
+        }
+    };
+
+    match ensure_strategy_config(&state, strategy_id).await {
+        Ok(config) if config.enabled => {}
+        Ok(_) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "strategy_disabled",
+                "Strategy config is disabled and cannot be promoted to testnet.",
+            )
+            .await;
+        }
+        Err(err) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(shadow_run.id),
+                Some(&shadow_run.symbol),
+                "failed_to_load_strategy_config",
+                &err.to_string(),
+            )
+            .await;
+        }
+    }
+
+    if let Err(response) =
+        ensure_shadow_promotion_price_fresh(&state, &request, correlation_id, &shadow_run.symbol)
+            .await
+    {
+        return response;
+    }
+
+    let expires_at = Utc::now()
+        + chrono::Duration::from_std(testnet_shadow_promotion_ttl())
+            .unwrap_or_else(|_| chrono::Duration::seconds(300));
+    let record = TestnetShadowPromotionRecord {
+        id: Uuid::new_v4(),
+        shadow_run_id: shadow_run.id,
+        status: TestnetShadowPromotionStatus::Previewed.as_str().to_string(),
+        strategy_id: Some(shadow_run.strategy_id.clone()),
+        symbol: Some(shadow_run.symbol.clone()),
+        timeframe: Some(shadow_run.timeframe.clone()),
+        signal_id: shadow_run.signal_id,
+        risk_decision_id: Some(risk_decision_id),
+        would_submit_payload: serde_json::to_value(&would_submit_payload).unwrap_or(Value::Null),
+        resolved_price: shadow_run.resolved_price,
+        price_source: shadow_run.price_source.clone(),
+        rejection_reasons: Vec::new(),
+        testnet_order_id: None,
+        client_order_id: None,
+        expires_at,
+        created_by: actor.actor_id,
+        submitted_by: None,
+        created_at: Utc::now(),
+        submitted_at: None,
+        correlation_id: Some(correlation_id),
+    };
+
+    let persisted = match insert_testnet_shadow_promotion(&state.db_pool, &record).await {
+        Ok(value) => value,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to persist shadow promotion preview"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_persist_shadow_promotion",
+                    message: "Shadow promotion preview could not be persisted.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let preview = match db::testnet_shadow_promotion_from_record(&persisted) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_shadow_promotion",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &actor,
+        "exchange.testnet.shadow_promotion.previewed",
+        &shadow_run.id.to_string(),
+        &json!({
+            "promotion_id": preview.promotion_id,
+            "shadow_run_id": preview.shadow_run_id,
+            "risk_decision_id": preview.risk_decision_id,
+        }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.shadow_promotion.previewed",
+            correlation_id,
+            &state.config.app_name,
+            json!({
+                "promotion_id": preview.promotion_id,
+                "shadow_run_id": preview.shadow_run_id,
+                "symbol": preview.symbol,
+            }),
+        ),
+    )
+    .await;
+    telemetry().inc_exchange_testnet_shadow_promotion("previewed");
+
+    (
+        StatusCode::OK,
+        Json(TestnetShadowPromotionResponse {
+            promotion: preview,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+async fn list_exchange_testnet_shadow_promotions_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Query(query): Query<TestnetShadowPromotionsQuery>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_EXCHANGE_TESTNET_LIMIT)
+        .clamp(1, MAX_EXCHANGE_TESTNET_LIMIT);
+
+    match list_testnet_shadow_promotions(&state.db_pool, limit).await {
+        Ok(records) => match records
+            .iter()
+            .map(db::testnet_shadow_promotion_from_record)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(promotions) => (
+                StatusCode::OK,
+                Json(TestnetShadowPromotionsResponse {
+                    promotions,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_shadow_promotions",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list testnet shadow promotions"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_shadow_promotions",
+                    message: "Shadow promotions could not be listed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_exchange_testnet_shadow_promotion_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Path(promotion_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_testnet_shadow_promotion_by_id(&state.db_pool, promotion_id).await {
+        Ok(Some(record)) => match db::testnet_shadow_promotion_from_record(&record) {
+            Ok(promotion) => (
+                StatusCode::OK,
+                Json(TestnetShadowPromotionResponse {
+                    promotion,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_shadow_promotion",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "testnet_shadow_promotion_not_found",
+                message: "Testnet shadow promotion was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_shadow_promotion",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn submit_exchange_testnet_shadow_promotion_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Path(promotion_id): Path<Uuid>,
+    Json(payload): Json<TestnetShadowPromotionSubmitRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    let promotion = match get_testnet_shadow_promotion_by_id(&state.db_pool, promotion_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "testnet_shadow_promotion_not_found",
+                    message: "Testnet shadow promotion was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load shadow promotion before submit"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_shadow_promotion",
+                    message: "Shadow promotion could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let symbol = promotion.symbol.clone().unwrap_or_default();
+    if !is_valid_testnet_shadow_promotion_confirmation(&symbol, &payload.confirmation_text) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_confirmation_text",
+                message: format!(
+                    "Shadow promotion submit requires confirmation_text exactly equal to {:?}.",
+                    expected_testnet_shadow_promotion_confirmation(&symbol)
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    if promotion.status != TestnetShadowPromotionStatus::Previewed.as_str() {
+        return exchange_testnet_shadow_promotion_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            Some(promotion.shadow_run_id),
+            Some(&symbol),
+            "duplicate_submit",
+            "Only PREVIEWED promotions can be submitted.",
+        )
+        .await;
+    }
+
+    if promotion.expires_at <= Utc::now() {
+        let reasons = vec!["promotion_expired".to_string()];
+        let _ = update_testnet_shadow_promotion_submission(
+            &state.db_pool,
+            promotion.id,
+            TestnetShadowPromotionStatus::Expired.as_str(),
+            &reasons,
+            None,
+            None,
+            actor.actor_id,
+            Some(Utc::now()),
+        )
+        .await;
+        return exchange_testnet_shadow_promotion_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            Some(promotion.shadow_run_id),
+            Some(&symbol),
+            "promotion_expired",
+            "Shadow promotion has expired and must be previewed again.",
+        )
+        .await;
+    }
+
+    match get_system_state(&state.db_pool).await {
+        Ok(system_state) if system_state.kill_switch_enabled => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(promotion.shadow_run_id),
+                Some(&symbol),
+                "kill_switch_active",
+                "Global kill switch is active.",
+            )
+            .await;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load system state for shadow promotion submit"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_read_system_state",
+                    message: "System state could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let risk_decision_id = match promotion.risk_decision_id {
+        Some(value) => value,
+        None => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(promotion.shadow_run_id),
+                Some(&symbol),
+                "missing_risk_decision_id",
+                "Promotion is missing risk_decision_id.",
+            )
+            .await;
+        }
+    };
+
+    match get_risk_decision_by_id(&state.db_pool, risk_decision_id).await {
+        Ok(Some(record)) if record.decision == "APPROVED" => {}
+        Ok(Some(_)) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(promotion.shadow_run_id),
+                Some(&symbol),
+                "risk_decision_not_approved",
+                "risk_decision_id must still reference an APPROVED risk decision.",
+            )
+            .await;
+        }
+        Ok(None) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(promotion.shadow_run_id),
+                Some(&symbol),
+                "risk_decision_not_found",
+                "risk_decision_id must reference an existing persisted risk decision.",
+            )
+            .await;
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load risk decision for shadow promotion submit"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_risk_decision",
+                    message: "Risk decision could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let would_submit_payload: aegis_core::TestnetShadowIntent =
+        match serde_json::from_value(promotion.would_submit_payload.clone()) {
+            Ok(value) => value,
+            Err(err) => {
+                return exchange_testnet_shadow_promotion_rejected_response(
+                    &state,
+                    &actor,
+                    &request,
+                    correlation_id,
+                    Some(promotion.shadow_run_id),
+                    Some(&symbol),
+                    "invalid_would_submit_payload",
+                    &format!("Persisted would-submit payload is invalid: {err}"),
+                )
+                .await;
+            }
+        };
+
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &actor,
+        "exchange.testnet.shadow_promotion.submit_requested",
+        &promotion.id.to_string(),
+        &json!({
+            "promotion_id": promotion.id,
+            "shadow_run_id": promotion.shadow_run_id,
+            "symbol": symbol,
+        }),
+    )
+    .await;
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "exchange.testnet.shadow_promotion.submit_requested",
+            correlation_id,
+            &state.config.app_name,
+            json!({
+                "promotion_id": promotion.id,
+                "shadow_run_id": promotion.shadow_run_id,
+                "symbol": symbol,
+            }),
+        ),
+    )
+    .await;
+
+    let symbol_model = match Symbol::new(would_submit_payload.symbol.to_string()) {
+        Ok(value) => value,
+        Err(_) => {
+            return exchange_testnet_shadow_promotion_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                Some(promotion.shadow_run_id),
+                Some(&symbol),
+                "invalid_symbol",
+                "Persisted would-submit payload contains an invalid symbol.",
+            )
+            .await;
+        }
+    };
+    let client_order_id = generate_testnet_client_order_id(correlation_id);
+    let order = ExchangeOrderRequest {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        symbol: symbol_model,
+        side: would_submit_payload.side,
+        order_type: would_submit_payload.order_type,
+        time_in_force: would_submit_payload.time_in_force,
+        quantity: would_submit_payload.quantity,
+        quote_notional: would_submit_payload.quote_notional,
+        limit_price: would_submit_payload.limit_price,
+        client_order_id: client_order_id.clone(),
+        recv_window_ms: None,
+        risk_decision_id: Some(risk_decision_id),
+    };
+    if let Err(err) = order.validate() {
+        return exchange_testnet_shadow_promotion_rejected_response(
+            &state,
+            &actor,
+            &request,
+            correlation_id,
+            Some(promotion.shadow_run_id),
+            Some(&symbol),
+            "invalid_exchange_order_request",
+            &err.to_string(),
+        )
+        .await;
+    }
+
+    let persisted_order = ExchangeTestnetOrderRecord {
+        id: Uuid::new_v4(),
+        exchange: ExchangeName::Binance.as_str().to_string(),
+        environment: ExchangeEnvironment::Testnet.as_str().to_string(),
+        client_order_id: client_order_id.clone(),
+        exchange_order_id: None,
+        symbol: order.symbol.to_string(),
+        side: order.side.as_str().to_string(),
+        order_type: order.order_type.as_str().to_string(),
+        time_in_force: order.time_in_force.map(|value| value.as_str().to_string()),
+        requested_qty: order.quantity,
+        requested_notional: order.quote_notional,
+        limit_price: order.limit_price,
+        status: "SUBMIT_REQUESTED".to_string(),
+        execution_state: TestnetExecutionState::OrderSubmitRequested
+            .as_str()
+            .to_string(),
+        ack_payload: None,
+        latest_status_payload: None,
+        risk_decision_id: order.risk_decision_id,
+        created_by: actor.actor_id,
+        last_transition_at: Some(Utc::now()),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+
+    if let Err(err) = insert_exchange_testnet_order(&state.db_pool, &persisted_order).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            "failed to persist exchange testnet order for shadow promotion"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_exchange_testnet_order",
+                message: "Exchange testnet order could not be persisted.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let _ = append_exchange_testnet_lifecycle_event_and_update_order(
+        &state.db_pool,
+        &ExchangeTestnetOrderLifecycleEventRecord {
+            id: Uuid::new_v4(),
+            order_id: Some(persisted_order.id),
+            client_order_id: persisted_order.client_order_id.clone(),
+            previous_state: None,
+            next_state: TestnetExecutionState::OrderSubmitRequested
+                .as_str()
+                .to_string(),
+            transition_source: TestnetExecutionTransitionSource::ApiSubmit
+                .as_str()
+                .to_string(),
+            reason: Some("submit_requested".to_string()),
+            payload: None,
+            created_by: actor.actor_id,
+            created_at: Utc::now(),
+            correlation_id: Some(correlation_id),
+        },
+        None,
+        Some("SUBMIT_REQUESTED"),
+        TestnetExecutionState::OrderSubmitRequested,
+        None,
+        None,
+    )
+    .await;
+
+    telemetry().inc_exchange_testnet_shadow_promotion_submit("attempt");
+    telemetry().inc_exchange_testnet_request("submit_order", "attempt");
+    match state.exchange_testnet.submit_order(order).await {
+        Ok(ack) => {
+            let local_status =
+                local_testnet_status_from_exchange_state(ack.status).unwrap_or(ack.status.as_str());
+            let (next_state, reason) = map_exchange_ack_to_transition(&ack);
+            let ack_payload = ack.raw_payload.clone();
+            let _ = append_testnet_lifecycle_transition(
+                &state.db_pool,
+                &persisted_order,
+                next_state,
+                TestnetExecutionTransitionSource::ExchangeAck,
+                Some(local_status),
+                ack.exchange_order_id.as_deref(),
+                reason.map(ToString::to_string),
+                Some(ack_payload),
+                actor.actor_id,
+                Some(correlation_id),
+                true,
+            )
+            .await;
+            let _ = update_testnet_shadow_promotion_submission(
+                &state.db_pool,
+                promotion.id,
+                TestnetShadowPromotionStatus::Submitted.as_str(),
+                &Vec::new(),
+                Some(persisted_order.id),
+                Some(&persisted_order.client_order_id),
+                actor.actor_id,
+                Some(Utc::now()),
+            )
+            .await;
+            let _ = insert_audit_log(
+                &state.db_pool,
+                correlation_id,
+                &actor,
+                "exchange.testnet.shadow_promotion.submitted",
+                &promotion.id.to_string(),
+                &json!({
+                    "shadow_run_id": promotion.shadow_run_id,
+                    "testnet_order_id": persisted_order.id,
+                    "client_order_id": persisted_order.client_order_id,
+                }),
+            )
+            .await;
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "exchange.testnet.shadow_promotion.submitted",
+                    correlation_id,
+                    &state.config.app_name,
+                    json!({
+                        "promotion_id": promotion.id,
+                        "shadow_run_id": promotion.shadow_run_id,
+                        "client_order_id": persisted_order.client_order_id,
+                    }),
+                ),
+            )
+            .await;
+            telemetry().inc_exchange_testnet_shadow_promotion("submitted");
+            telemetry().inc_exchange_testnet_shadow_promotion_submit("ok");
+            (
+                StatusCode::CREATED,
+                Json(TestnetShadowPromotionSubmitResponse {
+                    result: TestnetShadowPromotionResult {
+                        promotion_id: promotion.id,
+                        shadow_run_id: promotion.shadow_run_id,
+                        testnet_order_id: persisted_order.id,
+                        client_order_id: persisted_order.client_order_id,
+                        execution_state: next_state,
+                        correlation_id,
+                    },
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            let reasons = vec!["submit_failed".to_string()];
+            let _ = update_testnet_shadow_promotion_submission(
+                &state.db_pool,
+                promotion.id,
+                TestnetShadowPromotionStatus::Rejected.as_str(),
+                &reasons,
+                Some(persisted_order.id),
+                Some(&persisted_order.client_order_id),
+                actor.actor_id,
+                Some(Utc::now()),
+            )
+            .await;
+            telemetry().inc_exchange_testnet_shadow_promotion_submit("error");
+            exchange_testnet_adapter_rejected_response(
+                &state,
+                &actor,
+                &request,
+                correlation_id,
+                "submit_order",
+                err,
+                symbol,
+            )
+            .await
         }
     }
 }
@@ -11319,27 +12557,31 @@ mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
         cancel_exchange_testnet_order, generate_testnet_client_order_id,
-        get_exchange_testnet_shadow_run_handler, is_valid_resume_confirmation,
-        is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
+        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
+        is_valid_resume_confirmation, is_valid_testnet_order_confirmation,
+        list_exchange_testnet_order_repairs, list_exchange_testnet_shadow_promotions_handler,
         list_exchange_testnet_shadow_runs_handler, login, logout, metrics, normalize_route_label,
         order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
-        preview_exchange_testnet_pipeline, reconcile_exchange_testnet_orders_handler,
-        reconcile_testnet_orders, refresh, repair_exchange_testnet_order,
-        request_context_middleware, risk_decision_not_found_error, route_access,
-        run_exchange_testnet_shadow_handler, submit_exchange_testnet_pipeline, AppConfig, AppState,
+        preview_exchange_testnet_pipeline, preview_exchange_testnet_shadow_promotion_handler,
+        reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
+        repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
+        route_access, run_exchange_testnet_shadow_handler, submit_exchange_testnet_pipeline,
+        submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
         ExchangeTestnetPipelinePreviewResponse, RequestContext, StrategyRuntimeConfig,
-        TestnetShadowRunResponse, TestnetShadowRunsResponse, CLI_AUTH_MODE_HEADER,
-        CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT,
-        MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
+        TestnetShadowPromotionResponse, TestnetShadowPromotionSubmitResponse,
+        TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
+        CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT,
+        DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
     };
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
-        expected_testnet_pipeline_confirmation, AuthLoginResponse, AuthLogoutResponse,
-        AuthRefreshResponse, AuthUserResponse, Candle, CandleInterval, DataFreshnessStatus,
-        ExchangeEnvironment, ExchangeOrderState, FeedStatus, MarketDataSource, MarketMode,
-        MarketTick, RiskConfig, Side, StrategyConfig, StrategyId, StrategyMode, Symbol,
-        TestnetExecutionState, TestnetRepairAction, TestnetShadowDecision, UserRole, UserStatus,
+        expected_testnet_pipeline_confirmation, expected_testnet_shadow_promotion_confirmation,
+        AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse, Candle,
+        CandleInterval, DataFreshnessStatus, ExchangeEnvironment, ExchangeOrderState, FeedStatus,
+        MarketDataSource, MarketMode, MarketTick, RiskConfig, Side, StrategyConfig, StrategyId,
+        StrategyMode, Symbol, TestnetExecutionState, TestnetRepairAction, TestnetShadowDecision,
+        UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -11889,6 +13131,22 @@ mod tests {
                 "/exchange/testnet/shadow/runs/:id",
                 get(get_exchange_testnet_shadow_run_handler),
             )
+            .route(
+                "/exchange/testnet/shadow/promotions/preview",
+                post(preview_exchange_testnet_shadow_promotion_handler),
+            )
+            .route(
+                "/exchange/testnet/shadow/promotions",
+                get(list_exchange_testnet_shadow_promotions_handler),
+            )
+            .route(
+                "/exchange/testnet/shadow/promotions/:id",
+                get(get_exchange_testnet_shadow_promotion_handler),
+            )
+            .route(
+                "/exchange/testnet/shadow/promotions/:id/submit",
+                post(submit_exchange_testnet_shadow_promotion_handler),
+            )
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 request_context_middleware,
@@ -12272,6 +13530,14 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("shadow run count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_testnet_shadow_promotions(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM testnet_shadow_promotions")
+            .fetch_one(pool)
+            .await
+            .expect("shadow promotion count")
             .get::<i64, _>("count")
     }
 
@@ -13032,6 +14298,205 @@ mod tests {
             .await
             .expect("testnet orders")
             .is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_preview_persists_without_testnet_order_or_lifecycle() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let shadow_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        let shadow = response_json::<TestnetShadowRunResponse>(shadow_response).await;
+        assert_eq!(shadow.run.decision, TestnetShadowDecision::WouldSubmit);
+
+        let preview_response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/promotions/preview",
+                &operator_login.access_token,
+                json!({ "shadow_run_id": shadow.run.run_id }),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(preview_response.status(), StatusCode::OK);
+        let preview = response_json::<TestnetShadowPromotionResponse>(preview_response).await;
+        assert_eq!(preview.promotion.shadow_run_id, shadow.run.run_id);
+        assert_eq!(preview.promotion.status.as_str(), "PREVIEWED");
+        assert_eq!(count_testnet_shadow_promotions(&test_db.pool).await, 1);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_submit_creates_isolated_testnet_order_and_lifecycle() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        fake_exchange.push_submit_ack(FakeSubmitAck::default());
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange.clone()),
+            FakeExchangeAdapter::status(),
+        );
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let shadow_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        let shadow = response_json::<TestnetShadowRunResponse>(shadow_response).await;
+
+        let preview_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/promotions/preview",
+                &operator_login.access_token,
+                json!({ "shadow_run_id": shadow.run.run_id }),
+            ))
+            .await
+            .expect("preview response");
+        let preview = response_json::<TestnetShadowPromotionResponse>(preview_response).await;
+
+        let submit_response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/exchange/testnet/shadow/promotions/{}/submit",
+                    preview.promotion.promotion_id
+                ),
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(submit_response.status(), StatusCode::CREATED);
+        let submit = response_json::<TestnetShadowPromotionSubmitResponse>(submit_response).await;
+        assert_eq!(count_testnet_shadow_promotions(&test_db.pool).await, 1);
+        let orders = list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders");
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].id, submit.result.testnet_order_id);
+        let lifecycle = list_exchange_testnet_order_lifecycle_events(
+            &test_db.pool,
+            &submit.result.client_order_id,
+        )
+        .await
+        .expect("list lifecycle");
+        assert_eq!(lifecycle.len(), 2);
+        assert_eq!(lifecycle[0].next_state, "ORDER_SUBMIT_REQUESTED");
+        assert_eq!(lifecycle[1].next_state, "EXCHANGE_ACKED");
+        assert_eq!(fake_exchange.calls().submitted_orders.len(), 1);
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
     }
 
     #[tokio::test]

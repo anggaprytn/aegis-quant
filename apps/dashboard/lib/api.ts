@@ -75,6 +75,9 @@ import type {
   StrategyStatusResponse,
   StrategyToggleResponse,
   SystemEventRecord,
+  TestnetShadowPromotionResponse,
+  TestnetShadowPromotionSubmitResponse,
+  TestnetShadowPromotionsResponse,
   TestnetShadowRunResponse,
   TestnetShadowRunnerConfigResponse,
   TestnetShadowRunnerControlResponse,
@@ -369,6 +372,32 @@ export const api = {
     request<TestnetShadowRunsResponse>("/exchange/testnet/shadow/runs", undefined, { limit }),
   getExchangeTestnetShadowRun: (runId: string) =>
     request<TestnetShadowRunResponse>(`/exchange/testnet/shadow/runs/${runId}`),
+  previewExchangeTestnetShadowPromotion: (payload: { shadow_run_id: string }) =>
+    request<TestnetShadowPromotionResponse>("/exchange/testnet/shadow/promotions/preview", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getExchangeTestnetShadowPromotions: (limit = 20) =>
+    request<TestnetShadowPromotionsResponse>(
+      "/exchange/testnet/shadow/promotions",
+      undefined,
+      { limit },
+    ),
+  getExchangeTestnetShadowPromotion: (promotionId: string) =>
+    request<TestnetShadowPromotionResponse>(
+      `/exchange/testnet/shadow/promotions/${promotionId}`,
+    ),
+  submitExchangeTestnetShadowPromotion: (
+    promotionId: string,
+    payload: { confirmation_text: string },
+  ) =>
+    request<TestnetShadowPromotionSubmitResponse>(
+      `/exchange/testnet/shadow/promotions/${promotionId}/submit`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
   getExchangeTestnetShadowRunnerStatus: () =>
     request<TestnetShadowRunnerStatusResponse>("/exchange/testnet/shadow-runner/status"),
   getExchangeTestnetShadowRunnerConfig: () =>

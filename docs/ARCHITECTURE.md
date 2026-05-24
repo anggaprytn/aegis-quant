@@ -218,6 +218,8 @@ Notes:
 - `POST /exchange/testnet/pipeline/preview` is an operator-visible dry run only: it requires an existing approved `risk_decision_id`, blocks on the persistent kill switch, requires fresh local price context from stored tick/candle data, and must not create `exchange_testnet_orders` or lifecycle rows.
 - `POST /exchange/testnet/pipeline/submit` is owner-only: it revalidates the preview boundary, requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`, persists only isolated testnet-order state, and must never touch paper or backtest tables.
 - `POST /exchange/testnet/shadow/run` is operator-visible shadow execution only: it runs strategy -> signal -> risk -> local-price resolution -> would-submit intent, persists only `testnet_shadow_runs`, and must never submit to Binance or create isolated lifecycle rows.
+- `POST /exchange/testnet/shadow/promotions/preview` is the manual bridge from a persisted `WOULD_SUBMIT` shadow run into a gated testnet promotion record: it requires an existing approved `risk_decision_id`, an inactive kill switch, an enabled strategy config, fresh local pricing, persists only `testnet_shadow_promotions`, and must not create `exchange_testnet_orders` or lifecycle rows.
+- `POST /exchange/testnet/shadow/promotions/:id/submit` is owner-only: it requires exact typed confirmation `PROMOTE TESTNET <SYMBOL>`, revalidates kill switch plus risk approval, submits exactly the persisted promotion payload, persists only isolated testnet execution state, and must never recompute strategy or mutate paper/backtest/live tables.
 - `GET/POST /exchange/testnet/shadow-runner/*` manages a persistent no-submit scheduler: config/state live in singleton Postgres tables, `RUN_ONCE` reuses the same shadow path, scheduled ticks never submit, and only `testnet_shadow_runs` plus runner config/state are mutated.
 - Private testnet orders do not mutate `orders`, `paper_positions`, `paper_fills`, or paper PnL tables.
 - The adapter now also manages Spot Testnet listen-key lifecycle and testnet-only user-data stream URL construction.
@@ -261,6 +263,19 @@ closed candles
 -> fresh local tick/candle price resolution
 -> would-submit testnet intent
 -> persisted testnet_shadow_runs row
+```
+
+Testnet shadow promotion flow:
+
+```txt
+persisted WOULD_SUBMIT testnet_shadow_runs row
+-> operator preview request
+-> current kill switch + risk approval + strategy enabled + fresh local price checks
+-> persisted testnet_shadow_promotions row
+-> owner typed confirmation
+-> isolated exchange_testnet_orders row
+-> ORDER_SUBMIT_REQUESTED
+-> EXCHANGE_ACKED on adapter success
 ```
 
 Testnet shadow runner flow:

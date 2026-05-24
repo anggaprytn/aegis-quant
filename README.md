@@ -111,6 +111,7 @@ Optional environment variables:
 - `BINANCE_TESTNET_PRIVATE_STREAM_STALE_THRESHOLD_SECONDS`
 - `BINANCE_TESTNET_PRIVATE_STREAM_KEEPALIVE_SECONDS`
 - `BINANCE_TESTNET_PRIVATE_STREAM_RECONNECT_DELAY_SECONDS`
+- `TESTNET_SHADOW_PROMOTION_TTL_SECONDS`
 - `BINANCE_REST_BASE_URL`
 - `STRATEGY_DEFAULT_SYMBOLS`
 - `STRATEGY_DEFAULT_TIMEFRAME`
@@ -213,6 +214,8 @@ Guardrails:
 - Testnet submission is isolated from paper accounting and paper orders
 - Testnet pipeline preview is operator-visible only and never submits an exchange order or persists `exchange_testnet_orders`
 - Testnet shadow mode is operator-triggered only, persists isolated `testnet_shadow_runs`, and records would-submit intents without submitting or creating `exchange_testnet_orders`
+- Testnet shadow promotion preview is operator-visible only, persists isolated `testnet_shadow_promotions`, requires a persisted `WOULD_SUBMIT` shadow run plus fresh local pricing, and never auto-submits or creates lifecycle rows
+- Testnet shadow promotion submit is owner-only, requires exact typed confirmation `PROMOTE TESTNET <SYMBOL>`, submits only the persisted would-submit payload from the selected promotion, and mutates only isolated testnet execution state
 - Testnet shadow runner is a persistent no-submit scheduler over the same shadow path, persists only runner config/state plus `testnet_shadow_runs`, and never creates exchange order or lifecycle rows
 - Testnet pipeline submit is owner-only, requires an existing approved `risk_decision_id`, and requires exact typed confirmation `SUBMIT TESTNET <SYMBOL>`
 - Submit/cancel require `OWNER`, typed confirmation `TESTNET ORDER`, an inactive kill switch, and a preapproved `risk_decision_id`
@@ -246,6 +249,11 @@ cargo run -p cli -- exchange testnet shadow-run \
   --timeframe 1m
 cargo run -p cli -- exchange testnet shadow-runs --limit 50
 cargo run -p cli -- exchange testnet shadow-get <run_id>
+cargo run -p cli -- exchange testnet shadow-promotion-preview <shadow_run_id>
+cargo run -p cli -- exchange testnet shadow-promotions --limit 50
+cargo run -p cli -- exchange testnet shadow-promotion-get <promotion_id>
+cargo run -p cli -- exchange testnet shadow-promotion-submit <promotion_id> \
+  --confirm "PROMOTE TESTNET BTCUSDT"
 cargo run -p cli -- exchange testnet shadow-runner status
 cargo run -p cli -- exchange testnet shadow-runner config
 cargo run -p cli -- exchange testnet shadow-runner config-update \
@@ -320,6 +328,7 @@ Private stream notes:
 - Listen keys are hashed in Postgres; the API, CLI, logs, and dashboard use masked values only.
 - The dashboard Settings page now exposes a private-stream status card, recent private events, and operator lifecycle controls.
 - The dashboard Settings page now also exposes a testnet shadow-run form, recent shadow runs, and run-detail payload inspection.
+- The dashboard Settings page also exposes shadow promotion preview/list/detail flows with owner-only typed confirmation before any testnet submit.
 - The dashboard Settings page also exposes persistent testnet shadow-runner status, config, and start/pause/resume/run-once controls with role gating.
 
 To run the scheduler daemon directly:

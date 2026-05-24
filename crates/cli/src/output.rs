@@ -1,6 +1,7 @@
 use aegis_core::User;
 use aegis_core::{
-    ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowRunResult,
+    ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
+    TestnetShadowPromotionResult, TestnetShadowRunResult,
 };
 use colored::Colorize;
 use serde::Serialize;
@@ -21,8 +22,8 @@ use crate::api::{
     StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDryRunResponse, StrategyListResponse,
     StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
-    StrategyStatusResponse, TestnetShadowRunnerControlResponse, TestnetShadowRunnerStatusResponse,
-    TestnetShadowRunsResponse,
+    StrategyStatusResponse, TestnetShadowPromotionsResponse, TestnetShadowRunnerControlResponse,
+    TestnetShadowRunnerStatusResponse, TestnetShadowRunsResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -328,6 +329,72 @@ pub fn print_testnet_shadow_runs(response: &TestnetShadowRunsResponse) {
                 .unwrap_or_else(|| "-".to_string())
         );
     }
+}
+
+pub fn print_testnet_shadow_promotion(promotion: &TestnetShadowPromotionPreview) {
+    println!("Promotion ID: {}", promotion.promotion_id);
+    println!("Shadow Run ID: {}", promotion.shadow_run_id);
+    println!("Status: {}", promotion.status.as_str());
+    println!("Strategy: {}", promotion.strategy_id);
+    println!("Symbol: {}", promotion.symbol);
+    println!("Timeframe: {}", promotion.timeframe);
+    println!(
+        "Signal ID: {}",
+        promotion
+            .signal_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!("Risk Decision ID: {}", promotion.risk_decision_id);
+    println!(
+        "Resolved Price: {}",
+        promotion
+            .resolved_price
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Price Source: {}",
+        promotion.price_source.as_deref().unwrap_or("-")
+    );
+    println!("Expires At: {}", promotion.expires_at);
+    println!(
+        "Client Order ID: {}",
+        promotion.client_order_id.as_deref().unwrap_or("-")
+    );
+    println!(
+        "Reasons: {}",
+        promotion
+            .reasons
+            .iter()
+            .map(|value| value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    println!("Correlation ID: {}", promotion.correlation_id);
+}
+
+pub fn print_testnet_shadow_promotions(response: &TestnetShadowPromotionsResponse) {
+    for promotion in &response.promotions {
+        println!(
+            "{} {} {} {} expires={} client_order_id={}",
+            promotion.created_at,
+            promotion.shadow_run_id,
+            promotion.symbol,
+            promotion.status.as_str(),
+            promotion.expires_at,
+            promotion.client_order_id.as_deref().unwrap_or("-")
+        );
+    }
+}
+
+pub fn print_testnet_shadow_promotion_submit(result: &TestnetShadowPromotionResult) {
+    println!("Promotion ID: {}", result.promotion_id);
+    println!("Shadow Run ID: {}", result.shadow_run_id);
+    println!("Testnet Order ID: {}", result.testnet_order_id);
+    println!("Client Order ID: {}", result.client_order_id);
+    println!("Execution State: {}", result.execution_state.as_str());
+    println!("Correlation ID: {}", result.correlation_id);
 }
 
 pub fn print_testnet_shadow_runner_status(response: &TestnetShadowRunnerStatusResponse) {

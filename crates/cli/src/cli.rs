@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
 use aegis_core::{
-    expected_testnet_pipeline_confirmation, TestnetShadowRunRequest,
+    expected_testnet_pipeline_confirmation, TestnetShadowPromotionRequest, TestnetShadowRunRequest,
     TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
 };
 
@@ -131,6 +131,12 @@ pub enum ExchangeTestnetCommands {
     ShadowGet {
         run_id: Uuid,
     },
+    ShadowPromotionPreview(ExchangeTestnetShadowPromotionPreviewArgs),
+    ShadowPromotions(ExchangeTestnetShadowPromotionsArgs),
+    ShadowPromotionGet {
+        promotion_id: Uuid,
+    },
+    ShadowPromotionSubmit(ExchangeTestnetShadowPromotionSubmitArgs),
     #[command(subcommand)]
     ShadowRunner(ExchangeTestnetShadowRunnerCommands),
     #[command(subcommand)]
@@ -197,9 +203,36 @@ impl From<ExchangeTestnetShadowRunArgs> for TestnetShadowRunRequest {
 }
 
 #[derive(Debug, Args)]
+pub struct ExchangeTestnetShadowPromotionPreviewArgs {
+    pub shadow_run_id: Uuid,
+}
+
+impl From<ExchangeTestnetShadowPromotionPreviewArgs> for TestnetShadowPromotionRequest {
+    fn from(value: ExchangeTestnetShadowPromotionPreviewArgs) -> Self {
+        Self {
+            shadow_run_id: value.shadow_run_id,
+            correlation_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 pub struct ExchangeTestnetShadowRunsArgs {
     #[arg(long, default_value_t = 50)]
     pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetShadowPromotionsArgs {
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetShadowPromotionSubmitArgs {
+    pub promotion_id: Uuid,
+    #[arg(long)]
+    pub confirm: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

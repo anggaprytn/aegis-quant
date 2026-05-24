@@ -58,6 +58,8 @@ pub struct Telemetry {
     exchange_testnet_shadow_runner_last_tick_age_seconds: Gauge,
     exchange_testnet_shadow_would_submit_total: IntCounterVec,
     exchange_testnet_shadow_rejections_total: IntCounterVec,
+    exchange_testnet_shadow_promotions_total: IntCounterVec,
+    exchange_testnet_shadow_promotion_submits_total: IntCounterVec,
     exchange_testnet_lifecycle_transitions_total: IntCounterVec,
     exchange_testnet_lifecycle_invalid_transitions_total: IntCounterVec,
     exchange_testnet_orders_by_state: IntGaugeVec,
@@ -375,6 +377,21 @@ impl Telemetry {
             registry
         )
         .expect("exchange_testnet_shadow_rejections_total should register");
+        let exchange_testnet_shadow_promotions_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_shadow_promotions_total",
+            "Exchange testnet shadow promotions by status.",
+            &["status"],
+            registry
+        )
+        .expect("exchange_testnet_shadow_promotions_total should register");
+        let exchange_testnet_shadow_promotion_submits_total =
+            register_int_counter_vec_with_registry!(
+                "exchange_testnet_shadow_promotion_submits_total",
+                "Exchange testnet shadow promotion submits by result.",
+                &["result"],
+                registry
+            )
+            .expect("exchange_testnet_shadow_promotion_submits_total should register");
         let exchange_testnet_lifecycle_transitions_total = register_int_counter_vec_with_registry!(
             "exchange_testnet_lifecycle_transitions_total",
             "Testnet lifecycle transitions by source and next_state.",
@@ -519,6 +536,8 @@ impl Telemetry {
             exchange_testnet_shadow_runner_last_tick_age_seconds,
             exchange_testnet_shadow_would_submit_total,
             exchange_testnet_shadow_rejections_total,
+            exchange_testnet_shadow_promotions_total,
+            exchange_testnet_shadow_promotion_submits_total,
             exchange_testnet_lifecycle_transitions_total,
             exchange_testnet_lifecycle_invalid_transitions_total,
             exchange_testnet_orders_by_state,
@@ -827,6 +846,18 @@ impl Telemetry {
     pub fn inc_exchange_testnet_shadow_rejection(&self, reason: &str) {
         self.exchange_testnet_shadow_rejections_total
             .with_label_values(&[reason])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_shadow_promotion(&self, status: &str) {
+        self.exchange_testnet_shadow_promotions_total
+            .with_label_values(&[status])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_shadow_promotion_submit(&self, result: &str) {
+        self.exchange_testnet_shadow_promotion_submits_total
+            .with_label_values(&[result])
             .inc();
     }
 

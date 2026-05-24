@@ -1946,6 +1946,17 @@ pub fn is_valid_testnet_pipeline_confirmation(symbol: &str, confirmation_text: &
     confirmation_text == expected_testnet_pipeline_confirmation(symbol)
 }
 
+pub fn expected_testnet_shadow_promotion_confirmation(symbol: &str) -> String {
+    format!("PROMOTE TESTNET {}", symbol.trim().to_ascii_uppercase())
+}
+
+pub fn is_valid_testnet_shadow_promotion_confirmation(
+    symbol: &str,
+    confirmation_text: &str,
+) -> bool {
+    confirmation_text == expected_testnet_shadow_promotion_confirmation(symbol)
+}
+
 pub fn validate_testnet_repair_transition(
     action: TestnetRepairAction,
     previous: TestnetExecutionState,
@@ -2599,6 +2610,174 @@ pub struct TestnetShadowRunResult {
     pub resolved_price: Option<Decimal>,
     pub status: TestnetShadowStatus,
     pub created_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetShadowPromotionStatus {
+    Previewed,
+    Submitted,
+    Rejected,
+    Expired,
+    AlreadyPromoted,
+}
+
+impl TestnetShadowPromotionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Previewed => "PREVIEWED",
+            Self::Submitted => "SUBMITTED",
+            Self::Rejected => "REJECTED",
+            Self::Expired => "EXPIRED",
+            Self::AlreadyPromoted => "ALREADY_PROMOTED",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowPromotionStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PREVIEWED" => Ok(Self::Previewed),
+            "SUBMITTED" => Ok(Self::Submitted),
+            "REJECTED" => Ok(Self::Rejected),
+            "EXPIRED" => Ok(Self::Expired),
+            "ALREADY_PROMOTED" => Ok(Self::AlreadyPromoted),
+            other => Err(CoreError::UnsupportedShadowPromotionStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TestnetShadowPromotionRejectionReason {
+    ShadowRunNotFound,
+    ShadowDecisionNotWouldSubmit,
+    MissingRiskDecision,
+    RiskDecisionNotApproved,
+    KillSwitchActive,
+    StrategyDisabled,
+    StalePrice,
+    InvalidEnvironment,
+    MissingWouldSubmitPayload,
+    PromotionExpired,
+    DuplicateSubmit,
+    InvalidConfirmation,
+    OwnerRequired,
+    AlreadyPromoted,
+    SubmitFailed,
+    Error,
+}
+
+impl TestnetShadowPromotionRejectionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ShadowRunNotFound => "shadow_run_not_found",
+            Self::ShadowDecisionNotWouldSubmit => "shadow_decision_not_would_submit",
+            Self::MissingRiskDecision => "missing_risk_decision",
+            Self::RiskDecisionNotApproved => "risk_decision_not_approved",
+            Self::KillSwitchActive => "kill_switch_active",
+            Self::StrategyDisabled => "strategy_disabled",
+            Self::StalePrice => "stale_price",
+            Self::InvalidEnvironment => "invalid_environment",
+            Self::MissingWouldSubmitPayload => "missing_would_submit_payload",
+            Self::PromotionExpired => "promotion_expired",
+            Self::DuplicateSubmit => "duplicate_submit",
+            Self::InvalidConfirmation => "invalid_confirmation",
+            Self::OwnerRequired => "owner_required",
+            Self::AlreadyPromoted => "already_promoted",
+            Self::SubmitFailed => "submit_failed",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetShadowPromotionRejectionReason {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "shadow_run_not_found" => Ok(Self::ShadowRunNotFound),
+            "shadow_decision_not_would_submit" => Ok(Self::ShadowDecisionNotWouldSubmit),
+            "missing_risk_decision" => Ok(Self::MissingRiskDecision),
+            "risk_decision_not_approved" => Ok(Self::RiskDecisionNotApproved),
+            "kill_switch_active" => Ok(Self::KillSwitchActive),
+            "strategy_disabled" => Ok(Self::StrategyDisabled),
+            "stale_price" => Ok(Self::StalePrice),
+            "invalid_environment" => Ok(Self::InvalidEnvironment),
+            "missing_would_submit_payload" => Ok(Self::MissingWouldSubmitPayload),
+            "promotion_expired" => Ok(Self::PromotionExpired),
+            "duplicate_submit" => Ok(Self::DuplicateSubmit),
+            "invalid_confirmation" => Ok(Self::InvalidConfirmation),
+            "owner_required" => Ok(Self::OwnerRequired),
+            "already_promoted" => Ok(Self::AlreadyPromoted),
+            "submit_failed" => Ok(Self::SubmitFailed),
+            "error" => Ok(Self::Error),
+            other => Err(CoreError::UnsupportedShadowPromotionRejectionReason(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowPromotionRequest {
+    pub shadow_run_id: Uuid,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetShadowPromotionSubmitRequest {
+    pub confirmation_text: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl TestnetShadowPromotionSubmitRequest {
+    pub fn validate_confirmation(&self, symbol: &str) -> Result<(), CoreError> {
+        let expected = expected_testnet_shadow_promotion_confirmation(symbol);
+        if self.confirmation_text == expected {
+            return Ok(());
+        }
+        Err(CoreError::InvalidTestnetShadowPromotionConfirmation {
+            expected,
+            actual: self.confirmation_text.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetShadowPromotionPreview {
+    pub promotion_id: Uuid,
+    pub shadow_run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Uuid,
+    pub would_submit_payload: TestnetShadowIntent,
+    pub resolved_price: Option<Decimal>,
+    pub price_source: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub reasons: Vec<TestnetShadowPromotionRejectionReason>,
+    pub status: TestnetShadowPromotionStatus,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub testnet_order_id: Option<Uuid>,
+    pub client_order_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetShadowPromotionResult {
+    pub promotion_id: Uuid,
+    pub shadow_run_id: Uuid,
+    pub testnet_order_id: Uuid,
+    pub client_order_id: String,
+    pub execution_state: TestnetExecutionState,
     pub correlation_id: Uuid,
 }
 
@@ -4086,6 +4265,10 @@ pub enum CoreError {
     UnsupportedShadowStatus(String),
     #[error("unsupported testnet shadow rejection reason: {0}")]
     UnsupportedShadowRejectionReason(String),
+    #[error("unsupported testnet shadow promotion status: {0}")]
+    UnsupportedShadowPromotionStatus(String),
+    #[error("unsupported testnet shadow promotion rejection reason: {0}")]
+    UnsupportedShadowPromotionRejectionReason(String),
     #[error("unsupported testnet shadow runner status: {0}")]
     UnsupportedShadowRunnerStatus(String),
     #[error("unsupported testnet shadow runner stale feed policy: {0}")]
@@ -4186,6 +4369,10 @@ pub enum CoreError {
     },
     #[error("invalid testnet repair confirmation: expected {expected:?}, got {actual:?}")]
     InvalidTestnetRepairConfirmation { expected: String, actual: String },
+    #[error(
+        "invalid testnet shadow promotion confirmation: expected {expected:?}, got {actual:?}"
+    )]
+    InvalidTestnetShadowPromotionConfirmation { expected: String, actual: String },
     #[error("invalid testnet repair transition for {action:?} from {previous_state:?} to {next_state:?}")]
     InvalidTestnetRepairTransition {
         action: TestnetRepairAction,

@@ -28,10 +28,13 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Testnet direct submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
 - Testnet pipeline preview requires operator-or-owner auth, an approved persisted `risk_decision_id`, an inactive kill switch, and fresh local stored pricing; it must not submit exchange orders or persist isolated order lifecycle state
 - Testnet shadow mode requires operator-or-owner auth, an inactive kill switch, enabled strategy config, persisted risk evaluation, and fresh local stored pricing; it persists only `testnet_shadow_runs` and never submits exchange orders
+- Testnet shadow promotion preview requires operator-or-owner auth, a persisted `WOULD_SUBMIT` shadow run, an approved persisted `risk_decision_id`, an inactive kill switch, an enabled strategy config, and fresh local stored pricing; it persists only `testnet_shadow_promotions` and never auto-submits or creates isolated lifecycle state
+- Testnet shadow promotion submit requires owner authorization, exact typed confirmation `PROMOTE TESTNET <SYMBOL>`, a non-expired `PREVIEWED` promotion, an inactive kill switch, and a still-approved persisted `risk_decision_id`; it submits only the promotion's persisted would-submit payload
 - Testnet shadow runner status/config are inspectable by VIEWER, manual `RUN_ONCE`/`PAUSE`/`RESUME` are operator-or-owner only, and `START`/`STOP`/config update remain owner-gated
 - Testnet pipeline submit requires owner authorization, exact typed confirmation `SUBMIT TESTNET <SYMBOL>`, an approved persisted `risk_decision_id`, an inactive kill switch, and persists only isolated testnet execution state
 - Testnet repair actions require per-order typed confirmation: `REPAIR TESTNET <CLIENT_ORDER_ID>` or `CANCEL TESTNET <CLIENT_ORDER_ID>` for safe cancel
 - Testnet shadow mode must not create `exchange_testnet_orders`, must not append lifecycle events, and must not mutate paper/backtest/live execution tables
+- Testnet shadow promotions must not auto-submit, must not touch production Binance endpoints, and must not mutate paper orders, paper positions, paper PnL, backtest tables, or live execution tables
 - Testnet shadow runner must never submit automatically, must never touch production Binance endpoints, and may persist only `testnet_shadow_runs`, `testnet_shadow_runner_config`, and `testnet_shadow_runner_state`
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
 - Testnet lifecycle history is isolated in `exchange_testnet_order_lifecycle_events` and must not mutate paper accounting, backtest, or live execution tables

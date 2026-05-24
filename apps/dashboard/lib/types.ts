@@ -862,6 +862,64 @@ export type TestnetShadowRunsResponse = {
   timestamp: string;
 };
 
+export type TestnetShadowPromotionStatus =
+  | "PREVIEWED"
+  | "SUBMITTED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "ALREADY_PROMOTED";
+
+export type TestnetShadowPromotionPreview = {
+  promotion_id: string;
+  shadow_run_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  signal_id: string | null;
+  risk_decision_id: string;
+  would_submit_payload: TestnetShadowIntent;
+  resolved_price: string | null;
+  price_source: string | null;
+  expires_at: string;
+  reasons: string[];
+  status: TestnetShadowPromotionStatus;
+  correlation_id: string;
+  created_at: string;
+  submitted_at: string | null;
+  testnet_order_id: string | null;
+  client_order_id: string | null;
+};
+
+export type TestnetShadowPromotionResponse = {
+  promotion: TestnetShadowPromotionPreview;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type TestnetShadowPromotionsResponse = {
+  promotions: TestnetShadowPromotionPreview[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type TestnetShadowPromotionSubmitResult = {
+  promotion_id: string;
+  shadow_run_id: string;
+  testnet_order_id: string;
+  client_order_id: string;
+  execution_state: string;
+  correlation_id: string;
+};
+
+export type TestnetShadowPromotionSubmitResponse = {
+  result: TestnetShadowPromotionSubmitResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type TestnetShadowRunnerConfig = {
   id: string;
   enabled: boolean;

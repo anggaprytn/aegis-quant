@@ -13,7 +13,8 @@ use aegis_core::{
     StrategyConfigVersion, StrategyDecisionBreakdown, StrategyId, StrategyPerformanceMode,
     StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
     StrategyRiskBreakdown, StrategySignal, Symbol, TestnetExecutionState, TestnetShadowDecision,
-    TestnetShadowIntent, TestnetShadowRejectionReason, TestnetShadowRunResult,
+    TestnetShadowIntent, TestnetShadowPromotionPreview, TestnetShadowPromotionRejectionReason,
+    TestnetShadowPromotionStatus, TestnetShadowRejectionReason, TestnetShadowRunResult,
     TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState,
     TestnetShadowRunnerStatus, TestnetShadowStatus, User, UserRole, UserStatus,
 };
@@ -276,6 +277,30 @@ pub struct TestnetShadowRunRecord {
     pub reasons: Vec<String>,
     pub status: String,
     pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestnetShadowPromotionRecord {
+    pub id: Uuid,
+    pub shadow_run_id: Uuid,
+    pub status: String,
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub would_submit_payload: Value,
+    pub resolved_price: Option<Decimal>,
+    pub price_source: Option<String>,
+    pub rejection_reasons: Vec<String>,
+    pub testnet_order_id: Option<Uuid>,
+    pub client_order_id: Option<String>,
+    pub expires_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub submitted_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub submitted_at: Option<DateTime<Utc>>,
     pub correlation_id: Option<Uuid>,
 }
 
@@ -2178,6 +2203,264 @@ pub async fn get_testnet_shadow_run_by_id(
     .await?;
 
     Ok(row.as_ref().map(map_testnet_shadow_run))
+}
+
+pub async fn insert_testnet_shadow_promotion(
+    pool: &PgPool,
+    promotion: &TestnetShadowPromotionRecord,
+) -> Result<TestnetShadowPromotionRecord> {
+    let rejection_reasons = serde_json::to_value(&promotion.rejection_reasons)?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO testnet_shadow_promotions (
+            id,
+            shadow_run_id,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            resolved_price,
+            price_source,
+            rejection_reasons,
+            testnet_order_id,
+            client_order_id,
+            expires_at,
+            created_by,
+            submitted_by,
+            created_at,
+            submitted_at,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+        )
+        RETURNING
+            id,
+            shadow_run_id,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            resolved_price,
+            price_source,
+            rejection_reasons,
+            testnet_order_id,
+            client_order_id,
+            expires_at,
+            created_by,
+            submitted_by,
+            created_at,
+            submitted_at,
+            correlation_id
+        "#,
+    )
+    .bind(promotion.id)
+    .bind(promotion.shadow_run_id)
+    .bind(&promotion.status)
+    .bind(&promotion.strategy_id)
+    .bind(&promotion.symbol)
+    .bind(&promotion.timeframe)
+    .bind(promotion.signal_id)
+    .bind(promotion.risk_decision_id)
+    .bind(&promotion.would_submit_payload)
+    .bind(promotion.resolved_price)
+    .bind(&promotion.price_source)
+    .bind(rejection_reasons)
+    .bind(promotion.testnet_order_id)
+    .bind(&promotion.client_order_id)
+    .bind(promotion.expires_at)
+    .bind(promotion.created_by)
+    .bind(promotion.submitted_by)
+    .bind(promotion.created_at)
+    .bind(promotion.submitted_at)
+    .bind(promotion.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_testnet_shadow_promotion(&row))
+}
+
+pub async fn list_testnet_shadow_promotions(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<TestnetShadowPromotionRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            shadow_run_id,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            resolved_price,
+            price_source,
+            rejection_reasons,
+            testnet_order_id,
+            client_order_id,
+            expires_at,
+            created_by,
+            submitted_by,
+            created_at,
+            submitted_at,
+            correlation_id
+        FROM testnet_shadow_promotions
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_testnet_shadow_promotion).collect())
+}
+
+pub async fn get_testnet_shadow_promotion_by_id(
+    pool: &PgPool,
+    promotion_id: Uuid,
+) -> Result<Option<TestnetShadowPromotionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            shadow_run_id,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            resolved_price,
+            price_source,
+            rejection_reasons,
+            testnet_order_id,
+            client_order_id,
+            expires_at,
+            created_by,
+            submitted_by,
+            created_at,
+            submitted_at,
+            correlation_id
+        FROM testnet_shadow_promotions
+        WHERE id = $1
+        "#,
+    )
+    .bind(promotion_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_testnet_shadow_promotion))
+}
+
+pub async fn get_active_testnet_shadow_promotion_for_shadow_run(
+    pool: &PgPool,
+    shadow_run_id: Uuid,
+) -> Result<Option<TestnetShadowPromotionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            shadow_run_id,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            resolved_price,
+            price_source,
+            rejection_reasons,
+            testnet_order_id,
+            client_order_id,
+            expires_at,
+            created_by,
+            submitted_by,
+            created_at,
+            submitted_at,
+            correlation_id
+        FROM testnet_shadow_promotions
+        WHERE shadow_run_id = $1
+          AND status IN ('PREVIEWED', 'SUBMITTED')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(shadow_run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_testnet_shadow_promotion))
+}
+
+pub async fn update_testnet_shadow_promotion_submission(
+    pool: &PgPool,
+    promotion_id: Uuid,
+    status: &str,
+    rejection_reasons: &[String],
+    testnet_order_id: Option<Uuid>,
+    client_order_id: Option<&str>,
+    submitted_by: Option<Uuid>,
+    submitted_at: Option<DateTime<Utc>>,
+) -> Result<Option<TestnetShadowPromotionRecord>> {
+    let reasons = serde_json::to_value(rejection_reasons)?;
+    let row = sqlx::query(
+        r#"
+        UPDATE testnet_shadow_promotions
+        SET
+            status = $2,
+            rejection_reasons = $3,
+            testnet_order_id = COALESCE($4, testnet_order_id),
+            client_order_id = COALESCE($5, client_order_id),
+            submitted_by = COALESCE($6, submitted_by),
+            submitted_at = COALESCE($7, submitted_at)
+        WHERE id = $1
+        RETURNING
+            id,
+            shadow_run_id,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            resolved_price,
+            price_source,
+            rejection_reasons,
+            testnet_order_id,
+            client_order_id,
+            expires_at,
+            created_by,
+            submitted_by,
+            created_at,
+            submitted_at,
+            correlation_id
+        "#,
+    )
+    .bind(promotion_id)
+    .bind(status)
+    .bind(reasons)
+    .bind(testnet_order_id)
+    .bind(client_order_id)
+    .bind(submitted_by)
+    .bind(submitted_at)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_testnet_shadow_promotion))
 }
 
 pub fn default_testnet_shadow_runner_config(now: DateTime<Utc>) -> TestnetShadowRunnerConfig {
@@ -7665,6 +7948,37 @@ pub fn testnet_shadow_run_result_from_record(
     })
 }
 
+pub fn testnet_shadow_promotion_from_record(
+    record: &TestnetShadowPromotionRecord,
+) -> Result<TestnetShadowPromotionPreview> {
+    Ok(TestnetShadowPromotionPreview {
+        promotion_id: record.id,
+        shadow_run_id: record.shadow_run_id,
+        strategy_id: record.strategy_id.clone().unwrap_or_default(),
+        symbol: record.symbol.clone().unwrap_or_default(),
+        timeframe: record.timeframe.clone().unwrap_or_default(),
+        signal_id: record.signal_id,
+        risk_decision_id: record
+            .risk_decision_id
+            .ok_or_else(|| anyhow::anyhow!("promotion is missing risk_decision_id"))?,
+        would_submit_payload: serde_json::from_value(record.would_submit_payload.clone())?,
+        resolved_price: record.resolved_price,
+        price_source: record.price_source.clone(),
+        expires_at: record.expires_at,
+        reasons: record
+            .rejection_reasons
+            .iter()
+            .map(|value| value.parse::<TestnetShadowPromotionRejectionReason>())
+            .collect::<Result<Vec<_>, _>>()?,
+        status: record.status.parse::<TestnetShadowPromotionStatus>()?,
+        correlation_id: record.correlation_id.unwrap_or(record.id),
+        created_at: record.created_at,
+        submitted_at: record.submitted_at,
+        testnet_order_id: record.testnet_order_id,
+        client_order_id: record.client_order_id.clone(),
+    })
+}
+
 pub fn testnet_shadow_runner_config_from_record(
     record: &TestnetShadowRunnerConfigRecord,
 ) -> Result<TestnetShadowRunnerConfig> {
@@ -7831,6 +8145,42 @@ fn map_testnet_shadow_run(row: &sqlx::postgres::PgRow) -> TestnetShadowRunRecord
         reasons,
         status: row.get("status"),
         created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_testnet_shadow_promotion(row: &sqlx::postgres::PgRow) -> TestnetShadowPromotionRecord {
+    let reasons_json = row.get::<Value, _>("rejection_reasons");
+    let rejection_reasons = reasons_json
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    TestnetShadowPromotionRecord {
+        id: row.get("id"),
+        shadow_run_id: row.get("shadow_run_id"),
+        status: row.get("status"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        signal_id: row.get("signal_id"),
+        risk_decision_id: row.get("risk_decision_id"),
+        would_submit_payload: row.get("would_submit_payload"),
+        resolved_price: row.get("resolved_price"),
+        price_source: row.get("price_source"),
+        rejection_reasons,
+        testnet_order_id: row.get("testnet_order_id"),
+        client_order_id: row.get("client_order_id"),
+        expires_at: row.get("expires_at"),
+        created_by: row.get("created_by"),
+        submitted_by: row.get("submitted_by"),
+        created_at: row.get("created_at"),
+        submitted_at: row.get("submitted_at"),
         correlation_id: row.get("correlation_id"),
     }
 }
