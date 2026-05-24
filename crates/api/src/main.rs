@@ -12581,7 +12581,7 @@ mod tests {
         CandleInterval, DataFreshnessStatus, ExchangeEnvironment, ExchangeOrderState, FeedStatus,
         MarketDataSource, MarketMode, MarketTick, RiskConfig, Side, StrategyConfig, StrategyId,
         StrategyMode, Symbol, TestnetExecutionState, TestnetRepairAction, TestnetShadowDecision,
-        UserRole, UserStatus,
+        TestnetShadowPromotionStatus, TestnetShadowPromotionSubmitRequest, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -13541,6 +13541,128 @@ mod tests {
             .get::<i64, _>("count")
     }
 
+    async fn setup_shadow_promotion_fixture(pool: &PgPool) {
+        upsert_strategy_config(pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(pool, "BTCUSDT").await;
+        seed_shadow_candles(pool, "BTCUSDT", &[100_000, 101_000, 102_000, 103_000]).await;
+        insert_market_tick(
+            pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+    }
+
+    async fn create_previewable_shadow_run(
+        app: &Router,
+        operator_token: &str,
+    ) -> TestnetShadowRunResponse {
+        let shadow_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                operator_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(shadow_response.status(), StatusCode::OK);
+        let shadow = response_json::<TestnetShadowRunResponse>(shadow_response).await;
+        assert_eq!(shadow.run.decision, TestnetShadowDecision::WouldSubmit);
+        shadow
+    }
+
+    async fn create_shadow_promotion_preview(
+        app: &Router,
+        operator_token: &str,
+        shadow_run_id: Uuid,
+    ) -> TestnetShadowPromotionResponse {
+        let preview_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/promotions/preview",
+                operator_token,
+                json!({ "shadow_run_id": shadow_run_id }),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(preview_response.status(), StatusCode::OK);
+        response_json::<TestnetShadowPromotionResponse>(preview_response).await
+    }
+
+    async fn age_shadow_reference_price(pool: &PgPool, symbol: &str, age_seconds: i64) {
+        let stale_at = Utc::now() - chrono::Duration::seconds(age_seconds);
+        sqlx::query(
+            r#"
+            UPDATE market_ticks
+            SET received_at = $1, trade_time = $1
+            WHERE symbol = $2
+            "#,
+        )
+        .bind(stale_at)
+        .bind(symbol)
+        .execute(pool)
+        .await
+        .expect("market tick should age");
+        sqlx::query(
+            r#"
+            UPDATE candles
+            SET close_time = $1, updated_at = $1, created_at = $1
+            WHERE symbol = $2
+            "#,
+        )
+        .bind(stale_at)
+        .bind(symbol)
+        .execute(pool)
+        .await
+        .expect("candles should age");
+    }
+
+    async fn shadow_promotion_record(
+        pool: &PgPool,
+        promotion_id: Uuid,
+    ) -> db::TestnetShadowPromotionRecord {
+        db::get_testnet_shadow_promotion_by_id(pool, promotion_id)
+            .await
+            .expect("shadow promotion query")
+            .expect("shadow promotion should exist")
+    }
+
+    #[test]
+    fn exchange_testnet_shadow_promotion_submit_route_requires_owner() {
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/exchange/testnet/shadow/promotions/123/submit",
+                false
+            ),
+            super::RouteAccess::Owner
+        ));
+    }
+
+    #[test]
+    fn shadow_promotion_submit_confirmation_must_match_exact_phrase() {
+        let request = TestnetShadowPromotionSubmitRequest {
+            confirmation_text: expected_testnet_shadow_promotion_confirmation("BTCUSDT"),
+            correlation_id: None,
+        };
+        assert!(request.validate_confirmation("BTCUSDT").is_ok());
+
+        let invalid = TestnetShadowPromotionSubmitRequest {
+            confirmation_text: "promote testnet btcusdt".to_string(),
+            correlation_id: None,
+        };
+        assert!(invalid.validate_confirmation("BTCUSDT").is_err());
+    }
+
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
     async fn testnet_pipeline_preview_does_not_submit_orders() {
@@ -14313,22 +14435,7 @@ mod tests {
             UserRole::Operator,
         )
         .await;
-        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
-            .await
-            .expect("strategy config");
-        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
-        seed_shadow_candles(
-            &test_db.pool,
-            "BTCUSDT",
-            &[100_000, 101_000, 102_000, 103_000],
-        )
-        .await;
-        insert_market_tick(
-            &test_db.pool,
-            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
-        )
-        .await
-        .expect("market tick");
+        setup_shadow_promotion_fixture(&test_db.pool).await;
         let (operator_login, _) = login_cli(
             &app,
             "operator@example.com",
@@ -14336,7 +14443,69 @@ mod tests {
         )
         .await;
 
-        let shadow_response = app
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
+        let persisted =
+            shadow_promotion_record(&test_db.pool, preview.promotion.promotion_id).await;
+
+        assert_eq!(preview.promotion.shadow_run_id, shadow.run.run_id);
+        assert_eq!(preview.promotion.status.as_str(), "PREVIEWED");
+        assert_eq!(
+            persisted.status,
+            TestnetShadowPromotionStatus::Previewed.as_str()
+        );
+        assert!(persisted.expires_at > persisted.created_at);
+        assert_eq!(persisted.shadow_run_id, shadow.run.run_id);
+        assert_eq!(persisted.risk_decision_id, shadow.run.risk_decision_id);
+        assert_eq!(count_testnet_shadow_promotions(&test_db.pool).await, 1);
+        assert_eq!(
+            count_audit_logs(&test_db.pool, "exchange.testnet.shadow_promotion.previewed").await,
+            1
+        );
+        assert_eq!(
+            count_system_events(&test_db.pool, "exchange.testnet.shadow_promotion.previewed").await,
+            1
+        );
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_preview_rejects_non_would_submit_runs_without_persisting() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(&test_db.pool, "BTCUSDT", &[100_000, 99_900, 99_800, 99_700]).await;
+
+        let no_signal_response = app
             .clone()
             .oneshot(bearer_request(
                 "POST",
@@ -14349,24 +14518,174 @@ mod tests {
                 }),
             ))
             .await
-            .expect("shadow response");
-        let shadow = response_json::<TestnetShadowRunResponse>(shadow_response).await;
-        assert_eq!(shadow.run.decision, TestnetShadowDecision::WouldSubmit);
+            .expect("no signal shadow response");
+        let no_signal = response_json::<TestnetShadowRunResponse>(no_signal_response).await;
+        assert_eq!(no_signal.run.decision, TestnetShadowDecision::NoSignal);
 
-        let preview_response = app
+        let no_signal_preview = app
+            .clone()
             .oneshot(bearer_request(
                 "POST",
                 "/exchange/testnet/shadow/promotions/preview",
                 &operator_login.access_token,
-                json!({ "shadow_run_id": shadow.run.run_id }),
+                json!({ "shadow_run_id": no_signal.run.run_id }),
             ))
             .await
-            .expect("preview response");
-        assert_eq!(preview_response.status(), StatusCode::OK);
-        let preview = response_json::<TestnetShadowPromotionResponse>(preview_response).await;
-        assert_eq!(preview.promotion.shadow_run_id, shadow.run.run_id);
-        assert_eq!(preview.promotion.status.as_str(), "PREVIEWED");
-        assert_eq!(count_testnet_shadow_promotions(&test_db.pool).await, 1);
+            .expect("no signal preview response");
+        assert_eq!(no_signal_preview.status(), StatusCode::CONFLICT);
+        let no_signal_error = response_json::<Value>(no_signal_preview).await;
+        assert_eq!(no_signal_error["error"], "shadow_decision_not_would_submit");
+
+        upsert_risk_config(
+            &test_db.pool,
+            &RiskConfig {
+                max_open_positions: 2,
+                max_daily_loss_pct: Decimal::new(2, 0),
+                max_weekly_loss_pct: Decimal::new(5, 0),
+                max_position_notional: Decimal::new(1, 0),
+                max_slippage_pct: Decimal::new(1, 0),
+                max_consecutive_losses: 3,
+                cooldown_seconds: 900,
+                max_signal_age_ms: 5_000,
+                stale_feed_threshold_seconds: 10,
+            },
+        )
+        .await
+        .expect("risk config");
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+
+        let risk_rejected_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("risk rejected shadow response");
+        let risk_rejected = response_json::<TestnetShadowRunResponse>(risk_rejected_response).await;
+        assert_eq!(
+            risk_rejected.run.decision,
+            TestnetShadowDecision::RiskRejected
+        );
+
+        let risk_rejected_preview = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/promotions/preview",
+                &operator_login.access_token,
+                json!({ "shadow_run_id": risk_rejected.run.run_id }),
+            ))
+            .await
+            .expect("risk rejected preview response");
+        assert_eq!(risk_rejected_preview.status(), StatusCode::CONFLICT);
+        let risk_rejected_error = response_json::<Value>(risk_rejected_preview).await;
+        assert_eq!(
+            risk_rejected_error["error"],
+            "shadow_decision_not_would_submit"
+        );
+
+        assert_eq!(count_testnet_shadow_promotions(&test_db.pool).await, 0);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_preview_rejects_kill_switch_and_stale_price_without_persisting() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+
+        let kill_switch_shadow =
+            create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        set_kill_switch_state(
+            &test_db.pool,
+            &StateActor::system("test"),
+            Uuid::new_v4(),
+            "shadow promotion preview blocked",
+            true,
+            Some("manual block".to_string()),
+        )
+        .await
+        .expect("kill switch update");
+        let kill_switch_preview = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/promotions/preview",
+                &operator_login.access_token,
+                json!({ "shadow_run_id": kill_switch_shadow.run.run_id }),
+            ))
+            .await
+            .expect("kill switch preview response");
+        assert_eq!(kill_switch_preview.status(), StatusCode::CONFLICT);
+        let kill_switch_error = response_json::<Value>(kill_switch_preview).await;
+        assert_eq!(kill_switch_error["error"], "kill_switch_active");
+        set_kill_switch_state(
+            &test_db.pool,
+            &StateActor::system("test"),
+            Uuid::new_v4(),
+            "shadow promotion preview reset",
+            false,
+            Some("manual reset".to_string()),
+        )
+        .await
+        .expect("kill switch reset");
+
+        let stale_shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        age_shadow_reference_price(&test_db.pool, "BTCUSDT", 120).await;
+        let stale_preview = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/promotions/preview",
+                &operator_login.access_token,
+                json!({ "shadow_run_id": stale_shadow.run.run_id }),
+            ))
+            .await
+            .expect("stale preview response");
+        assert_eq!(stale_preview.status(), StatusCode::CONFLICT);
+        let stale_error = response_json::<Value>(stale_preview).await;
+        assert_eq!(stale_error["error"], "stale_price");
+
+        assert_eq!(count_testnet_shadow_promotions(&test_db.pool).await, 0);
         assert!(list_exchange_testnet_orders(&test_db.pool, 20)
             .await
             .expect("testnet orders")
@@ -14407,22 +14726,7 @@ mod tests {
             UserRole::Operator,
         )
         .await;
-        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
-            .await
-            .expect("strategy config");
-        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
-        seed_shadow_candles(
-            &test_db.pool,
-            "BTCUSDT",
-            &[100_000, 101_000, 102_000, 103_000],
-        )
-        .await;
-        insert_market_tick(
-            &test_db.pool,
-            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
-        )
-        .await
-        .expect("market tick");
+        setup_shadow_promotion_fixture(&test_db.pool).await;
         let (operator_login, _) = login_cli(
             &app,
             "operator@example.com",
@@ -14436,33 +14740,10 @@ mod tests {
         )
         .await;
 
-        let shadow_response = app
-            .clone()
-            .oneshot(bearer_request(
-                "POST",
-                "/exchange/testnet/shadow/run",
-                &operator_login.access_token,
-                json!({
-                    "strategy_id": "momentum_v1",
-                    "symbol": "BTCUSDT",
-                    "timeframe": "1m"
-                }),
-            ))
-            .await
-            .expect("shadow response");
-        let shadow = response_json::<TestnetShadowRunResponse>(shadow_response).await;
-
-        let preview_response = app
-            .clone()
-            .oneshot(bearer_request(
-                "POST",
-                "/exchange/testnet/shadow/promotions/preview",
-                &operator_login.access_token,
-                json!({ "shadow_run_id": shadow.run.run_id }),
-            ))
-            .await
-            .expect("preview response");
-        let preview = response_json::<TestnetShadowPromotionResponse>(preview_response).await;
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
 
         let submit_response = app
             .oneshot(bearer_request(
@@ -14486,6 +14767,20 @@ mod tests {
             .expect("list testnet orders");
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].id, submit.result.testnet_order_id);
+        let persisted =
+            shadow_promotion_record(&test_db.pool, preview.promotion.promotion_id).await;
+        assert_eq!(
+            persisted.status,
+            TestnetShadowPromotionStatus::Submitted.as_str()
+        );
+        assert_eq!(
+            persisted.testnet_order_id,
+            Some(submit.result.testnet_order_id)
+        );
+        assert_eq!(
+            persisted.client_order_id.as_deref(),
+            Some(submit.result.client_order_id.as_str())
+        );
         let lifecycle = list_exchange_testnet_order_lifecycle_events(
             &test_db.pool,
             &submit.result.client_order_id,
@@ -14495,6 +14790,530 @@ mod tests {
         assert_eq!(lifecycle.len(), 2);
         assert_eq!(lifecycle[0].next_state, "ORDER_SUBMIT_REQUESTED");
         assert_eq!(lifecycle[1].next_state, "EXCHANGE_ACKED");
+        assert_eq!(fake_exchange.calls().submitted_orders.len(), 1);
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_submit_rejects_duplicate_submit_without_duplicate_order() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        fake_exchange.push_submit_ack(FakeSubmitAck::default());
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange.clone()),
+            FakeExchangeAdapter::status(),
+        );
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
+
+        let submit_uri = format!(
+            "/exchange/testnet/shadow/promotions/{}/submit",
+            preview.promotion.promotion_id
+        );
+        let first_submit = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &submit_uri,
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("first submit response");
+        assert_eq!(first_submit.status(), StatusCode::CREATED);
+
+        let second_submit = app
+            .oneshot(bearer_request(
+                "POST",
+                &submit_uri,
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("second submit response");
+        assert_eq!(second_submit.status(), StatusCode::CONFLICT);
+        let error = response_json::<Value>(second_submit).await;
+        assert_eq!(error["error"], "duplicate_submit");
+
+        let persisted =
+            shadow_promotion_record(&test_db.pool, preview.promotion.promotion_id).await;
+        assert_eq!(
+            persisted.status,
+            TestnetShadowPromotionStatus::Submitted.as_str()
+        );
+        let orders = list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders");
+        assert_eq!(orders.len(), 1);
+        let lifecycle = list_exchange_testnet_order_lifecycle_events(
+            &test_db.pool,
+            orders[0].client_order_id.as_str(),
+        )
+        .await
+        .expect("lifecycle events");
+        assert_eq!(lifecycle.len(), 2);
+        assert_eq!(
+            system_events_for_order(
+                &test_db.pool,
+                orders[0].client_order_id.as_str(),
+                "exchange.testnet.order.acked"
+            )
+            .await
+            .len(),
+            1
+        );
+        assert_eq!(fake_exchange.calls().submitted_orders.len(), 1);
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_submit_rejects_wrong_confirmation_without_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
+
+        let submit_response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/exchange/testnet/shadow/promotions/{}/submit",
+                    preview.promotion.promotion_id
+                ),
+                &owner_login.access_token,
+                json!({ "confirmation_text": "PROMOTE TESTNET ETHUSDT" }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(submit_response.status(), StatusCode::BAD_REQUEST);
+
+        let persisted =
+            shadow_promotion_record(&test_db.pool, preview.promotion.promotion_id).await;
+        assert_eq!(
+            persisted.status,
+            TestnetShadowPromotionStatus::Previewed.as_str()
+        );
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_submit_requires_owner_without_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
+
+        let submit_response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/exchange/testnet/shadow/promotions/{}/submit",
+                    preview.promotion.promotion_id
+                ),
+                &operator_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(submit_response.status(), StatusCode::FORBIDDEN);
+
+        let persisted =
+            shadow_promotion_record(&test_db.pool, preview.promotion.promotion_id).await;
+        assert_eq!(
+            persisted.status,
+            TestnetShadowPromotionStatus::Previewed.as_str()
+        );
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_submit_rejects_expired_preview_without_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
+
+        sqlx::query("UPDATE testnet_shadow_promotions SET expires_at = $2 WHERE id = $1")
+            .bind(preview.promotion.promotion_id)
+            .bind(Utc::now() - chrono::Duration::seconds(1))
+            .execute(&test_db.pool)
+            .await
+            .expect("promotion expiry update");
+
+        let submit_response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/exchange/testnet/shadow/promotions/{}/submit",
+                    preview.promotion.promotion_id
+                ),
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(submit_response.status(), StatusCode::CONFLICT);
+        let error = response_json::<Value>(submit_response).await;
+        assert_eq!(error["error"], "promotion_expired");
+
+        let persisted =
+            shadow_promotion_record(&test_db.pool, preview.promotion.promotion_id).await;
+        assert_eq!(
+            persisted.status,
+            TestnetShadowPromotionStatus::Expired.as_str()
+        );
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            0
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_submit_uses_persisted_promotion_payload() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        fake_exchange.push_submit_ack(FakeSubmitAck::default());
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange.clone()),
+            FakeExchangeAdapter::status(),
+        );
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
+
+        let expected_side = preview.promotion.would_submit_payload.side;
+        let mut mutated_payload = serde_json::to_value(&preview.promotion.would_submit_payload)
+            .expect("payload should serialize");
+        mutated_payload["side"] = Value::String("SELL".to_string());
+        mutated_payload["quote_notional"] = Value::String("123456".to_string());
+        sqlx::query("UPDATE testnet_shadow_runs SET would_submit_payload = $2 WHERE id = $1")
+            .bind(shadow.run.run_id)
+            .bind(mutated_payload)
+            .execute(&test_db.pool)
+            .await
+            .expect("shadow run payload update");
+
+        let submit_response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/exchange/testnet/shadow/promotions/{}/submit",
+                    preview.promotion.promotion_id
+                ),
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(submit_response.status(), StatusCode::CREATED);
+
+        let submitted_orders = fake_exchange.calls().submitted_orders;
+        assert_eq!(submitted_orders.len(), 1);
+        assert_eq!(submitted_orders[0].side, expected_side);
+        assert_ne!(
+            submitted_orders[0].quote_notional,
+            Some(Decimal::new(123_456, 0))
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_promotion_submit_adapter_failure_marks_rejected_without_ack() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        fake_exchange.push_submit_error(aegis_core::ExchangeError::Transport(
+            "deterministic timeout".to_string(),
+        ));
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange.clone()),
+            FakeExchangeAdapter::status(),
+        );
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let shadow = create_previewable_shadow_run(&app, &operator_login.access_token).await;
+        let preview =
+            create_shadow_promotion_preview(&app, &operator_login.access_token, shadow.run.run_id)
+                .await;
+
+        let submit_uri = format!(
+            "/exchange/testnet/shadow/promotions/{}/submit",
+            preview.promotion.promotion_id
+        );
+        let failed_submit = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &submit_uri,
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(failed_submit.status(), StatusCode::CONFLICT);
+
+        let persisted =
+            shadow_promotion_record(&test_db.pool, preview.promotion.promotion_id).await;
+        assert_eq!(
+            persisted.status,
+            TestnetShadowPromotionStatus::Rejected.as_str()
+        );
+        let order = list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders")
+            .into_iter()
+            .next()
+            .expect("testnet order should exist");
+        let lifecycle = list_exchange_testnet_order_lifecycle_events(
+            &test_db.pool,
+            order.client_order_id.as_str(),
+        )
+        .await
+        .expect("lifecycle events");
+        assert_eq!(lifecycle.len(), 1);
+        assert_eq!(lifecycle[0].next_state, "ORDER_SUBMIT_REQUESTED");
+        assert!(system_events_for_order(
+            &test_db.pool,
+            order.client_order_id.as_str(),
+            "exchange.testnet.order.acked"
+        )
+        .await
+        .is_empty());
+
+        let repeat_submit = app
+            .oneshot(bearer_request(
+                "POST",
+                &submit_uri,
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_testnet_shadow_promotion_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("repeat submit response");
+        assert_eq!(repeat_submit.status(), StatusCode::CONFLICT);
+        let repeat_error = response_json::<Value>(repeat_submit).await;
+        assert_eq!(repeat_error["error"], "duplicate_submit");
+
         assert_eq!(fake_exchange.calls().submitted_orders.len(), 1);
         assert_no_paper_or_backtest_mutation(&test_db.pool).await;
     }

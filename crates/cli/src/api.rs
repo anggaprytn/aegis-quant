@@ -2467,4 +2467,225 @@ mod tests {
         clear_token_file(&token_path).expect("token file clear");
         server.abort();
     }
+
+    #[tokio::test]
+    async fn shadow_promotion_preview_serializes_expected_request_body() {
+        async fn preview(
+            Json(payload): Json<aegis_core::TestnetShadowPromotionRequest>,
+        ) -> impl IntoResponse {
+            assert_eq!(
+                payload.shadow_run_id,
+                Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("valid uuid")
+            );
+            assert_eq!(
+                payload.correlation_id,
+                Some(Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid"))
+            );
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "promotion": {
+                        "promotion_id": "11111111-1111-1111-1111-111111111111",
+                        "shadow_run_id": payload.shadow_run_id,
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m",
+                        "signal_id": null,
+                        "risk_decision_id": "22222222-2222-2222-2222-222222222222",
+                        "would_submit_payload": {
+                            "exchange": "binance",
+                            "environment": "testnet",
+                            "symbol": "BTCUSDT",
+                            "side": "BUY",
+                            "order_type": "MARKET",
+                            "time_in_force": null,
+                            "quantity": null,
+                            "quote_notional": "100000",
+                            "limit_price": null,
+                            "risk_decision_id": "22222222-2222-2222-2222-222222222222"
+                        },
+                        "resolved_price": "100000",
+                        "price_source": "market_tick",
+                        "expires_at": "2026-05-24T00:05:00Z",
+                        "reasons": [],
+                        "status": "PREVIEWED",
+                        "correlation_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        "created_at": "2026-05-24T00:00:00Z",
+                        "submitted_at": null,
+                        "testnet_order_id": null,
+                        "client_order_id": null
+                    },
+                    "request_id": "req-1",
+                    "correlation_id": "corr-1",
+                    "timestamp": "2026-05-24T00:00:00Z"
+                })),
+            )
+        }
+
+        let app = Router::new().route("/exchange/testnet/shadow/promotions/preview", post(preview));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server should run");
+        });
+
+        let client =
+            ApiClient::new(reqwest::Url::parse(&format!("http://{}", addr)).expect("base url"));
+        let response = client
+            .exchange_testnet_shadow_promotion_preview(&aegis_core::TestnetShadowPromotionRequest {
+                shadow_run_id: Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+                    .expect("valid uuid"),
+                correlation_id: Some(
+                    Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid"),
+                ),
+            })
+            .await
+            .expect("preview should succeed");
+
+        assert_eq!(response.promotion.symbol, "BTCUSDT");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn shadow_promotion_client_uses_expected_paths() {
+        async fn list() -> impl IntoResponse {
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "promotions": [],
+                    "request_id": "req-list",
+                    "correlation_id": "corr-list",
+                    "timestamp": "2026-05-24T00:00:00Z"
+                })),
+            )
+        }
+
+        async fn get_promotion(
+            axum::extract::Path(promotion_id): axum::extract::Path<Uuid>,
+        ) -> impl IntoResponse {
+            assert_eq!(
+                promotion_id,
+                Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("valid uuid")
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "promotion": {
+                        "promotion_id": promotion_id,
+                        "shadow_run_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m",
+                        "signal_id": null,
+                        "risk_decision_id": "22222222-2222-2222-2222-222222222222",
+                        "would_submit_payload": {
+                            "exchange": "binance",
+                            "environment": "testnet",
+                            "symbol": "BTCUSDT",
+                            "side": "BUY",
+                            "order_type": "MARKET",
+                            "time_in_force": null,
+                            "quantity": null,
+                            "quote_notional": "100000",
+                            "limit_price": null,
+                            "risk_decision_id": "22222222-2222-2222-2222-222222222222"
+                        },
+                        "resolved_price": "100000",
+                        "price_source": "market_tick",
+                        "expires_at": "2026-05-24T00:05:00Z",
+                        "reasons": [],
+                        "status": "PREVIEWED",
+                        "correlation_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        "created_at": "2026-05-24T00:00:00Z",
+                        "submitted_at": null,
+                        "testnet_order_id": null,
+                        "client_order_id": null
+                    },
+                    "request_id": "req-get",
+                    "correlation_id": "corr-get",
+                    "timestamp": "2026-05-24T00:00:00Z"
+                })),
+            )
+        }
+
+        async fn submit(
+            axum::extract::Path(promotion_id): axum::extract::Path<Uuid>,
+            Json(payload): Json<aegis_core::TestnetShadowPromotionSubmitRequest>,
+        ) -> impl IntoResponse {
+            assert_eq!(
+                promotion_id,
+                Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("valid uuid")
+            );
+            assert_eq!(payload.confirmation_text, "PROMOTE TESTNET BTCUSDT");
+
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "result": {
+                        "promotion_id": promotion_id,
+                        "shadow_run_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "testnet_order_id": "44444444-4444-4444-4444-444444444444",
+                        "client_order_id": "aegis-testnet-1",
+                        "execution_state": "EXCHANGE_ACKED",
+                        "correlation_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                    },
+                    "request_id": "req-submit",
+                    "correlation_id": "corr-submit",
+                    "timestamp": "2026-05-24T00:00:00Z"
+                })),
+            )
+        }
+
+        let app = Router::new()
+            .route("/exchange/testnet/shadow/promotions", get(list))
+            .route(
+                "/exchange/testnet/shadow/promotions/:id",
+                get(get_promotion),
+            )
+            .route(
+                "/exchange/testnet/shadow/promotions/:id/submit",
+                post(submit),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server should run");
+        });
+
+        let client =
+            ApiClient::new(reqwest::Url::parse(&format!("http://{}", addr)).expect("base url"));
+        let promotion_id =
+            Uuid::parse_str("33333333-3333-3333-3333-333333333333").expect("valid uuid");
+
+        let list_response = client
+            .exchange_testnet_shadow_promotions(25)
+            .await
+            .expect("list should succeed");
+        assert!(list_response.promotions.is_empty());
+
+        let get_response = client
+            .exchange_testnet_shadow_promotion_get(promotion_id)
+            .await
+            .expect("get should succeed");
+        assert_eq!(get_response.promotion.promotion_id, promotion_id);
+
+        let submit_response = client
+            .exchange_testnet_shadow_promotion_submit(
+                promotion_id,
+                &aegis_core::TestnetShadowPromotionSubmitRequest {
+                    confirmation_text: "PROMOTE TESTNET BTCUSDT".to_string(),
+                    correlation_id: None,
+                },
+            )
+            .await
+            .expect("submit should succeed");
+        assert_eq!(submit_response.result.promotion_id, promotion_id);
+
+        server.abort();
+    }
 }

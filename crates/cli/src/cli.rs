@@ -708,9 +708,11 @@ pub struct BacktestListArgs {
 
 #[cfg(test)]
 mod tests {
+    use super::ExchangeTestnetShadowPromotionPreviewArgs;
     use super::{Cli, Commands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT};
-    use aegis_core::expected_testnet_pipeline_confirmation;
+    use aegis_core::{expected_testnet_pipeline_confirmation, TestnetShadowPromotionRequest};
     use clap::Parser;
+    use uuid::Uuid;
 
     #[test]
     fn resume_confirmation_accepts_exact_text() {
@@ -835,5 +837,18 @@ mod tests {
         .expect("cli parses");
 
         assert!(cli.validate().is_ok());
+    }
+    #[test]
+    fn shadow_promotion_preview_request_serializes_expected_wire_shape() {
+        let shadow_run_id =
+            Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("valid uuid");
+        let request =
+            TestnetShadowPromotionRequest::from(ExchangeTestnetShadowPromotionPreviewArgs {
+                shadow_run_id,
+            });
+        let value = serde_json::to_value(request).expect("serializes");
+
+        assert_eq!(value["shadow_run_id"], shadow_run_id.to_string());
+        assert!(value["correlation_id"].is_null());
     }
 }
