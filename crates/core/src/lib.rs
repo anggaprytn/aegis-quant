@@ -433,6 +433,241 @@ pub struct StrategyEvaluationResult {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReplayRunStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl ReplayRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for ReplayRunStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedReplayRunStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayMode {
+    Backtest,
+}
+
+impl ReplayMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Backtest => "backtest",
+        }
+    }
+}
+
+impl std::str::FromStr for ReplayMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "backtest" => Ok(Self::Backtest),
+            other => Err(CoreError::UnsupportedReplayMode(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FeeModel {
+    Bps,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SlippageModel {
+    Bps,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BacktestConfig {
+    pub replay_mode: ReplayMode,
+    pub holding_candles: u32,
+    pub fee_model: FeeModel,
+    pub slippage_model: SlippageModel,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub risk_config_id: Option<Uuid>,
+    pub risk_config: Option<Value>,
+}
+
+impl BacktestConfig {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.holding_candles == 0 {
+            return Err(CoreError::InvalidHoldingCandles);
+        }
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BacktestRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub risk_config_id: Option<Uuid>,
+    pub risk_config: Option<Value>,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub correlation_id: Option<Uuid>,
+    pub holding_candles: Option<u32>,
+}
+
+impl BacktestRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategy_id.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestStrategyId);
+        }
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestSymbol);
+        }
+        if self.timeframe.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestTimeframe);
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidBacktestTimeRange);
+        }
+        if self.initial_capital <= Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestInitialCapital);
+        }
+
+        self.config().validate()?;
+        Ok(())
+    }
+
+    pub fn config(&self) -> BacktestConfig {
+        BacktestConfig {
+            replay_mode: ReplayMode::Backtest,
+            holding_candles: self.holding_candles.unwrap_or(3),
+            fee_model: FeeModel::Bps,
+            slippage_model: SlippageModel::Bps,
+            fee_bps: self.fee_bps,
+            slippage_bps: self.slippage_bps,
+            risk_config_id: self.risk_config_id,
+            risk_config: self.risk_config.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BacktestTrade {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub side: Side,
+    pub entry_time: DateTime<Utc>,
+    pub entry_price: Decimal,
+    pub exit_time: Option<DateTime<Utc>>,
+    pub exit_price: Option<Decimal>,
+    pub quantity: Decimal,
+    pub notional: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub realized_pnl: Decimal,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BacktestPosition {
+    pub side: Side,
+    pub entry_time: DateTime<Utc>,
+    pub entry_price: Decimal,
+    pub quantity: Decimal,
+    pub notional: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub remaining_holding_candles: u32,
+    pub stop_loss_price: Option<Decimal>,
+    pub take_profit_price: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BacktestEquityPoint {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub equity: Decimal,
+    pub drawdown_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BacktestMetricSummary {
+    pub final_equity: Decimal,
+    pub pnl: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub win_rate: Decimal,
+    pub trade_count: i32,
+    pub winning_trades: i32,
+    pub losing_trades: i32,
+    pub avg_win: Decimal,
+    pub avg_loss: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BacktestResult {
+    pub run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub final_equity: Decimal,
+    pub pnl: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub win_rate: Decimal,
+    pub trade_count: i32,
+    pub winning_trades: i32,
+    pub losing_trades: i32,
+    pub avg_win: Decimal,
+    pub avg_loss: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub status: ReplayRunStatus,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MarketMode {
     Paper,
@@ -865,8 +1100,26 @@ pub enum CoreError {
     UnsupportedSignalSide(String),
     #[error("unsupported signal reason: {0}")]
     UnsupportedSignalReason(String),
+    #[error("unsupported replay run status: {0}")]
+    UnsupportedReplayRunStatus(String),
+    #[error("unsupported replay mode: {0}")]
+    UnsupportedReplayMode(String),
     #[error("idempotency_key cannot be empty")]
     EmptyIdempotencyKey,
+    #[error("backtest strategy_id cannot be empty")]
+    EmptyBacktestStrategyId,
+    #[error("backtest symbol cannot be empty")]
+    EmptyBacktestSymbol,
+    #[error("backtest timeframe cannot be empty")]
+    EmptyBacktestTimeframe,
+    #[error("backtest end_time must be after start_time")]
+    InvalidBacktestTimeRange,
+    #[error("backtest initial_capital must be greater than zero")]
+    InvalidBacktestInitialCapital,
+    #[error("holding_candles must be greater than zero")]
+    InvalidHoldingCandles,
+    #[error("invalid backtest bps field: {0}")]
+    InvalidBacktestBps(String),
     #[error("quantity must be greater than zero")]
     InvalidOrderQuantity,
     #[error("limit_price must be greater than zero")]

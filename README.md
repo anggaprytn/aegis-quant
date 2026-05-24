@@ -12,6 +12,7 @@ This repository foundation includes:
 - Binance public WebSocket market ingest with deterministic 1m candle building
 - Deterministic candle-only strategy evaluation for `momentum_v1` and `volatility_breakout_v1`
 - Deterministic paper trading pipeline from closed candles to risk-gated paper order lifecycle
+- Deterministic replay/backtest engine from stored candles and persisted strategy configs
 - Event model and publisher trait skeleton
 - Postgres migration baseline
 - Local development Docker Compose setup
@@ -43,6 +44,7 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/market/feed-status'`
    `curl 'http://127.0.0.1:3000/strategy/list'`
    `curl 'http://127.0.0.1:3000/signals/recent?symbol=BTCUSDT&limit=50'`
+   `curl 'http://127.0.0.1:3000/backtest/runs?limit=10'`
 
 Required environment variables:
 
@@ -168,6 +170,52 @@ Example no-signal response:
 }
 ```
 
+## Backtest example
+
+`/backtest/run` replays stored closed candles only. It does not connect to Binance, does not call private exchange APIs, and does not mutate production `signals`, `risk_decisions`, or `orders`.
+
+```bash
+curl -X POST http://127.0.0.1:3000/backtest/run \
+  -H 'content-type: application/json' \
+  -d '{
+    "strategy_id":"momentum_v1",
+    "symbol":"BTCUSDT",
+    "timeframe":"1m",
+    "start_time":"2026-05-01T00:00:00Z",
+    "end_time":"2026-05-02T00:00:00Z",
+    "initial_capital":"1000000",
+    "fee_bps":"10",
+    "slippage_bps":"5",
+    "holding_candles":3
+  }'
+```
+
+```json
+{
+  "run_id": "00000000-0000-0000-0000-000000000000",
+  "status": "COMPLETED",
+  "strategy_id": "momentum_v1",
+  "symbol": "BTCUSDT",
+  "trade_count": 12,
+  "pnl": "15200",
+  "pnl_pct": "1.52",
+  "max_drawdown_pct": "0.84",
+  "win_rate": "58.33",
+  "fee_paid": "12000",
+  "slippage_cost": "6000",
+  "correlation_id": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Inspect persisted results:
+
+```bash
+curl 'http://127.0.0.1:3000/backtest/runs?limit=10'
+curl 'http://127.0.0.1:3000/backtest/runs/<run_id>'
+curl 'http://127.0.0.1:3000/backtest/runs/<run_id>/trades'
+curl 'http://127.0.0.1:3000/backtest/runs/<run_id>/equity'
+```
+
 ## Workspace layout
 
 ```txt
@@ -180,6 +228,7 @@ crates/
   execution-engine/
   llm-analyst/
   market-ingest/
+  replay-engine/
   risk-engine/
   strategy-engine/
 docs/

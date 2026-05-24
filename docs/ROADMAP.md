@@ -12,10 +12,11 @@
 8. Deterministic candle-only strategy signal generation on stored candles
 9. Deterministic paper pipeline: closed candles -> signal -> risk decision -> paper order lifecycle
 10. Persistent kill switch and paper-only order lifecycle APIs
+11. Deterministic replay/backtest MVP on stored candles and persisted strategy configs
 
 ## Next implementation steps
 
-1. Expand replay/backfill primitives for market data
+1. Extend replay/backtest with richer sizing, short/flat state, and research workflows
 2. Add richer risk rules using data freshness and position state
 3. Add paper trading reconciliation and lifecycle extensions
 4. Add kill switch operator workflows and monitoring polish

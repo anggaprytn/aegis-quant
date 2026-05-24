@@ -17,6 +17,7 @@ LLM components are advisory only and do not have execution authority.
 - `crates/events`: event taxonomy and publisher contract
 - `crates/db`: database configuration and migrations
 - `crates/market-ingest`: Binance public market data ingestion and deterministic candle boundary
+- `crates/replay-engine`: deterministic historical candle replay and backtest simulation boundary
 - `crates/strategy-engine`: deterministic signal generation boundary
 - `crates/risk-engine`: risk gating boundary
 - `crates/execution-engine`: paper execution lifecycle boundary
@@ -75,6 +76,29 @@ Notes:
 - Order idempotency is deterministic from `strategy_id + signal_id + risk_decision_id + symbol + side + source_candle_open_time`.
 - Duplicate pipeline runs reuse the existing paper order instead of creating a second active order for the same idempotency key.
 - If the strategy is disabled, the market feed is stale/degraded, the kill switch is active, or the signal is stale, the pipeline stops safely without creating a paper order.
+
+## Replay and backtest flow
+
+Replay/backtest follows this isolated path:
+
+```txt
+stored closed candles
+-> deterministic strategy evaluation
+-> simulated entry/exit decisions
+-> simulated trades
+-> equity curve
+-> persisted backtest metrics
+```
+
+Notes:
+
+- Replay reads only stored closed candles from Postgres for the requested symbol, timeframe, and time range.
+- Strategy evaluation sees only candles available up to the replay point; no lookahead into future candles is allowed.
+- Entries execute at the next candle open with fixed deterministic slippage and fee assumptions.
+- Exits use deterministic TP/SL threshold checks or a fixed holding-candle fallback.
+- Replay emits `replay.backtest.started`, `replay.backtest.completed`, and `replay.backtest.failed` into `system_events`.
+- Replay persists only into `backtest_runs`, `backtest_trades`, and `backtest_equity_curve`.
+- Replay must not mutate production `signals`, `risk_decisions`, or `orders`.
 
 ## Deployment shape
 

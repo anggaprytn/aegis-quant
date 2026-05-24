@@ -8,6 +8,7 @@ members = [
     "crates/execution-engine",
     "crates/llm-analyst",
     "crates/market-ingest",
+    "crates/replay-engine",
     "crates/risk-engine",
     "crates/strategy-engine",
 ]

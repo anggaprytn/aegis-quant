@@ -1,6 +1,7 @@
 use aegis_core::{
-    Candle, CandleInterval, DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus,
-    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperOrder, RiskCheckContext,
+    BacktestConfig, BacktestEquityPoint, BacktestResult, BacktestTrade, Candle, CandleInterval,
+    DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus, MarketDataSource, MarketTick,
+    OrderIntent, OrderStatus, PaperOrder, ReplayRunStatus, RiskCheckContext,
     RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig, StrategyId,
     StrategySignal, Symbol,
 };
@@ -181,6 +182,62 @@ pub struct SignalRecord {
 pub struct StrategyStatusRecord {
     pub config: StrategyConfigRecord,
     pub state: Option<StrategyStateRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRunRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub final_equity: Decimal,
+    pub pnl: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub win_rate: Decimal,
+    pub trade_count: i32,
+    pub winning_trades: i32,
+    pub losing_trades: i32,
+    pub avg_win: Decimal,
+    pub avg_loss: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub status: String,
+    pub config: Value,
+    pub correlation_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestTradeRecord {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub side: String,
+    pub entry_time: DateTime<Utc>,
+    pub entry_price: Decimal,
+    pub exit_time: Option<DateTime<Utc>>,
+    pub exit_price: Option<Decimal>,
+    pub quantity: Decimal,
+    pub notional: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub realized_pnl: Decimal,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestEquityPointRecord {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub equity: Decimal,
+    pub drawdown_pct: Decimal,
 }
 
 #[derive(Debug, Clone)]
@@ -1098,6 +1155,446 @@ pub async fn get_recent_closed_candles(
     Ok(candles)
 }
 
+pub async fn get_closed_candles_range(
+    pool: &PgPool,
+    symbol: &Symbol,
+    interval: CandleInterval,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) -> Result<Vec<Candle>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        FROM candles
+        WHERE symbol = $1
+          AND interval = $2
+          AND is_closed = TRUE
+          AND open_time >= $3
+          AND close_time <= $4
+        ORDER BY open_time ASC
+        "#,
+    )
+    .bind(symbol.as_str())
+    .bind(interval.as_str())
+    .bind(start_time)
+    .bind(end_time)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_candle_domain).collect())
+}
+
+pub async fn insert_backtest_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    request: &aegis_core::BacktestRequest,
+    config: &BacktestConfig,
+    created_at: DateTime<Utc>,
+    status: ReplayRunStatus,
+    correlation_id: Option<Uuid>,
+) -> Result<BacktestRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO backtest_runs (
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            final_equity,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            trade_count,
+            winning_trades,
+            losing_trades,
+            avg_win,
+            avg_loss,
+            fee_paid,
+            slippage_cost,
+            status,
+            config,
+            correlation_id,
+            created_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            $8, $9, $10, $11
+        )
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            final_equity,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            trade_count,
+            winning_trades,
+            losing_trades,
+            avg_win,
+            avg_loss,
+            fee_paid,
+            slippage_cost,
+            status,
+            config,
+            correlation_id,
+            created_at
+        "#,
+    )
+    .bind(run_id)
+    .bind(&request.strategy_id)
+    .bind(&request.symbol)
+    .bind(&request.timeframe)
+    .bind(request.start_time)
+    .bind(request.end_time)
+    .bind(request.initial_capital)
+    .bind(status.as_str())
+    .bind(serde_json::to_value(config)?)
+    .bind(correlation_id)
+    .bind(created_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_backtest_run(&row))
+}
+
+pub async fn update_backtest_run_completed(
+    pool: &PgPool,
+    result: &BacktestResult,
+    config: &BacktestConfig,
+) -> Result<BacktestRunRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE backtest_runs
+        SET
+            final_equity = $2,
+            pnl = $3,
+            pnl_pct = $4,
+            max_drawdown_pct = $5,
+            win_rate = $6,
+            trade_count = $7,
+            winning_trades = $8,
+            losing_trades = $9,
+            avg_win = $10,
+            avg_loss = $11,
+            fee_paid = $12,
+            slippage_cost = $13,
+            status = $14,
+            config = $15,
+            correlation_id = $16
+        WHERE id = $1
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            final_equity,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            trade_count,
+            winning_trades,
+            losing_trades,
+            avg_win,
+            avg_loss,
+            fee_paid,
+            slippage_cost,
+            status,
+            config,
+            correlation_id,
+            created_at
+        "#,
+    )
+    .bind(result.run_id)
+    .bind(result.final_equity)
+    .bind(result.pnl)
+    .bind(result.pnl_pct)
+    .bind(result.max_drawdown_pct)
+    .bind(result.win_rate)
+    .bind(result.trade_count)
+    .bind(result.winning_trades)
+    .bind(result.losing_trades)
+    .bind(result.avg_win)
+    .bind(result.avg_loss)
+    .bind(result.fee_paid)
+    .bind(result.slippage_cost)
+    .bind(result.status.as_str())
+    .bind(serde_json::to_value(config)?)
+    .bind(result.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_backtest_run(&row))
+}
+
+pub async fn insert_backtest_trade(
+    pool: &PgPool,
+    trade: &BacktestTrade,
+) -> Result<BacktestTradeRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO backtest_trades (
+            id,
+            run_id,
+            strategy_id,
+            symbol,
+            side,
+            entry_time,
+            entry_price,
+            exit_time,
+            exit_price,
+            quantity,
+            notional,
+            fee_paid,
+            slippage_cost,
+            realized_pnl,
+            reason,
+            created_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9,
+            $10, $11, $12, $13, $14, $15, $16
+        )
+        RETURNING
+            id,
+            run_id,
+            strategy_id,
+            symbol,
+            side,
+            entry_time,
+            entry_price,
+            exit_time,
+            exit_price,
+            quantity,
+            notional,
+            fee_paid,
+            slippage_cost,
+            realized_pnl,
+            reason,
+            created_at
+        "#,
+    )
+    .bind(trade.id)
+    .bind(trade.run_id)
+    .bind(&trade.strategy_id)
+    .bind(&trade.symbol)
+    .bind(format!("{:?}", trade.side).to_ascii_uppercase())
+    .bind(trade.entry_time)
+    .bind(trade.entry_price)
+    .bind(trade.exit_time)
+    .bind(trade.exit_price)
+    .bind(trade.quantity)
+    .bind(trade.notional)
+    .bind(trade.fee_paid)
+    .bind(trade.slippage_cost)
+    .bind(trade.realized_pnl)
+    .bind(&trade.reason)
+    .bind(trade.created_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_backtest_trade(&row))
+}
+
+pub async fn insert_backtest_equity_points(
+    pool: &PgPool,
+    points: &[BacktestEquityPoint],
+) -> Result<Vec<BacktestEquityPointRecord>> {
+    let mut records = Vec::with_capacity(points.len());
+    for point in points {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO backtest_equity_curve (
+                id,
+                run_id,
+                timestamp,
+                equity,
+                drawdown_pct
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING
+                id,
+                run_id,
+                timestamp,
+                equity,
+                drawdown_pct
+            "#,
+        )
+        .bind(point.id)
+        .bind(point.run_id)
+        .bind(point.timestamp)
+        .bind(point.equity)
+        .bind(point.drawdown_pct)
+        .fetch_one(pool)
+        .await?;
+        records.push(map_backtest_equity_point(&row));
+    }
+    Ok(records)
+}
+
+pub async fn get_backtest_run(pool: &PgPool, run_id: Uuid) -> Result<Option<BacktestRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            final_equity,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            trade_count,
+            winning_trades,
+            losing_trades,
+            avg_win,
+            avg_loss,
+            fee_paid,
+            slippage_cost,
+            status,
+            config,
+            correlation_id,
+            created_at
+        FROM backtest_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_backtest_run))
+}
+
+pub async fn list_backtest_runs(pool: &PgPool, limit: i64) -> Result<Vec<BacktestRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            final_equity,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            trade_count,
+            winning_trades,
+            losing_trades,
+            avg_win,
+            avg_loss,
+            fee_paid,
+            slippage_cost,
+            status,
+            config,
+            correlation_id,
+            created_at
+        FROM backtest_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_backtest_run).collect())
+}
+
+pub async fn get_backtest_trades(pool: &PgPool, run_id: Uuid) -> Result<Vec<BacktestTradeRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            run_id,
+            strategy_id,
+            symbol,
+            side,
+            entry_time,
+            entry_price,
+            exit_time,
+            exit_price,
+            quantity,
+            notional,
+            fee_paid,
+            slippage_cost,
+            realized_pnl,
+            reason,
+            created_at
+        FROM backtest_trades
+        WHERE run_id = $1
+        ORDER BY entry_time ASC, created_at ASC
+        "#,
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_backtest_trade).collect())
+}
+
+pub async fn get_backtest_equity_curve(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Vec<BacktestEquityPointRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            run_id,
+            timestamp,
+            equity,
+            drawdown_pct
+        FROM backtest_equity_curve
+        WHERE run_id = $1
+        ORDER BY timestamp ASC
+        "#,
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_backtest_equity_point).collect())
+}
+
 pub async fn upsert_strategy_config(
     pool: &PgPool,
     config: &StrategyConfig,
@@ -1856,6 +2353,65 @@ fn map_strategy_state(row: &sqlx::postgres::PgRow) -> StrategyStateRecord {
     }
 }
 
+fn map_backtest_run(row: &sqlx::postgres::PgRow) -> BacktestRunRecord {
+    BacktestRunRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        initial_capital: row.get("initial_capital"),
+        final_equity: row.get("final_equity"),
+        pnl: row.get("pnl"),
+        pnl_pct: row.get("pnl_pct"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        win_rate: row.get("win_rate"),
+        trade_count: row.get("trade_count"),
+        winning_trades: row.get("winning_trades"),
+        losing_trades: row.get("losing_trades"),
+        avg_win: row.get("avg_win"),
+        avg_loss: row.get("avg_loss"),
+        fee_paid: row.get("fee_paid"),
+        slippage_cost: row.get("slippage_cost"),
+        status: row.get("status"),
+        config: row.get("config"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_backtest_trade(row: &sqlx::postgres::PgRow) -> BacktestTradeRecord {
+    BacktestTradeRecord {
+        id: row.get("id"),
+        run_id: row.get("run_id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        side: row.get("side"),
+        entry_time: row.get("entry_time"),
+        entry_price: row.get("entry_price"),
+        exit_time: row.get("exit_time"),
+        exit_price: row.get("exit_price"),
+        quantity: row.get("quantity"),
+        notional: row.get("notional"),
+        fee_paid: row.get("fee_paid"),
+        slippage_cost: row.get("slippage_cost"),
+        realized_pnl: row.get("realized_pnl"),
+        reason: row.get("reason"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_backtest_equity_point(row: &sqlx::postgres::PgRow) -> BacktestEquityPointRecord {
+    BacktestEquityPointRecord {
+        id: row.get("id"),
+        run_id: row.get("run_id"),
+        timestamp: row.get("timestamp"),
+        equity: row.get("equity"),
+        drawdown_pct: row.get("drawdown_pct"),
+    }
+}
+
 fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
     SignalRecord {
         id: row.get("id"),
@@ -1872,6 +2428,37 @@ fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
         correlation_id: row.get("correlation_id"),
         created_at: row.get("created_at"),
     }
+}
+
+pub fn backtest_result_from_record(record: &BacktestRunRecord) -> Result<BacktestResult> {
+    Ok(BacktestResult {
+        run_id: record.id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        start_time: record.start_time,
+        end_time: record.end_time,
+        initial_capital: record.initial_capital,
+        final_equity: record.final_equity,
+        pnl: record.pnl,
+        pnl_pct: record.pnl_pct,
+        max_drawdown_pct: record.max_drawdown_pct,
+        win_rate: record.win_rate,
+        trade_count: record.trade_count,
+        winning_trades: record.winning_trades,
+        losing_trades: record.losing_trades,
+        avg_win: record.avg_win,
+        avg_loss: record.avg_loss,
+        fee_paid: record.fee_paid,
+        slippage_cost: record.slippage_cost,
+        status: record.status.parse()?,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub fn backtest_config_from_value(value: &Value) -> Result<BacktestConfig> {
+    Ok(serde_json::from_value(value.clone())?)
 }
 
 fn map_risk_decision(row: &sqlx::postgres::PgRow) -> RiskDecisionRecord {

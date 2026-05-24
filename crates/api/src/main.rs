@@ -3,9 +3,9 @@ mod pipeline;
 use std::{env, net::SocketAddr, time::Instant};
 
 use aegis_core::{
-    CandleInterval, MarketMode, OrderIntent, PaperTradingPipelineRequest, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyConfig, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    BacktestRequest, CandleInterval, MarketMode, OrderIntent, PaperTradingPipelineRequest,
+    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side,
+    SignalReason, StrategyConfig, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
 };
 use axum::{
     extract::{Path, Query, Request, State},
@@ -17,18 +17,21 @@ use axum::{
 };
 use chrono::Utc;
 use db::{
-    check_health, connect_pool, create_paper_order, ensure_system_state, get_latest_market_tick,
-    get_order_by_id, get_recent_closed_candles, get_strategy_status, get_system_event,
-    get_system_state, insert_risk_evaluation, insert_signal_deduped, list_candles,
-    list_market_feed_statuses, list_orders, list_recent_signals, list_recent_system_events,
-    list_strategy_status, load_risk_state_snapshot, set_kill_switch_state,
-    strategy_config_from_record, update_strategy_state, upsert_strategy_config, CandleRecord,
+    backtest_result_from_record, check_health, connect_pool, create_paper_order,
+    ensure_system_state, get_backtest_equity_curve, get_backtest_run, get_backtest_trades,
+    get_latest_market_tick, get_order_by_id, get_recent_closed_candles, get_strategy_status,
+    get_system_event, get_system_state, insert_risk_evaluation, insert_signal_deduped,
+    list_backtest_runs, list_candles, list_market_feed_statuses, list_orders, list_recent_signals,
+    list_recent_system_events, list_strategy_status, load_risk_state_snapshot,
+    set_kill_switch_state, strategy_config_from_record, update_strategy_state,
+    upsert_strategy_config, BacktestEquityPointRecord, BacktestTradeRecord, CandleRecord,
     CreateOrderError, DbConfig, InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord,
     OrderRecord, PgPool, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
     SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use market_ingest::MarketIngestConfig;
+use replay_engine::ReplayEngine;
 use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -201,6 +204,11 @@ struct RecentEventsQuery {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct BacktestRunsQuery {
+    limit: Option<i64>,
+}
+
 #[derive(Serialize)]
 struct RecentEventsResponse {
     events: Vec<SystemEventRecord>,
@@ -364,6 +372,54 @@ struct CandlesResponse {
 }
 
 #[derive(Serialize)]
+struct BacktestRunsResponse {
+    runs: Vec<aegis_core::BacktestResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct BacktestRunResponse {
+    run: aegis_core::BacktestResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct BacktestTradesResponse {
+    trades: Vec<BacktestTradeRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct BacktestEquityCurveResponse {
+    equity: Vec<BacktestEquityPointRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct BacktestRunAcceptedResponse {
+    run_id: Uuid,
+    status: aegis_core::ReplayRunStatus,
+    strategy_id: String,
+    symbol: String,
+    trade_count: i32,
+    pnl: String,
+    pnl_pct: String,
+    max_drawdown_pct: String,
+    win_rate: String,
+    fee_paid: String,
+    slippage_cost: String,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
 struct FeedStatusResponse {
     feeds: Vec<MarketFeedStatusRecord>,
     request_id: String,
@@ -445,6 +501,7 @@ struct EvaluateStrategyResponse {
 }
 
 type RunPaperPipelineRequest = PaperTradingPipelineRequest;
+type RunBacktestRequest = BacktestRequest;
 
 #[tokio::main]
 async fn main() {
@@ -503,6 +560,17 @@ async fn main() {
         .route("/risk/evaluate", post(evaluate_risk))
         .route("/paper/orders", post(create_order))
         .route("/paper/pipeline/run", post(run_paper_pipeline_handler))
+        .route("/backtest/run", post(run_backtest_handler))
+        .route("/backtest/runs", get(get_backtest_runs))
+        .route("/backtest/runs/:id", get(get_backtest_run_handler))
+        .route(
+            "/backtest/runs/:id/trades",
+            get(get_backtest_trades_handler),
+        )
+        .route(
+            "/backtest/runs/:id/equity",
+            get(get_backtest_equity_handler),
+        )
         .route("/orders", get(get_orders))
         .route("/orders/:id", get(get_order))
         .route("/market/symbols", get(get_market_symbols))
@@ -1494,6 +1562,306 @@ async fn run_paper_pipeline_handler(
             )
                 .into_response()
         }
+    }
+}
+
+async fn run_backtest_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(mut payload): Json<RunBacktestRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+
+    let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+    match engine.run_backtest(payload).await {
+        Ok(execution) => (
+            StatusCode::OK,
+            Json(BacktestRunAcceptedResponse {
+                run_id: execution.result.run_id,
+                status: execution.result.status,
+                strategy_id: execution.result.strategy_id,
+                symbol: execution.result.symbol,
+                trade_count: execution.result.trade_count,
+                pnl: execution.result.pnl.to_string(),
+                pnl_pct: execution.result.pnl_pct.to_string(),
+                max_drawdown_pct: execution.result.max_drawdown_pct.to_string(),
+                win_rate: execution.result.win_rate.to_string(),
+                fee_paid: execution.result.fee_paid.to_string(),
+                slippage_cost: execution.result.slippage_cost.to_string(),
+                correlation_id: execution.result.correlation_id,
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.contains("invalid")
+                || message.contains("unsupported")
+                || message.contains("cannot be empty")
+                || message.contains("must be")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to run backtest"
+            );
+
+            (
+                status,
+                Json(ErrorResponse {
+                    error: "failed_to_run_backtest",
+                    message,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_backtest_runs(
+    State(state): State<AppState>,
+    Query(query): Query<BacktestRunsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_backtest_runs(&state.db_pool, bounded_limit(query.limit)).await {
+        Ok(runs) => {
+            let mut mapped = Vec::with_capacity(runs.len());
+            for run in runs {
+                match backtest_result_from_record(&run) {
+                    Ok(result) => mapped.push(result),
+                    Err(err) => {
+                        error!(
+                            request_id = %request.request_id,
+                            correlation_id = %request.correlation_id,
+                            error = %err,
+                            run_id = %run.id,
+                            "failed to map backtest run"
+                        );
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_backtest_run",
+                                message: "Backtest run could not be decoded.".to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            (
+                StatusCode::OK,
+                Json(BacktestRunsResponse {
+                    runs: mapped,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list backtest runs"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_backtest_runs",
+                    message: "Failed to query backtest runs.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_backtest_run_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let run_id = match id.parse::<Uuid>() {
+        Ok(run_id) => run_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_run_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match get_backtest_run(&state.db_pool, run_id).await {
+        Ok(Some(run)) => match backtest_result_from_record(&run) {
+            Ok(result) => (
+                StatusCode::OK,
+                Json(BacktestRunResponse {
+                    run: result,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_backtest_run",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "backtest_run_not_found",
+                message: "Backtest run was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_backtest_run",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_backtest_trades_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let run_id = match id.parse::<Uuid>() {
+        Ok(run_id) => run_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_run_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match get_backtest_trades(&state.db_pool, run_id).await {
+        Ok(trades) => (
+            StatusCode::OK,
+            Json(BacktestTradesResponse {
+                trades,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_backtest_trades",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_backtest_equity_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let run_id = match id.parse::<Uuid>() {
+        Ok(run_id) => run_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_run_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match get_backtest_equity_curve(&state.db_pool, run_id).await {
+        Ok(equity) => (
+            StatusCode::OK,
+            Json(BacktestEquityCurveResponse {
+                equity,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_backtest_equity",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
     }
 }
 
