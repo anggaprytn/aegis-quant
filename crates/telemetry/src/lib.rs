@@ -7,8 +7,9 @@ use std::{
 use prometheus::{
     register_gauge_vec_with_registry, register_gauge_with_registry,
     register_histogram_vec_with_registry, register_int_counter_vec_with_registry,
-    register_int_gauge_vec_with_registry, register_int_gauge_with_registry, Encoder, Gauge,
-    GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry, TextEncoder,
+    register_int_counter_with_registry, register_int_gauge_vec_with_registry,
+    register_int_gauge_with_registry, Encoder, Gauge, GaugeVec, HistogramVec, IntCounter,
+    IntCounterVec, IntGauge, IntGaugeVec, Registry, TextEncoder,
 };
 
 const FEED_STATUSES: [&str; 4] = ["connected", "disconnected", "stale", "unknown"];
@@ -47,6 +48,7 @@ pub struct Telemetry {
     backtest_duration_seconds: HistogramVec,
     backtest_trades_total: IntCounterVec,
     analytics_requests_total: IntCounterVec,
+    analytics_promotion_funnel_requests_total: IntCounter,
     exchange_testnet_requests_total: IntCounterVec,
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
@@ -301,6 +303,12 @@ impl Telemetry {
             registry
         )
         .expect("analytics_requests_total should register");
+        let analytics_promotion_funnel_requests_total = register_int_counter_with_registry!(
+            "analytics_promotion_funnel_requests_total",
+            "Promotion funnel analytics requests.",
+            registry
+        )
+        .expect("analytics_promotion_funnel_requests_total should register");
         let exchange_testnet_requests_total = register_int_counter_vec_with_registry!(
             "exchange_testnet_requests_total",
             "Exchange testnet adapter requests by operation and result.",
@@ -525,6 +533,7 @@ impl Telemetry {
             backtest_duration_seconds,
             backtest_trades_total,
             analytics_requests_total,
+            analytics_promotion_funnel_requests_total,
             exchange_testnet_requests_total,
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
@@ -779,6 +788,10 @@ impl Telemetry {
         self.analytics_requests_total
             .with_label_values(&[kind])
             .inc();
+    }
+
+    pub fn inc_analytics_promotion_funnel_request(&self) {
+        self.analytics_promotion_funnel_requests_total.inc();
     }
 
     pub fn inc_exchange_testnet_request(&self, operation: &str, result: &str) {

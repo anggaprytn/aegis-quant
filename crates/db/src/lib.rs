@@ -1,5 +1,6 @@
 use aegis_core::{
-    calculate_strategy_rejection_rate, calculate_strategy_win_rate,
+    calculate_average_duration_seconds, calculate_strategy_rejection_rate,
+    calculate_strategy_win_rate, calculate_testnet_promotion_rate,
     combine_strategy_performance_summaries, BacktestConfig, BacktestEquityPoint, BacktestResult,
     BacktestTrade, Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult,
     CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
@@ -12,7 +13,10 @@ use aegis_core::{
     Side, SignalReason, StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
     StrategyConfigVersion, StrategyDecisionBreakdown, StrategyId, StrategyPerformanceMode,
     StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
-    StrategyRiskBreakdown, StrategySignal, Symbol, TestnetExecutionState, TestnetShadowDecision,
+    StrategyRiskBreakdown, StrategySignal, Symbol, TestnetExecutionState,
+    TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetPromotionQualitySignal, TestnetShadowDecision,
     TestnetShadowIntent, TestnetShadowPromotionPreview, TestnetShadowPromotionRejectionReason,
     TestnetShadowPromotionStatus, TestnetShadowRejectionReason, TestnetShadowRunResult,
     TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState,
@@ -5448,6 +5452,28 @@ pub async fn get_backtest_equity_curve(
 const ANALYTICS_DEFAULT_LIMIT: i64 = 20;
 const ANALYTICS_MAX_LIMIT: i64 = 100;
 const ANALYTICS_DEFAULT_WINDOW_DAYS: i64 = 7;
+const TESTNET_PROMOTION_FUNNEL_DEFAULT_LIMIT: i64 = 100;
+const TESTNET_PROMOTION_FUNNEL_MAX_LIMIT: i64 = 1000;
+
+#[derive(Debug, Clone)]
+struct TestnetPromotionFunnelMaterializedRow {
+    shadow_run_id: Uuid,
+    promotion_id: Option<Uuid>,
+    strategy_id: String,
+    symbol: String,
+    timeframe: String,
+    promotion_status: Option<String>,
+    promotion_rejection_reasons: Vec<String>,
+    testnet_order_id: Option<Uuid>,
+    client_order_id: Option<String>,
+    effective_execution_state: Option<TestnetExecutionState>,
+    linked_order_missing: bool,
+    shadow_created_at: DateTime<Utc>,
+    promotion_created_at: Option<DateTime<Utc>>,
+    submitted_at: Option<DateTime<Utc>>,
+    acked_at: Option<DateTime<Utc>>,
+    last_lifecycle_at: Option<DateTime<Utc>>,
+}
 
 fn bounded_analytics_limit(limit: Option<i64>) -> i64 {
     match limit {
@@ -5469,6 +5495,630 @@ fn analytics_window(
     } else {
         (end_time, start_time, computed_at)
     }
+}
+
+fn bounded_testnet_promotion_funnel_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(TESTNET_PROMOTION_FUNNEL_MAX_LIMIT),
+        _ => TESTNET_PROMOTION_FUNNEL_DEFAULT_LIMIT,
+    }
+}
+
+fn empty_testnet_promotion_funnel_summary(
+    request: &TestnetPromotionFunnelRequest,
+    computed_at: DateTime<Utc>,
+) -> TestnetPromotionFunnelSummary {
+    TestnetPromotionFunnelSummary {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        window_start: request.start_time,
+        window_end: request.end_time,
+        shadow_would_submit_count: 0,
+        promotion_previewed_count: 0,
+        promotion_submitted_count: 0,
+        promotion_rejected_count: 0,
+        promotion_expired_count: 0,
+        promotion_duplicate_rejected_count: 0,
+        testnet_orders_created_count: 0,
+        acked_count: 0,
+        filled_count: 0,
+        partially_filled_count: 0,
+        cancelled_count: 0,
+        rejected_count: 0,
+        expired_count: 0,
+        reconciliation_required_count: 0,
+        unknown_exchange_state_count: 0,
+        failed_count: 0,
+        preview_rate_pct: Decimal::ZERO,
+        submit_rate_pct: Decimal::ZERO,
+        ack_rate_pct: Decimal::ZERO,
+        fill_rate_pct: Decimal::ZERO,
+        reconciliation_required_rate_pct: Decimal::ZERO,
+        avg_time_shadow_to_preview_seconds: None,
+        avg_time_preview_to_submit_seconds: None,
+        stages: Vec::new(),
+        outcome_breakdown: Vec::new(),
+        dropoff_breakdown: Vec::new(),
+        lifecycle_breakdown: Vec::new(),
+        quality_signals: Vec::new(),
+        computed_at,
+    }
+}
+
+fn duration_seconds_decimal(start: DateTime<Utc>, end: DateTime<Utc>) -> Option<Decimal> {
+    let millis = end.signed_duration_since(start).num_milliseconds();
+    if millis < 0 {
+        None
+    } else {
+        Some(Decimal::from(millis) / Decimal::from(1000))
+    }
+}
+
+fn row_counts_as_submitted(row: &TestnetPromotionFunnelMaterializedRow) -> bool {
+    row.submitted_at.is_some() || row.client_order_id.is_some() || row.testnet_order_id.is_some()
+}
+
+fn row_counts_as_duplicate_rejected(row: &TestnetPromotionFunnelMaterializedRow) -> bool {
+    matches!(row.promotion_status.as_deref(), Some("ALREADY_PROMOTED"))
+        || row
+            .promotion_rejection_reasons
+            .iter()
+            .any(|reason| matches!(reason.as_str(), "duplicate_submit" | "already_promoted"))
+}
+
+fn build_testnet_promotion_funnel_stage_breakdown(
+    summary: &TestnetPromotionFunnelSummary,
+) -> Vec<TestnetPromotionFunnelStage> {
+    vec![
+        TestnetPromotionFunnelStage {
+            stage: "shadow_would_submit".to_string(),
+            count: summary.shadow_would_submit_count,
+            rate_pct: if summary.shadow_would_submit_count > 0 {
+                Decimal::from(100)
+            } else {
+                Decimal::ZERO
+            },
+        },
+        TestnetPromotionFunnelStage {
+            stage: "promotion_previewed".to_string(),
+            count: summary.promotion_previewed_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.promotion_previewed_count,
+                summary.shadow_would_submit_count,
+            ),
+        },
+        TestnetPromotionFunnelStage {
+            stage: "promotion_submitted".to_string(),
+            count: summary.promotion_submitted_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.promotion_submitted_count,
+                summary.promotion_previewed_count,
+            ),
+        },
+        TestnetPromotionFunnelStage {
+            stage: "acked".to_string(),
+            count: summary.acked_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.acked_count,
+                summary.testnet_orders_created_count,
+            ),
+        },
+        TestnetPromotionFunnelStage {
+            stage: "filled".to_string(),
+            count: summary.filled_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.filled_count, summary.acked_count),
+        },
+        TestnetPromotionFunnelStage {
+            stage: "reconciliation_required".to_string(),
+            count: summary.reconciliation_required_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.reconciliation_required_count,
+                summary.testnet_orders_created_count,
+            ),
+        },
+    ]
+}
+
+fn build_testnet_promotion_dropoff_breakdown(
+    summary: &TestnetPromotionFunnelSummary,
+) -> Vec<TestnetPromotionDropoffBreakdown> {
+    let shadow_to_preview =
+        (summary.shadow_would_submit_count - summary.promotion_previewed_count).max(0);
+    let preview_to_submit =
+        (summary.promotion_previewed_count - summary.promotion_submitted_count).max(0);
+    let submit_to_ack = (summary.promotion_submitted_count - summary.acked_count).max(0);
+    let ack_to_fill = (summary.acked_count - summary.filled_count).max(0);
+
+    vec![
+        TestnetPromotionDropoffBreakdown {
+            stage: "shadow_to_preview".to_string(),
+            dropped_count: shadow_to_preview,
+            dropoff_rate_pct: calculate_testnet_promotion_rate(
+                shadow_to_preview,
+                summary.shadow_would_submit_count,
+            ),
+        },
+        TestnetPromotionDropoffBreakdown {
+            stage: "preview_to_submit".to_string(),
+            dropped_count: preview_to_submit,
+            dropoff_rate_pct: calculate_testnet_promotion_rate(
+                preview_to_submit,
+                summary.promotion_previewed_count,
+            ),
+        },
+        TestnetPromotionDropoffBreakdown {
+            stage: "submit_to_ack".to_string(),
+            dropped_count: submit_to_ack,
+            dropoff_rate_pct: calculate_testnet_promotion_rate(
+                submit_to_ack,
+                summary.promotion_submitted_count,
+            ),
+        },
+        TestnetPromotionDropoffBreakdown {
+            stage: "ack_to_fill".to_string(),
+            dropped_count: ack_to_fill,
+            dropoff_rate_pct: calculate_testnet_promotion_rate(ack_to_fill, summary.acked_count),
+        },
+    ]
+}
+
+fn build_testnet_promotion_outcome_breakdown(
+    summary: &TestnetPromotionFunnelSummary,
+) -> Vec<TestnetPromotionOutcomeBreakdown> {
+    let denominator = summary.shadow_would_submit_count;
+    vec![
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "promotion_rejected".to_string(),
+            count: summary.promotion_rejected_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.promotion_rejected_count,
+                denominator,
+            ),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "promotion_expired".to_string(),
+            count: summary.promotion_expired_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.promotion_expired_count,
+                denominator,
+            ),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "filled".to_string(),
+            count: summary.filled_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.filled_count, denominator),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "partially_filled".to_string(),
+            count: summary.partially_filled_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.partially_filled_count, denominator),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "cancelled".to_string(),
+            count: summary.cancelled_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.cancelled_count, denominator),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "rejected".to_string(),
+            count: summary.rejected_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.rejected_count, denominator),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "expired".to_string(),
+            count: summary.expired_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.expired_count, denominator),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "reconciliation_required".to_string(),
+            count: summary.reconciliation_required_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.reconciliation_required_count,
+                denominator,
+            ),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "unknown_exchange_state".to_string(),
+            count: summary.unknown_exchange_state_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.unknown_exchange_state_count,
+                denominator,
+            ),
+        },
+        TestnetPromotionOutcomeBreakdown {
+            outcome: "failed".to_string(),
+            count: summary.failed_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.failed_count, denominator),
+        },
+    ]
+}
+
+fn build_testnet_promotion_lifecycle_breakdown_from_summary(
+    summary: &TestnetPromotionFunnelSummary,
+) -> Vec<TestnetPromotionLifecycleBreakdown> {
+    let denominator = summary.testnet_orders_created_count;
+    vec![
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::ExchangeAcked.as_str().to_string(),
+            count: summary.acked_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.acked_count, denominator),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::PartiallyFilled.as_str().to_string(),
+            count: summary.partially_filled_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.partially_filled_count, denominator),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::Filled.as_str().to_string(),
+            count: summary.filled_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.filled_count, denominator),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::Cancelled.as_str().to_string(),
+            count: summary.cancelled_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.cancelled_count, denominator),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::Rejected.as_str().to_string(),
+            count: summary.rejected_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.rejected_count, denominator),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::Expired.as_str().to_string(),
+            count: summary.expired_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.expired_count, denominator),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::ReconciliationRequired
+                .as_str()
+                .to_string(),
+            count: summary.reconciliation_required_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.reconciliation_required_count,
+                denominator,
+            ),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::UnknownExchangeState
+                .as_str()
+                .to_string(),
+            count: summary.unknown_exchange_state_count,
+            rate_pct: calculate_testnet_promotion_rate(
+                summary.unknown_exchange_state_count,
+                denominator,
+            ),
+        },
+        TestnetPromotionLifecycleBreakdown {
+            execution_state: TestnetExecutionState::Failed.as_str().to_string(),
+            count: summary.failed_count,
+            rate_pct: calculate_testnet_promotion_rate(summary.failed_count, denominator),
+        },
+    ]
+}
+
+fn build_testnet_promotion_quality_signals(
+    summary: &TestnetPromotionFunnelSummary,
+) -> Vec<TestnetPromotionQualitySignal> {
+    vec![
+        TestnetPromotionQualitySignal {
+            signal: "preview_rate".to_string(),
+            value_pct: summary.preview_rate_pct,
+            numerator: summary.promotion_previewed_count,
+            denominator: summary.shadow_would_submit_count,
+        },
+        TestnetPromotionQualitySignal {
+            signal: "submit_rate".to_string(),
+            value_pct: summary.submit_rate_pct,
+            numerator: summary.promotion_submitted_count,
+            denominator: summary.promotion_previewed_count,
+        },
+        TestnetPromotionQualitySignal {
+            signal: "ack_rate".to_string(),
+            value_pct: summary.ack_rate_pct,
+            numerator: summary.acked_count,
+            denominator: summary.testnet_orders_created_count,
+        },
+        TestnetPromotionQualitySignal {
+            signal: "fill_rate".to_string(),
+            value_pct: summary.fill_rate_pct,
+            numerator: summary.filled_count,
+            denominator: summary.acked_count,
+        },
+        TestnetPromotionQualitySignal {
+            signal: "reconciliation_required_rate".to_string(),
+            value_pct: summary.reconciliation_required_rate_pct,
+            numerator: summary.reconciliation_required_count,
+            denominator: summary.testnet_orders_created_count,
+        },
+    ]
+}
+
+fn summarize_testnet_promotion_funnel_rows(
+    request: &TestnetPromotionFunnelRequest,
+    rows: &[TestnetPromotionFunnelMaterializedRow],
+) -> TestnetPromotionFunnelSummary {
+    let computed_at = Utc::now();
+    let mut summary = empty_testnet_promotion_funnel_summary(request, computed_at);
+    let mut total_shadow_to_preview_seconds = Decimal::ZERO;
+    let mut shadow_to_preview_samples = 0;
+    let mut total_preview_to_submit_seconds = Decimal::ZERO;
+    let mut preview_to_submit_samples = 0;
+
+    for row in rows {
+        summary.shadow_would_submit_count += 1;
+
+        if row.promotion_id.is_some() {
+            summary.promotion_previewed_count += 1;
+        }
+
+        if row_counts_as_submitted(row) {
+            summary.promotion_submitted_count += 1;
+        }
+
+        match row.promotion_status.as_deref() {
+            Some("REJECTED") => summary.promotion_rejected_count += 1,
+            Some("EXPIRED") => summary.promotion_expired_count += 1,
+            _ => {}
+        }
+
+        if row_counts_as_duplicate_rejected(row) {
+            summary.promotion_duplicate_rejected_count += 1;
+        }
+
+        if row.client_order_id.is_some() || row.testnet_order_id.is_some() {
+            summary.testnet_orders_created_count += 1;
+        }
+
+        if row.acked_at.is_some() {
+            summary.acked_count += 1;
+        }
+
+        if let Some(state) = row.effective_execution_state {
+            match state {
+                TestnetExecutionState::Filled => summary.filled_count += 1,
+                TestnetExecutionState::PartiallyFilled => summary.partially_filled_count += 1,
+                TestnetExecutionState::Cancelled => summary.cancelled_count += 1,
+                TestnetExecutionState::Rejected => summary.rejected_count += 1,
+                TestnetExecutionState::Expired => summary.expired_count += 1,
+                TestnetExecutionState::ReconciliationRequired => {
+                    summary.reconciliation_required_count += 1
+                }
+                TestnetExecutionState::UnknownExchangeState => {
+                    summary.unknown_exchange_state_count += 1
+                }
+                TestnetExecutionState::Failed => summary.failed_count += 1,
+                _ => {}
+            }
+        }
+
+        if let Some(promotion_created_at) = row.promotion_created_at {
+            if let Some(seconds) =
+                duration_seconds_decimal(row.shadow_created_at, promotion_created_at)
+            {
+                total_shadow_to_preview_seconds += seconds;
+                shadow_to_preview_samples += 1;
+            }
+        }
+
+        if let (Some(promotion_created_at), Some(submitted_at)) =
+            (row.promotion_created_at, row.submitted_at)
+        {
+            if let Some(seconds) = duration_seconds_decimal(promotion_created_at, submitted_at) {
+                total_preview_to_submit_seconds += seconds;
+                preview_to_submit_samples += 1;
+            }
+        }
+    }
+
+    summary.preview_rate_pct = calculate_testnet_promotion_rate(
+        summary.promotion_previewed_count,
+        summary.shadow_would_submit_count,
+    );
+    summary.submit_rate_pct = calculate_testnet_promotion_rate(
+        summary.promotion_submitted_count,
+        summary.promotion_previewed_count,
+    );
+    summary.ack_rate_pct =
+        calculate_testnet_promotion_rate(summary.acked_count, summary.testnet_orders_created_count);
+    summary.fill_rate_pct =
+        calculate_testnet_promotion_rate(summary.filled_count, summary.acked_count);
+    summary.reconciliation_required_rate_pct = calculate_testnet_promotion_rate(
+        summary.reconciliation_required_count,
+        summary.testnet_orders_created_count,
+    );
+    summary.avg_time_shadow_to_preview_seconds = calculate_average_duration_seconds(
+        total_shadow_to_preview_seconds,
+        shadow_to_preview_samples,
+    );
+    summary.avg_time_preview_to_submit_seconds = calculate_average_duration_seconds(
+        total_preview_to_submit_seconds,
+        preview_to_submit_samples,
+    );
+    summary.stages = build_testnet_promotion_funnel_stage_breakdown(&summary);
+    summary.outcome_breakdown = build_testnet_promotion_outcome_breakdown(&summary);
+    summary.dropoff_breakdown = build_testnet_promotion_dropoff_breakdown(&summary);
+    summary.lifecycle_breakdown =
+        build_testnet_promotion_lifecycle_breakdown_from_summary(&summary);
+    summary.quality_signals = build_testnet_promotion_quality_signals(&summary);
+    summary
+}
+
+async fn query_testnet_promotion_funnel_materialized_rows(
+    pool: &PgPool,
+    request: &TestnetPromotionFunnelRequest,
+    limit: Option<i64>,
+) -> Result<Vec<TestnetPromotionFunnelMaterializedRow>> {
+    let mut builder = QueryBuilder::<Postgres>::new(
+        r#"
+        SELECT
+            sr.id AS shadow_run_id,
+            sr.strategy_id,
+            sr.symbol,
+            sr.timeframe,
+            sr.created_at AS shadow_created_at,
+            sp.id AS promotion_id,
+            sp.status AS promotion_status,
+            COALESCE(sp.rejection_reasons, '[]'::jsonb) AS promotion_rejection_reasons,
+            sp.testnet_order_id,
+            COALESCE(sp.client_order_id, eo.client_order_id) AS client_order_id,
+            sp.created_at AS promotion_created_at,
+            sp.submitted_at,
+            COALESCE(eo.execution_state, latest_lifecycle.next_state) AS effective_execution_state,
+            (sp.client_order_id IS NOT NULL AND eo.id IS NULL) AS linked_order_missing,
+            ack_lifecycle.acked_at,
+            latest_lifecycle.created_at AS last_lifecycle_at
+        FROM testnet_shadow_runs sr
+        LEFT JOIN testnet_shadow_promotions sp
+            ON sp.shadow_run_id = sr.id
+        LEFT JOIN exchange_testnet_orders eo
+            ON eo.id = sp.testnet_order_id
+        LEFT JOIN LATERAL (
+            SELECT
+                le.next_state,
+                le.created_at
+            FROM exchange_testnet_order_lifecycle_events le
+            WHERE (
+                eo.id IS NOT NULL
+                AND le.order_id = eo.id
+            ) OR (
+                sp.client_order_id IS NOT NULL
+                AND le.client_order_id = sp.client_order_id
+            )
+            ORDER BY le.created_at DESC, le.id DESC
+            LIMIT 1
+        ) latest_lifecycle ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT MIN(le.created_at) AS acked_at
+            FROM exchange_testnet_order_lifecycle_events le
+            WHERE (
+                eo.id IS NOT NULL
+                AND le.order_id = eo.id
+            ) OR (
+                sp.client_order_id IS NOT NULL
+                AND le.client_order_id = sp.client_order_id
+            )
+              AND le.next_state = 'EXCHANGE_ACKED'
+        ) ack_lifecycle ON TRUE
+        WHERE sr.decision = 'WOULD_SUBMIT'
+        "#,
+    );
+
+    if let Some(strategy_id) = request.strategy_id.as_deref() {
+        builder.push(" AND sr.strategy_id = ");
+        builder.push_bind(strategy_id);
+    }
+    if let Some(symbol) = request.symbol.as_deref() {
+        builder.push(" AND sr.symbol = ");
+        builder.push_bind(symbol);
+    }
+    if let Some(timeframe) = request.timeframe.as_deref() {
+        builder.push(" AND sr.timeframe = ");
+        builder.push_bind(timeframe);
+    }
+    if let Some(start_time) = request.start_time {
+        builder.push(" AND sr.created_at >= ");
+        builder.push_bind(start_time);
+    }
+    if let Some(end_time) = request.end_time {
+        builder.push(" AND sr.created_at <= ");
+        builder.push_bind(end_time);
+    }
+
+    builder.push(" ORDER BY sr.created_at DESC, sr.id DESC");
+    if let Some(limit) = limit {
+        builder.push(" LIMIT ");
+        builder.push_bind(limit);
+    }
+
+    let rows = builder.build().fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| TestnetPromotionFunnelMaterializedRow {
+            shadow_run_id: row.get("shadow_run_id"),
+            promotion_id: row.get("promotion_id"),
+            strategy_id: row.get("strategy_id"),
+            symbol: row.get("symbol"),
+            timeframe: row.get("timeframe"),
+            promotion_status: row.get("promotion_status"),
+            promotion_rejection_reasons: row
+                .get::<Value, _>("promotion_rejection_reasons")
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect(),
+            testnet_order_id: row.get("testnet_order_id"),
+            client_order_id: row.get("client_order_id"),
+            effective_execution_state: row
+                .get::<Option<String>, _>("effective_execution_state")
+                .and_then(|value| value.parse::<TestnetExecutionState>().ok()),
+            linked_order_missing: row.get("linked_order_missing"),
+            shadow_created_at: row.get("shadow_created_at"),
+            promotion_created_at: row.get("promotion_created_at"),
+            submitted_at: row.get("submitted_at"),
+            acked_at: row.get("acked_at"),
+            last_lifecycle_at: row.get("last_lifecycle_at"),
+        })
+        .collect())
+}
+
+pub async fn get_testnet_promotion_funnel_summary(
+    pool: &PgPool,
+    request: &TestnetPromotionFunnelRequest,
+) -> Result<TestnetPromotionFunnelSummary> {
+    let rows = query_testnet_promotion_funnel_materialized_rows(pool, request, None).await?;
+    Ok(summarize_testnet_promotion_funnel_rows(request, &rows))
+}
+
+pub async fn get_testnet_promotion_outcome_breakdown(
+    pool: &PgPool,
+    request: &TestnetPromotionFunnelRequest,
+) -> Result<Vec<TestnetPromotionOutcomeBreakdown>> {
+    let summary = get_testnet_promotion_funnel_summary(pool, request).await?;
+    Ok(summary.outcome_breakdown)
+}
+
+pub async fn get_testnet_promotion_lifecycle_breakdown(
+    pool: &PgPool,
+    request: &TestnetPromotionFunnelRequest,
+) -> Result<Vec<TestnetPromotionLifecycleBreakdown>> {
+    let summary = get_testnet_promotion_funnel_summary(pool, request).await?;
+    Ok(summary.lifecycle_breakdown)
+}
+
+pub async fn list_testnet_promotion_funnel_rows(
+    pool: &PgPool,
+    request: &TestnetPromotionFunnelRequest,
+) -> Result<Vec<TestnetPromotionFunnelRow>> {
+    let rows = query_testnet_promotion_funnel_materialized_rows(
+        pool,
+        request,
+        Some(bounded_testnet_promotion_funnel_limit(request.limit)),
+    )
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| TestnetPromotionFunnelRow {
+            shadow_run_id: row.shadow_run_id,
+            promotion_id: row.promotion_id,
+            strategy_id: row.strategy_id,
+            symbol: row.symbol,
+            timeframe: row.timeframe,
+            promotion_status: row.promotion_status,
+            promotion_rejection_reasons: row.promotion_rejection_reasons,
+            testnet_order_id: row.testnet_order_id,
+            client_order_id: row.client_order_id,
+            execution_state: row.effective_execution_state,
+            linked_order_missing: row.linked_order_missing,
+            shadow_created_at: row.shadow_created_at,
+            promotion_created_at: row.promotion_created_at,
+            submitted_at: row.submitted_at,
+            acked_at: row.acked_at,
+            last_lifecycle_at: row.last_lifecycle_at,
+        })
+        .collect())
 }
 
 fn empty_strategy_performance_summary(
@@ -8605,8 +9255,14 @@ fn string_array_from_json_field(value: &Value, field: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::dedupe_candles_for_upsert;
-    use aegis_core::{Candle, CandleInterval, MarketDataSource, Symbol};
+    use super::{
+        dedupe_candles_for_upsert, summarize_testnet_promotion_funnel_rows,
+        TestnetPromotionFunnelMaterializedRow,
+    };
+    use aegis_core::{
+        Candle, CandleInterval, MarketDataSource, Symbol, TestnetExecutionState,
+        TestnetPromotionFunnelRequest,
+    };
     use chrono::{TimeZone, Utc};
     use rust_decimal::Decimal;
     use uuid::Uuid;
@@ -8646,6 +9302,100 @@ mod tests {
         assert_eq!(deduped.len(), 2);
         assert_eq!(deduped[0].close, replacement.close);
         assert_eq!(deduped[1].close, next.close);
+    }
+
+    #[test]
+    fn promotion_funnel_summary_handles_missing_linked_order() {
+        let shadow_created_at = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
+        let promotion_created_at = shadow_created_at + chrono::Duration::seconds(8);
+        let submitted_at = promotion_created_at + chrono::Duration::seconds(4);
+        let summary = summarize_testnet_promotion_funnel_rows(
+            &TestnetPromotionFunnelRequest {
+                strategy_id: Some("momentum_v1".to_string()),
+                symbol: Some("BTCUSDT".to_string()),
+                timeframe: Some("1m".to_string()),
+                start_time: None,
+                end_time: None,
+                limit: None,
+            },
+            &[TestnetPromotionFunnelMaterializedRow {
+                shadow_run_id: Uuid::new_v4(),
+                promotion_id: Some(Uuid::new_v4()),
+                strategy_id: "momentum_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "1m".to_string(),
+                promotion_status: Some("SUBMITTED".to_string()),
+                promotion_rejection_reasons: Vec::new(),
+                testnet_order_id: None,
+                client_order_id: Some("client-1".to_string()),
+                effective_execution_state: None,
+                linked_order_missing: true,
+                shadow_created_at,
+                promotion_created_at: Some(promotion_created_at),
+                submitted_at: Some(submitted_at),
+                acked_at: None,
+                last_lifecycle_at: None,
+            }],
+        );
+
+        assert_eq!(summary.shadow_would_submit_count, 1);
+        assert_eq!(summary.promotion_previewed_count, 1);
+        assert_eq!(summary.promotion_submitted_count, 1);
+        assert_eq!(summary.testnet_orders_created_count, 1);
+        assert_eq!(summary.acked_count, 0);
+        assert_eq!(summary.fill_rate_pct, Decimal::ZERO);
+        assert_eq!(
+            summary.avg_time_shadow_to_preview_seconds,
+            Some(Decimal::from(8)),
+        );
+        assert_eq!(
+            summary.avg_time_preview_to_submit_seconds,
+            Some(Decimal::from(4)),
+        );
+    }
+
+    #[test]
+    fn promotion_funnel_summary_counts_lifecycle_outcomes() {
+        let created_at = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
+        let summary = summarize_testnet_promotion_funnel_rows(
+            &TestnetPromotionFunnelRequest {
+                strategy_id: None,
+                symbol: None,
+                timeframe: None,
+                start_time: None,
+                end_time: None,
+                limit: None,
+            },
+            &[TestnetPromotionFunnelMaterializedRow {
+                shadow_run_id: Uuid::new_v4(),
+                promotion_id: Some(Uuid::new_v4()),
+                strategy_id: "momentum_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "1m".to_string(),
+                promotion_status: Some("SUBMITTED".to_string()),
+                promotion_rejection_reasons: Vec::new(),
+                testnet_order_id: Some(Uuid::new_v4()),
+                client_order_id: Some("client-2".to_string()),
+                effective_execution_state: Some(TestnetExecutionState::Filled),
+                linked_order_missing: false,
+                shadow_created_at: created_at,
+                promotion_created_at: Some(created_at + chrono::Duration::seconds(2)),
+                submitted_at: Some(created_at + chrono::Duration::seconds(3)),
+                acked_at: Some(created_at + chrono::Duration::seconds(4)),
+                last_lifecycle_at: Some(created_at + chrono::Duration::seconds(5)),
+            }],
+        );
+
+        assert_eq!(summary.acked_count, 1);
+        assert_eq!(summary.filled_count, 1);
+        assert_eq!(
+            summary.lifecycle_breakdown[2].execution_state,
+            TestnetExecutionState::Filled.as_str()
+        );
+        assert_eq!(
+            summary.fill_rate_pct,
+            Decimal::from_str_exact("100.00").expect("valid decimal"),
+        );
     }
 }
 

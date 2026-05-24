@@ -1297,6 +1297,110 @@ pub struct StrategyPerformanceRequest {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetPromotionFunnelRequest {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetPromotionFunnelStage {
+    pub stage: String,
+    pub count: i64,
+    pub rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetPromotionOutcomeBreakdown {
+    pub outcome: String,
+    pub count: i64,
+    pub rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetPromotionDropoffBreakdown {
+    pub stage: String,
+    pub dropped_count: i64,
+    pub dropoff_rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetPromotionLifecycleBreakdown {
+    pub execution_state: String,
+    pub count: i64,
+    pub rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetPromotionQualitySignal {
+    pub signal: String,
+    pub value_pct: Decimal,
+    pub numerator: i64,
+    pub denominator: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetPromotionFunnelRow {
+    pub shadow_run_id: Uuid,
+    pub promotion_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub promotion_status: Option<String>,
+    pub promotion_rejection_reasons: Vec<String>,
+    pub testnet_order_id: Option<Uuid>,
+    pub client_order_id: Option<String>,
+    pub execution_state: Option<TestnetExecutionState>,
+    pub linked_order_missing: bool,
+    pub shadow_created_at: DateTime<Utc>,
+    pub promotion_created_at: Option<DateTime<Utc>>,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub acked_at: Option<DateTime<Utc>>,
+    pub last_lifecycle_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetPromotionFunnelSummary {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub window_start: Option<DateTime<Utc>>,
+    pub window_end: Option<DateTime<Utc>>,
+    pub shadow_would_submit_count: i64,
+    pub promotion_previewed_count: i64,
+    pub promotion_submitted_count: i64,
+    pub promotion_rejected_count: i64,
+    pub promotion_expired_count: i64,
+    pub promotion_duplicate_rejected_count: i64,
+    pub testnet_orders_created_count: i64,
+    pub acked_count: i64,
+    pub filled_count: i64,
+    pub partially_filled_count: i64,
+    pub cancelled_count: i64,
+    pub rejected_count: i64,
+    pub expired_count: i64,
+    pub reconciliation_required_count: i64,
+    pub unknown_exchange_state_count: i64,
+    pub failed_count: i64,
+    pub preview_rate_pct: Decimal,
+    pub submit_rate_pct: Decimal,
+    pub ack_rate_pct: Decimal,
+    pub fill_rate_pct: Decimal,
+    pub reconciliation_required_rate_pct: Decimal,
+    pub avg_time_shadow_to_preview_seconds: Option<Decimal>,
+    pub avg_time_preview_to_submit_seconds: Option<Decimal>,
+    pub stages: Vec<TestnetPromotionFunnelStage>,
+    pub outcome_breakdown: Vec<TestnetPromotionOutcomeBreakdown>,
+    pub dropoff_breakdown: Vec<TestnetPromotionDropoffBreakdown>,
+    pub lifecycle_breakdown: Vec<TestnetPromotionLifecycleBreakdown>,
+    pub quality_signals: Vec<TestnetPromotionQualitySignal>,
+    pub computed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyPerformanceMetric {
     pub name: String,
@@ -1431,6 +1535,25 @@ pub fn calculate_strategy_average_pnl(total: Decimal, count: i64) -> Option<Deci
         None
     } else {
         Some(total / Decimal::from(count))
+    }
+}
+
+pub fn calculate_testnet_promotion_rate(numerator: i64, denominator: i64) -> Decimal {
+    if denominator <= 0 {
+        Decimal::ZERO
+    } else {
+        ((Decimal::from(numerator) * Decimal::from(100)) / Decimal::from(denominator)).round_dp(2)
+    }
+}
+
+pub fn calculate_average_duration_seconds(
+    total_seconds: Decimal,
+    sample_count: i64,
+) -> Option<Decimal> {
+    if sample_count <= 0 {
+        None
+    } else {
+        Some((total_seconds / Decimal::from(sample_count)).round_dp(2))
     }
 }
 
@@ -4429,8 +4552,9 @@ pub enum CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        calculate_strategy_average_pnl, calculate_strategy_rejection_rate,
-        calculate_strategy_win_rate, combine_strategy_performance_summaries,
+        calculate_average_duration_seconds, calculate_strategy_average_pnl,
+        calculate_strategy_rejection_rate, calculate_strategy_win_rate,
+        calculate_testnet_promotion_rate, combine_strategy_performance_summaries,
         validate_password_length, validate_testnet_repair_transition, ExchangeEnvironment,
         ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
         ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
@@ -4765,6 +4889,48 @@ mod tests {
     #[test]
     fn strategy_average_pnl_returns_none_for_empty_totals() {
         assert_eq!(calculate_strategy_average_pnl(Decimal::ZERO, 0), None);
+    }
+
+    #[test]
+    fn promotion_rate_returns_zero_for_empty_denominator() {
+        assert_eq!(calculate_testnet_promotion_rate(5, 0), Decimal::ZERO);
+    }
+
+    #[test]
+    fn promotion_preview_rate_is_percent_rounded() {
+        assert_eq!(
+            calculate_testnet_promotion_rate(12, 42),
+            Decimal::from_str_exact("28.57").expect("valid decimal"),
+        );
+    }
+
+    #[test]
+    fn promotion_submit_rate_is_percent_rounded() {
+        assert_eq!(
+            calculate_testnet_promotion_rate(5, 12),
+            Decimal::from_str_exact("41.67").expect("valid decimal"),
+        );
+    }
+
+    #[test]
+    fn promotion_fill_rate_is_percent_rounded() {
+        assert_eq!(
+            calculate_testnet_promotion_rate(3, 5),
+            Decimal::from_str_exact("60.00").expect("valid decimal"),
+        );
+    }
+
+    #[test]
+    fn average_duration_returns_none_for_empty_samples() {
+        assert_eq!(calculate_average_duration_seconds(Decimal::ZERO, 0), None);
+    }
+
+    #[test]
+    fn average_duration_calculates_decimal_seconds() {
+        assert_eq!(
+            calculate_average_duration_seconds(Decimal::from(11), 2),
+            Some(Decimal::from_str_exact("5.50").expect("valid decimal")),
+        );
     }
 
     #[test]

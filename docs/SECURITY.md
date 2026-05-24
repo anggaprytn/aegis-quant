@@ -38,6 +38,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Testnet shadow runner must never submit automatically, must never touch production Binance endpoints, and may persist only `testnet_shadow_runs`, `testnet_shadow_runner_config`, and `testnet_shadow_runner_state`
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
 - Testnet lifecycle history is isolated in `exchange_testnet_order_lifecycle_events` and must not mutate paper accounting, backtest, or live execution tables
+- Testnet promotion funnel analytics is read-only: it may read `testnet_shadow_runs`, `testnet_shadow_promotions`, `exchange_testnet_orders`, and `exchange_testnet_order_lifecycle_events`, but it must never trigger preview, submit, repair, reconciliation, paper, backtest, or live execution paths
 - Testnet repair history is isolated in `exchange_testnet_repair_actions` and must not mutate paper accounting, backtest, or live execution tables
 - Testnet reconciliation is isolated in `exchange_reconciliation_runs` and `exchange_reconciliation_mismatches`, is operator-triggered, and never reads secrets from the CLI or dashboard
 - Testnet private stream events are isolated in `exchange_private_stream_events`, update only isolated `exchange_testnet_orders`, and never mutate paper/backtest/live tables

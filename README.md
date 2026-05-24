@@ -18,6 +18,7 @@ This repository foundation includes:
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
 - Strategy config validation, versioning, audit logging, and dry-run evaluation before pipeline/backtest use
 - Read-only strategy performance analytics across backtest, paper, and shadow data
+- Read-only testnet promotion funnel analytics from shadow would-submit through isolated testnet lifecycle outcome
 - Minimal Next.js operational dashboard shell for paper-only inspection and control
 - Binance Spot Testnet adapter skeleton with protected inspection and owner-gated testnet submit/cancel
 - Event model and publisher trait skeleton
@@ -177,6 +178,13 @@ cargo run -p cli -- analytics strategy rankings --mode SHADOW --limit 20
 cargo run -p cli -- analytics strategy decision-breakdown momentum_v1 \
   --symbol BTCUSDT \
   --timeframe 1m
+cargo run -p cli -- analytics testnet promotion-funnel \
+  --strategy momentum_v1 \
+  --symbol BTCUSDT \
+  --timeframe 1m
+cargo run -p cli -- analytics testnet promotion-outcomes \
+  --symbol BTCUSDT
+cargo run -p cli -- analytics testnet promotion-rows --limit 50
 cargo run -p cli -- market backfill \
   --symbol BTCUSDT \
   --timeframe 1m \
@@ -201,6 +209,7 @@ Notes:
 - The CLI does not print tokens by default and does not implement live trading, production exchange private APIs, API key reads, or any TUI layer.
 - Testnet exchange commands talk only to the Aegis HTTP API; the CLI never reads Binance secrets directly.
 - Strategy analytics is read-only: it compares persisted backtest, paper, and shadow behavior and never submits or mutates orders, positions, PnL, reconciliation rows, or exchange state.
+- Promotion funnel analytics is read-only: it joins `testnet_shadow_runs`, `testnet_shadow_promotions`, `exchange_testnet_orders`, and isolated lifecycle history strictly for inspection.
 
 ## Binance Spot Testnet adapter
 

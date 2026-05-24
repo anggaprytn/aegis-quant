@@ -605,6 +605,8 @@ pub enum PaperCommands {
 pub enum AnalyticsCommands {
     #[command(subcommand)]
     Strategy(AnalyticsStrategyCommands),
+    #[command(subcommand)]
+    Testnet(AnalyticsTestnetCommands),
 }
 
 #[derive(Debug, Subcommand)]
@@ -612,6 +614,13 @@ pub enum AnalyticsStrategyCommands {
     Performance(AnalyticsPerformanceArgs),
     Rankings(AnalyticsRankingsArgs),
     DecisionBreakdown(AnalyticsDecisionBreakdownArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AnalyticsTestnetCommands {
+    PromotionFunnel(AnalyticsTestnetPromotionFunnelArgs),
+    PromotionOutcomes(AnalyticsTestnetPromotionOutcomesArgs),
+    PromotionRows(AnalyticsTestnetPromotionRowsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -655,6 +664,50 @@ pub struct AnalyticsDecisionBreakdownArgs {
     pub start_time: Option<chrono::DateTime<chrono::Utc>>,
     #[arg(long)]
     pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Args)]
+pub struct AnalyticsTestnetPromotionFunnelArgs {
+    #[arg(long = "strategy")]
+    pub strategy_id: Option<String>,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long)]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long)]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Args)]
+pub struct AnalyticsTestnetPromotionOutcomesArgs {
+    #[arg(long = "strategy")]
+    pub strategy_id: Option<String>,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long)]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long)]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Args)]
+pub struct AnalyticsTestnetPromotionRowsArgs {
+    #[arg(long = "strategy")]
+    pub strategy_id: Option<String>,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long)]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long)]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Args)]

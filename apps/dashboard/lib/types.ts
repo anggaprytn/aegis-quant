@@ -169,6 +169,115 @@ export type StrategyPnlBreakdownResponse = {
   timestamp: string;
 };
 
+export type TestnetPromotionFunnelStage = {
+  stage: string;
+  count: number;
+  rate_pct: string;
+};
+
+export type TestnetPromotionOutcomeBreakdown = {
+  outcome: string;
+  count: number;
+  rate_pct: string;
+};
+
+export type TestnetPromotionDropoffBreakdown = {
+  stage: string;
+  dropped_count: number;
+  dropoff_rate_pct: string;
+};
+
+export type TestnetPromotionLifecycleBreakdown = {
+  execution_state: string;
+  count: number;
+  rate_pct: string;
+};
+
+export type TestnetPromotionQualitySignal = {
+  signal: string;
+  value_pct: string;
+  numerator: number;
+  denominator: number;
+};
+
+export type TestnetPromotionFunnelRow = {
+  shadow_run_id: string;
+  promotion_id: string | null;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  promotion_status: string | null;
+  promotion_rejection_reasons: string[];
+  testnet_order_id: string | null;
+  client_order_id: string | null;
+  execution_state: string | null;
+  linked_order_missing: boolean;
+  shadow_created_at: string;
+  promotion_created_at: string | null;
+  submitted_at: string | null;
+  acked_at: string | null;
+  last_lifecycle_at: string | null;
+};
+
+export type TestnetPromotionFunnelSummary = {
+  strategy_id: string | null;
+  symbol: string | null;
+  timeframe: string | null;
+  window_start: string | null;
+  window_end: string | null;
+  shadow_would_submit_count: number;
+  promotion_previewed_count: number;
+  promotion_submitted_count: number;
+  promotion_rejected_count: number;
+  promotion_expired_count: number;
+  promotion_duplicate_rejected_count: number;
+  testnet_orders_created_count: number;
+  acked_count: number;
+  filled_count: number;
+  partially_filled_count: number;
+  cancelled_count: number;
+  rejected_count: number;
+  expired_count: number;
+  reconciliation_required_count: number;
+  unknown_exchange_state_count: number;
+  failed_count: number;
+  preview_rate_pct: string;
+  submit_rate_pct: string;
+  ack_rate_pct: string;
+  fill_rate_pct: string;
+  reconciliation_required_rate_pct: string;
+  avg_time_shadow_to_preview_seconds: string | null;
+  avg_time_preview_to_submit_seconds: string | null;
+  stages: TestnetPromotionFunnelStage[];
+  outcome_breakdown: TestnetPromotionOutcomeBreakdown[];
+  dropoff_breakdown: TestnetPromotionDropoffBreakdown[];
+  lifecycle_breakdown: TestnetPromotionLifecycleBreakdown[];
+  quality_signals: TestnetPromotionQualitySignal[];
+  computed_at: string;
+};
+
+export type TestnetPromotionFunnelSummaryResponse = {
+  summary: TestnetPromotionFunnelSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type TestnetPromotionFunnelOutcomesResponse = {
+  outcomes: TestnetPromotionOutcomeBreakdown[];
+  lifecycle: TestnetPromotionLifecycleBreakdown[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type TestnetPromotionFunnelRowsResponse = {
+  rows: TestnetPromotionFunnelRow[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type StatusResponse = {
   service: string;
   environment: string;

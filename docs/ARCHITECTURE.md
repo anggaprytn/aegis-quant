@@ -181,6 +181,7 @@ Notes:
 - Backtest metrics stay sourced from `backtest_runs`.
 - Paper metrics stay sourced from paper accounting tables and paper orders only.
 - Shadow metrics stay sourced from `testnet_shadow_runs` only.
+- Promotion funnel metrics stay sourced from `testnet_shadow_runs`, `testnet_shadow_promotions`, `exchange_testnet_orders`, and `exchange_testnet_order_lifecycle_events` only.
 - Combined summaries are assembled in memory from bounded per-mode reads; they are not a new execution source of truth.
 - The analytics API is inspection-only and must never trigger exchange submission, paper pipeline execution, backtests, repair actions, or reconciliation.
 
@@ -277,6 +278,21 @@ persisted WOULD_SUBMIT testnet_shadow_runs row
 -> ORDER_SUBMIT_REQUESTED
 -> EXCHANGE_ACKED on adapter success
 ```
+
+Promotion funnel read model:
+
+```txt
+testnet_shadow_runs (WOULD_SUBMIT only)
+-> optional testnet_shadow_promotions row
+-> optional isolated exchange_testnet_orders row
+-> optional exchange_testnet_order_lifecycle_events history
+-> read-only SQL join + bounded API/CLI/dashboard views
+```
+
+Notes:
+
+- The funnel is observational only; it does not create promotion rows, submit testnet orders, append lifecycle events, or update reconciliation state.
+- Missing linked order rows are tolerated and surfaced as incomplete analytics rows rather than treated as executable repair actions.
 
 Testnet shadow runner flow:
 

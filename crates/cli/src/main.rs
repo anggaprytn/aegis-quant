@@ -11,8 +11,8 @@ use cli::api::{
     RiskDecisionsQuery,
 };
 use cli::cli::{
-    AnalyticsCommands, AnalyticsStrategyCommands, AuthCommands, BacktestCommands, Cli, Commands,
-    EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
+    AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
+    BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, MarketCommands,
     OrderCommands, PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands,
     StrategyCommands, StrategyConfigCommands, RESUME_CONFIRMATION_TEXT,
@@ -929,6 +929,57 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_strategy_decision_breakdown(&response);
+                    }
+                }
+            },
+            AnalyticsCommands::Testnet(command) => match command {
+                AnalyticsTestnetCommands::PromotionFunnel(args) => {
+                    let response = client
+                        .testnet_promotion_funnel(
+                            args.strategy_id,
+                            args.symbol,
+                            args.timeframe,
+                            args.start_time,
+                            args.end_time,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_promotion_funnel_summary(&response);
+                    }
+                }
+                AnalyticsTestnetCommands::PromotionOutcomes(args) => {
+                    let response = client
+                        .testnet_promotion_outcomes(
+                            args.strategy_id,
+                            args.symbol,
+                            args.timeframe,
+                            args.start_time,
+                            args.end_time,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_promotion_outcomes(&response);
+                    }
+                }
+                AnalyticsTestnetCommands::PromotionRows(args) => {
+                    let response = client
+                        .testnet_promotion_rows(
+                            args.strategy_id,
+                            args.symbol,
+                            args.timeframe,
+                            args.start_time,
+                            args.end_time,
+                            Some(args.limit),
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_testnet_promotion_rows(&response);
                     }
                 }
             },

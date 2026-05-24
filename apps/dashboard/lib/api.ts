@@ -75,6 +75,9 @@ import type {
   StrategyStatusResponse,
   StrategyToggleResponse,
   SystemEventRecord,
+  TestnetPromotionFunnelOutcomesResponse,
+  TestnetPromotionFunnelRowsResponse,
+  TestnetPromotionFunnelSummaryResponse,
   TestnetShadowPromotionResponse,
   TestnetShadowPromotionSubmitResponse,
   TestnetShadowPromotionsResponse,
@@ -590,6 +593,62 @@ export const api = {
       `/analytics/strategy/${strategyId}/backtest-breakdown`,
       undefined,
       { symbol, timeframe, start_time: startTime, end_time: endTime },
+    ),
+  getTestnetPromotionFunnel: (
+    strategyId?: string,
+    symbol?: string,
+    timeframe?: string,
+    startTime?: string,
+    endTime?: string,
+  ) =>
+    request<TestnetPromotionFunnelSummaryResponse>(
+      "/analytics/testnet/promotion-funnel",
+      undefined,
+      {
+        strategy_id: strategyId,
+        symbol,
+        timeframe,
+        start_time: startTime,
+        end_time: endTime,
+      },
+    ),
+  getTestnetPromotionOutcomes: (
+    strategyId?: string,
+    symbol?: string,
+    timeframe?: string,
+    startTime?: string,
+    endTime?: string,
+  ) =>
+    request<TestnetPromotionFunnelOutcomesResponse>(
+      "/analytics/testnet/promotion-funnel/outcomes",
+      undefined,
+      {
+        strategy_id: strategyId,
+        symbol,
+        timeframe,
+        start_time: startTime,
+        end_time: endTime,
+      },
+    ),
+  getTestnetPromotionRows: (
+    strategyId?: string,
+    symbol?: string,
+    timeframe?: string,
+    startTime?: string,
+    endTime?: string,
+    limit = 50,
+  ) =>
+    request<TestnetPromotionFunnelRowsResponse>(
+      "/analytics/testnet/promotion-funnel/rows",
+      undefined,
+      {
+        strategy_id: strategyId,
+        symbol,
+        timeframe,
+        start_time: startTime,
+        end_time: endTime,
+        limit,
+      },
     ),
   getRecentEvents: (params?: {
     limit?: number;

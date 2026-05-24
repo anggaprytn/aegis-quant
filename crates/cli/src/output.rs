@@ -22,7 +22,9 @@ use crate::api::{
     StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDryRunResponse, StrategyListResponse,
     StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
-    StrategyStatusResponse, TestnetShadowPromotionsResponse, TestnetShadowRunnerControlResponse,
+    StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
+    TestnetPromotionFunnelRowsResponse, TestnetPromotionFunnelSummaryResponse,
+    TestnetShadowPromotionsResponse, TestnetShadowRunnerControlResponse,
     TestnetShadowRunnerStatusResponse, TestnetShadowRunsResponse,
 };
 
@@ -1151,6 +1153,101 @@ pub fn print_strategy_decision_breakdown(response: &StrategyDecisionBreakdownRes
         breakdown.skipped_count,
         breakdown.error_count
     );
+}
+
+pub fn print_testnet_promotion_funnel_summary(response: &TestnetPromotionFunnelSummaryResponse) {
+    let summary = &response.summary;
+    println!(
+        "Strategy: {}  Symbol: {}  Timeframe: {}",
+        summary.strategy_id.as_deref().unwrap_or("ALL"),
+        summary.symbol.as_deref().unwrap_or("ALL"),
+        summary.timeframe.as_deref().unwrap_or("ALL")
+    );
+    println!(
+        "Window: {} -> {}",
+        summary
+            .window_start
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ALL".to_string()),
+        summary
+            .window_end
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "ALL".to_string())
+    );
+    println!(
+        "Shadow: {}  Previewed: {}  Submitted: {}  Orders: {}  Acked: {}  Filled: {}",
+        summary.shadow_would_submit_count,
+        summary.promotion_previewed_count,
+        summary.promotion_submitted_count,
+        summary.testnet_orders_created_count,
+        summary.acked_count,
+        summary.filled_count
+    );
+    println!(
+        "Rejected promos: {}  Expired promos: {}  Duplicate rejected: {}",
+        summary.promotion_rejected_count,
+        summary.promotion_expired_count,
+        summary.promotion_duplicate_rejected_count
+    );
+    println!(
+        "Cancelled: {}  Rejected orders: {}  Expired orders: {}  Reconciliation required: {}  Unknown: {}  Failed: {}",
+        summary.cancelled_count,
+        summary.rejected_count,
+        summary.expired_count,
+        summary.reconciliation_required_count,
+        summary.unknown_exchange_state_count,
+        summary.failed_count
+    );
+    println!(
+        "Preview rate: {}%  Submit rate: {}%  Ack rate: {}%  Fill rate: {}%  Reconciliation required rate: {}%",
+        summary.preview_rate_pct,
+        summary.submit_rate_pct,
+        summary.ack_rate_pct,
+        summary.fill_rate_pct,
+        summary.reconciliation_required_rate_pct
+    );
+}
+
+pub fn print_testnet_promotion_outcomes(response: &TestnetPromotionFunnelOutcomesResponse) {
+    println!("Outcomes:");
+    for outcome in &response.outcomes {
+        println!(
+            "{} count={} rate={}%",
+            outcome.outcome, outcome.count, outcome.rate_pct
+        );
+    }
+    println!("Lifecycle:");
+    for item in &response.lifecycle {
+        println!(
+            "{} count={} rate={}%",
+            item.execution_state, item.count, item.rate_pct
+        );
+    }
+}
+
+pub fn print_testnet_promotion_rows(response: &TestnetPromotionFunnelRowsResponse) {
+    for row in &response.rows {
+        println!(
+            "{} promotion={} strategy={} symbol={} status={} client_order_id={} execution_state={} previewed_at={} submitted_at={}",
+            row.shadow_run_id,
+            row.promotion_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.strategy_id,
+            row.symbol,
+            row.promotion_status.as_deref().unwrap_or("-"),
+            row.client_order_id.as_deref().unwrap_or("-"),
+            row.execution_state
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.promotion_created_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.submitted_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
 }
 
 fn summarize_feeds(feed: &FeedStatusResponse) -> String {

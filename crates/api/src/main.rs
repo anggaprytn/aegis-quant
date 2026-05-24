@@ -34,14 +34,15 @@ use aegis_core::{
     StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyEvaluationContext, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
     StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetRepairAction,
-    TestnetRepairActionStatus, TestnetRepairRequest, TestnetRepairResult,
-    TestnetRepairValidationIssue, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionStatus,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlAction,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
-    UserRole, UserStatus,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetRepairAction, TestnetRepairActionStatus,
+    TestnetRepairRequest, TestnetRepairResult, TestnetRepairValidationIssue,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionStatus, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest, TestnetShadowRunnerState,
+    TestnetShadowRunnerTickResult, UserRole, UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
@@ -77,8 +78,10 @@ use db::{
     get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
     get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
     get_strategy_shadow_decision_breakdown, get_strategy_status, get_system_event,
-    get_system_state, get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id,
-    get_user_by_email, get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
+    get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
+    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
+    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
     insert_exchange_testnet_repair_action, insert_paper_account, insert_paper_equity_snapshot,
     insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
     insert_strategy_config_audit, insert_system_event, insert_testnet_shadow_promotion,
@@ -90,12 +93,12 @@ use db::{
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
     list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
     list_strategy_config_audit, list_strategy_config_versions, list_strategy_performance_rankings,
-    list_strategy_status, list_testnet_shadow_promotions, list_testnet_shadow_runs,
-    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
-    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
-    revoke_session, risk_config_audit_from_record, risk_config_from_record,
-    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
-    strategy_config_audit_from_record, strategy_config_from_record,
+    list_strategy_status, list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions,
+    list_testnet_shadow_runs, load_risk_state_snapshot, paper_account_from_record,
+    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
+    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
+    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
+    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
     strategy_config_version_from_record, update_strategy_state,
     update_testnet_shadow_promotion_submission, update_user_last_login,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
@@ -372,6 +375,16 @@ struct StrategyDecisionBreakdownQuery {
     timeframe: Option<String>,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+struct TestnetPromotionFunnelQuery {
+    strategy_id: Option<String>,
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -878,6 +891,31 @@ struct StrategyDecisionBreakdownResponse {
 #[derive(Serialize, Deserialize)]
 struct StrategyPnlBreakdownResponse {
     breakdown: StrategyPnlBreakdown,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetPromotionFunnelSummaryResponse {
+    summary: TestnetPromotionFunnelSummary,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetPromotionFunnelOutcomesResponse {
+    outcomes: Vec<TestnetPromotionOutcomeBreakdown>,
+    lifecycle: Vec<TestnetPromotionLifecycleBreakdown>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestnetPromotionFunnelRowsResponse {
+    rows: Vec<TestnetPromotionFunnelRow>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1713,6 +1751,18 @@ async fn main() {
             "/analytics/strategy/:id/backtest-breakdown",
             get(get_strategy_backtest_breakdown_handler),
         )
+        .route(
+            "/analytics/testnet/promotion-funnel",
+            get(get_testnet_promotion_funnel_handler),
+        )
+        .route(
+            "/analytics/testnet/promotion-funnel/outcomes",
+            get(get_testnet_promotion_funnel_outcomes_handler),
+        )
+        .route(
+            "/analytics/testnet/promotion-funnel/rows",
+            get(list_testnet_promotion_funnel_rows_handler),
+        )
         .route("/orders", get(get_orders))
         .route("/orders/:id", get(get_order))
         .route("/market/symbols", get(get_market_symbols))
@@ -2360,6 +2410,13 @@ fn bounded_strategy_analytics_limit(limit: Option<i64>) -> i64 {
     }
 }
 
+fn bounded_testnet_promotion_funnel_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(1000),
+        _ => 100,
+    }
+}
+
 fn strategy_performance_request_from_query(
     query: StrategyAnalyticsQuery,
 ) -> StrategyPerformanceRequest {
@@ -2371,6 +2428,19 @@ fn strategy_performance_request_from_query(
         start_time: query.start_time,
         end_time: query.end_time,
         limit: Some(bounded_strategy_analytics_limit(query.limit)),
+    }
+}
+
+fn testnet_promotion_funnel_request_from_query(
+    query: TestnetPromotionFunnelQuery,
+) -> TestnetPromotionFunnelRequest {
+    TestnetPromotionFunnelRequest {
+        strategy_id: query.strategy_id,
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        start_time: query.start_time,
+        end_time: query.end_time,
+        limit: Some(bounded_testnet_promotion_funnel_limit(query.limit)),
     }
 }
 
@@ -10109,6 +10179,115 @@ async fn get_strategy_backtest_breakdown_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_load_strategy_backtest_breakdown",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_testnet_promotion_funnel_handler(
+    State(state): State<AppState>,
+    Query(query): Query<TestnetPromotionFunnelQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("testnet_promotion_funnel");
+    telemetry().inc_analytics_promotion_funnel_request();
+    let funnel_request = testnet_promotion_funnel_request_from_query(query);
+
+    match get_testnet_promotion_funnel_summary(&state.db_pool, &funnel_request).await {
+        Ok(summary) => (
+            StatusCode::OK,
+            Json(TestnetPromotionFunnelSummaryResponse {
+                summary,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_testnet_promotion_funnel",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_testnet_promotion_funnel_outcomes_handler(
+    State(state): State<AppState>,
+    Query(query): Query<TestnetPromotionFunnelQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("testnet_promotion_funnel_outcomes");
+    telemetry().inc_analytics_promotion_funnel_request();
+    let funnel_request = testnet_promotion_funnel_request_from_query(query);
+
+    match (
+        get_testnet_promotion_outcome_breakdown(&state.db_pool, &funnel_request).await,
+        get_testnet_promotion_lifecycle_breakdown(&state.db_pool, &funnel_request).await,
+    ) {
+        (Ok(outcomes), Ok(lifecycle)) => (
+            StatusCode::OK,
+            Json(TestnetPromotionFunnelOutcomesResponse {
+                outcomes,
+                lifecycle,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        (Err(err), _) | (_, Err(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_testnet_promotion_outcomes",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_testnet_promotion_funnel_rows_handler(
+    State(state): State<AppState>,
+    Query(query): Query<TestnetPromotionFunnelQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    telemetry().inc_analytics_request("testnet_promotion_funnel_rows");
+    telemetry().inc_analytics_promotion_funnel_request();
+    let funnel_request = testnet_promotion_funnel_request_from_query(query);
+
+    match list_testnet_promotion_funnel_rows(&state.db_pool, &funnel_request).await {
+        Ok(rows) => (
+            StatusCode::OK,
+            Json(TestnetPromotionFunnelRowsResponse {
+                rows,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_testnet_promotion_rows",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

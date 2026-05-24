@@ -28,6 +28,8 @@ import type {
   StrategyPnlBreakdown,
   StrategyStatusView,
   SystemEventRecord,
+  TestnetPromotionFunnelRow,
+  TestnetPromotionFunnelSummary,
   TestnetShadowRunResult,
   TestnetShadowRunnerConfig,
 } from "@/lib/types";
@@ -704,6 +706,41 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedStrategyId),
     refetchInterval: 15_000,
   });
+  const testnetPromotionFunnelQuery = useQuery({
+    queryKey: [
+      "analytics-testnet-promotion-funnel",
+      selectedStrategyId,
+      selectedSymbol,
+      selectedAnalyticsTimeframe,
+    ],
+    queryFn: () =>
+      api.getTestnetPromotionFunnel(
+        selectedStrategyId,
+        selectedSymbol,
+        selectedAnalyticsTimeframe,
+      ),
+    enabled: Boolean(selectedStrategyId),
+    refetchInterval: 15_000,
+  });
+  const testnetPromotionRowsQuery = useQuery({
+    queryKey: [
+      "analytics-testnet-promotion-rows",
+      selectedStrategyId,
+      selectedSymbol,
+      selectedAnalyticsTimeframe,
+    ],
+    queryFn: () =>
+      api.getTestnetPromotionRows(
+        selectedStrategyId,
+        selectedSymbol,
+        selectedAnalyticsTimeframe,
+        undefined,
+        undefined,
+        50,
+      ),
+    enabled: Boolean(selectedStrategyId),
+    refetchInterval: 15_000,
+  });
   const strategyConfigVersionsQuery = useQuery({
     queryKey: ["strategy-config-versions", selectedStrategyId],
     queryFn: () => api.getStrategyConfigVersions(selectedStrategyId),
@@ -857,6 +894,8 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["analytics-decision-breakdown"] }),
       queryClient.invalidateQueries({ queryKey: ["analytics-paper-pnl-breakdown"] }),
       queryClient.invalidateQueries({ queryKey: ["analytics-backtest-breakdown"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-testnet-promotion-funnel"] }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-testnet-promotion-rows"] }),
       queryClient.invalidateQueries({ queryKey: ["events"] }),
       queryClient.invalidateQueries({ queryKey: ["feed-status"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-status"] }),
@@ -2562,6 +2601,64 @@ function AuthenticatedDashboard({
                   error={getErrorMessage(strategyBacktestBreakdownQuery.error)}
                 />
               </Panel>
+
+              <Panel className="xl:col-span-7" title="Promotion Funnel">
+                <TestnetPromotionFunnelCards
+                  summary={testnetPromotionFunnelQuery.data?.summary}
+                  loading={testnetPromotionFunnelQuery.isLoading}
+                  error={getErrorMessage(testnetPromotionFunnelQuery.error)}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-5" title="Promotion Rates">
+                <KeyValue
+                  items={[
+                    [
+                      "Preview Rate",
+                      formatPercent(testnetPromotionFunnelQuery.data?.summary.preview_rate_pct),
+                    ],
+                    [
+                      "Submit Rate",
+                      formatPercent(testnetPromotionFunnelQuery.data?.summary.submit_rate_pct),
+                    ],
+                    [
+                      "Fill Rate",
+                      formatPercent(testnetPromotionFunnelQuery.data?.summary.fill_rate_pct),
+                    ],
+                    [
+                      "Reconciliation Required Rate",
+                      formatPercent(
+                        testnetPromotionFunnelQuery.data?.summary
+                          .reconciliation_required_rate_pct,
+                      ),
+                    ],
+                    [
+                      "Shadow -> Preview Avg Seconds",
+                      formatNumber(
+                        testnetPromotionFunnelQuery.data?.summary
+                          .avg_time_shadow_to_preview_seconds,
+                      ),
+                    ],
+                    [
+                      "Preview -> Submit Avg Seconds",
+                      formatNumber(
+                        testnetPromotionFunnelQuery.data?.summary
+                          .avg_time_preview_to_submit_seconds,
+                      ),
+                    ],
+                  ]}
+                  loading={testnetPromotionFunnelQuery.isLoading}
+                  error={getErrorMessage(testnetPromotionFunnelQuery.error)}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-12" title="Recent Promotion Rows">
+                <TestnetPromotionRowsTable
+                  rows={testnetPromotionRowsQuery.data?.rows ?? []}
+                  loading={testnetPromotionRowsQuery.isLoading}
+                  error={getErrorMessage(testnetPromotionRowsQuery.error)}
+                />
+              </Panel>
             </section>
           )}
 
@@ -3733,6 +3830,119 @@ function SimpleList({ items }: { items: string[] }) {
           {item}
         </div>
       ))}
+    </div>
+  );
+}
+
+function formatPercent(value?: string | null) {
+  const formatted = formatNumber(value);
+  return formatted === "-" ? "-" : `${formatted}%`;
+}
+
+function TestnetPromotionFunnelCards({
+  summary,
+  loading,
+  error,
+}: {
+  summary?: TestnetPromotionFunnelSummary;
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading promotion funnel..." />;
+  }
+
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+
+  if (!summary || summary.shadow_would_submit_count === 0) {
+    return <EmptyState label="No promotion funnel data for this filter." />;
+  }
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {[
+        ["Shadow Would Submit", String(summary.shadow_would_submit_count)],
+        ["Previewed", String(summary.promotion_previewed_count)],
+        ["Submitted", String(summary.promotion_submitted_count)],
+        ["Acked", String(summary.acked_count)],
+        ["Filled", String(summary.filled_count)],
+        ["Reconciliation Required", String(summary.reconciliation_required_count)],
+      ].map(([label, value]) => (
+        <div
+          key={label}
+          className="rounded-xl border border-border bg-surface/60 px-3 py-4"
+        >
+          <div className="text-[11px] uppercase tracking-[0.18em] text-muted">{label}</div>
+          <div className="mt-2 text-2xl font-semibold text-slate-100">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TestnetPromotionRowsTable({
+  rows,
+  loading,
+  error,
+}: {
+  rows: TestnetPromotionFunnelRow[];
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading promotion rows..." />;
+  }
+
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+
+  if (!rows.length) {
+    return <EmptyState label="No promotion rows found for this filter." />;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-left text-sm">
+        <thead className="text-xs uppercase tracking-[0.18em] text-muted">
+          <tr>
+            <th className="px-3 py-2">Shadow Run</th>
+            <th className="px-3 py-2">Promotion</th>
+            <th className="px-3 py-2">Strategy</th>
+            <th className="px-3 py-2">Symbol</th>
+            <th className="px-3 py-2">Status</th>
+            <th className="px-3 py-2">Client Order ID</th>
+            <th className="px-3 py-2">Execution State</th>
+            <th className="px-3 py-2">Created</th>
+            <th className="px-3 py-2">Submitted</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.shadow_run_id} className="border-t border-border/60 text-slate-100">
+              <td className="px-3 py-2 font-mono text-xs">{shortenId(row.shadow_run_id)}</td>
+              <td className="px-3 py-2 font-mono text-xs">
+                {row.promotion_id ? shortenId(row.promotion_id) : "-"}
+              </td>
+              <td className="px-3 py-2">{row.strategy_id}</td>
+              <td className="px-3 py-2">{row.symbol}</td>
+              <td className="px-3 py-2">{row.promotion_status ?? "-"}</td>
+              <td className="px-3 py-2 font-mono text-xs">{row.client_order_id ?? "-"}</td>
+              <td className="px-3 py-2">
+                {row.execution_state ?? (row.linked_order_missing ? "MISSING_LINK" : "-")}
+              </td>
+              <td className="px-3 py-2">
+                {formatDateTime(row.promotion_created_at ?? row.shadow_created_at)}
+              </td>
+              <td className="px-3 py-2">
+                {row.submitted_at ? formatDateTime(row.submitted_at) : "-"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

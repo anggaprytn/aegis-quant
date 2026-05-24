@@ -9,8 +9,8 @@ use aegis_core::{
     ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
     RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId,
     StrategyPerformanceMode, StrategyPerformanceRequest, StrategySignal, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetShadowRunnerConfig,
-    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
 use db::{
@@ -20,22 +20,26 @@ use db::{
     get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key, get_risk_decision,
     get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_shadow_decision_breakdown, get_system_state, insert_backtest_equity_points,
-    insert_backtest_run, insert_backtest_trade, insert_candle_backfill_run,
-    insert_exchange_private_stream_event, insert_exchange_reconciliation_mismatch,
-    insert_exchange_reconciliation_run, insert_exchange_testnet_order, insert_paper_account,
-    insert_risk_decision, insert_signal_deduped, insert_testnet_shadow_run,
+    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, insert_backtest_equity_points, insert_backtest_run,
+    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
+    insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
+    insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
+    insert_paper_account, insert_risk_decision, insert_signal_deduped,
+    insert_testnet_shadow_promotion, insert_testnet_shadow_run,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
-    list_strategy_performance_rankings, set_kill_switch_state, test_support::TestDatabase,
-    testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
-    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_candle,
-    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
+    list_strategy_performance_rankings, list_testnet_promotion_funnel_rows, set_kill_switch_state,
+    test_support::TestDatabase, testnet_shadow_runner_config_from_record,
+    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
+    update_exchange_testnet_order_status, upsert_candle, upsert_candles_batch,
+    upsert_exchange_private_stream_state, upsert_paper_position,
     upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, StateActor,
-    TestnetShadowRunRecord, TESTNET_SHADOW_RUNNER_CONFIG_ID, TESTNET_SHADOW_RUNNER_STATE_ID,
+    TestnetShadowPromotionRecord, TestnetShadowRunRecord, TESTNET_SHADOW_RUNNER_CONFIG_ID,
+    TESTNET_SHADOW_RUNNER_STATE_ID,
 };
 use exchange::{
     apply_testnet_transition, local_testnet_order_status_from_private_execution_report,
@@ -305,6 +309,130 @@ async fn append_lifecycle_event(
     .await
     .expect("lifecycle event should persist")
     .expect("testnet order should exist")
+}
+
+async fn insert_promotion_funnel_fixture(
+    pool: &db::PgPool,
+    symbol: &str,
+    promotion_status: &str,
+    execution_state: Option<TestnetExecutionState>,
+    delete_linked_order_after_insert: bool,
+) -> (
+    TestnetShadowRunRecord,
+    TestnetShadowPromotionRecord,
+    Option<ExchangeTestnetOrderRecord>,
+) {
+    let shadow_run = TestnetShadowRunRecord {
+        id: Uuid::new_v4(),
+        strategy_id: "momentum_v1".to_string(),
+        symbol: symbol.to_string(),
+        timeframe: "1m".to_string(),
+        decision: "WOULD_SUBMIT".to_string(),
+        signal_id: None,
+        risk_decision_id: None,
+        would_submit_payload: Some(json!({"symbol": symbol, "side": "BUY"})),
+        price_source: Some("stored_tick".to_string()),
+        resolved_price: Some(Decimal::new(100_000, 0)),
+        reasons: Vec::new(),
+        status: "COMPLETED".to_string(),
+        created_at: fixed_time(),
+        correlation_id: Some(Uuid::new_v4()),
+    };
+    insert_testnet_shadow_run(pool, &shadow_run)
+        .await
+        .expect("shadow run should persist");
+
+    let maybe_order = execution_state.map(|state| {
+        let mut order = sample_exchange_testnet_order_record_with_state(state.as_str(), state);
+        order.symbol = symbol.to_string();
+        order.client_order_id = format!("aegis-promo-{symbol}-{}", Uuid::new_v4());
+        order.created_at = fixed_time() + chrono::Duration::seconds(2);
+        order.updated_at = order.created_at;
+        order.last_transition_at = Some(order.created_at);
+        order
+    });
+
+    if let Some(order) = maybe_order.as_ref() {
+        insert_exchange_testnet_order(pool, order)
+            .await
+            .expect("testnet order should persist");
+        insert_exchange_testnet_order_lifecycle_event(
+            pool,
+            &lifecycle_event_record(
+                order,
+                None,
+                TestnetExecutionState::ExchangeAcked,
+                TestnetExecutionTransitionSource::ExchangeAck,
+                Some("acked"),
+                Some(json!({"status":"NEW"})),
+                lifecycle_time(3),
+            ),
+        )
+        .await
+        .expect("acked lifecycle should persist");
+        if execution_state != Some(TestnetExecutionState::ExchangeAcked) {
+            insert_exchange_testnet_order_lifecycle_event(
+                pool,
+                &lifecycle_event_record(
+                    order,
+                    Some(TestnetExecutionState::ExchangeAcked),
+                    execution_state.expect("execution state should exist"),
+                    TestnetExecutionTransitionSource::PrivateStream,
+                    Some("terminal"),
+                    Some(json!({"status": execution_state.expect("execution state").as_str()})),
+                    lifecycle_time(4),
+                ),
+            )
+            .await
+            .expect("terminal lifecycle should persist");
+        }
+    }
+
+    let promotion = TestnetShadowPromotionRecord {
+        id: Uuid::new_v4(),
+        shadow_run_id: shadow_run.id,
+        status: promotion_status.to_string(),
+        strategy_id: Some("momentum_v1".to_string()),
+        symbol: Some(symbol.to_string()),
+        timeframe: Some("1m".to_string()),
+        signal_id: None,
+        risk_decision_id: None,
+        would_submit_payload: json!({"symbol": symbol, "side": "BUY"}),
+        resolved_price: Some(Decimal::new(100_000, 0)),
+        price_source: Some("stored_tick".to_string()),
+        rejection_reasons: if promotion_status == "REJECTED" {
+            vec!["submit_failed".to_string()]
+        } else {
+            Vec::new()
+        },
+        testnet_order_id: maybe_order.as_ref().map(|order| order.id),
+        client_order_id: maybe_order
+            .as_ref()
+            .map(|order| order.client_order_id.clone()),
+        expires_at: fixed_time() + chrono::Duration::minutes(5),
+        created_by: None,
+        submitted_by: None,
+        created_at: fixed_time() + chrono::Duration::seconds(1),
+        submitted_at: if promotion_status == "PREVIEWED" {
+            None
+        } else {
+            Some(fixed_time() + chrono::Duration::seconds(2))
+        },
+        correlation_id: Some(Uuid::new_v4()),
+    };
+    insert_testnet_shadow_promotion(pool, &promotion)
+        .await
+        .expect("promotion should persist");
+
+    if delete_linked_order_after_insert {
+        sqlx::query("DELETE FROM exchange_testnet_orders WHERE id = $1")
+            .bind(promotion.testnet_order_id)
+            .execute(pool)
+            .await
+            .expect("testnet order delete should succeed");
+    }
+
+    (shadow_run, promotion, maybe_order)
 }
 
 fn sample_private_execution_report(
@@ -1811,4 +1939,198 @@ async fn strategy_decision_breakdown_counts_shadow_outcomes() {
     assert_eq!(breakdown.would_submit_count, 1);
     assert_eq!(breakdown.no_signal_count, 1);
     assert_eq!(breakdown.risk_rejected_count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn promotion_funnel_counts_shadow_would_submit_rows() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    insert_testnet_shadow_run(
+        &test_db.pool,
+        &TestnetShadowRunRecord {
+            id: Uuid::new_v4(),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            decision: "WOULD_SUBMIT".to_string(),
+            signal_id: None,
+            risk_decision_id: None,
+            would_submit_payload: Some(json!({"symbol":"BTCUSDT"})),
+            price_source: None,
+            resolved_price: None,
+            reasons: Vec::new(),
+            status: "COMPLETED".to_string(),
+            created_at: fixed_time(),
+            correlation_id: Some(Uuid::new_v4()),
+        },
+    )
+    .await
+    .expect("shadow run should persist");
+
+    let summary = get_testnet_promotion_funnel_summary(
+        &test_db.pool,
+        &TestnetPromotionFunnelRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("summary should load");
+
+    assert_eq!(summary.shadow_would_submit_count, 1);
+    assert_eq!(summary.promotion_previewed_count, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn promotion_funnel_counts_previewed_and_submitted_promotions() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    insert_promotion_funnel_fixture(&test_db.pool, "BTCUSDT", "PREVIEWED", None, false).await;
+    insert_promotion_funnel_fixture(
+        &test_db.pool,
+        "ETHUSDT",
+        "SUBMITTED",
+        Some(TestnetExecutionState::Filled),
+        false,
+    )
+    .await;
+
+    let summary = get_testnet_promotion_funnel_summary(
+        &test_db.pool,
+        &TestnetPromotionFunnelRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: None,
+            timeframe: Some("1m".to_string()),
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("summary should load");
+
+    assert_eq!(summary.promotion_previewed_count, 2);
+    assert_eq!(summary.promotion_submitted_count, 1);
+    assert_eq!(summary.filled_count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn promotion_funnel_counts_linked_order_lifecycle_state() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    insert_promotion_funnel_fixture(
+        &test_db.pool,
+        "BTCUSDT",
+        "SUBMITTED",
+        Some(TestnetExecutionState::ReconciliationRequired),
+        false,
+    )
+    .await;
+
+    let lifecycle = get_testnet_promotion_lifecycle_breakdown(
+        &test_db.pool,
+        &TestnetPromotionFunnelRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("lifecycle breakdown should load");
+
+    assert_eq!(
+        lifecycle
+            .iter()
+            .find(|item| item.execution_state
+                == TestnetExecutionState::ReconciliationRequired.as_str())
+            .map(|item| item.count),
+        Some(1),
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn promotion_rows_do_not_leak_unrelated_symbols() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    insert_promotion_funnel_fixture(
+        &test_db.pool,
+        "BTCUSDT",
+        "SUBMITTED",
+        Some(TestnetExecutionState::Filled),
+        false,
+    )
+    .await;
+    insert_promotion_funnel_fixture(
+        &test_db.pool,
+        "ETHUSDT",
+        "SUBMITTED",
+        Some(TestnetExecutionState::Cancelled),
+        false,
+    )
+    .await;
+
+    let rows = list_testnet_promotion_funnel_rows(
+        &test_db.pool,
+        &TestnetPromotionFunnelRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: Some(50),
+        },
+    )
+    .await
+    .expect("rows should load");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].symbol, "BTCUSDT");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn promotion_summary_handles_missing_linked_order_without_crashing() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    insert_promotion_funnel_fixture(
+        &test_db.pool,
+        "BTCUSDT",
+        "SUBMITTED",
+        Some(TestnetExecutionState::Filled),
+        true,
+    )
+    .await;
+
+    let summary = get_testnet_promotion_funnel_summary(
+        &test_db.pool,
+        &TestnetPromotionFunnelRequest {
+            strategy_id: Some("momentum_v1".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("1m".to_string()),
+            start_time: Some(fixed_time() - chrono::Duration::days(1)),
+            end_time: Some(fixed_time() + chrono::Duration::days(1)),
+            limit: None,
+        },
+    )
+    .await
+    .expect("summary should load");
+
+    assert_eq!(summary.promotion_submitted_count, 1);
+    assert_eq!(summary.testnet_orders_created_count, 1);
 }

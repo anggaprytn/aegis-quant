@@ -7,10 +7,12 @@ use aegis_core::{
     RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
     StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
     StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyPerformanceSummary, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    StrategyPerformanceSummary, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -1089,6 +1091,94 @@ impl ApiClient {
         )
         .await
     }
+
+    pub async fn testnet_promotion_funnel(
+        &self,
+        strategy_id: Option<String>,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<TestnetPromotionFunnelSummaryResponse, ApiClientError> {
+        let mut query = Vec::new();
+        if let Some(strategy_id) = strategy_id.filter(|value| !value.is_empty()) {
+            query.push(("strategy_id", strategy_id));
+        }
+        if let Some(symbol) = symbol.filter(|value| !value.is_empty()) {
+            query.push(("symbol", symbol));
+        }
+        if let Some(timeframe) = timeframe.filter(|value| !value.is_empty()) {
+            query.push(("timeframe", timeframe));
+        }
+        if let Some(start_time) = start_time {
+            query.push(("start_time", start_time.to_rfc3339()));
+        }
+        if let Some(end_time) = end_time {
+            query.push(("end_time", end_time.to_rfc3339()));
+        }
+        self.get("/analytics/testnet/promotion-funnel", &query)
+            .await
+    }
+
+    pub async fn testnet_promotion_outcomes(
+        &self,
+        strategy_id: Option<String>,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<TestnetPromotionFunnelOutcomesResponse, ApiClientError> {
+        let mut query = Vec::new();
+        if let Some(strategy_id) = strategy_id.filter(|value| !value.is_empty()) {
+            query.push(("strategy_id", strategy_id));
+        }
+        if let Some(symbol) = symbol.filter(|value| !value.is_empty()) {
+            query.push(("symbol", symbol));
+        }
+        if let Some(timeframe) = timeframe.filter(|value| !value.is_empty()) {
+            query.push(("timeframe", timeframe));
+        }
+        if let Some(start_time) = start_time {
+            query.push(("start_time", start_time.to_rfc3339()));
+        }
+        if let Some(end_time) = end_time {
+            query.push(("end_time", end_time.to_rfc3339()));
+        }
+        self.get("/analytics/testnet/promotion-funnel/outcomes", &query)
+            .await
+    }
+
+    pub async fn testnet_promotion_rows(
+        &self,
+        strategy_id: Option<String>,
+        symbol: Option<String>,
+        timeframe: Option<String>,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: Option<i64>,
+    ) -> Result<TestnetPromotionFunnelRowsResponse, ApiClientError> {
+        let mut query = Vec::new();
+        if let Some(strategy_id) = strategy_id.filter(|value| !value.is_empty()) {
+            query.push(("strategy_id", strategy_id));
+        }
+        if let Some(symbol) = symbol.filter(|value| !value.is_empty()) {
+            query.push(("symbol", symbol));
+        }
+        if let Some(timeframe) = timeframe.filter(|value| !value.is_empty()) {
+            query.push(("timeframe", timeframe));
+        }
+        if let Some(start_time) = start_time {
+            query.push(("start_time", start_time.to_rfc3339()));
+        }
+        if let Some(end_time) = end_time {
+            query.push(("end_time", end_time.to_rfc3339()));
+        }
+        if let Some(limit) = limit {
+            query.push(("limit", limit.to_string()));
+        }
+        self.get("/analytics/testnet/promotion-funnel/rows", &query)
+            .await
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -2110,6 +2200,31 @@ pub struct StrategyPerformanceRankingsResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyDecisionBreakdownResponse {
     pub breakdown: StrategyDecisionBreakdown,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetPromotionFunnelSummaryResponse {
+    pub summary: TestnetPromotionFunnelSummary,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetPromotionFunnelOutcomesResponse {
+    pub outcomes: Vec<TestnetPromotionOutcomeBreakdown>,
+    pub lifecycle: Vec<TestnetPromotionLifecycleBreakdown>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TestnetPromotionFunnelRowsResponse {
+    pub rows: Vec<TestnetPromotionFunnelRow>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
