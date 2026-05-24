@@ -9,8 +9,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-aegis_quant}
       POSTGRES_USER: ${POSTGRES_USER:-aegis}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -37,7 +35,7 @@ services:
     environment:
       API_BIND_ADDR: 0.0.0.0:3000
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3100:3000"
 
   market-ingest:
     build:
@@ -91,7 +89,7 @@ services:
     volumes:
       - ..:/app
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3101:3001"
 
   prometheus:
     image: prom/prometheus:v2.54.1
@@ -106,7 +104,7 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
 
 volumes:
   postgres_data:
