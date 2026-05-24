@@ -120,6 +120,7 @@ The dashboard is intentionally dense and operational:
 - Sidebar sections: Command Center, Market Data, Strategies, Risk, Orders, Backtests, Logs / Events, Settings placeholder
 - Sticky header: mode, kill switch state, feed state, data age, daily PnL placeholder, API health
 - Paper-only controls: kill switch activation, typed resume confirmation, strategy evaluation, paper pipeline run, and backtest run
+- Read-only cockpit inspection: persisted risk decisions, enriched paper order detail, and filtered recent system events
 
 Frontend constraints:
 
@@ -127,3 +128,27 @@ Frontend constraints:
 - No exchange private API or secret handling
 - No chart-heavy UX in MVP
 - Defensive rendering around backend errors and optional data shapes
+
+## Cockpit observability flow
+
+The operational cockpit should expose persisted truth from the backend rather than reconstructing links in the browser:
+
+```txt
+signals
+-> risk_decisions
+-> orders
+-> system_events
+-> dashboard read APIs
+```
+
+Read API boundaries:
+
+- `/risk/decisions` and `/risk/decisions/:id` expose persisted risk approvals and rejections, including notional, score, reasons, correlation, and linked signal metadata when available
+- `/orders` and `/orders/:id` expose paper order inspection data enriched from the linked `risk_decision_id`, including truthful `signal_id` and `strategy_id`
+- `/events/recent` exposes newest-first system events with optional server-side filters for `event_type`, `source`, and `correlation_id`
+
+Operational intent:
+
+- The dashboard should show what the database recorded, not best-effort guesses from correlation IDs alone
+- Risk rejection review is read-only and does not mutate risk state
+- Event inspection remains append-only and filterable for operator triage

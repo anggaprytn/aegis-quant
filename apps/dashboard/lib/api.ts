@@ -18,6 +18,8 @@ import type {
   PaperPipelineResult,
   RecentSignalsResponse,
   RiskActionResponse,
+  RiskDecisionResponse,
+  RiskDecisionsResponse,
   RiskStatusResponse,
   StatusResponse,
   StrategyListResponse,
@@ -139,6 +141,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  getRiskDecisions: (symbol?: string, limit = 50) =>
+    request<RiskDecisionsResponse>("/risk/decisions", undefined, { symbol, limit }),
+  getRiskDecision: (id: string) =>
+    request<RiskDecisionResponse>(`/risk/decisions/${id}`),
   getOrders: () => request<OrdersResponse>("/orders"),
   getOrder: (id: string) => request<OrderResponse>(`/orders/${id}`),
   runBacktest: (payload: BacktestRequest) =>
@@ -154,10 +160,15 @@ export const api = {
     request<BacktestTradesResponse>(`/backtest/runs/${id}/trades`),
   getBacktestEquity: (id: string) =>
     request<BacktestEquityCurveResponse>(`/backtest/runs/${id}/equity`),
-  getRecentEvents: (limit = 50) =>
+  getRecentEvents: (params?: {
+    limit?: number;
+    event_type?: string;
+    source?: string;
+    correlation_id?: string;
+  }) =>
     request<{ events: SystemEventRecord[]; request_id: string; correlation_id: string; timestamp: string }>(
       "/events/recent",
       undefined,
-      { limit },
+      params,
     ),
 };

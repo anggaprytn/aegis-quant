@@ -75,6 +75,33 @@ export type RiskActionResponse = {
   timestamp: string;
 };
 
+export type RiskDecisionRecord = {
+  id: string;
+  signal_id: string | null;
+  decision: string;
+  approved_notional: string | null;
+  risk_score: string | null;
+  reasons: string[];
+  created_at: string;
+  correlation_id: string;
+  strategy_id: string | null;
+  symbol: string | null;
+};
+
+export type RiskDecisionsResponse = {
+  decisions: RiskDecisionRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type RiskDecisionResponse = {
+  decision: RiskDecisionRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type MarketSymbolsResponse = {
   exchange: string;
   symbols: string[];
@@ -242,18 +269,26 @@ export type PaperPipelineResult = {
 
 export type OrderRecord = {
   order_id: string;
+  client_order_id: string;
+  exchange_order_id: string | null;
+  signal_id: string | null;
   correlation_id: string;
   risk_decision_id: string;
+  strategy_id: string | null;
   idempotency_key: string;
+  requested_notional: string | null;
   symbol: string;
   side: string;
   quantity: string;
+  filled_qty: string;
   limit_price: string | null;
+  mode: string;
   market_mode: string;
   status: string;
   execution_state: string;
   status_reason: string | null;
   filled_price: string | null;
+  avg_fill_price: string | null;
   submitted_at: string | null;
   filled_at: string | null;
   cancelled_at: string | null;

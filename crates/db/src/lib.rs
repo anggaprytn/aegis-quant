@@ -62,8 +62,13 @@ pub struct RiskDecisionRecord {
     pub correlation_id: Uuid,
     pub signal_id: Option<Uuid>,
     pub decision: String,
+    pub approved_notional: Option<Decimal>,
+    pub risk_score: Option<Decimal>,
+    pub reasons: Vec<String>,
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
     pub rationale: String,
-    pub decided_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +86,14 @@ pub struct OrderRecord {
     pub execution_state: String,
     pub status_reason: Option<String>,
     pub filled_price: Option<sqlx::types::Decimal>,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub signal_id: Option<Uuid>,
+    pub strategy_id: Option<String>,
+    pub requested_notional: Option<sqlx::types::Decimal>,
+    pub filled_qty: sqlx::types::Decimal,
+    pub avg_fill_price: Option<sqlx::types::Decimal>,
+    pub mode: String,
     pub submitted_at: Option<DateTime<Utc>>,
     pub filled_at: Option<DateTime<Utc>>,
     pub cancelled_at: Option<DateTime<Utc>>,
@@ -603,6 +616,13 @@ pub async fn get_risk_decision(
     pool: &PgPool,
     risk_decision_id: Uuid,
 ) -> Result<Option<RiskDecisionRecord>> {
+    get_risk_decision_by_id(pool, risk_decision_id).await
+}
+
+pub async fn get_risk_decision_by_id(
+    pool: &PgPool,
+    risk_decision_id: Uuid,
+) -> Result<Option<RiskDecisionRecord>> {
     let row = sqlx::query(
         r#"
         SELECT
@@ -611,8 +631,11 @@ pub async fn get_risk_decision(
             signal_id,
             decision,
             rationale,
-            decided_at
+            decided_at,
+            COALESCE(s.strategy_id, rationale::jsonb ->> 'strategy_id') AS strategy_id,
+            COALESCE(s.symbol, rationale::jsonb ->> 'symbol') AS symbol
         FROM risk_decisions
+        LEFT JOIN signals s ON s.id = risk_decisions.signal_id
         WHERE id = $1
         "#,
     )
@@ -623,11 +646,12 @@ pub async fn get_risk_decision(
     Ok(row.as_ref().map(map_risk_decision))
 }
 
-pub async fn list_recent_risk_decisions(
+pub async fn list_recent_risk_decisions_filtered(
     pool: &PgPool,
+    symbol: Option<&str>,
     limit: i64,
 ) -> Result<Vec<RiskDecisionRecord>> {
-    let rows = sqlx::query(
+    let row = sqlx::query(
         r#"
         SELECT
             id,
@@ -635,17 +659,29 @@ pub async fn list_recent_risk_decisions(
             signal_id,
             decision,
             rationale,
-            decided_at
+            decided_at,
+            COALESCE(s.strategy_id, rationale::jsonb ->> 'strategy_id') AS strategy_id,
+            COALESCE(s.symbol, rationale::jsonb ->> 'symbol') AS symbol
         FROM risk_decisions
+        LEFT JOIN signals s ON s.id = risk_decisions.signal_id
+        WHERE ($1::text IS NULL OR COALESCE(s.symbol, rationale::jsonb ->> 'symbol') = $1)
         ORDER BY decided_at DESC
-        LIMIT $1
+        LIMIT $2
         "#,
     )
+    .bind(symbol)
     .bind(limit)
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.iter().map(map_risk_decision).collect())
+    Ok(row.iter().map(map_risk_decision).collect())
+}
+
+pub async fn list_recent_risk_decisions(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<RiskDecisionRecord>> {
+    list_recent_risk_decisions_filtered(pool, None, limit).await
 }
 
 pub async fn create_paper_order(
@@ -819,29 +855,34 @@ pub async fn list_orders(pool: &PgPool) -> Result<Vec<OrderRecord>> {
     let rows = sqlx::query(
         r#"
         SELECT
-            id,
-            correlation_id,
-            risk_decision_id,
-            idempotency_key,
-            symbol,
-            side,
-            quantity,
-            limit_price,
-            market_mode,
-            status,
-            execution_state,
-            status_reason,
-            filled_price,
-            submitted_at,
-            filled_at,
-            cancelled_at,
-            rejected_at,
-            expired_at,
-            expires_at,
-            created_at,
-            updated_at
-        FROM orders
-        ORDER BY created_at DESC
+            o.id,
+            o.correlation_id,
+            o.risk_decision_id,
+            o.idempotency_key,
+            o.symbol,
+            o.side,
+            o.quantity,
+            o.limit_price,
+            o.market_mode,
+            o.status,
+            o.execution_state,
+            o.status_reason,
+            o.filled_price,
+            o.submitted_at,
+            o.filled_at,
+            o.cancelled_at,
+            o.rejected_at,
+            o.expired_at,
+            o.expires_at,
+            o.created_at,
+            o.updated_at,
+            rd.signal_id,
+            COALESCE(s.strategy_id, rd.rationale::jsonb ->> 'strategy_id') AS strategy_id,
+            rd.rationale AS risk_rationale
+        FROM orders o
+        LEFT JOIN risk_decisions rd ON rd.id = o.risk_decision_id
+        LEFT JOIN signals s ON s.id = rd.signal_id
+        ORDER BY o.created_at DESC
         "#,
     )
     .fetch_all(pool)
@@ -854,29 +895,34 @@ pub async fn get_order_by_id(pool: &PgPool, order_id: Uuid) -> Result<Option<Ord
     let row = sqlx::query(
         r#"
         SELECT
-            id,
-            correlation_id,
-            risk_decision_id,
-            idempotency_key,
-            symbol,
-            side,
-            quantity,
-            limit_price,
-            market_mode,
-            status,
-            execution_state,
-            status_reason,
-            filled_price,
-            submitted_at,
-            filled_at,
-            cancelled_at,
-            rejected_at,
-            expired_at,
-            expires_at,
-            created_at,
-            updated_at
-        FROM orders
-        WHERE id = $1
+            o.id,
+            o.correlation_id,
+            o.risk_decision_id,
+            o.idempotency_key,
+            o.symbol,
+            o.side,
+            o.quantity,
+            o.limit_price,
+            o.market_mode,
+            o.status,
+            o.execution_state,
+            o.status_reason,
+            o.filled_price,
+            o.submitted_at,
+            o.filled_at,
+            o.cancelled_at,
+            o.rejected_at,
+            o.expired_at,
+            o.expires_at,
+            o.created_at,
+            o.updated_at,
+            rd.signal_id,
+            COALESCE(s.strategy_id, rd.rationale::jsonb ->> 'strategy_id') AS strategy_id,
+            rd.rationale AS risk_rationale
+        FROM orders o
+        LEFT JOIN risk_decisions rd ON rd.id = o.risk_decision_id
+        LEFT JOIN signals s ON s.id = rd.signal_id
+        WHERE o.id = $1
         "#,
     )
     .bind(order_id)
@@ -893,29 +939,34 @@ pub async fn get_order_by_idempotency_key(
     let row = sqlx::query(
         r#"
         SELECT
-            id,
-            correlation_id,
-            risk_decision_id,
-            idempotency_key,
-            symbol,
-            side,
-            quantity,
-            limit_price,
-            market_mode,
-            status,
-            execution_state,
-            status_reason,
-            filled_price,
-            submitted_at,
-            filled_at,
-            cancelled_at,
-            rejected_at,
-            expired_at,
-            expires_at,
-            created_at,
-            updated_at
-        FROM orders
-        WHERE idempotency_key = $1
+            o.id,
+            o.correlation_id,
+            o.risk_decision_id,
+            o.idempotency_key,
+            o.symbol,
+            o.side,
+            o.quantity,
+            o.limit_price,
+            o.market_mode,
+            o.status,
+            o.execution_state,
+            o.status_reason,
+            o.filled_price,
+            o.submitted_at,
+            o.filled_at,
+            o.cancelled_at,
+            o.rejected_at,
+            o.expired_at,
+            o.expires_at,
+            o.created_at,
+            o.updated_at,
+            rd.signal_id,
+            COALESCE(s.strategy_id, rd.rationale::jsonb ->> 'strategy_id') AS strategy_id,
+            rd.rationale AS risk_rationale
+        FROM orders o
+        LEFT JOIN risk_decisions rd ON rd.id = o.risk_decision_id
+        LEFT JOIN signals s ON s.id = rd.signal_id
+        WHERE o.idempotency_key = $1
         "#,
     )
     .bind(idempotency_key)
@@ -2195,6 +2246,16 @@ pub async fn list_recent_system_events(
     pool: &PgPool,
     limit: i64,
 ) -> Result<Vec<SystemEventRecord>> {
+    list_recent_system_events_filtered(pool, limit, None, None, None).await
+}
+
+pub async fn list_recent_system_events_filtered(
+    pool: &PgPool,
+    limit: i64,
+    event_type: Option<&str>,
+    source: Option<&str>,
+    correlation_id: Option<Uuid>,
+) -> Result<Vec<SystemEventRecord>> {
     let rows = sqlx::query(
         r#"
         SELECT
@@ -2206,10 +2267,16 @@ pub async fn list_recent_system_events(
             occurred_at,
             created_at
         FROM system_events
+        WHERE ($1::text IS NULL OR event_type = $1)
+          AND ($2::text IS NULL OR source = $2)
+          AND ($3::uuid IS NULL OR correlation_id = $3)
         ORDER BY created_at DESC
-        LIMIT $1
+        LIMIT $4
         "#,
     )
+    .bind(event_type)
+    .bind(source)
+    .bind(correlation_id)
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -2462,13 +2529,28 @@ pub fn backtest_config_from_value(value: &Value) -> Result<BacktestConfig> {
 }
 
 fn map_risk_decision(row: &sqlx::postgres::PgRow) -> RiskDecisionRecord {
+    let rationale = row.get::<String, _>("rationale");
+    let rationale_json = serde_json::from_str::<Value>(&rationale).ok();
+
     RiskDecisionRecord {
         risk_decision_id: row.get("id"),
         correlation_id: row.get("correlation_id"),
         signal_id: row.get("signal_id"),
         decision: row.get("decision"),
-        rationale: row.get("rationale"),
-        decided_at: row.get("decided_at"),
+        approved_notional: rationale_json
+            .as_ref()
+            .and_then(|value| decimal_from_json_field(value, "approved_notional")),
+        risk_score: rationale_json
+            .as_ref()
+            .and_then(|value| decimal_from_json_field(value, "risk_score")),
+        reasons: rationale_json
+            .as_ref()
+            .map(|value| string_array_from_json_field(value, "reasons"))
+            .unwrap_or_default(),
+        strategy_id: row.try_get("strategy_id").ok(),
+        symbol: row.try_get("symbol").ok(),
+        rationale,
+        created_at: row.get("decided_at"),
     }
 }
 
@@ -2485,20 +2567,43 @@ fn map_system_state(row: &sqlx::postgres::PgRow) -> SystemStateRecord {
 }
 
 fn map_order(row: &sqlx::postgres::PgRow) -> OrderRecord {
+    let quantity = row.get("quantity");
+    let filled_price = row.get("filled_price");
+    let market_mode = row.get::<String, _>("market_mode");
+    let idempotency_key = row.get::<String, _>("idempotency_key");
+    let risk_rationale = row.try_get::<String, _>("risk_rationale").ok();
+    let rationale_json = risk_rationale
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+
     OrderRecord {
         order_id: row.get("id"),
         correlation_id: row.get("correlation_id"),
         risk_decision_id: row.get("risk_decision_id"),
-        idempotency_key: row.get("idempotency_key"),
+        idempotency_key: idempotency_key.clone(),
         symbol: row.get("symbol"),
         side: row.get("side"),
-        quantity: row.get("quantity"),
+        quantity,
         limit_price: row.get("limit_price"),
-        market_mode: row.get("market_mode"),
+        market_mode: market_mode.clone(),
         status: row.get("status"),
         execution_state: row.get("execution_state"),
         status_reason: row.get("status_reason"),
-        filled_price: row.get("filled_price"),
+        filled_price,
+        client_order_id: idempotency_key,
+        exchange_order_id: None,
+        signal_id: row.try_get("signal_id").ok(),
+        strategy_id: row.try_get("strategy_id").ok(),
+        requested_notional: rationale_json
+            .as_ref()
+            .and_then(|value| decimal_from_json_field(value, "suggested_notional")),
+        filled_qty: if row.get::<String, _>("status") == "FILLED" {
+            quantity
+        } else {
+            Decimal::ZERO
+        },
+        avg_fill_price: filled_price,
+        mode: market_mode,
         submitted_at: row.get("submitted_at"),
         filled_at: row.get("filled_at"),
         cancelled_at: row.get("cancelled_at"),
@@ -2508,6 +2613,27 @@ fn map_order(row: &sqlx::postgres::PgRow) -> OrderRecord {
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
+}
+
+fn decimal_from_json_field(value: &Value, field: &str) -> Option<Decimal> {
+    match value.get(field) {
+        Some(Value::String(raw)) => raw.parse::<Decimal>().ok(),
+        Some(Value::Number(raw)) => raw.to_string().parse::<Decimal>().ok(),
+        _ => None,
+    }
+}
+
+fn string_array_from_json_field(value: &Value, field: &str) -> Vec<String> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn insert_system_event_tx(

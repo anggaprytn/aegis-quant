@@ -15,6 +15,7 @@ import type {
   BacktestRunAcceptedResponse,
   MarketFeedStatusRecord,
   OrderRecord,
+  RiskDecisionRecord,
   StrategyStatusView,
   SystemEventRecord,
 } from "@/lib/types";
@@ -75,8 +76,9 @@ export function DashboardApp() {
   const [resumeConfirmation, setResumeConfirmation] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [eventSourceFilter, setEventSourceFilter] = useState("");
-  const [eventSymbolFilter, setEventSymbolFilter] = useState("");
+  const [eventCorrelationFilter, setEventCorrelationFilter] = useState("");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [selectedRiskDecisionId, setSelectedRiskDecisionId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [backtestForm, setBacktestForm] =
     useState<BacktestRequest>(DEFAULT_BACKTEST_FORM);
@@ -123,14 +125,30 @@ export function DashboardApp() {
     queryFn: api.getOrders,
     refetchInterval: 10_000,
   });
+  const riskDecisionsQuery = useQuery({
+    queryKey: ["risk-decisions", selectedSymbol],
+    queryFn: () => api.getRiskDecisions(selectedSymbol, 50),
+    refetchInterval: 10_000,
+  });
+  const latestRiskDecisionsQuery = useQuery({
+    queryKey: ["risk-decisions-latest"],
+    queryFn: () => api.getRiskDecisions(undefined, 20),
+    refetchInterval: 10_000,
+  });
   const backtestRunsQuery = useQuery({
     queryKey: ["backtest-runs"],
     queryFn: () => api.getBacktestRuns(20),
     refetchInterval: 15_000,
   });
   const eventsQuery = useQuery({
-    queryKey: ["events"],
-    queryFn: () => api.getRecentEvents(100),
+    queryKey: ["events", eventTypeFilter, eventSourceFilter, eventCorrelationFilter],
+    queryFn: () =>
+      api.getRecentEvents({
+        limit: 100,
+        event_type: eventTypeFilter || undefined,
+        source: eventSourceFilter || undefined,
+        correlation_id: eventCorrelationFilter || undefined,
+      }),
     refetchInterval: 10_000,
   });
 
@@ -158,6 +176,12 @@ export function DashboardApp() {
     queryKey: ["order", selectedOrderId],
     queryFn: () => api.getOrder(selectedOrderId ?? ""),
     enabled: Boolean(selectedOrderId),
+  });
+
+  const selectedRiskDecisionQuery = useQuery({
+    queryKey: ["risk-decision", selectedRiskDecisionId],
+    queryFn: () => api.getRiskDecision(selectedRiskDecisionId ?? ""),
+    enabled: Boolean(selectedRiskDecisionId),
   });
 
   const selectedRunQuery = useQuery({
@@ -207,6 +231,18 @@ export function DashboardApp() {
   ]);
 
   useEffect(() => {
+    if (!selectedOrderId && ordersQuery.data?.orders[0]) {
+      setSelectedOrderId(ordersQuery.data.orders[0].order_id);
+    }
+  }, [ordersQuery.data?.orders, selectedOrderId]);
+
+  useEffect(() => {
+    if (!selectedRiskDecisionId && riskDecisionsQuery.data?.decisions[0]) {
+      setSelectedRiskDecisionId(riskDecisionsQuery.data.decisions[0].id);
+    }
+  }, [riskDecisionsQuery.data?.decisions, selectedRiskDecisionId]);
+
+  useEffect(() => {
     if (!selectedRunId && backtestRunsQuery.data?.runs[0]) {
       setSelectedRunId(backtestRunsQuery.data.runs[0].run_id);
     }
@@ -215,6 +251,7 @@ export function DashboardApp() {
   const refreshOperationalData = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["risk-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["risk-decisions"] }),
       queryClient.invalidateQueries({ queryKey: ["orders"] }),
       queryClient.invalidateQueries({ queryKey: ["signals"] }),
       queryClient.invalidateQueries({ queryKey: ["backtest-runs"] }),
@@ -283,6 +320,8 @@ export function DashboardApp() {
 
   const strategies = strategiesQuery.data?.strategies ?? [];
   const orders = ordersQuery.data?.orders ?? [];
+  const riskDecisions = riskDecisionsQuery.data?.decisions ?? [];
+  const latestRiskDecisions = latestRiskDecisionsQuery.data?.decisions ?? [];
   const events = eventsQuery.data?.events ?? [];
   const recentSignals = signalsQuery.data?.signals ?? [];
   const backtestRuns = backtestRunsQuery.data?.runs ?? [];
@@ -307,24 +346,10 @@ export function DashboardApp() {
       ),
     [events],
   );
-  const filteredEvents = useMemo(
+  const latestRiskRejection = useMemo(
     () =>
-      events.filter((event) => {
-        if (eventTypeFilter && !event.event_type.includes(eventTypeFilter)) {
-          return false;
-        }
-        if (eventSourceFilter && !event.source.includes(eventSourceFilter)) {
-          return false;
-        }
-        if (eventSymbolFilter) {
-          const payload = JSON.stringify(event.payload ?? {}).toUpperCase();
-          if (!payload.includes(eventSymbolFilter.toUpperCase())) {
-            return false;
-          }
-        }
-        return true;
-      }),
-    [eventSourceFilter, eventSymbolFilter, eventTypeFilter, events],
+      latestRiskDecisions.find((decision) => decision.decision === "REJECTED") ?? null,
+    [latestRiskDecisions],
   );
 
   return (
@@ -494,15 +519,38 @@ export function DashboardApp() {
               </Panel>
 
               <Panel className="xl:col-span-6" title="Recent Orders">
-                <OrdersTable orders={orders.slice(0, 8)} onSelect={setSelectedOrderId} />
+                <OrdersTable
+                  orders={orders.slice(0, 8)}
+                  onSelect={setSelectedOrderId}
+                  selectedId={selectedOrderId}
+                />
+                <InlineStatus error={getErrorMessage(ordersQuery.error)} />
               </Panel>
 
               <Panel className="xl:col-span-6" title="Recent Backtest Runs">
                 <BacktestRunsTable runs={backtestRuns.slice(0, 8)} onSelect={setSelectedRunId} />
               </Panel>
 
+              <Panel className="xl:col-span-6" title="Latest Risk Rejection">
+                <RiskRejectionSummary
+                  decision={latestRiskRejection}
+                  loading={latestRiskDecisionsQuery.isLoading}
+                  error={getErrorMessage(latestRiskDecisionsQuery.error)}
+                  onOpen={() => {
+                    if (latestRiskRejection) {
+                      setSelectedRiskDecisionId(latestRiskRejection.id);
+                      setSection("risk");
+                    }
+                  }}
+                />
+              </Panel>
+
               <Panel className="xl:col-span-6" title="Recent System Events">
-                <EventsTable events={events.slice(0, 8)} />
+                <EventsTable
+                  events={events.slice(0, 8)}
+                  loading={eventsQuery.isLoading}
+                  error={getErrorMessage(eventsQuery.error)}
+                />
               </Panel>
 
               <Panel className="xl:col-span-6" title="Paper Pipeline Run">
@@ -740,7 +788,68 @@ export function DashboardApp() {
                 />
               </Panel>
               <Panel className="xl:col-span-8" title="Recent Risk Events">
-                <EventsTable events={riskEvents} />
+                <EventsTable
+                  events={riskEvents}
+                  loading={eventsQuery.isLoading}
+                  error={getErrorMessage(eventsQuery.error)}
+                />
+              </Panel>
+              <Panel className="xl:col-span-8" title="Risk Decisions">
+                <div className="mb-3 max-w-xs">
+                  <Field
+                    label="Symbol"
+                    as="select"
+                    value={selectedSymbol}
+                    onChange={setSelectedSymbol}
+                    options={dataSymbols}
+                  />
+                </div>
+                <RiskDecisionsTable
+                  decisions={riskDecisions}
+                  onSelect={setSelectedRiskDecisionId}
+                  selectedId={selectedRiskDecisionId}
+                  loading={riskDecisionsQuery.isLoading}
+                  error={getErrorMessage(riskDecisionsQuery.error)}
+                />
+              </Panel>
+              <Panel className="xl:col-span-4" title="Risk Decision Detail">
+                <KeyValue
+                  items={[
+                    ["Decision ID", selectedRiskDecisionQuery.data?.decision.id ?? "N/A"],
+                    [
+                      "Signal ID",
+                      selectedRiskDecisionQuery.data?.decision.signal_id ?? "N/A",
+                    ],
+                    [
+                      "Strategy",
+                      selectedRiskDecisionQuery.data?.decision.strategy_id ?? "N/A",
+                    ],
+                    ["Symbol", selectedRiskDecisionQuery.data?.decision.symbol ?? "N/A"],
+                    ["Decision", selectedRiskDecisionQuery.data?.decision.decision ?? "N/A"],
+                    [
+                      "Approved Notional",
+                      selectedRiskDecisionQuery.data?.decision.approved_notional ?? "N/A",
+                    ],
+                    [
+                      "Risk Score",
+                      selectedRiskDecisionQuery.data?.decision.risk_score ?? "N/A",
+                    ],
+                    [
+                      "Reasons",
+                      selectedRiskDecisionQuery.data?.decision.reasons.join(", ") || "N/A",
+                    ],
+                    [
+                      "Correlation",
+                      selectedRiskDecisionQuery.data?.decision.correlation_id ?? "N/A",
+                    ],
+                    [
+                      "Created",
+                      formatDateTime(selectedRiskDecisionQuery.data?.decision.created_at),
+                    ],
+                  ]}
+                  loading={selectedRiskDecisionQuery.isLoading}
+                  error={getErrorMessage(selectedRiskDecisionQuery.error)}
+                />
               </Panel>
               <Panel className="xl:col-span-6" title="Activate Kill Switch">
                 <Field
@@ -796,20 +905,46 @@ export function DashboardApp() {
                   items={[
                     ["Order ID", selectedOrderQuery.data?.order.order_id ?? "N/A"],
                     [
+                      "Client Order ID",
+                      selectedOrderQuery.data?.order.client_order_id ?? "N/A",
+                    ],
+                    [
+                      "Exchange Order ID",
+                      selectedOrderQuery.data?.order.exchange_order_id ?? "N/A",
+                    ],
+                    [
+                      "Signal ID",
+                      selectedOrderQuery.data?.order.signal_id ?? "N/A",
+                    ],
+                    [
+                      "Strategy ID",
+                      selectedOrderQuery.data?.order.strategy_id ?? "N/A",
+                    ],
+                    [
+                      "Correlation ID",
+                      selectedOrderQuery.data?.order.correlation_id ?? "N/A",
+                    ],
+                    [
                       "Execution State",
                       selectedOrderQuery.data?.order.execution_state ?? "N/A",
                     ],
                     ["Status", selectedOrderQuery.data?.order.status ?? "N/A"],
+                    ["Side", selectedOrderQuery.data?.order.side ?? "N/A"],
+                    ["Symbol", selectedOrderQuery.data?.order.symbol ?? "N/A"],
+                    ["Mode", selectedOrderQuery.data?.order.mode ?? "N/A"],
                     [
                       "Idempotency Key",
                       selectedOrderQuery.data?.order.idempotency_key ?? "N/A",
                     ],
                     [
-                      "Signal ID",
-                      deriveSignalIdFromCorrelation(
-                        selectedOrderQuery.data?.order.correlation_id,
-                        recentSignals,
-                      ),
+                      "Requested Notional",
+                      selectedOrderQuery.data?.order.requested_notional ?? "N/A",
+                    ],
+                    ["Quantity", selectedOrderQuery.data?.order.quantity ?? "N/A"],
+                    ["Filled Qty", selectedOrderQuery.data?.order.filled_qty ?? "N/A"],
+                    [
+                      "Avg Fill Price",
+                      selectedOrderQuery.data?.order.avg_fill_price ?? "N/A",
                     ],
                     [
                       "Risk Decision ID",
@@ -818,6 +953,14 @@ export function DashboardApp() {
                     [
                       "Status Reason",
                       selectedOrderQuery.data?.order.status_reason ?? "N/A",
+                    ],
+                    [
+                      "Created",
+                      formatDateTime(selectedOrderQuery.data?.order.created_at),
+                    ],
+                    [
+                      "Updated",
+                      formatDateTime(selectedOrderQuery.data?.order.updated_at),
                     ],
                   ]}
                   loading={selectedOrderQuery.isLoading}
@@ -934,13 +1077,17 @@ export function DashboardApp() {
                     placeholder="aegis-quant-api"
                   />
                   <Field
-                    label="Symbol"
-                    value={eventSymbolFilter}
-                    onChange={setEventSymbolFilter}
-                    placeholder="BTCUSDT"
+                    label="Correlation ID"
+                    value={eventCorrelationFilter}
+                    onChange={setEventCorrelationFilter}
+                    placeholder="2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0"
                   />
                 </div>
-                <EventsTable events={filteredEvents} />
+                <EventsTable
+                  events={events}
+                  loading={eventsQuery.isLoading}
+                  error={getErrorMessage(eventsQuery.error)}
+                />
               </Panel>
             </section>
           )}
@@ -1489,7 +1636,112 @@ function BacktestEquityTable({
   );
 }
 
-function EventsTable({ events }: { events: SystemEventRecord[] }) {
+function RiskDecisionsTable({
+  decisions,
+  onSelect,
+  selectedId,
+  loading,
+  error,
+}: {
+  decisions: RiskDecisionRecord[];
+  onSelect: (decisionId: string) => void;
+  selectedId?: string | null;
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading risk decisions..." />;
+  }
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+  if (!decisions.length) {
+    return <EmptyState label="No risk decisions found for this filter." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {decisions.map((decision) => (
+        <button
+          key={decision.id}
+          className={cn(
+            "w-full rounded-xl border p-3 text-left transition",
+            selectedId === decision.id
+              ? "border-accent bg-accent/5"
+              : "border-border bg-surface/60 hover:border-slate-500",
+          )}
+          onClick={() => onSelect(decision.id)}
+        >
+          <div className="grid gap-2 md:grid-cols-6">
+            <div className="font-mono text-xs">{shortenId(decision.id)}</div>
+            <div>{decision.symbol ?? "N/A"}</div>
+            <div>{decision.strategy_id ?? "N/A"}</div>
+            <div>{decision.decision}</div>
+            <div>{decision.risk_score ?? "N/A"}</div>
+            <div>{formatRelativeAge(decision.created_at)}</div>
+          </div>
+          <div className="mt-2 text-xs text-slate-300">
+            {decision.reasons.join(", ") || "No reasons recorded."}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RiskRejectionSummary({
+  decision,
+  loading,
+  error,
+  onOpen,
+}: {
+  decision: RiskDecisionRecord | null;
+  loading?: boolean;
+  error?: string;
+  onOpen: () => void;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading latest rejection..." />;
+  }
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+  if (!decision) {
+    return <EmptyState label="No recent risk rejection." />;
+  }
+
+  return (
+    <div className="space-y-3">
+      <KeyValue
+        items={[
+          ["Decision ID", decision.id],
+          ["Symbol", decision.symbol ?? "N/A"],
+          ["Strategy", decision.strategy_id ?? "N/A"],
+          ["Risk Score", decision.risk_score ?? "N/A"],
+          ["Created", formatDateTime(decision.created_at)],
+          ["Reasons", decision.reasons.join(", ") || "N/A"],
+        ]}
+      />
+      <ActionButton label="Open Risk Screen" onClick={onOpen} tone="warning" />
+    </div>
+  );
+}
+
+function EventsTable({
+  events,
+  loading,
+  error,
+}: {
+  events: SystemEventRecord[];
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading events..." />;
+  }
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
   if (!events.length) {
     return <EmptyState label="No events available." />;
   }
@@ -1571,11 +1823,6 @@ function computeDataAge(feeds: MarketFeedStatusRecord[], tickTimes: Array<string
   return formatRelativeAge(
     timestamps.sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0],
   );
-}
-
-function deriveSignalIdFromCorrelation(correlationId?: string, signals?: Array<{ id: string; correlation_id: string }>) {
-  const signal = signals?.find((item) => item.correlation_id === correlationId);
-  return signal?.id ?? "Unavailable";
 }
 
 function trimJson(payload: unknown) {

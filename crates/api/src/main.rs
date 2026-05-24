@@ -19,15 +19,16 @@ use chrono::Utc;
 use db::{
     backtest_result_from_record, check_health, connect_pool, create_paper_order,
     ensure_system_state, get_backtest_equity_curve, get_backtest_run, get_backtest_trades,
-    get_latest_market_tick, get_order_by_id, get_recent_closed_candles, get_strategy_status,
-    get_system_event, get_system_state, insert_risk_evaluation, insert_signal_deduped,
-    list_backtest_runs, list_candles, list_market_feed_statuses, list_orders, list_recent_signals,
-    list_recent_system_events, list_strategy_status, load_risk_state_snapshot,
+    get_latest_market_tick, get_order_by_id, get_recent_closed_candles, get_risk_decision_by_id,
+    get_strategy_status, get_system_event, get_system_state, insert_risk_evaluation,
+    insert_signal_deduped, list_backtest_runs, list_candles, list_market_feed_statuses,
+    list_orders, list_recent_risk_decisions_filtered, list_recent_signals,
+    list_recent_system_events_filtered, list_strategy_status, load_risk_state_snapshot,
     set_kill_switch_state, strategy_config_from_record, update_strategy_state,
     upsert_strategy_config, BacktestEquityPointRecord, BacktestTradeRecord, CandleRecord,
     CreateOrderError, DbConfig, InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord,
-    OrderRecord, PgPool, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
-    SystemStateRecord,
+    OrderRecord, PgPool, RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord,
+    SystemEventRecord, SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use market_ingest::MarketIngestConfig;
@@ -42,8 +43,10 @@ use uuid::Uuid;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const CORRELATION_ID_HEADER: HeaderName = HeaderName::from_static("x-correlation-id");
-const DEFAULT_RECENT_EVENTS_LIMIT: i64 = 50;
-const MAX_RECENT_EVENTS_LIMIT: i64 = 200;
+const DEFAULT_RECENT_EVENTS_LIMIT: i64 = 100;
+const MAX_RECENT_EVENTS_LIMIT: i64 = 500;
+const DEFAULT_RISK_DECISIONS_LIMIT: i64 = 50;
+const MAX_RISK_DECISIONS_LIMIT: i64 = 200;
 const DEFAULT_CANDLE_LIMIT: i64 = 100;
 const MAX_CANDLE_LIMIT: i64 = 1_000;
 
@@ -202,6 +205,15 @@ struct DependencyStatus {
 #[derive(Deserialize)]
 struct RecentEventsQuery {
     limit: Option<i64>,
+    event_type: Option<String>,
+    source: Option<String>,
+    correlation_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RiskDecisionsQuery {
+    symbol: Option<String>,
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -212,6 +224,36 @@ struct BacktestRunsQuery {
 #[derive(Serialize)]
 struct RecentEventsResponse {
     events: Vec<SystemEventRecord>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskDecisionView {
+    id: Uuid,
+    signal_id: Option<Uuid>,
+    decision: String,
+    approved_notional: Option<String>,
+    risk_score: Option<String>,
+    reasons: Vec<String>,
+    created_at: chrono::DateTime<Utc>,
+    correlation_id: Uuid,
+    strategy_id: Option<String>,
+    symbol: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RiskDecisionsResponse {
+    decisions: Vec<RiskDecisionView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskDecisionResponse {
+    decision: RiskDecisionView,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -320,7 +362,7 @@ struct CreatePaperOrderRequest {
 
 #[derive(Serialize)]
 struct OrderResponse {
-    order: OrderRecord,
+    order: OrderView,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -328,10 +370,43 @@ struct OrderResponse {
 
 #[derive(Serialize)]
 struct OrdersResponse {
-    orders: Vec<OrderRecord>,
+    orders: Vec<OrderView>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct OrderView {
+    order_id: Uuid,
+    client_order_id: String,
+    exchange_order_id: Option<String>,
+    signal_id: Option<Uuid>,
+    risk_decision_id: Uuid,
+    strategy_id: Option<String>,
+    symbol: String,
+    side: String,
+    status: String,
+    execution_state: String,
+    idempotency_key: String,
+    requested_notional: Option<String>,
+    quantity: String,
+    filled_qty: String,
+    limit_price: Option<String>,
+    filled_price: Option<String>,
+    avg_fill_price: Option<String>,
+    mode: String,
+    market_mode: String,
+    status_reason: Option<String>,
+    correlation_id: Uuid,
+    submitted_at: Option<chrono::DateTime<Utc>>,
+    filled_at: Option<chrono::DateTime<Utc>>,
+    cancelled_at: Option<chrono::DateTime<Utc>>,
+    rejected_at: Option<chrono::DateTime<Utc>>,
+    expired_at: Option<chrono::DateTime<Utc>>,
+    expires_at: Option<chrono::DateTime<Utc>>,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
 }
 
 #[derive(Serialize)]
@@ -555,6 +630,8 @@ async fn main() {
         .route("/events/recent", get(recent_events))
         .route("/events/:id", get(event_by_id))
         .route("/risk/status", get(risk_status))
+        .route("/risk/decisions", get(get_risk_decisions))
+        .route("/risk/decisions/:id", get(get_risk_decision))
         .route("/risk/kill-switch", post(enable_kill_switch))
         .route("/risk/resume", post(resume_trading))
         .route("/risk/evaluate", post(evaluate_risk))
@@ -671,10 +748,21 @@ fn request_context(request: Option<Extension<RequestContext>>) -> RequestContext
         })
 }
 
-fn bounded_limit(limit: Option<i64>) -> i64 {
+fn bounded_recent_events_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(value) if value > 0 => value.min(MAX_RECENT_EVENTS_LIMIT),
         _ => DEFAULT_RECENT_EVENTS_LIMIT,
+    }
+}
+
+fn bounded_limit(limit: Option<i64>) -> i64 {
+    bounded_recent_events_limit(limit)
+}
+
+fn bounded_risk_decisions_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_RISK_DECISIONS_LIMIT),
+        _ => DEFAULT_RISK_DECISIONS_LIMIT,
     }
 }
 
@@ -787,6 +875,15 @@ fn default_actor() -> StateActor {
     StateActor::system("anonymous")
 }
 
+fn parse_correlation_id_filter(value: Option<&str>) -> Result<Option<Uuid>, String> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) => Uuid::parse_str(raw)
+            .map(Some)
+            .map_err(|err| format!("invalid correlation_id: {err}")),
+        None => Ok(None),
+    }
+}
+
 fn map_kill_switch(state: SystemStateRecord) -> KillSwitchResponse {
     KillSwitchResponse {
         enabled: state.kill_switch_enabled,
@@ -838,6 +935,65 @@ fn risk_action_response(
         request_id: request.request_id,
         correlation_id: request.correlation_id,
         timestamp: Utc::now(),
+    }
+}
+
+fn risk_decision_not_found_error(request: &RequestContext) -> ErrorResponse {
+    ErrorResponse {
+        error: "risk_decision_not_found",
+        message: "Risk decision was not found.".to_string(),
+        request_id: request.request_id.clone(),
+        correlation_id: request.correlation_id.clone(),
+        timestamp: Utc::now(),
+    }
+}
+
+fn risk_decision_view(record: RiskDecisionRecord) -> RiskDecisionView {
+    RiskDecisionView {
+        id: record.risk_decision_id,
+        signal_id: record.signal_id,
+        decision: record.decision,
+        approved_notional: record.approved_notional.map(|value| value.to_string()),
+        risk_score: record.risk_score.map(|value| value.to_string()),
+        reasons: record.reasons,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
+        strategy_id: record.strategy_id,
+        symbol: record.symbol,
+    }
+}
+
+fn order_view(record: OrderRecord) -> OrderView {
+    OrderView {
+        order_id: record.order_id,
+        client_order_id: record.client_order_id,
+        exchange_order_id: record.exchange_order_id,
+        signal_id: record.signal_id,
+        risk_decision_id: record.risk_decision_id,
+        strategy_id: record.strategy_id,
+        symbol: record.symbol,
+        side: record.side,
+        status: record.status,
+        execution_state: record.execution_state,
+        idempotency_key: record.idempotency_key,
+        requested_notional: record.requested_notional.map(|value| value.to_string()),
+        quantity: record.quantity.to_string(),
+        filled_qty: record.filled_qty.to_string(),
+        limit_price: record.limit_price.map(|value| value.to_string()),
+        filled_price: record.filled_price.map(|value| value.to_string()),
+        avg_fill_price: record.avg_fill_price.map(|value| value.to_string()),
+        mode: record.mode,
+        market_mode: record.market_mode,
+        status_reason: record.status_reason,
+        correlation_id: record.correlation_id,
+        submitted_at: record.submitted_at,
+        filled_at: record.filled_at,
+        cancelled_at: record.cancelled_at,
+        rejected_at: record.rejected_at,
+        expired_at: record.expired_at,
+        expires_at: record.expires_at,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
     }
 }
 
@@ -930,9 +1086,33 @@ async fn recent_events(
     request: Option<Extension<RequestContext>>,
 ) -> impl IntoResponse {
     let request = request_context(request);
-    let limit = bounded_limit(query.limit);
+    let limit = bounded_recent_events_limit(query.limit);
+    let correlation_id = match parse_correlation_id_filter(query.correlation_id.as_deref()) {
+        Ok(value) => value,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_correlation_id",
+                    message,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
 
-    match list_recent_system_events(&state.db_pool, limit).await {
+    match list_recent_system_events_filtered(
+        &state.db_pool,
+        limit,
+        query.event_type.as_deref(),
+        query.source.as_deref(),
+        correlation_id,
+    )
+    .await
+    {
         Ok(events) => (
             StatusCode::OK,
             Json(RecentEventsResponse {
@@ -956,6 +1136,96 @@ async fn recent_events(
                 Json(ErrorResponse {
                     error: "failed_to_query_events",
                     message: "Failed to query recent system events.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_risk_decisions(
+    State(state): State<AppState>,
+    Query(query): Query<RiskDecisionsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let limit = bounded_risk_decisions_limit(query.limit);
+
+    match list_recent_risk_decisions_filtered(&state.db_pool, query.symbol.as_deref(), limit).await
+    {
+        Ok(decisions) => (
+            StatusCode::OK,
+            Json(RiskDecisionsResponse {
+                decisions: decisions.into_iter().map(risk_decision_view).collect(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query risk decisions"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_risk_decisions",
+                    message: "Failed to query persisted risk decisions.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_risk_decision(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match get_risk_decision_by_id(&state.db_pool, id).await {
+        Ok(Some(decision)) => (
+            StatusCode::OK,
+            Json(RiskDecisionResponse {
+                decision: risk_decision_view(decision),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(risk_decision_not_found_error(&request)),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                risk_decision_id = %id,
+                error = %err,
+                "failed to query risk decision"
+            );
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_risk_decision",
+                    message: "Failed to query the requested risk decision.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -1439,7 +1709,7 @@ async fn create_order(
         Ok(outcome) => (
             StatusCode::CREATED,
             Json(OrderResponse {
-                order: outcome.order,
+                order: order_view(outcome.order),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
@@ -1875,7 +2145,7 @@ async fn get_orders(
         Ok(orders) => (
             StatusCode::OK,
             Json(OrdersResponse {
-                orders,
+                orders: orders.into_iter().map(order_view).collect(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
@@ -1916,7 +2186,7 @@ async fn get_order(
         Ok(Some(order)) => (
             StatusCode::OK,
             Json(OrderResponse {
-                order,
+                order: order_view(order),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
@@ -2805,25 +3075,66 @@ async fn evaluate_strategy_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_limit, is_valid_resume_confirmation, parse_order_intent, parse_risk_check_context,
-        DEFAULT_RECENT_EVENTS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
+        bounded_recent_events_limit, bounded_risk_decisions_limit, is_valid_resume_confirmation,
+        order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
+        risk_decision_not_found_error, RequestContext, DEFAULT_RECENT_EVENTS_LIMIT,
+        DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
     };
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::Side;
     use chrono::Utc;
+    use db::OrderRecord;
+    use rust_decimal::Decimal;
     use uuid::Uuid;
 
     #[test]
     fn recent_events_limit_defaults_when_missing_or_invalid() {
-        assert_eq!(bounded_limit(None), DEFAULT_RECENT_EVENTS_LIMIT);
-        assert_eq!(bounded_limit(Some(0)), DEFAULT_RECENT_EVENTS_LIMIT);
-        assert_eq!(bounded_limit(Some(-1)), DEFAULT_RECENT_EVENTS_LIMIT);
+        assert_eq!(
+            bounded_recent_events_limit(None),
+            DEFAULT_RECENT_EVENTS_LIMIT
+        );
+        assert_eq!(
+            bounded_recent_events_limit(Some(0)),
+            DEFAULT_RECENT_EVENTS_LIMIT
+        );
+        assert_eq!(
+            bounded_recent_events_limit(Some(-1)),
+            DEFAULT_RECENT_EVENTS_LIMIT
+        );
     }
 
     #[test]
     fn recent_events_limit_is_capped() {
-        assert_eq!(bounded_limit(Some(25)), 25);
-        assert_eq!(bounded_limit(Some(10_000)), MAX_RECENT_EVENTS_LIMIT);
+        assert_eq!(bounded_recent_events_limit(Some(25)), 25);
+        assert_eq!(
+            bounded_recent_events_limit(Some(10_000)),
+            MAX_RECENT_EVENTS_LIMIT
+        );
+    }
+
+    #[test]
+    fn risk_decisions_limit_defaults_when_missing_or_invalid() {
+        assert_eq!(
+            bounded_risk_decisions_limit(None),
+            DEFAULT_RISK_DECISIONS_LIMIT
+        );
+        assert_eq!(
+            bounded_risk_decisions_limit(Some(0)),
+            DEFAULT_RISK_DECISIONS_LIMIT
+        );
+        assert_eq!(
+            bounded_risk_decisions_limit(Some(-1)),
+            DEFAULT_RISK_DECISIONS_LIMIT
+        );
+    }
+
+    #[test]
+    fn risk_decisions_limit_is_capped() {
+        assert_eq!(bounded_risk_decisions_limit(Some(25)), 25);
+        assert_eq!(
+            bounded_risk_decisions_limit(Some(10_000)),
+            MAX_RISK_DECISIONS_LIMIT
+        );
     }
 
     #[test]
@@ -2874,5 +3185,71 @@ mod tests {
             intent.correlation_id,
             Uuid::parse_str("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0").expect("valid uuid")
         );
+    }
+
+    #[test]
+    fn correlation_id_filter_rejects_invalid_uuid() {
+        assert!(parse_correlation_id_filter(Some("not-a-uuid")).is_err());
+        assert_eq!(
+            parse_correlation_id_filter(Some("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0"))
+                .expect("valid filter"),
+            Some(Uuid::parse_str("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0").expect("valid uuid"))
+        );
+    }
+
+    #[test]
+    fn order_view_exposes_signal_id_and_requested_notional() {
+        let record = OrderRecord {
+            order_id: Uuid::from_u128(0x11),
+            correlation_id: Uuid::from_u128(0x12),
+            risk_decision_id: Uuid::from_u128(0x13),
+            idempotency_key: "momentum_v1:btc:123".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            side: "BUY".to_string(),
+            quantity: Decimal::ONE,
+            limit_price: Some(Decimal::new(100_000, 0)),
+            market_mode: "paper".to_string(),
+            status: "FILLED".to_string(),
+            execution_state: "PaperFilled".to_string(),
+            status_reason: None,
+            filled_price: Some(Decimal::new(100_100, 0)),
+            client_order_id: "momentum_v1:btc:123".to_string(),
+            exchange_order_id: None,
+            signal_id: Some(Uuid::from_u128(0x14)),
+            strategy_id: Some("momentum_v1".to_string()),
+            requested_notional: Some(Decimal::new(100_000, 0)),
+            filled_qty: Decimal::ONE,
+            avg_fill_price: Some(Decimal::new(100_100, 0)),
+            mode: "paper".to_string(),
+            submitted_at: None,
+            filled_at: None,
+            cancelled_at: None,
+            rejected_at: None,
+            expired_at: None,
+            expires_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let view = order_view(record);
+
+        assert_eq!(view.signal_id, Some(Uuid::from_u128(0x14)));
+        assert_eq!(view.requested_notional.as_deref(), Some("100000"));
+        assert_eq!(view.client_order_id, "momentum_v1:btc:123");
+    }
+
+    #[test]
+    fn risk_decision_not_found_error_uses_expected_message() {
+        let request = RequestContext {
+            request_id: "req-1".to_string(),
+            correlation_id: "corr-1".to_string(),
+        };
+
+        let error = risk_decision_not_found_error(&request);
+
+        assert_eq!(error.error, "risk_decision_not_found");
+        assert_eq!(error.message, "Risk decision was not found.");
+        assert_eq!(error.request_id, "req-1");
+        assert_eq!(error.correlation_id, "corr-1");
     }
 }

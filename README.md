@@ -44,6 +44,11 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/market/feed-status'`
    `curl 'http://127.0.0.1:3000/strategy/list'`
    `curl 'http://127.0.0.1:3000/signals/recent?symbol=BTCUSDT&limit=50'`
+   `curl 'http://127.0.0.1:3000/risk/decisions?symbol=BTCUSDT&limit=50'`
+   `curl 'http://127.0.0.1:3000/risk/decisions/<risk_decision_id>'`
+   `curl 'http://127.0.0.1:3000/orders'`
+   `curl 'http://127.0.0.1:3000/orders/<order_id>'`
+   `curl 'http://127.0.0.1:3000/events/recent?limit=100&event_type=risk.rejected&source=aegis-quant-api'`
    `curl 'http://127.0.0.1:3000/backtest/runs?limit=10'`
 8. Start the dashboard:
    `cd apps/dashboard`
@@ -93,6 +98,13 @@ Safety constraints:
 - No API key entry
 - Resume requires typed confirmation exactly equal to `RESUME TRADING`
 - Kill switch activation and resume both flow through the existing backend endpoints
+
+Operational inspection additions:
+
+- Risk screen reads persisted risk decisions through `/risk/decisions` and `/risk/decisions/:id`
+- Orders expose true `signal_id` linkage through the persisted `risk_decision_id`, not dashboard-side correlation guesses
+- Events screen reads server-filtered `/events/recent` rows by `event_type`, `source`, and `correlation_id`
+- Command Center surfaces the latest persisted risk rejection without adding any live-trading controls
 
 Local frontend env:
 

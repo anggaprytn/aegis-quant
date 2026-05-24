@@ -15,13 +15,19 @@
 11. Deterministic replay/backtest MVP on stored candles and persisted strategy configs
 12. Minimal operational dashboard shell for paper-only inspection and control
 
+## Current status
+
+- Completed: persistent kill switch, deterministic risk evaluation, Binance public ingest, deterministic candle building, strategy signal generation, paper-only order lifecycle, replay/backtest MVP, DB-backed integration harness, and minimal dashboard shell
+- Completed: cockpit inspection APIs for persisted risk decisions, enriched order inspection, and filtered recent events
+- Current focus: tighten operator visibility and truthful paper-state inspection before any new product surface area
+
 ## Next implementation steps
 
-1. Extend replay/backtest with richer sizing, short/flat state, and research workflows
+1. Add paper trading reconciliation and lifecycle extensions
 2. Add richer risk rules using data freshness and position state
-3. Add paper trading reconciliation and lifecycle extensions
-4. Add kill switch operator workflows and monitoring polish
-5. Add strategy scheduling and bounded automation around the existing pipeline
+3. Add kill switch operator workflows and monitoring polish
+4. Add strategy scheduling and bounded automation around the existing pipeline
+5. Extend replay/backtest with richer sizing, short/flat state, and research workflows
 6. Add simple charts only when the operational shell is already stable
 
 ## Explicitly deferred
