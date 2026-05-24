@@ -17,6 +17,11 @@ import type {
   CandleBackfillRunsResponse,
   CandlesResponse,
   EvaluateStrategyResponse,
+  ExchangeReconciliationMismatchesResponse,
+  ExchangeReconciliationRequest,
+  ExchangeReconciliationResultResponse,
+  ExchangeReconciliationRunResponse,
+  ExchangeReconciliationRunsResponse,
   ExchangeTestnetBalancesResponse,
   ExchangeTestnetOrderResponse,
   ExchangeTestnetOrdersResponse,
@@ -271,6 +276,25 @@ export const api = {
     request<ExchangeTestnetBalancesResponse>("/exchange/testnet/balances"),
   getExchangeTestnetOrders: (limit = 20) =>
     request<ExchangeTestnetOrdersResponse>("/exchange/testnet/orders", undefined, { limit }),
+  reconcileExchangeTestnetOrders: (payload: ExchangeReconciliationRequest) =>
+    request<ExchangeReconciliationResultResponse>("/exchange/testnet/reconcile", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getExchangeReconciliationRuns: (limit = 20) =>
+    request<ExchangeReconciliationRunsResponse>(
+      "/exchange/testnet/reconciliation/runs",
+      undefined,
+      { limit },
+    ),
+  getExchangeReconciliationRun: (runId: string) =>
+    request<ExchangeReconciliationRunResponse>(
+      `/exchange/testnet/reconciliation/runs/${runId}`,
+    ),
+  getExchangeReconciliationMismatches: (runId: string) =>
+    request<ExchangeReconciliationMismatchesResponse>(
+      `/exchange/testnet/reconciliation/runs/${runId}/mismatches`,
+    ),
   submitExchangeTestnetOrder: (payload: Record<string, unknown>) =>
     request<ExchangeTestnetOrderResponse>("/exchange/testnet/orders", {
       method: "POST",

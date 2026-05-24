@@ -1,23 +1,27 @@
 use aegis_core::{
     BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle,
     CandleBackfillRequest, CandleBackfillStatus, CandleInterval, MarketDataSource, OrderIntent,
-    ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId,
-    StrategySignal, Symbol,
+    ExchangeReconciliationSummary, ReplayRunStatus, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
+    SignalConfidence, SignalReason, SignalSide, StrategyId, StrategySignal, Symbol,
 };
 use chrono::{TimeZone, Utc};
 use db::{
     count_candles_range, create_paper_order, get_backtest_equity_curve, get_backtest_run,
     get_backtest_trades, get_candle_backfill_run, get_closed_candles_range,
+    fail_exchange_reconciliation_run, get_exchange_reconciliation_run,
     get_order_by_idempotency_key, get_risk_decision, get_system_state,
     insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_candle_backfill_run, insert_risk_decision, insert_signal_deduped, list_orders,
+    insert_candle_backfill_run, insert_exchange_reconciliation_mismatch,
+    insert_exchange_reconciliation_run, insert_exchange_testnet_order, insert_risk_decision,
+    insert_signal_deduped, list_exchange_reconciliation_mismatches, list_orders,
     list_recent_signals, set_kill_switch_state, test_support::TestDatabase,
     update_backtest_run_completed, upsert_candle, upsert_candles_batch, CreateOrderError,
-    StateActor,
+    ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
+    ExchangeTestnetOrderRecord, StateActor,
 };
 use rust_decimal::Decimal;
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 fn fixed_time() -> chrono::DateTime<Utc> {
@@ -140,6 +144,47 @@ fn sample_backfill_request() -> CandleBackfillRequest {
     }
 }
 
+fn sample_exchange_testnet_order_record() -> ExchangeTestnetOrderRecord {
+    ExchangeTestnetOrderRecord {
+        id: Uuid::new_v4(),
+        exchange: "binance".to_string(),
+        environment: "testnet".to_string(),
+        client_order_id: format!("aegis-testnet-{}", Uuid::new_v4()),
+        exchange_order_id: Some("123".to_string()),
+        symbol: "BTCUSDT".to_string(),
+        side: "BUY".to_string(),
+        order_type: "LIMIT".to_string(),
+        time_in_force: Some("GTC".to_string()),
+        requested_qty: Some(Decimal::ONE),
+        requested_notional: None,
+        limit_price: Some(Decimal::new(100_000, 0)),
+        status: "NEW".to_string(),
+        ack_payload: Some(json!({"status":"NEW"})),
+        latest_status_payload: Some(json!({"status":"NEW"})),
+        risk_decision_id: None,
+        created_by: None,
+        created_at: fixed_time(),
+        updated_at: fixed_time(),
+    }
+}
+
+fn sample_exchange_reconciliation_run_record() -> ExchangeReconciliationRunRecord {
+    ExchangeReconciliationRunRecord {
+        id: Uuid::new_v4(),
+        exchange: "binance".to_string(),
+        environment: "testnet".to_string(),
+        status: "RUNNING".to_string(),
+        checked_orders: 0,
+        matched_orders: 0,
+        mismatched_orders: 0,
+        unknown_orders: 0,
+        failed_reason: None,
+        correlation_id: Uuid::new_v4(),
+        started_at: fixed_time(),
+        completed_at: None,
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
 async fn kill_switch_persists_across_sessions() {
@@ -232,6 +277,95 @@ async fn duplicate_signal_is_deduped_cleanly() {
         .await
         .expect("signals should list");
     assert_eq!(signals.len(), 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn exchange_reconciliation_run_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let run = sample_exchange_reconciliation_run_record();
+
+    let inserted = insert_exchange_reconciliation_run(&test_db.pool, &run)
+        .await
+        .expect("run should persist");
+    let loaded = get_exchange_reconciliation_run(&test_db.pool, inserted.id)
+        .await
+        .expect("run query should succeed")
+        .expect("run should exist");
+
+    assert_eq!(loaded.id, inserted.id);
+    assert_eq!(loaded.status, "RUNNING");
+    assert_eq!(loaded.environment, "testnet");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn exchange_reconciliation_mismatch_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let order = sample_exchange_testnet_order_record();
+    insert_exchange_testnet_order(&test_db.pool, &order)
+        .await
+        .expect("order should persist");
+    let run = insert_exchange_reconciliation_run(&test_db.pool, &sample_exchange_reconciliation_run_record())
+        .await
+        .expect("run should persist");
+
+    insert_exchange_reconciliation_mismatch(
+        &test_db.pool,
+        &ExchangeReconciliationMismatchRecord {
+            id: Uuid::new_v4(),
+            run_id: run.id,
+            client_order_id: order.client_order_id.clone(),
+            local_status: Some("NEW".to_string()),
+            exchange_status: Some("FILLED".to_string()),
+            mismatch_kind: "STATUS_MISMATCH".to_string(),
+            action: "UPDATE_LOCAL_STATUS".to_string(),
+            payload: json!({ "reason": "test" }),
+            created_at: fixed_time(),
+        },
+    )
+    .await
+    .expect("mismatch should persist");
+
+    let mismatches = list_exchange_reconciliation_mismatches(&test_db.pool, run.id)
+        .await
+        .expect("mismatch query should succeed");
+
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(mismatches[0].client_order_id, order.client_order_id);
+    assert_eq!(mismatches[0].mismatch_kind, "STATUS_MISMATCH");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn failed_exchange_reconciliation_run_persists_failed_reason() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let run = insert_exchange_reconciliation_run(&test_db.pool, &sample_exchange_reconciliation_run_record())
+        .await
+        .expect("run should persist");
+
+    let summary = ExchangeReconciliationSummary {
+        checked_orders: 1,
+        matched_orders: 0,
+        mismatched_orders: 0,
+        unknown_orders: 0,
+    };
+    fail_exchange_reconciliation_run(&test_db.pool, run.id, &summary, "transport failure")
+        .await
+        .expect("run failure should persist");
+
+    let loaded = get_exchange_reconciliation_run(&test_db.pool, run.id)
+        .await
+        .expect("run query should succeed")
+        .expect("run should exist");
+    assert_eq!(loaded.status, "FAILED");
+    assert_eq!(loaded.failed_reason.as_deref(), Some("transport failure"));
 }
 
 #[tokio::test]

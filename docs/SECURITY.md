@@ -26,6 +26,8 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - `/metrics` exposes operational state only, not secrets, but it should still be restricted at the network boundary in production
 - Testnet submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
+- Testnet reconciliation is isolated in `exchange_reconciliation_runs` and `exchange_reconciliation_mismatches`, is operator-triggered, and never reads secrets from the CLI or dashboard
+- Reconciliation mismatches and failure events must not include API secrets or high-cardinality metric labels
 - Binance private REST support is testnet-only, signs requests with HMAC SHA256, and does not log API secrets
 - Production Binance env vars and withdrawal endpoints are intentionally absent
 

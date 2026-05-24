@@ -100,6 +100,10 @@ pub enum ExchangeTestnetCommands {
     OrderSubmit(ExchangeTestnetOrderSubmitArgs),
     OrderGet { client_order_id: String },
     OrderCancel(ExchangeTestnetOrderCancelArgs),
+    Reconcile(ExchangeTestnetReconcileArgs),
+    ReconciliationRuns(ExchangeReconciliationRunsArgs),
+    ReconciliationGet { run_id: Uuid },
+    ReconciliationMismatches { run_id: Uuid },
 }
 
 #[derive(Debug, Args)]
@@ -129,6 +133,20 @@ pub struct ExchangeTestnetOrderCancelArgs {
     pub client_order_id: String,
     #[arg(long)]
     pub confirm: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetReconcileArgs {
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
+    #[arg(long = "status-filter")]
+    pub status_filter: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeReconciliationRunsArgs {
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Subcommand)]

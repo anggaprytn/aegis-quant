@@ -5,7 +5,8 @@ use serde::Serialize;
 
 use crate::api::{
     BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
-    CandleBackfillRunsResponse, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
+    CandleBackfillRunsResponse, ExchangeReconciliationMismatchRecord, ExchangeReconciliationResult,
+    ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
     ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse, FeedStatusResponse,
     HealthResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
     PaperEquityResponse, PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse,
@@ -149,6 +150,70 @@ pub fn print_exchange_testnet_order(response: &ExchangeTestnetOrderResponse) {
         "Requested quote notional: {}",
         order.requested_notional.as_deref().unwrap_or("-")
     );
+}
+
+pub fn print_exchange_reconciliation_result(result: &ExchangeReconciliationResult) {
+    println!("Run ID: {}", result.run_id);
+    println!("Status: {}", result.status);
+    println!("Checked orders: {}", result.checked_orders);
+    println!("Matched orders: {}", result.matched_orders);
+    println!("Mismatched orders: {}", result.mismatched_orders);
+    println!("Unknown orders: {}", result.unknown_orders);
+    println!("Correlation ID: {}", result.correlation_id);
+}
+
+pub fn print_exchange_reconciliation_runs(runs: &[ExchangeReconciliationRunRecord]) {
+    for run in runs {
+        println!(
+            "{} status={} checked={} matched={} mismatched={} unknown={} started_at={}",
+            run.id,
+            run.status,
+            run.checked_orders,
+            run.matched_orders,
+            run.mismatched_orders,
+            run.unknown_orders,
+            run.started_at
+        );
+    }
+}
+
+pub fn print_exchange_reconciliation_run(run: &ExchangeReconciliationRunRecord) {
+    println!("Run ID: {}", run.id);
+    println!("Exchange: {}", run.exchange);
+    println!("Environment: {}", run.environment);
+    println!("Status: {}", run.status);
+    println!("Checked orders: {}", run.checked_orders);
+    println!("Matched orders: {}", run.matched_orders);
+    println!("Mismatched orders: {}", run.mismatched_orders);
+    println!("Unknown orders: {}", run.unknown_orders);
+    println!(
+        "Failed reason: {}",
+        run.failed_reason.as_deref().unwrap_or("-")
+    );
+    println!("Started at: {}", run.started_at);
+    println!(
+        "Completed at: {}",
+        run.completed_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!("Correlation ID: {}", run.correlation_id);
+}
+
+pub fn print_exchange_reconciliation_mismatches(
+    mismatches: &[ExchangeReconciliationMismatchRecord],
+) {
+    for mismatch in mismatches {
+        println!(
+            "{} client_order_id={} local_status={} exchange_status={} kind={} action={}",
+            mismatch.id,
+            mismatch.client_order_id,
+            mismatch.local_status.as_deref().unwrap_or("-"),
+            mismatch.exchange_status.as_deref().unwrap_or("-"),
+            mismatch.mismatch_kind,
+            mismatch.action
+        );
+    }
 }
 
 pub fn print_risk_action(response: &RiskActionResponse) {

@@ -1,4 +1,5 @@
 mod auth;
+mod exchange_reconcile;
 mod pipeline;
 
 use std::{env, net::SocketAddr, time::Instant};
@@ -11,15 +12,17 @@ use aegis_core::{
     AuthenticatedActor, BacktestRequest, CandleBackfillRequest, CandleBackfillResult,
     CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
     ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
-    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeRateLimitState, ExchangeRequestMode,
-    ExchangeSymbolInfo, MarketMode, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
-    PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDryRunRequest, StrategyDryRunResult, StrategyEvaluationContext, StrategyId,
-    StrategyStatus, Symbol, UserRole, UserStatus,
+    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeRateLimitState,
+    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
+    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo, MarketMode, OrderIntent,
+    PaperCloseMode, PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol, UserRole,
+    UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
@@ -48,16 +51,17 @@ use db::{
     insert_exchange_testnet_order, insert_paper_account, insert_paper_equity_snapshot,
     insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
     insert_strategy_config_audit, insert_system_event, insert_user, list_backtest_runs,
-    list_candle_backfill_runs, list_candles, list_exchange_testnet_orders,
-    list_market_feed_statuses, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
-    list_paper_positions, list_paper_trade_journal, list_recent_risk_decisions_filtered,
-    list_recent_signals, list_recent_system_events_filtered, list_risk_config_audit,
-    list_risk_config_versions, list_strategy_config_audit, list_strategy_config_versions,
-    list_strategy_status, load_risk_state_snapshot, paper_account_from_record,
-    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
-    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
-    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
+    list_candle_backfill_runs, list_candles, list_exchange_reconciliation_mismatches,
+    list_exchange_reconciliation_runs, list_exchange_testnet_orders, list_market_feed_statuses,
+    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
+    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
+    list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
+    list_strategy_config_audit, list_strategy_config_versions, list_strategy_status,
+    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
+    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
+    revoke_session, risk_config_audit_from_record, risk_config_from_record,
+    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
+    strategy_config_audit_from_record, strategy_config_from_record,
     strategy_config_version_from_record, update_exchange_testnet_order_ack,
     update_exchange_testnet_order_status, update_strategy_state, update_user_last_login,
     upsert_paper_position, upsert_risk_config, upsert_strategy_config, user_from_record,
@@ -84,6 +88,11 @@ use strategy_engine::{
 use telemetry::telemetry;
 use tracing::{error, info};
 use uuid::Uuid;
+
+use crate::exchange_reconcile::{
+    local_testnet_status_from_exchange_state, mismatch_from_record, reconcile_testnet_orders,
+    run_from_record, run_result_from_run, ReconcileTestnetOrdersError,
+};
 
 use crate::auth::{
     actor_from_claims, bootstrap_credentials, build_refresh_cookie, clear_refresh_cookie,
@@ -569,6 +578,38 @@ struct ExchangeTestnetOrdersResponse {
 }
 
 #[derive(Serialize)]
+struct ExchangeReconciliationRunResponse {
+    run: ExchangeReconciliationRun,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeReconciliationRunsResponse {
+    runs: Vec<ExchangeReconciliationRun>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeReconciliationMismatchesResponse {
+    mismatches: Vec<ExchangeReconciliationMismatch>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeReconciliationResultResponse {
+    result: ExchangeReconciliationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ExchangeTestnetOrderView {
     id: Uuid,
     exchange: String,
@@ -594,6 +635,18 @@ struct ExchangeTestnetOrderView {
 #[derive(Deserialize)]
 struct ExchangeTestnetOrdersQuery {
     limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ExchangeReconciliationRunsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ReconcileExchangeTestnetOrdersRequest {
+    limit: Option<i64>,
+    status_filter: Option<Vec<String>>,
+    correlation_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -1130,6 +1183,22 @@ async fn main() {
             "/exchange/testnet/orders/:client_order_id/cancel",
             post(cancel_exchange_testnet_order),
         )
+        .route(
+            "/exchange/testnet/reconcile",
+            post(reconcile_exchange_testnet_orders_handler),
+        )
+        .route(
+            "/exchange/testnet/reconciliation/runs",
+            get(list_exchange_reconciliation_runs_handler),
+        )
+        .route(
+            "/exchange/testnet/reconciliation/runs/:id",
+            get(get_exchange_reconciliation_run_handler),
+        )
+        .route(
+            "/exchange/testnet/reconciliation/runs/:id/mismatches",
+            get(list_exchange_reconciliation_mismatches_handler),
+        )
         .route("/paper/orders", post(create_order))
         .route("/paper/pipeline/run", post(run_paper_pipeline_handler))
         .route("/paper/account", get(get_paper_account))
@@ -1496,6 +1565,9 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     if method == axum::http::Method::GET && path == "/exchange/testnet/orders" {
         return RouteAccess::Operator;
     }
+    if method == axum::http::Method::POST && path == "/exchange/testnet/reconcile" {
+        return RouteAccess::Operator;
+    }
     if method == axum::http::Method::GET {
         return RouteAccess::Authenticated;
     }
@@ -1767,6 +1839,13 @@ fn bounded_paper_limit(limit: Option<i64>) -> i64 {
 }
 
 fn bounded_exchange_testnet_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_EXCHANGE_TESTNET_LIMIT),
+        _ => DEFAULT_EXCHANGE_TESTNET_LIMIT,
+    }
+}
+
+fn bounded_exchange_reconciliation_runs_limit(limit: Option<i64>) -> i64 {
     match limit {
         Some(value) if value > 0 => value.min(MAX_EXCHANGE_TESTNET_LIMIT),
         _ => DEFAULT_EXCHANGE_TESTNET_LIMIT,
@@ -3855,11 +3934,13 @@ async fn get_exchange_testnet_order(
                 Ok(status) => {
                     telemetry().inc_exchange_testnet_request("get_order_status", "ok");
                     let payload = status.raw_payload.clone();
+                    let local_status = local_testnet_status_from_exchange_state(status.status)
+                        .unwrap_or(status.status.as_str());
                     match update_exchange_testnet_order_status(
                         &state.db_pool,
                         &client_order_id,
                         status.exchange_order_id.as_deref(),
-                        status.status.as_str(),
+                        local_status,
                         &payload,
                     )
                     .await
@@ -4326,6 +4407,285 @@ async fn cancel_exchange_testnet_order(
     }
 }
 
+async fn reconcile_exchange_testnet_orders_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ReconcileExchangeTestnetOrdersRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let limit = bounded_exchange_testnet_limit(payload.limit);
+    let request_model = ExchangeReconciliationRequest {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        limit,
+        status_filter: payload.status_filter.unwrap_or_else(|| {
+            vec![
+                "ACKED".to_string(),
+                "NEW".to_string(),
+                "PARTIALLY_FILLED".to_string(),
+            ]
+        }),
+        correlation_id: payload
+            .correlation_id
+            .or_else(|| Some(parse_correlation_id(&request.correlation_id))),
+    };
+
+    match reconcile_testnet_orders(
+        &state.db_pool,
+        &state.exchange_testnet,
+        &state.config.app_name,
+        &actor,
+        &request_model,
+    )
+    .await
+    {
+        Ok(details) => (
+            StatusCode::OK,
+            Json(ExchangeReconciliationResultResponse {
+                result: run_result_from_run(&details.run),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(ReconcileTestnetOrdersError::Validation(err)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_exchange_reconciliation_request",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(ReconcileTestnetOrdersError::Failed {
+            run_id,
+            correlation_id,
+            reason,
+        }) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: "exchange_reconciliation_failed",
+                message: format!(
+                    "Exchange reconciliation failed for run {run_id} (correlation_id {correlation_id}): {reason}"
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(ReconcileTestnetOrdersError::Unexpected(err)) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to reconcile exchange testnet orders"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_reconcile_exchange_testnet_orders",
+                    message: "Exchange testnet reconciliation could not be completed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_exchange_reconciliation_runs_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Query(query): Query<ExchangeReconciliationRunsQuery>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let limit = bounded_exchange_reconciliation_runs_limit(query.limit);
+
+    match list_exchange_reconciliation_runs(
+        &state.db_pool,
+        ExchangeEnvironment::Testnet.as_str(),
+        limit,
+    )
+    .await
+    {
+        Ok(runs) => match runs
+            .iter()
+            .map(run_from_record)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(runs) => (
+                StatusCode::OK,
+                Json(ExchangeReconciliationRunsResponse {
+                    runs,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_exchange_reconciliation_runs",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list exchange reconciliation runs"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_exchange_reconciliation_runs",
+                    message: "Exchange reconciliation runs could not be listed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_exchange_reconciliation_run_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Path(run_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match db::get_exchange_reconciliation_run(&state.db_pool, run_id).await {
+        Ok(Some(run)) => match run_from_record(&run) {
+            Ok(run) => (
+                StatusCode::OK,
+                Json(ExchangeReconciliationRunResponse {
+                    run,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_exchange_reconciliation_run",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "exchange_reconciliation_run_not_found",
+                message: "Exchange reconciliation run was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to query exchange reconciliation run"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_exchange_reconciliation_run",
+                    message: "Exchange reconciliation run could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_exchange_reconciliation_mismatches_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Path(run_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match list_exchange_reconciliation_mismatches(&state.db_pool, run_id).await {
+        Ok(mismatches) => match mismatches
+            .iter()
+            .map(mismatch_from_record)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(mismatches) => (
+                StatusCode::OK,
+                Json(ExchangeReconciliationMismatchesResponse {
+                    mismatches,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_exchange_reconciliation_mismatches",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list exchange reconciliation mismatches"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_exchange_reconciliation_mismatches",
+                    message: "Exchange reconciliation mismatches could not be listed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn submit_exchange_testnet_order_success(
     state: &AppState,
     actor: &StateActor,
@@ -4335,17 +4695,19 @@ async fn submit_exchange_testnet_order_success(
     ack: ExchangeOrderAck,
 ) -> Response {
     telemetry().inc_exchange_testnet_request("submit_order", "ok");
+    let local_status =
+        local_testnet_status_from_exchange_state(ack.status).unwrap_or(ack.status.as_str());
     telemetry().inc_exchange_testnet_order(
         &fallback_record.symbol,
         &fallback_record.side,
-        ack.status.as_str(),
+        local_status,
     );
     let ack_payload = ack.raw_payload.clone();
     let updated = update_exchange_testnet_order_ack(
         &state.db_pool,
         &fallback_record.client_order_id,
         ack.exchange_order_id.as_deref(),
-        ack.status.as_str(),
+        local_status,
         &ack_payload,
     )
     .await;
@@ -4355,7 +4717,7 @@ async fn submit_exchange_testnet_order_success(
         actor,
         "exchange.testnet.order.acked",
         &fallback_record.client_order_id,
-        &json!({ "status": ack.status.as_str(), "exchange_order_id": ack.exchange_order_id }),
+        &json!({ "status": local_status, "exchange_order_id": ack.exchange_order_id }),
     )
     .await;
     let _ = insert_system_event(
@@ -4364,7 +4726,7 @@ async fn submit_exchange_testnet_order_success(
             "exchange.testnet.order.acked",
             correlation_id,
             &state.config.app_name,
-            json!({ "client_order_id": fallback_record.client_order_id, "status": ack.status.as_str() }),
+            json!({ "client_order_id": fallback_record.client_order_id, "status": local_status }),
         ),
     )
     .await;
@@ -4402,17 +4764,19 @@ async fn cancel_exchange_testnet_order_success(
     ack: ExchangeCancelAck,
 ) -> Response {
     telemetry().inc_exchange_testnet_request("cancel_order", "ok");
+    let local_status =
+        local_testnet_status_from_exchange_state(ack.status).unwrap_or(ack.status.as_str());
     telemetry().inc_exchange_testnet_order(
         &fallback_record.symbol,
         &fallback_record.side,
-        ack.status.as_str(),
+        local_status,
     );
     let payload = ack.raw_payload.clone();
     let updated = update_exchange_testnet_order_status(
         &state.db_pool,
         &fallback_record.client_order_id,
         ack.exchange_order_id.as_deref(),
-        ack.status.as_str(),
+        local_status,
         &payload,
     )
     .await;
@@ -4422,7 +4786,7 @@ async fn cancel_exchange_testnet_order_success(
         actor,
         "exchange.testnet.order.cancelled",
         &fallback_record.client_order_id,
-        &json!({ "status": ack.status.as_str(), "exchange_order_id": ack.exchange_order_id }),
+        &json!({ "status": local_status, "exchange_order_id": ack.exchange_order_id }),
     )
     .await;
     let _ = insert_system_event(
@@ -4431,7 +4795,7 @@ async fn cancel_exchange_testnet_order_success(
             "exchange.testnet.order.cancelled",
             correlation_id,
             &state.config.app_name,
-            json!({ "client_order_id": fallback_record.client_order_id, "status": ack.status.as_str() }),
+            json!({ "client_order_id": fallback_record.client_order_id, "status": local_status }),
         ),
     )
     .await;
@@ -7829,6 +8193,10 @@ mod tests {
                 false
             ),
             super::RouteAccess::Owner
+        ));
+        assert!(matches!(
+            route_access(&axum::http::Method::POST, "/exchange/testnet/reconcile", false),
+            super::RouteAccess::Operator
         ));
     }
 

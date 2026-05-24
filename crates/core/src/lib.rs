@@ -1426,6 +1426,195 @@ pub struct ExchangeOrderStatus {
     pub raw_payload: Value,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeReconciliationStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+impl ExchangeReconciliationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for ExchangeReconciliationStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedExchangeReconciliationStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeReconciliationMismatchKind {
+    StatusMismatch,
+    ExchangeOrderMissing,
+    LocalOrderMissing,
+    AckWithoutStatus,
+    CancelNotConfirmed,
+    UnknownExchangeState,
+}
+
+impl ExchangeReconciliationMismatchKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StatusMismatch => "STATUS_MISMATCH",
+            Self::ExchangeOrderMissing => "EXCHANGE_ORDER_MISSING",
+            Self::LocalOrderMissing => "LOCAL_ORDER_MISSING",
+            Self::AckWithoutStatus => "ACK_WITHOUT_STATUS",
+            Self::CancelNotConfirmed => "CANCEL_NOT_CONFIRMED",
+            Self::UnknownExchangeState => "UNKNOWN_EXCHANGE_STATE",
+        }
+    }
+}
+
+impl std::str::FromStr for ExchangeReconciliationMismatchKind {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "STATUS_MISMATCH" => Ok(Self::StatusMismatch),
+            "EXCHANGE_ORDER_MISSING" => Ok(Self::ExchangeOrderMissing),
+            "LOCAL_ORDER_MISSING" => Ok(Self::LocalOrderMissing),
+            "ACK_WITHOUT_STATUS" => Ok(Self::AckWithoutStatus),
+            "CANCEL_NOT_CONFIRMED" => Ok(Self::CancelNotConfirmed),
+            "UNKNOWN_EXCHANGE_STATE" => Ok(Self::UnknownExchangeState),
+            other => Err(CoreError::UnsupportedExchangeReconciliationMismatchKind(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeReconciliationAction {
+    None,
+    UpdateLocalStatus,
+    Alert,
+}
+
+impl ExchangeReconciliationAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::UpdateLocalStatus => "UPDATE_LOCAL_STATUS",
+            Self::Alert => "ALERT",
+        }
+    }
+}
+
+impl std::str::FromStr for ExchangeReconciliationAction {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "NONE" => Ok(Self::None),
+            "UPDATE_LOCAL_STATUS" => Ok(Self::UpdateLocalStatus),
+            "ALERT" => Ok(Self::Alert),
+            other => Err(CoreError::UnsupportedExchangeReconciliationAction(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangeReconciliationSummary {
+    pub checked_orders: i32,
+    pub matched_orders: i32,
+    pub mismatched_orders: i32,
+    pub unknown_orders: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangeReconciliationRun {
+    pub id: Uuid,
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub status: ExchangeReconciliationStatus,
+    pub checked_orders: i32,
+    pub matched_orders: i32,
+    pub mismatched_orders: i32,
+    pub unknown_orders: i32,
+    pub failed_reason: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeReconciliationMismatch {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub client_order_id: String,
+    pub local_status: Option<String>,
+    pub exchange_status: Option<String>,
+    pub mismatch_kind: ExchangeReconciliationMismatchKind,
+    pub action: ExchangeReconciliationAction,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangeReconciliationResult {
+    pub run_id: Uuid,
+    pub status: ExchangeReconciliationStatus,
+    pub checked_orders: i32,
+    pub matched_orders: i32,
+    pub mismatched_orders: i32,
+    pub unknown_orders: i32,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangeReconciliationRequest {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub limit: i64,
+    pub status_filter: Vec<String>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl ExchangeReconciliationRequest {
+    pub const MAX_LIMIT: i64 = 200;
+
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.environment == ExchangeEnvironment::Live {
+            return Err(CoreError::LiveExchangeEnvironmentRejected);
+        }
+        if self.limit <= 0 {
+            return Err(CoreError::InvalidExchangeReconciliationLimit(self.limit));
+        }
+        if self.limit > Self::MAX_LIMIT {
+            return Err(CoreError::ExchangeReconciliationLimitTooHigh(self.limit));
+        }
+        if self
+            .status_filter
+            .iter()
+            .any(|status| status.trim().is_empty())
+        {
+            return Err(CoreError::InvalidExchangeReconciliationStatusFilter);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExchangeCancelRequest {
     pub exchange: ExchangeName,
@@ -2462,6 +2651,12 @@ pub enum CoreError {
     UnsupportedExchangeEnvironment(String),
     #[error("unsupported exchange name: {0}")]
     UnsupportedExchangeName(String),
+    #[error("unsupported exchange reconciliation status: {0}")]
+    UnsupportedExchangeReconciliationStatus(String),
+    #[error("unsupported exchange reconciliation mismatch kind: {0}")]
+    UnsupportedExchangeReconciliationMismatchKind(String),
+    #[error("unsupported exchange reconciliation action: {0}")]
+    UnsupportedExchangeReconciliationAction(String),
     #[error("unsupported paper account status: {0}")]
     UnsupportedPaperAccountStatus(String),
     #[error("unsupported position side: {0}")]
@@ -2510,6 +2705,12 @@ pub enum CoreError {
     InvalidCandleBackfillLimit,
     #[error("candle backfill request limit exceeds Binance maximum: {0}")]
     CandleBackfillLimitTooHigh(u16),
+    #[error("exchange reconciliation request limit must be greater than zero: {0}")]
+    InvalidExchangeReconciliationLimit(i64),
+    #[error("exchange reconciliation request limit exceeds maximum: {0}")]
+    ExchangeReconciliationLimitTooHigh(i64),
+    #[error("exchange reconciliation status_filter cannot contain empty values")]
+    InvalidExchangeReconciliationStatusFilter,
     #[error("candle backfill estimate exceeds supported bounds")]
     InvalidCandleBackfillEstimate,
     #[error("holding_candles must be greater than zero")]

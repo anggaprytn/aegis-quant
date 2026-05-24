@@ -49,6 +49,9 @@ pub struct Telemetry {
     exchange_testnet_requests_total: IntCounterVec,
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
+    exchange_reconciliation_runs_total: IntCounterVec,
+    exchange_reconciliation_mismatches_total: IntCounterVec,
+    exchange_reconciliation_checked_orders_total: IntCounterVec,
     db_health_status: IntGauge,
     db_query_errors_total: IntCounterVec,
     known_position_symbols: Mutex<BTreeSet<String>>,
@@ -292,6 +295,27 @@ impl Telemetry {
             registry
         )
         .expect("exchange_testnet_errors_total should register");
+        let exchange_reconciliation_runs_total = register_int_counter_vec_with_registry!(
+            "exchange_reconciliation_runs_total",
+            "Exchange reconciliation runs by environment and status.",
+            &["environment", "status"],
+            registry
+        )
+        .expect("exchange_reconciliation_runs_total should register");
+        let exchange_reconciliation_mismatches_total = register_int_counter_vec_with_registry!(
+            "exchange_reconciliation_mismatches_total",
+            "Exchange reconciliation mismatches by environment and kind.",
+            &["environment", "kind"],
+            registry
+        )
+        .expect("exchange_reconciliation_mismatches_total should register");
+        let exchange_reconciliation_checked_orders_total = register_int_counter_vec_with_registry!(
+            "exchange_reconciliation_checked_orders_total",
+            "Exchange reconciliation checked order count by environment.",
+            &["environment"],
+            registry
+        )
+        .expect("exchange_reconciliation_checked_orders_total should register");
         let db_health_status = register_int_gauge_with_registry!(
             "db_health_status",
             "Database health status as 1 for healthy and 0 for unhealthy.",
@@ -342,6 +366,9 @@ impl Telemetry {
             exchange_testnet_requests_total,
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
+            exchange_reconciliation_runs_total,
+            exchange_reconciliation_mismatches_total,
+            exchange_reconciliation_checked_orders_total,
             db_health_status,
             db_query_errors_total,
             known_position_symbols: Mutex::new(BTreeSet::new()),
@@ -583,6 +610,24 @@ impl Telemetry {
         self.exchange_testnet_errors_total
             .with_label_values(&[operation, kind])
             .inc();
+    }
+
+    pub fn inc_exchange_reconciliation_run(&self, environment: &str, status: &str) {
+        self.exchange_reconciliation_runs_total
+            .with_label_values(&[environment, status])
+            .inc();
+    }
+
+    pub fn inc_exchange_reconciliation_mismatch(&self, environment: &str, kind: &str) {
+        self.exchange_reconciliation_mismatches_total
+            .with_label_values(&[environment, kind])
+            .inc();
+    }
+
+    pub fn inc_exchange_reconciliation_checked_orders(&self, environment: &str, count: u64) {
+        self.exchange_reconciliation_checked_orders_total
+            .with_label_values(&[environment])
+            .inc_by(count);
     }
 }
 

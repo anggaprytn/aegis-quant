@@ -666,6 +666,46 @@ impl ApiClient {
         .await
     }
 
+    pub async fn exchange_testnet_reconcile(
+        &self,
+        request: &ExchangeTestnetReconcileRequest,
+    ) -> Result<ExchangeReconciliationResultResponse, ApiClientError> {
+        self.post("/exchange/testnet/reconcile", request).await
+    }
+
+    pub async fn exchange_reconciliation_runs(
+        &self,
+        limit: i64,
+    ) -> Result<ExchangeReconciliationRunsResponse, ApiClientError> {
+        self.get(
+            "/exchange/testnet/reconciliation/runs",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn exchange_reconciliation_run(
+        &self,
+        run_id: Uuid,
+    ) -> Result<ExchangeReconciliationRunResponse, ApiClientError> {
+        self.get(
+            &format!("/exchange/testnet/reconciliation/runs/{run_id}"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn exchange_reconciliation_mismatches(
+        &self,
+        run_id: Uuid,
+    ) -> Result<ExchangeReconciliationMismatchesResponse, ApiClientError> {
+        self.get(
+            &format!("/exchange/testnet/reconciliation/runs/{run_id}/mismatches"),
+            &[],
+        )
+        .await
+    }
+
     pub async fn paper_account(&self) -> Result<PaperAccountResponse, ApiClientError> {
         self.get("/paper/account", &[]).await
     }
@@ -817,6 +857,13 @@ pub struct ExchangeTestnetOrderSubmitRequest {
     pub limit_price: Option<String>,
     pub risk_decision_id: Option<Uuid>,
     pub confirmation_text: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExchangeTestnetReconcileRequest {
+    pub limit: Option<i64>,
+    pub status_filter: Option<Vec<String>>,
     pub correlation_id: Option<Uuid>,
 }
 
@@ -1209,6 +1256,78 @@ pub struct ExchangeTestnetOrdersResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExchangeTestnetOrderResponse {
     pub order: ExchangeTestnetOrderRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeReconciliationRunRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub environment: String,
+    pub status: String,
+    pub checked_orders: i32,
+    pub matched_orders: i32,
+    pub mismatched_orders: i32,
+    pub unknown_orders: i32,
+    pub failed_reason: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeReconciliationMismatchRecord {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub client_order_id: String,
+    pub local_status: Option<String>,
+    pub exchange_status: Option<String>,
+    pub mismatch_kind: String,
+    pub action: String,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeReconciliationResult {
+    pub run_id: Uuid,
+    pub status: String,
+    pub checked_orders: i32,
+    pub matched_orders: i32,
+    pub mismatched_orders: i32,
+    pub unknown_orders: i32,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeReconciliationResultResponse {
+    pub result: ExchangeReconciliationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeReconciliationRunsResponse {
+    pub runs: Vec<ExchangeReconciliationRunRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeReconciliationRunResponse {
+    pub run: ExchangeReconciliationRunRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeReconciliationMismatchesResponse {
+    pub mismatches: Vec<ExchangeReconciliationMismatchRecord>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

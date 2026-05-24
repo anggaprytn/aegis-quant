@@ -27,16 +27,16 @@
 - Completed: local operator auth MVP with OWNER/OPERATOR/VIEWER roles, dashboard login, CLI bearer login flow, DB-backed sessions, refresh rotation, and protected mutating endpoints
 - Completed: DB-backed auth persistence/authorization coverage plus CLI refresh persistence, explicit `auth refresh`, and one-shot automatic refresh retry on `401`
 - Completed: Binance Spot Testnet adapter skeleton with isolated persistence, owner-gated submit/cancel, CLI support, dashboard inspection, and testnet-only guardrails
-- Current focus: tighten reconciliation and operator controls around testnet/paper boundaries before any live execution surface area
+- Completed: testnet order reconciliation with persisted runs/mismatches, operator-triggered API/CLI/dashboard controls, and testnet-only status normalization
+- Current focus: tighten paper reconciliation and broader operator controls around paper/testnet boundaries before any live execution surface area
 
 ## Next implementation steps
 
-1. Add exchange reconciliation and explicit status refresh on top of `exchange_testnet_orders`
-2. Add paper trading reconciliation on top of the close/exit lifecycle
-3. Add richer risk rules using data freshness, open position state, and paper account drawdown
-4. Add monitoring polish and alerting guidance on top of the telemetry surface
-5. Add strategy scheduling and bounded automation around the existing pipeline
-6. Extend replay/backtest with richer sizing, short/flat state, and research workflows
+1. Add paper trading reconciliation on top of the close/exit lifecycle
+2. Add richer risk rules using data freshness, open position state, and paper account drawdown
+3. Add monitoring polish and alerting guidance on top of the telemetry surface
+4. Add strategy scheduling and bounded automation around the existing pipeline
+5. Extend replay/backtest with richer sizing, short/flat state, and research workflows
 
 ## Explicitly deferred
 

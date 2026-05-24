@@ -197,6 +197,8 @@ Guardrails:
 - Production Binance endpoints are not configured or used
 - Testnet submission is isolated from paper accounting and paper orders
 - Submit/cancel require `OWNER`, typed confirmation `TESTNET ORDER`, an inactive kill switch, and a preapproved `risk_decision_id`
+- Reconciliation is testnet-only, persists runs plus mismatches, and never mutates paper/backtest/live tables
+- Unknown exchange state or missing exchange orders are surfaced as explicit mismatches and alerts, not treated as success
 
 Required env when using the adapter:
 
@@ -219,6 +221,10 @@ cargo run -p cli -- exchange testnet order-submit \
   --confirm "TESTNET ORDER"
 cargo run -p cli -- exchange testnet order-get aegis-testnet-<correlationid>
 cargo run -p cli -- exchange testnet order-cancel aegis-testnet-<correlationid> --confirm "TESTNET ORDER"
+cargo run -p cli -- exchange testnet reconcile --limit 50
+cargo run -p cli -- exchange testnet reconciliation-runs
+cargo run -p cli -- exchange testnet reconciliation-get <run_id>
+cargo run -p cli -- exchange testnet reconciliation-mismatches <run_id>
 ```
 
 ## Auth MVP

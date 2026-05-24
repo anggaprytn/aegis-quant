@@ -318,6 +318,9 @@ function AuthenticatedDashboard({
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [selectedRiskDecisionId, setSelectedRiskDecisionId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedReconciliationRunId, setSelectedReconciliationRunId] = useState<string | null>(
+    null,
+  );
   const [backtestForm, setBacktestForm] =
     useState<BacktestRequest>(DEFAULT_BACKTEST_FORM);
   const [lastBacktestResult, setLastBacktestResult] =
@@ -366,6 +369,13 @@ function AuthenticatedDashboard({
     queryKey: ["exchange-testnet-orders"],
     queryFn: () => api.getExchangeTestnetOrders(20),
     enabled: user.role === "OWNER" || user.role === "OPERATOR",
+    refetchInterval: 10_000,
+  });
+  const exchangeReconciliationRunsQuery = useQuery({
+    queryKey: ["exchange-reconciliation-runs"],
+    queryFn: () => api.getExchangeReconciliationRuns(10),
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 10_000,
   });
   const symbolsQuery = useQuery({
@@ -511,6 +521,19 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedOrderId),
   });
 
+  const selectedExchangeReconciliationRunQuery = useQuery({
+    queryKey: ["exchange-reconciliation-run", selectedReconciliationRunId],
+    queryFn: () => api.getExchangeReconciliationRun(selectedReconciliationRunId ?? ""),
+    enabled: Boolean(selectedReconciliationRunId),
+  });
+
+  const selectedExchangeReconciliationMismatchesQuery = useQuery({
+    queryKey: ["exchange-reconciliation-mismatches", selectedReconciliationRunId],
+    queryFn: () =>
+      api.getExchangeReconciliationMismatches(selectedReconciliationRunId ?? ""),
+    enabled: Boolean(selectedReconciliationRunId),
+  });
+
   const selectedRiskDecisionQuery = useQuery({
     queryKey: ["risk-decision", selectedRiskDecisionId],
     queryFn: () => api.getRiskDecision(selectedRiskDecisionId ?? ""),
@@ -587,6 +610,12 @@ function AuthenticatedDashboard({
   }, [ordersQuery.data?.orders, selectedOrderId]);
 
   useEffect(() => {
+    if (!selectedReconciliationRunId && exchangeReconciliationRunsQuery.data?.runs[0]) {
+      setSelectedReconciliationRunId(exchangeReconciliationRunsQuery.data.runs[0].id);
+    }
+  }, [exchangeReconciliationRunsQuery.data?.runs, selectedReconciliationRunId]);
+
+  useEffect(() => {
     if (!selectedRiskDecisionId && riskDecisionsQuery.data?.decisions[0]) {
       setSelectedRiskDecisionId(riskDecisionsQuery.data.decisions[0].id);
     }
@@ -620,6 +649,9 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-symbols"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-balances"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-orders"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-runs"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-run"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-reconciliation-mismatches"] }),
       queryClient.invalidateQueries({ queryKey: ["backfill-runs"] }),
       queryClient.invalidateQueries({ queryKey: ["backfill-run"] }),
       queryClient.invalidateQueries({ queryKey: ["latest-tick"] }),
@@ -788,6 +820,17 @@ function AuthenticatedDashboard({
       api.cancelExchangeTestnetOrder(clientOrderId, testnetConfirmation),
     onSuccess: async () => {
       setTestnetConfirmation("");
+      await refreshOperationalData();
+    },
+  });
+  const exchangeReconcileMutation = useMutation({
+    mutationFn: () =>
+      api.reconcileExchangeTestnetOrders({
+        limit: 50,
+        status_filter: ["ACKED", "NEW", "PARTIALLY_FILLED"],
+      }),
+    onSuccess: async (response) => {
+      setSelectedReconciliationRunId(response.result.run_id);
       await refreshOperationalData();
     },
   });
@@ -2223,6 +2266,79 @@ function AuthenticatedDashboard({
                       ) : null}
                     </div>
                   ))}
+                </div>
+              </Panel>
+              <Panel title="Testnet Reconciliation">
+                {(user.role === "OWNER" || user.role === "OPERATOR") ? (
+                  <div className="mb-4">
+                    <button
+                      className="rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-4 py-2 text-sm"
+                      onClick={() => exchangeReconcileMutation.mutate()}
+                      disabled={exchangeReconcileMutation.isPending}
+                    >
+                      Run Reconciliation
+                    </button>
+                  </div>
+                ) : null}
+                <InlineStatus
+                  error={getErrorMessage(exchangeReconcileMutation.error)}
+                  success={
+                    exchangeReconcileMutation.data
+                      ? `last run ${exchangeReconcileMutation.data.result.status.toLowerCase()} with ${exchangeReconcileMutation.data.result.mismatched_orders} mismatches`
+                      : undefined
+                  }
+                />
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <div className="space-y-2 text-sm text-slate-200">
+                    {(exchangeReconciliationRunsQuery.data?.runs ?? []).map((run) => (
+                      <button
+                        key={run.id}
+                        className={cn(
+                          "w-full rounded-xl border px-3 py-2 text-left",
+                          selectedReconciliationRunId === run.id
+                            ? "border-accent bg-accent/10"
+                            : "border-border bg-surface/60",
+                        )}
+                        onClick={() => setSelectedReconciliationRunId(run.id)}
+                        type="button"
+                      >
+                        <div>{shortenId(run.id)}</div>
+                        <div className="text-slate-400">
+                          {run.status} checked={run.checked_orders} mismatch={run.mismatched_orders} unknown={run.unknown_orders}
+                        </div>
+                      </button>
+                    ))}
+                    <InlineStatus error={getErrorMessage(exchangeReconciliationRunsQuery.error)} />
+                  </div>
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-sm text-slate-200">
+                    <div className="font-medium text-slate-100">Selected Run</div>
+                    <div className="mt-2">
+                      Status: {selectedExchangeReconciliationRunQuery.data?.run.status ?? "N/A"}
+                    </div>
+                    <div>
+                      Failed reason: {selectedExchangeReconciliationRunQuery.data?.run.failed_reason ?? "none"}
+                    </div>
+                    <div className="mt-3 font-medium text-slate-100">Mismatch Details</div>
+                    {(selectedExchangeReconciliationMismatchesQuery.data?.mismatches ?? []).map((mismatch) => (
+                      <div
+                        key={mismatch.id}
+                        className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 p-2 text-xs"
+                      >
+                        <div className="font-medium text-amber-100">
+                          {mismatch.mismatch_kind} {mismatch.client_order_id}
+                        </div>
+                        <div>
+                          local={mismatch.local_status ?? "N/A"} exchange={mismatch.exchange_status ?? "N/A"} action={mismatch.action}
+                        </div>
+                      </div>
+                    ))}
+                    {!(selectedExchangeReconciliationMismatchesQuery.data?.mismatches ?? []).length ? (
+                      <div className="mt-2 text-xs text-slate-400">
+                        No mismatches for the selected run.
+                      </div>
+                    ) : null}
+                    <InlineStatus error={getErrorMessage(selectedExchangeReconciliationRunQuery.error) ?? getErrorMessage(selectedExchangeReconciliationMismatchesQuery.error)} />
+                  </div>
                 </div>
               </Panel>
               {user.role === "OWNER" ? (

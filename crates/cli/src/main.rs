@@ -476,6 +476,48 @@ async fn main() -> anyhow::Result<()> {
                         output::print_exchange_testnet_order(&response);
                     }
                 }
+                ExchangeTestnetCommands::Reconcile(args) => {
+                    let response = client
+                        .exchange_testnet_reconcile(&cli::api::ExchangeTestnetReconcileRequest {
+                            limit: Some(args.limit),
+                            status_filter: if args.status_filter.is_empty() {
+                                None
+                            } else {
+                                Some(args.status_filter)
+                            },
+                            correlation_id: None,
+                        })
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_reconciliation_result(&response.result);
+                    }
+                }
+                ExchangeTestnetCommands::ReconciliationRuns(args) => {
+                    let response = client.exchange_reconciliation_runs(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_reconciliation_runs(&response.runs);
+                    }
+                }
+                ExchangeTestnetCommands::ReconciliationGet { run_id } => {
+                    let response = client.exchange_reconciliation_run(run_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_reconciliation_run(&response.run);
+                    }
+                }
+                ExchangeTestnetCommands::ReconciliationMismatches { run_id } => {
+                    let response = client.exchange_reconciliation_mismatches(run_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_reconciliation_mismatches(&response.mismatches);
+                    }
+                }
             },
         },
         Commands::Paper(command) => match command {

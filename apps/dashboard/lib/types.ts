@@ -660,6 +660,77 @@ export type ExchangeTestnetOrderResponse = {
   timestamp: string;
 };
 
+export type ExchangeReconciliationRequest = {
+  limit?: number;
+  status_filter?: string[];
+  correlation_id?: string;
+};
+
+export type ExchangeReconciliationResult = {
+  run_id: string;
+  status: string;
+  checked_orders: number;
+  matched_orders: number;
+  mismatched_orders: number;
+  unknown_orders: number;
+  correlation_id: string;
+};
+
+export type ExchangeReconciliationRun = {
+  id: string;
+  exchange: string;
+  environment: string;
+  status: string;
+  checked_orders: number;
+  matched_orders: number;
+  mismatched_orders: number;
+  unknown_orders: number;
+  failed_reason: string | null;
+  started_at: string;
+  completed_at: string | null;
+  correlation_id: string;
+};
+
+export type ExchangeReconciliationMismatch = {
+  id: string;
+  run_id: string;
+  client_order_id: string;
+  local_status: string | null;
+  exchange_status: string | null;
+  mismatch_kind: string;
+  action: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+export type ExchangeReconciliationResultResponse = {
+  result: ExchangeReconciliationResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeReconciliationRunsResponse = {
+  runs: ExchangeReconciliationRun[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeReconciliationRunResponse = {
+  run: ExchangeReconciliationRun;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeReconciliationMismatchesResponse = {
+  mismatches: ExchangeReconciliationMismatch[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type PaperAccountRecord = {
   id: string;
   name: string;

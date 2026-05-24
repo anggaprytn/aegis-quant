@@ -1,21 +1,22 @@
 use aegis_core::{
     BacktestConfig, BacktestEquityPoint, BacktestResult, BacktestTrade, Candle,
     CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult, CandleBackfillStatus,
-    CandleInterval, DataFreshnessStatus, EventEnvelope, ExecutionState, FeedStatus,
-    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus,
-    PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder,
-    PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
-    RiskEvaluationResult, Session, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigVersion, StrategyId, StrategySignal, Symbol, User, UserRole, UserStatus,
+    CandleInterval, DataFreshnessStatus, EventEnvelope, ExchangeReconciliationStatus,
+    ExecutionState, FeedStatus, MarketDataSource, MarketTick, OrderIntent, OrderStatus,
+    PaperAccount, PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus,
+    PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradeJournalEntry, PositionSide,
+    PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session, Side, SignalReason,
+    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal,
+    Symbol, User, UserRole, UserStatus,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{postgres::PgPoolOptions, Postgres, Row, Transaction};
+use sqlx::{postgres::PgPoolOptions, Postgres, QueryBuilder, Row, Transaction};
 use std::collections::BTreeMap;
 use thiserror::Error;
 use uuid::Uuid;
@@ -157,6 +158,35 @@ pub struct ExchangeTestnetOrderRecord {
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeReconciliationRunRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub environment: String,
+    pub status: String,
+    pub checked_orders: i32,
+    pub matched_orders: i32,
+    pub mismatched_orders: i32,
+    pub unknown_orders: i32,
+    pub failed_reason: Option<String>,
+    pub correlation_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeReconciliationMismatchRecord {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub client_order_id: String,
+    pub local_status: Option<String>,
+    pub exchange_status: Option<String>,
+    pub mismatch_kind: String,
+    pub action: String,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1879,6 +1909,337 @@ pub async fn list_exchange_testnet_orders(
     .await?;
 
     Ok(rows.iter().map(map_exchange_testnet_order).collect())
+}
+
+pub async fn list_exchange_testnet_orders_for_reconciliation(
+    pool: &PgPool,
+    limit: i64,
+    status_filter: &[String],
+) -> Result<Vec<ExchangeTestnetOrderRecord>> {
+    let mut builder = QueryBuilder::<Postgres>::new(
+        r#"
+        SELECT
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            created_at,
+            updated_at
+        FROM exchange_testnet_orders
+        "#,
+    );
+
+    if !status_filter.is_empty() {
+        builder.push(" WHERE status IN (");
+        let mut separated = builder.separated(", ");
+        for status in status_filter {
+            separated.push_bind(status);
+        }
+        separated.push_unseparated(")");
+    }
+
+    builder.push(" ORDER BY updated_at DESC LIMIT ");
+    builder.push_bind(limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
+    Ok(rows.iter().map(map_exchange_testnet_order).collect())
+}
+
+pub async fn insert_exchange_reconciliation_run(
+    pool: &PgPool,
+    run: &ExchangeReconciliationRunRecord,
+) -> Result<ExchangeReconciliationRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO exchange_reconciliation_runs (
+            id,
+            exchange,
+            environment,
+            status,
+            checked_orders,
+            matched_orders,
+            mismatched_orders,
+            unknown_orders,
+            failed_reason,
+            correlation_id,
+            started_at,
+            completed_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING
+            id,
+            exchange,
+            environment,
+            status,
+            checked_orders,
+            matched_orders,
+            mismatched_orders,
+            unknown_orders,
+            failed_reason,
+            correlation_id,
+            started_at,
+            completed_at
+        "#,
+    )
+    .bind(run.id)
+    .bind(&run.exchange)
+    .bind(&run.environment)
+    .bind(&run.status)
+    .bind(run.checked_orders)
+    .bind(run.matched_orders)
+    .bind(run.mismatched_orders)
+    .bind(run.unknown_orders)
+    .bind(&run.failed_reason)
+    .bind(run.correlation_id)
+    .bind(run.started_at)
+    .bind(run.completed_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_exchange_reconciliation_run(&row))
+}
+
+pub async fn complete_exchange_reconciliation_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    summary: &aegis_core::ExchangeReconciliationSummary,
+) -> Result<Option<ExchangeReconciliationRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE exchange_reconciliation_runs
+        SET
+            status = $2,
+            checked_orders = $3,
+            matched_orders = $4,
+            mismatched_orders = $5,
+            unknown_orders = $6,
+            failed_reason = NULL,
+            completed_at = NOW()
+        WHERE id = $1
+        RETURNING
+            id,
+            exchange,
+            environment,
+            status,
+            checked_orders,
+            matched_orders,
+            mismatched_orders,
+            unknown_orders,
+            failed_reason,
+            correlation_id,
+            started_at,
+            completed_at
+        "#,
+    )
+    .bind(run_id)
+    .bind(ExchangeReconciliationStatus::Completed.as_str())
+    .bind(summary.checked_orders)
+    .bind(summary.matched_orders)
+    .bind(summary.mismatched_orders)
+    .bind(summary.unknown_orders)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_exchange_reconciliation_run))
+}
+
+pub async fn fail_exchange_reconciliation_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    summary: &aegis_core::ExchangeReconciliationSummary,
+    failed_reason: &str,
+) -> Result<Option<ExchangeReconciliationRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE exchange_reconciliation_runs
+        SET
+            status = $2,
+            checked_orders = $3,
+            matched_orders = $4,
+            mismatched_orders = $5,
+            unknown_orders = $6,
+            failed_reason = $7,
+            completed_at = NOW()
+        WHERE id = $1
+        RETURNING
+            id,
+            exchange,
+            environment,
+            status,
+            checked_orders,
+            matched_orders,
+            mismatched_orders,
+            unknown_orders,
+            failed_reason,
+            correlation_id,
+            started_at,
+            completed_at
+        "#,
+    )
+    .bind(run_id)
+    .bind(ExchangeReconciliationStatus::Failed.as_str())
+    .bind(summary.checked_orders)
+    .bind(summary.matched_orders)
+    .bind(summary.mismatched_orders)
+    .bind(summary.unknown_orders)
+    .bind(failed_reason)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_exchange_reconciliation_run))
+}
+
+pub async fn get_exchange_reconciliation_run(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<ExchangeReconciliationRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            environment,
+            status,
+            checked_orders,
+            matched_orders,
+            mismatched_orders,
+            unknown_orders,
+            failed_reason,
+            correlation_id,
+            started_at,
+            completed_at
+        FROM exchange_reconciliation_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_exchange_reconciliation_run))
+}
+
+pub async fn list_exchange_reconciliation_runs(
+    pool: &PgPool,
+    environment: &str,
+    limit: i64,
+) -> Result<Vec<ExchangeReconciliationRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            environment,
+            status,
+            checked_orders,
+            matched_orders,
+            mismatched_orders,
+            unknown_orders,
+            failed_reason,
+            correlation_id,
+            started_at,
+            completed_at
+        FROM exchange_reconciliation_runs
+        WHERE environment = $1
+        ORDER BY started_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(environment)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_exchange_reconciliation_run).collect())
+}
+
+pub async fn insert_exchange_reconciliation_mismatch(
+    pool: &PgPool,
+    mismatch: &ExchangeReconciliationMismatchRecord,
+) -> Result<ExchangeReconciliationMismatchRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO exchange_reconciliation_mismatches (
+            id,
+            run_id,
+            client_order_id,
+            local_status,
+            exchange_status,
+            mismatch_kind,
+            action,
+            payload,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING
+            id,
+            run_id,
+            client_order_id,
+            local_status,
+            exchange_status,
+            mismatch_kind,
+            action,
+            payload,
+            created_at
+        "#,
+    )
+    .bind(mismatch.id)
+    .bind(mismatch.run_id)
+    .bind(&mismatch.client_order_id)
+    .bind(&mismatch.local_status)
+    .bind(&mismatch.exchange_status)
+    .bind(&mismatch.mismatch_kind)
+    .bind(&mismatch.action)
+    .bind(&mismatch.payload)
+    .bind(mismatch.created_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_exchange_reconciliation_mismatch(&row))
+}
+
+pub async fn list_exchange_reconciliation_mismatches(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Vec<ExchangeReconciliationMismatchRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            run_id,
+            client_order_id,
+            local_status,
+            exchange_status,
+            mismatch_kind,
+            action,
+            payload,
+            created_at
+        FROM exchange_reconciliation_mismatches
+        WHERE run_id = $1
+        ORDER BY created_at ASC
+        "#,
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(map_exchange_reconciliation_mismatch)
+        .collect())
 }
 
 pub async fn get_default_paper_account(pool: &PgPool) -> Result<Option<PaperAccountRecord>> {
@@ -5838,6 +6199,39 @@ fn map_exchange_testnet_order(row: &sqlx::postgres::PgRow) -> ExchangeTestnetOrd
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_exchange_reconciliation_run(row: &sqlx::postgres::PgRow) -> ExchangeReconciliationRunRecord {
+    ExchangeReconciliationRunRecord {
+        id: row.get("id"),
+        exchange: row.get("exchange"),
+        environment: row.get("environment"),
+        status: row.get("status"),
+        checked_orders: row.get("checked_orders"),
+        matched_orders: row.get("matched_orders"),
+        mismatched_orders: row.get("mismatched_orders"),
+        unknown_orders: row.get("unknown_orders"),
+        failed_reason: row.get("failed_reason"),
+        correlation_id: row.get("correlation_id"),
+        started_at: row.get("started_at"),
+        completed_at: row.get("completed_at"),
+    }
+}
+
+fn map_exchange_reconciliation_mismatch(
+    row: &sqlx::postgres::PgRow,
+) -> ExchangeReconciliationMismatchRecord {
+    ExchangeReconciliationMismatchRecord {
+        id: row.get("id"),
+        run_id: row.get("run_id"),
+        client_order_id: row.get("client_order_id"),
+        local_status: row.get("local_status"),
+        exchange_status: row.get("exchange_status"),
+        mismatch_kind: row.get("mismatch_kind"),
+        action: row.get("action"),
+        payload: row.get("payload"),
+        created_at: row.get("created_at"),
     }
 }
 

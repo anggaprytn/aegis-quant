@@ -192,6 +192,8 @@ Notes:
 - Binance Spot Testnet uses only `https://testnet.binance.vision`.
 - Private testnet orders do not mutate `orders`, `paper_positions`, `paper_fills`, or paper PnL tables.
 - The adapter trait currently covers exchange info, balances, submit, cancel, and order status only.
+- Reconciliation runs against isolated `exchange_testnet_orders`, persists `exchange_reconciliation_runs` plus `exchange_reconciliation_mismatches`, and updates local testnet status only through safe exchange-to-local mappings.
+- Unknown exchange states or missing exchange orders emit explicit mismatch events and remain operator-visible; they do not automatically toggle the global kill switch.
 - Private stream handling remains deferred; this patch keeps the network boundary explicit without wiring streaming execution.
 
 ## Frontend cockpit overview
@@ -200,6 +202,7 @@ The dashboard is intentionally dense and operational:
 
 - Sidebar sections: Command Center, Market Data, Strategies, Risk, Orders, Backtests, Logs / Events, Settings placeholder
 - Settings now includes a minimal Testnet Exchange surface for status, symbols, balances, recent isolated testnet orders, and owner-gated submit/cancel controls
+- Settings now also includes manual testnet reconciliation, recent reconciliation runs, mismatch counts, and mismatch detail inspection
 - Sticky header: mode, kill switch state, feed state, data age, daily PnL placeholder, API health
 - Paper-only controls: kill switch activation, typed resume confirmation, strategy evaluation, paper pipeline run, and backtest run
 - Read-only cockpit inspection: persisted risk decisions, enriched paper order detail, and filtered recent system events
