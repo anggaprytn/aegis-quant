@@ -9,6 +9,8 @@ use sqlx::{
 use crate::{ensure_system_state, PgPool};
 
 const TEST_TABLES: &[&str] = &[
+    "exchange_private_stream_events",
+    "exchange_private_stream_state",
     "exchange_reconciliation_mismatches",
     "exchange_reconciliation_runs",
     "exchange_testnet_orders",

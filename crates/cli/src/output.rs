@@ -5,7 +5,9 @@ use serde::Serialize;
 
 use crate::api::{
     BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
-    CandleBackfillRunsResponse, ExchangeReconciliationMismatchRecord, ExchangeReconciliationResult,
+    CandleBackfillRunsResponse, ExchangePrivateStreamEventRecord,
+    ExchangePrivateStreamListenKeyResponse, ExchangePrivateStreamStatusResponse,
+    ExchangeReconciliationMismatchRecord, ExchangeReconciliationResult,
     ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
     ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse, FeedStatusResponse,
     HealthResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
@@ -111,6 +113,62 @@ pub fn print_exchange_testnet_status(response: &ExchangeTestnetStatusResponse) {
     println!("Configured: {}", response.configured);
     println!("Request mode: {}", response.request_mode);
     println!("REST base URL: {}", response.rest_base_url);
+    println!("WS base URL: {}", response.ws_base_url);
+}
+
+pub fn print_exchange_private_stream_status(response: &ExchangePrivateStreamStatusResponse) {
+    let state = &response.state;
+    println!("Exchange: {}", state.exchange);
+    println!("Environment: {}", state.environment);
+    println!("Status: {}", state.status);
+    println!(
+        "Listen key hash: {}",
+        state.listen_key_hash.as_deref().unwrap_or("-")
+    );
+    println!(
+        "Connected at: {}",
+        state
+            .connected_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Last event at: {}",
+        state
+            .last_event_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!("Reconnect count: {}", state.reconnect_count);
+    println!("Last error: {}", state.last_error.as_deref().unwrap_or("-"));
+    println!("Stale: {}", state.is_stale);
+}
+
+pub fn print_exchange_private_stream_events(events: &[ExchangePrivateStreamEventRecord]) {
+    for event in events {
+        println!(
+            "{} type={} client_order_id={} status={} received_at={}",
+            event.id,
+            event.event_type,
+            event.client_order_id.as_deref().unwrap_or("-"),
+            event.order_status.as_deref().unwrap_or("-"),
+            event.received_at
+        );
+    }
+}
+
+pub fn print_exchange_private_stream_listen_key(response: &ExchangePrivateStreamListenKeyResponse) {
+    println!("Listen key status: {}", response.listen_key_status);
+    println!(
+        "Listen key: {}",
+        response.listen_key_masked.as_deref().unwrap_or("-")
+    );
+    print_exchange_private_stream_status(&ExchangePrivateStreamStatusResponse {
+        state: response.state.clone(),
+        request_id: response.request_id.clone(),
+        correlation_id: response.correlation_id.clone(),
+        timestamp: response.timestamp,
+    });
 }
 
 pub fn print_exchange_testnet_symbols(response: &ExchangeTestnetSymbolsResponse) {

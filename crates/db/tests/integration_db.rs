@@ -1,22 +1,25 @@
 use aegis_core::{
     BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle,
-    CandleBackfillRequest, CandleBackfillStatus, CandleInterval, MarketDataSource, OrderIntent,
-    ExchangeReconciliationSummary, ReplayRunStatus, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
-    SignalConfidence, SignalReason, SignalSide, StrategyId, StrategySignal, Symbol,
+    CandleBackfillRequest, CandleBackfillStatus, CandleInterval, ExchangeReconciliationSummary,
+    MarketDataSource, OrderIntent, ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision,
+    RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason,
+    SignalSide, StrategyId, StrategySignal, Symbol,
 };
 use chrono::{TimeZone, Utc};
 use db::{
-    count_candles_range, create_paper_order, get_backtest_equity_curve, get_backtest_run,
-    get_backtest_trades, get_candle_backfill_run, get_closed_candles_range,
-    fail_exchange_reconciliation_run, get_exchange_reconciliation_run,
+    count_candles_range, create_paper_order, fail_exchange_reconciliation_run,
+    get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
+    get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_order_by_idempotency_key, get_risk_decision, get_system_state,
     insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_candle_backfill_run, insert_exchange_reconciliation_mismatch,
-    insert_exchange_reconciliation_run, insert_exchange_testnet_order, insert_risk_decision,
-    insert_signal_deduped, list_exchange_reconciliation_mismatches, list_orders,
+    insert_candle_backfill_run, insert_exchange_private_stream_event,
+    insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
+    insert_exchange_testnet_order, insert_risk_decision, insert_signal_deduped,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches, list_orders,
     list_recent_signals, set_kill_switch_state, test_support::TestDatabase,
-    update_backtest_run_completed, upsert_candle, upsert_candles_batch, CreateOrderError,
+    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_candle,
+    upsert_candles_batch, upsert_exchange_private_stream_state, CreateOrderError,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderRecord, StateActor,
 };
@@ -185,6 +188,20 @@ fn sample_exchange_reconciliation_run_record() -> ExchangeReconciliationRunRecor
     }
 }
 
+fn sample_private_stream_state_record() -> ExchangePrivateStreamStateRecord {
+    ExchangePrivateStreamStateRecord {
+        exchange: "binance".to_string(),
+        environment: "testnet".to_string(),
+        status: "CONNECTED".to_string(),
+        listen_key_hash: Some("hash123".to_string()),
+        connected_at: Some(fixed_time()),
+        last_event_at: Some(fixed_time()),
+        last_error: None,
+        reconnect_count: 1,
+        updated_at: fixed_time(),
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
 async fn kill_switch_persists_across_sessions() {
@@ -310,9 +327,12 @@ async fn exchange_reconciliation_mismatch_persists() {
     insert_exchange_testnet_order(&test_db.pool, &order)
         .await
         .expect("order should persist");
-    let run = insert_exchange_reconciliation_run(&test_db.pool, &sample_exchange_reconciliation_run_record())
-        .await
-        .expect("run should persist");
+    let run = insert_exchange_reconciliation_run(
+        &test_db.pool,
+        &sample_exchange_reconciliation_run_record(),
+    )
+    .await
+    .expect("run should persist");
 
     insert_exchange_reconciliation_mismatch(
         &test_db.pool,
@@ -346,9 +366,12 @@ async fn failed_exchange_reconciliation_run_persists_failed_reason() {
     let test_db = TestDatabase::setup()
         .await
         .expect("test db should initialize");
-    let run = insert_exchange_reconciliation_run(&test_db.pool, &sample_exchange_reconciliation_run_record())
-        .await
-        .expect("run should persist");
+    let run = insert_exchange_reconciliation_run(
+        &test_db.pool,
+        &sample_exchange_reconciliation_run_record(),
+    )
+    .await
+    .expect("run should persist");
 
     let summary = ExchangeReconciliationSummary {
         checked_orders: 1,
@@ -616,4 +639,84 @@ async fn backtest_tables_persist_and_round_trip() {
     assert_eq!(loaded_trades.len(), 1);
     assert_eq!(loaded_equity.len(), 1);
     assert_eq!(loaded_candles.len(), 4);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn private_stream_event_persists_and_lists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+
+    insert_exchange_private_stream_event(
+        &test_db.pool,
+        &ExchangePrivateStreamEventRecord {
+            id: Uuid::new_v4(),
+            exchange: "binance".to_string(),
+            environment: "testnet".to_string(),
+            event_type: "executionReport".to_string(),
+            symbol: Some("BTCUSDT".to_string()),
+            client_order_id: Some("client-1".to_string()),
+            exchange_order_id: Some("123".to_string()),
+            execution_type: Some("TRADE".to_string()),
+            order_status: Some("FILLED".to_string()),
+            payload: json!({"e":"executionReport"}),
+            event_time: fixed_time(),
+            received_at: fixed_time(),
+            correlation_id: None,
+        },
+    )
+    .await
+    .expect("private stream event should persist");
+
+    let events = list_exchange_private_stream_events(
+        &test_db.pool,
+        "testnet",
+        10,
+        Some("client-1"),
+        Some("executionReport"),
+    )
+    .await
+    .expect("private stream events should list");
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].client_order_id.as_deref(), Some("client-1"));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn private_stream_state_updates_and_testnet_order_mapping_stays_isolated() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let order = sample_exchange_testnet_order_record();
+
+    insert_exchange_testnet_order(&test_db.pool, &order)
+        .await
+        .expect("testnet order should persist");
+
+    let state =
+        upsert_exchange_private_stream_state(&test_db.pool, &sample_private_stream_state_record())
+            .await
+            .expect("private stream state should upsert");
+    assert_eq!(state.status, "CONNECTED");
+
+    let loaded = get_exchange_private_stream_state(&test_db.pool, "binance", "testnet")
+        .await
+        .expect("private stream state should load")
+        .expect("private stream state should exist");
+    assert_eq!(loaded.listen_key_hash.as_deref(), Some("hash123"));
+
+    let updated = update_exchange_testnet_order_status(
+        &test_db.pool,
+        &order.client_order_id,
+        order.exchange_order_id.as_deref(),
+        "FILLED",
+        &json!({"source":"private_stream"}),
+    )
+    .await
+    .expect("testnet order should update")
+    .expect("testnet order should exist");
+
+    assert_eq!(updated.status, "FILLED");
 }

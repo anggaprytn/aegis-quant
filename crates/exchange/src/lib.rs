@@ -2,8 +2,11 @@ use std::{collections::BTreeMap, env, sync::Arc};
 
 use aegis_core::{
     ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeError,
-    ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
-    ExchangeOrderStatus, ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeRateLimitState,
+    ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
+    ExchangeListenKeyStatus, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest,
+    ExchangeOrderSide, ExchangeOrderState, ExchangeOrderStatus, ExchangeOrderTimeInForce,
+    ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
+    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
     ExchangeRequestMode, ExchangeSymbolInfo,
 };
 use async_trait::async_trait;
@@ -16,11 +19,11 @@ use reqwest::{
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::Sha256;
-
+use sha2::{Digest, Sha256};
 pub type Result<T> = std::result::Result<T, ExchangeError>;
 
 const DEFAULT_TESTNET_BASE_URL: &str = "https://testnet.binance.vision";
+const DEFAULT_TESTNET_WS_BASE_URL: &str = "wss://stream.testnet.binance.vision/ws";
 const HEADER_API_KEY: &str = "X-MBX-APIKEY";
 
 #[async_trait]
@@ -42,6 +45,7 @@ pub struct BinanceSpotTestnetAdapter {
 pub struct BinanceSpotTestnetConfig {
     pub environment: ExchangeEnvironment,
     pub rest_base_url: String,
+    pub ws_base_url: String,
     pub api_key: Option<SecretString>,
     pub api_secret: Option<SecretString>,
     pub recv_window_ms: Option<u64>,
@@ -53,6 +57,8 @@ impl BinanceSpotTestnetConfig {
             environment: ExchangeEnvironment::Testnet,
             rest_base_url: env::var("BINANCE_TESTNET_REST_BASE_URL")
                 .unwrap_or_else(|_| DEFAULT_TESTNET_BASE_URL.to_string()),
+            ws_base_url: env::var("BINANCE_TESTNET_WS_BASE_URL")
+                .unwrap_or_else(|_| DEFAULT_TESTNET_WS_BASE_URL.to_string()),
             api_key: env::var("BINANCE_TESTNET_API_KEY")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
@@ -108,6 +114,7 @@ impl BinanceSpotTestnetAdapter {
             exchange: ExchangeName::Binance,
             environment: self.config.environment,
             rest_base_url: self.config.rest_base_url.clone(),
+            ws_base_url: self.config.ws_base_url.clone(),
             configured: self.config.api_key.is_some() && self.config.api_secret.is_some(),
             request_mode: ExchangeRequestMode::Signed,
             rate_limits: ExchangeRateLimitState {
@@ -146,6 +153,86 @@ impl BinanceSpotTestnetAdapter {
                 query
             )
         }
+    }
+
+    pub async fn create_listen_key(&self) -> Result<BinanceListenKey> {
+        self.config
+            .validate_environment(ExchangeEnvironment::Testnet)?;
+        let headers = self.signed_headers()?;
+        let response: BinanceListenKeyResponse = self
+            .request(Method::POST, "/api/v3/userDataStream", "", Some(headers))
+            .await?;
+        Ok(BinanceListenKey {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            status: ExchangeListenKeyStatus::Active,
+            listen_key: response.listen_key,
+            created_at: Utc::now(),
+        })
+    }
+
+    pub async fn keepalive_listen_key(&self, listen_key: &str) -> Result<BinanceListenKey> {
+        self.config
+            .validate_environment(ExchangeEnvironment::Testnet)?;
+        if listen_key.trim().is_empty() {
+            return Err(ExchangeError::Validation(
+                "listen key cannot be empty".to_string(),
+            ));
+        }
+        let headers = self.signed_headers()?;
+        let query = format!("listenKey={listen_key}");
+        let response: BinanceListenKeyResponse = self
+            .request(Method::PUT, "/api/v3/userDataStream", &query, Some(headers))
+            .await?;
+        Ok(BinanceListenKey {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            status: ExchangeListenKeyStatus::Active,
+            listen_key: response.listen_key,
+            created_at: Utc::now(),
+        })
+    }
+
+    pub async fn close_listen_key(&self, listen_key: &str) -> Result<BinanceListenKeyClosed> {
+        self.config
+            .validate_environment(ExchangeEnvironment::Testnet)?;
+        if listen_key.trim().is_empty() {
+            return Err(ExchangeError::Validation(
+                "listen key cannot be empty".to_string(),
+            ));
+        }
+        let headers = self.signed_headers()?;
+        let query = format!("listenKey={listen_key}");
+        let _: Value = self
+            .request(
+                Method::DELETE,
+                "/api/v3/userDataStream",
+                &query,
+                Some(headers),
+            )
+            .await?;
+        Ok(BinanceListenKeyClosed {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            status: ExchangeListenKeyStatus::Closed,
+            closed_at: Utc::now(),
+        })
+    }
+
+    pub fn build_user_stream_url(&self, listen_key: &str) -> Result<String> {
+        self.config
+            .validate_environment(ExchangeEnvironment::Testnet)?;
+        if listen_key.trim().is_empty() {
+            return Err(ExchangeError::Validation(
+                "listen key cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(format!(
+            "{}/{}",
+            self.config.ws_base_url.trim_end_matches('/'),
+            listen_key.trim()
+        ))
     }
 
     async fn public_get<T>(&self, path: &str) -> Result<T>
@@ -353,9 +440,33 @@ pub struct BinanceTestnetStatus {
     pub exchange: ExchangeName,
     pub environment: ExchangeEnvironment,
     pub rest_base_url: String,
+    pub ws_base_url: String,
     pub configured: bool,
     pub request_mode: ExchangeRequestMode,
     pub rate_limits: ExchangeRateLimitState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinanceListenKey {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub status: ExchangeListenKeyStatus,
+    pub listen_key: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinanceListenKeyClosed {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub status: ExchangeListenKeyStatus,
+    pub closed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivateStreamEventProcessResult {
+    pub event: ExchangePrivateStreamEvent,
+    pub execution_report: Option<ExchangeExecutionReport>,
 }
 
 pub fn build_query_string(params: &BTreeMap<String, String>) -> String {
@@ -438,6 +549,239 @@ fn parse_time_in_force(value: Option<String>) -> Result<Option<ExchangeOrderTime
     }
 }
 
+fn parse_execution_report_type(value: &str) -> ExchangeExecutionReportType {
+    match value {
+        "NEW" => ExchangeExecutionReportType::New,
+        "CANCELED" => ExchangeExecutionReportType::Canceled,
+        "REPLACED" => ExchangeExecutionReportType::Replaced,
+        "REJECTED" => ExchangeExecutionReportType::Rejected,
+        "TRADE" => ExchangeExecutionReportType::Trade,
+        "EXPIRED" => ExchangeExecutionReportType::Expired,
+        "TRADE_PREVENTION" => ExchangeExecutionReportType::TradePrevention,
+        _ => ExchangeExecutionReportType::Unknown,
+    }
+}
+
+fn parse_execution_status(value: &str) -> ExchangeExecutionStatus {
+    match value {
+        "NEW" => ExchangeExecutionStatus::New,
+        "PARTIALLY_FILLED" => ExchangeExecutionStatus::PartiallyFilled,
+        "FILLED" => ExchangeExecutionStatus::Filled,
+        "CANCELED" => ExchangeExecutionStatus::Canceled,
+        "PENDING_CANCEL" => ExchangeExecutionStatus::PendingCancel,
+        "REJECTED" => ExchangeExecutionStatus::Rejected,
+        "EXPIRED" => ExchangeExecutionStatus::Expired,
+        "EXPIRED_IN_MATCH" => ExchangeExecutionStatus::ExpiredInMatch,
+        _ => ExchangeExecutionStatus::Unknown,
+    }
+}
+
+pub fn local_testnet_order_status_from_private_execution_report(
+    report: &ExchangeExecutionReport,
+) -> &'static str {
+    report.order_status.as_str()
+}
+
+pub fn hash_listen_key(listen_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(listen_key.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+pub fn mask_listen_key(listen_key: &str) -> String {
+    let trimmed = listen_key.trim();
+    if trimmed.len() <= 8 {
+        return "********".to_string();
+    }
+
+    format!("{}***{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
+}
+
+pub fn build_private_stream_state(
+    status: ExchangePrivateStreamStatus,
+    listen_key_hash: Option<String>,
+    connected_at: Option<DateTime<Utc>>,
+    last_event_at: Option<DateTime<Utc>>,
+    last_error: Option<String>,
+    reconnect_count: i32,
+) -> ExchangePrivateStreamState {
+    ExchangePrivateStreamState {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        status,
+        listen_key_hash,
+        connected_at,
+        last_event_at,
+        last_error,
+        reconnect_count,
+        updated_at: Utc::now(),
+    }
+}
+
+pub fn private_stream_is_stale(
+    state: &ExchangePrivateStreamState,
+    now: DateTime<Utc>,
+    threshold: std::time::Duration,
+) -> bool {
+    state
+        .last_event_at
+        .and_then(|last_event_at| now.signed_duration_since(last_event_at).to_std().ok())
+        .map(|age| age > threshold)
+        .unwrap_or(false)
+}
+
+pub fn parse_binance_private_stream_event(
+    payload: &Value,
+    received_at: DateTime<Utc>,
+) -> Result<PrivateStreamEventProcessResult> {
+    let event_type = payload
+        .get("e")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ExchangeError::Serialization("missing event type".to_string()))?;
+    let event_time = payload
+        .get("E")
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or(received_at);
+
+    match event_type {
+        "executionReport" => {
+            let report = parse_binance_execution_report(payload)?;
+            Ok(PrivateStreamEventProcessResult {
+                event: ExchangePrivateStreamEvent {
+                    exchange: ExchangeName::Binance,
+                    environment: ExchangeEnvironment::Testnet,
+                    source: ExchangePrivateStreamSource::Websocket,
+                    event_type: event_type.to_string(),
+                    symbol: Some(report.symbol.clone()),
+                    client_order_id: Some(report.client_order_id.clone()),
+                    exchange_order_id: report.exchange_order_id.clone(),
+                    execution_type: Some(report.execution_type),
+                    order_status: Some(report.order_status),
+                    event_time,
+                    received_at,
+                    raw_payload: payload.clone(),
+                },
+                execution_report: Some(report),
+            })
+        }
+        _ => Ok(PrivateStreamEventProcessResult {
+            event: ExchangePrivateStreamEvent {
+                exchange: ExchangeName::Binance,
+                environment: ExchangeEnvironment::Testnet,
+                source: ExchangePrivateStreamSource::Websocket,
+                event_type: event_type.to_string(),
+                symbol: payload
+                    .get("s")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                client_order_id: payload
+                    .get("c")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                exchange_order_id: payload
+                    .get("i")
+                    .map(|value| stringify_json_scalar(value.clone())),
+                execution_type: None,
+                order_status: None,
+                event_time,
+                received_at,
+                raw_payload: payload.clone(),
+            },
+            execution_report: None,
+        }),
+    }
+}
+
+pub fn parse_binance_execution_report(payload: &Value) -> Result<ExchangeExecutionReport> {
+    let symbol = payload.get("s").and_then(Value::as_str).ok_or_else(|| {
+        ExchangeError::Serialization("missing executionReport symbol".to_string())
+    })?;
+    let client_order_id = payload.get("c").and_then(Value::as_str).ok_or_else(|| {
+        ExchangeError::Serialization("missing executionReport client order id".to_string())
+    })?;
+    let side = parse_order_side(payload.get("S").and_then(Value::as_str).ok_or_else(|| {
+        ExchangeError::Serialization("missing executionReport side".to_string())
+    })?)?;
+    let order_type =
+        parse_order_type(payload.get("o").and_then(Value::as_str).ok_or_else(|| {
+            ExchangeError::Serialization("missing executionReport order type".to_string())
+        })?)?;
+    let report = ExchangeExecutionReport {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        symbol: symbol.to_string(),
+        client_order_id: client_order_id.to_string(),
+        exchange_order_id: payload
+            .get("i")
+            .map(|value| stringify_json_scalar(value.clone()))
+            .filter(|value| !value.is_empty() && value != "null"),
+        side,
+        order_type,
+        time_in_force: parse_time_in_force(
+            payload
+                .get("f")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+        )?,
+        order_status: parse_execution_status(
+            payload
+                .get("X")
+                .and_then(Value::as_str)
+                .unwrap_or("UNKNOWN"),
+        ),
+        execution_type: parse_execution_report_type(
+            payload
+                .get("x")
+                .and_then(Value::as_str)
+                .unwrap_or("UNKNOWN"),
+        ),
+        last_executed_qty: payload
+            .get("l")
+            .and_then(Value::as_str)
+            .and_then(parse_decimal)
+            .unwrap_or_default(),
+        cumulative_filled_qty: payload
+            .get("z")
+            .and_then(Value::as_str)
+            .and_then(parse_decimal)
+            .unwrap_or_default(),
+        last_executed_price: payload
+            .get("L")
+            .and_then(Value::as_str)
+            .and_then(parse_decimal)
+            .unwrap_or_default(),
+        commission_amount: payload.get("n").and_then(Value::as_str).and_then(|value| {
+            if value.is_empty() {
+                None
+            } else {
+                parse_decimal(value)
+            }
+        }),
+        commission_asset: payload.get("N").and_then(Value::as_str).and_then(|value| {
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        }),
+        event_time: payload
+            .get("E")
+            .and_then(Value::as_i64)
+            .and_then(DateTime::<Utc>::from_timestamp_millis)
+            .unwrap_or_else(Utc::now),
+        transaction_time: payload
+            .get("T")
+            .and_then(Value::as_i64)
+            .and_then(DateTime::<Utc>::from_timestamp_millis),
+        raw_payload: payload.clone(),
+    };
+    report
+        .validate()
+        .map_err(|err| ExchangeError::Validation(err.to_string()))?;
+    Ok(report)
+}
+
 #[derive(Debug, Deserialize)]
 struct BinanceExchangeInfoResponse {
     symbols: Vec<BinanceSymbolInfo>,
@@ -457,6 +801,12 @@ struct BinanceSymbolInfo {
 #[derive(Debug, Deserialize)]
 struct BinanceAccountResponse {
     balances: Vec<BinanceBalance>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinanceListenKeyResponse {
+    #[serde(rename = "listenKey")]
+    listen_key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -586,13 +936,26 @@ fn stringify_json_scalar(value: Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_query_string, sign_query, BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
+        build_query_string, hash_listen_key, mask_listen_key, parse_binance_execution_report,
+        sign_query, BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
     };
     use aegis_core::{
-        ExchangeEnvironment, ExchangeName, ExchangeOrderRequest, ExchangeOrderSide,
-        ExchangeOrderType, Symbol,
+        ExchangeEnvironment, ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName,
+        ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderType, Symbol,
     };
     use rust_decimal::Decimal;
+    use serde_json::json;
+
+    fn adapter() -> BinanceSpotTestnetAdapter {
+        BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
+            environment: ExchangeEnvironment::Testnet,
+            rest_base_url: "https://testnet.binance.vision".to_string(),
+            ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
+            api_key: None,
+            api_secret: None,
+            recv_window_ms: None,
+        })
+    }
 
     #[test]
     fn signing_is_deterministic() {
@@ -613,13 +976,7 @@ mod tests {
 
     #[test]
     fn live_environment_is_rejected() {
-        let adapter = BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
-            environment: ExchangeEnvironment::Testnet,
-            rest_base_url: "https://testnet.binance.vision".to_string(),
-            api_key: None,
-            api_secret: None,
-            recv_window_ms: None,
-        });
+        let adapter = adapter();
         let err = adapter
             .config()
             .validate_environment(ExchangeEnvironment::Live)
@@ -632,13 +989,7 @@ mod tests {
 
     #[test]
     fn missing_credentials_are_rejected() {
-        let adapter = BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
-            environment: ExchangeEnvironment::Testnet,
-            rest_base_url: "https://testnet.binance.vision".to_string(),
-            api_key: None,
-            api_secret: None,
-            recv_window_ms: None,
-        });
+        let adapter = adapter();
         let err = adapter.config().credentials().expect_err("missing creds");
         assert!(matches!(err, aegis_core::ExchangeError::Configuration(_)));
     }
@@ -661,5 +1012,185 @@ mod tests {
         };
 
         request.validate().expect("valid request");
+    }
+
+    #[test]
+    fn listen_key_url_construction_uses_testnet_ws_base() {
+        let url = adapter()
+            .build_user_stream_url("listen-key-1")
+            .expect("url should build");
+        assert_eq!(url, "wss://stream.testnet.binance.vision/ws/listen-key-1");
+    }
+
+    #[test]
+    fn listen_key_masking_and_hashing_are_stable() {
+        assert_eq!(mask_listen_key("abcdefghijklmnopqrstuvwxyz"), "abcd***wxyz");
+        assert_eq!(
+            hash_listen_key("listen-key"),
+            "d2132747304b33d5c0da8efb961d0de7f2edddd2a32cc7e80cef635cb8ad0e47"
+        );
+    }
+
+    #[test]
+    fn parses_new_execution_report() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport",
+            "E":1710000000000i64,
+            "s":"BTCUSDT",
+            "c":"client-new",
+            "i":12345,
+            "S":"BUY",
+            "o":"LIMIT",
+            "f":"GTC",
+            "x":"NEW",
+            "X":"NEW",
+            "l":"0",
+            "z":"0",
+            "L":"0",
+            "n":"0",
+            "N":null,
+            "T":1710000000000i64
+        }))
+        .expect("report should parse");
+
+        assert_eq!(report.execution_type, ExchangeExecutionReportType::New);
+        assert_eq!(report.order_status, ExchangeExecutionStatus::New);
+        assert_eq!(report.last_executed_qty, Decimal::ZERO);
+    }
+
+    #[test]
+    fn parses_trade_filled_execution_report() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport",
+            "E":1710000000000i64,
+            "s":"BTCUSDT",
+            "c":"client-filled",
+            "i":12345,
+            "S":"BUY",
+            "o":"MARKET",
+            "f":"GTC",
+            "x":"TRADE",
+            "X":"FILLED",
+            "l":"0.01000000",
+            "z":"0.01000000",
+            "L":"65000.12",
+            "n":"0.00001000",
+            "N":"BNB",
+            "T":1710000000100i64
+        }))
+        .expect("report should parse");
+
+        assert_eq!(report.execution_type, ExchangeExecutionReportType::Trade);
+        assert_eq!(report.order_status, ExchangeExecutionStatus::Filled);
+        assert_eq!(report.commission_asset.as_deref(), Some("BNB"));
+        assert!(report.fill_event().is_some());
+    }
+
+    #[test]
+    fn parses_canceled_execution_report() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport",
+            "E":1710000000000i64,
+            "s":"BTCUSDT",
+            "c":"client-cancel",
+            "i":12345,
+            "S":"SELL",
+            "o":"LIMIT",
+            "f":"GTC",
+            "x":"CANCELED",
+            "X":"CANCELED",
+            "l":"0",
+            "z":"0",
+            "L":"0",
+            "n":"0",
+            "N":null,
+            "T":1710000000200i64
+        }))
+        .expect("report should parse");
+
+        assert_eq!(report.execution_type, ExchangeExecutionReportType::Canceled);
+        assert_eq!(report.order_status, ExchangeExecutionStatus::Canceled);
+    }
+
+    #[test]
+    fn parses_partially_filled_execution_report() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport",
+            "E":1710000000000i64,
+            "s":"BTCUSDT",
+            "c":"client-partial",
+            "i":12345,
+            "S":"BUY",
+            "o":"LIMIT",
+            "f":"GTC",
+            "x":"TRADE",
+            "X":"PARTIALLY_FILLED",
+            "l":"0.00500000",
+            "z":"0.00500000",
+            "L":"64999.99",
+            "n":"0.00000500",
+            "N":"BNB",
+            "T":1710000000300i64
+        }))
+        .expect("report should parse");
+
+        assert_eq!(
+            report.order_status,
+            ExchangeExecutionStatus::PartiallyFilled
+        );
+    }
+
+    #[test]
+    fn unknown_execution_status_maps_to_unknown() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport",
+            "E":1710000000000i64,
+            "s":"BTCUSDT",
+            "c":"client-unknown",
+            "i":12345,
+            "S":"BUY",
+            "o":"MARKET",
+            "f":"GTC",
+            "x":"SOMETHING_NEW",
+            "X":"MYSTERY_STATUS",
+            "l":"0",
+            "z":"0",
+            "L":"0",
+            "n":"0",
+            "N":null,
+            "T":1710000000400i64
+        }))
+        .expect("report should parse");
+
+        assert_eq!(report.execution_type, ExchangeExecutionReportType::Unknown);
+        assert_eq!(report.order_status, ExchangeExecutionStatus::Unknown);
+    }
+
+    #[test]
+    fn private_execution_report_maps_local_testnet_order_status() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport",
+            "E":1710000000000i64,
+            "s":"BTCUSDT",
+            "c":"client-map",
+            "i":12345,
+            "S":"BUY",
+            "o":"MARKET",
+            "f":"GTC",
+            "x":"TRADE",
+            "X":"PARTIALLY_FILLED",
+            "l":"0.01",
+            "z":"0.01",
+            "L":"65000",
+            "n":"0",
+            "N":null,
+            "T":1710000000000i64
+        }))
+        .expect("report should parse");
+
+        assert_eq!(
+            super::local_testnet_order_status_from_private_execution_report(&report),
+            "PARTIALLY_FILLED"
+        );
     }
 }

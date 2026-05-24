@@ -312,6 +312,7 @@ function AuthenticatedDashboard({
   const [testnetQuantity, setTestnetQuantity] = useState("");
   const [testnetLimitPrice, setTestnetLimitPrice] = useState("");
   const [testnetRiskDecisionId, setTestnetRiskDecisionId] = useState("");
+  const [privateStreamListenKey, setPrivateStreamListenKey] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [eventSourceFilter, setEventSourceFilter] = useState("");
   const [eventCorrelationFilter, setEventCorrelationFilter] = useState("");
@@ -353,6 +354,20 @@ function AuthenticatedDashboard({
     queryKey: ["exchange-testnet-status"],
     queryFn: api.getExchangeTestnetStatus,
     refetchInterval: 15_000,
+  });
+  const exchangePrivateStreamStatusQuery = useQuery({
+    queryKey: ["exchange-private-stream-status"],
+    queryFn: api.getExchangeTestnetPrivateStreamStatus,
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 10_000,
+  });
+  const exchangePrivateStreamEventsQuery = useQuery({
+    queryKey: ["exchange-private-stream-events"],
+    queryFn: () => api.getExchangeTestnetPrivateStreamEvents(20),
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 10_000,
   });
   const exchangeTestnetSymbolsQuery = useQuery({
     queryKey: ["exchange-testnet-symbols"],
@@ -646,6 +661,8 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["events"] }),
       queryClient.invalidateQueries({ queryKey: ["feed-status"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-private-stream-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["exchange-private-stream-events"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-symbols"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-balances"] }),
       queryClient.invalidateQueries({ queryKey: ["exchange-testnet-orders"] }),
@@ -831,6 +848,25 @@ function AuthenticatedDashboard({
       }),
     onSuccess: async (response) => {
       setSelectedReconciliationRunId(response.result.run_id);
+      await refreshOperationalData();
+    },
+  });
+  const exchangePrivateStreamCreateListenKeyMutation = useMutation({
+    mutationFn: api.createExchangeTestnetPrivateStreamListenKey,
+    onSuccess: async () => {
+      await refreshOperationalData();
+    },
+  });
+  const exchangePrivateStreamKeepaliveMutation = useMutation({
+    mutationFn: () => api.keepaliveExchangeTestnetPrivateStreamListenKey(privateStreamListenKey),
+    onSuccess: async () => {
+      await refreshOperationalData();
+    },
+  });
+  const exchangePrivateStreamCloseMutation = useMutation({
+    mutationFn: () => api.closeExchangeTestnetPrivateStreamListenKey(privateStreamListenKey),
+    onSuccess: async () => {
+      setPrivateStreamListenKey("");
       await refreshOperationalData();
     },
   });
@@ -2207,7 +2243,7 @@ function AuthenticatedDashboard({
             <section className="grid gap-4">
               <Panel title="Testnet Exchange">
                 <div className="mb-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                  TESTNET ONLY, NO LIVE TRADING. Submission still requires typed confirmation and a preapproved risk decision.
+                  TESTNET ONLY. No live trading, no production Binance endpoints, and no automatic paper-pipeline mutation from private exchange events.
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
                   <HeaderStat
@@ -2227,6 +2263,89 @@ function AuthenticatedDashboard({
                   />
                 </div>
                 <InlineStatus error={getErrorMessage(exchangeTestnetStatusQuery.error)} />
+              </Panel>
+              <Panel title="Private Stream Status">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <HeaderStat
+                    label="Stream"
+                    value={exchangePrivateStreamStatusQuery.data?.state.status ?? "DISCONNECTED"}
+                    tone={exchangePrivateStreamStatusQuery.data?.state.is_stale ? "warning" : "ok"}
+                  />
+                  <HeaderStat
+                    label="Last Event"
+                    value={formatRelativeAge(exchangePrivateStreamStatusQuery.data?.state.last_event_at)}
+                    tone="neutral"
+                  />
+                  <HeaderStat
+                    label="Reconnects"
+                    value={String(exchangePrivateStreamStatusQuery.data?.state.reconnect_count ?? 0)}
+                    tone="neutral"
+                  />
+                  <HeaderStat
+                    label="Listen Key"
+                    value={exchangePrivateStreamStatusQuery.data?.state.listen_key_hash ? "hashed" : "missing"}
+                    tone={exchangePrivateStreamStatusQuery.data?.state.listen_key_hash ? "ok" : "warning"}
+                  />
+                </div>
+                <div className="mt-4 rounded-xl border border-border bg-surface/50 p-3 text-sm text-slate-200">
+                  <div>Last error: {exchangePrivateStreamStatusQuery.data?.state.last_error ?? "none"}</div>
+                  <div>Connected at: {formatDateTime(exchangePrivateStreamStatusQuery.data?.state.connected_at)}</div>
+                  <div>Updated at: {formatDateTime(exchangePrivateStreamStatusQuery.data?.state.updated_at)}</div>
+                </div>
+                {(user.role === "OWNER" || user.role === "OPERATOR") ? (
+                  <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+                    <Field
+                      label="Listen Key"
+                      value={privateStreamListenKey}
+                      onChange={setPrivateStreamListenKey}
+                      placeholder="testnet listen key for keepalive/close"
+                    />
+                    <button
+                      className="rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-4 py-2 text-sm"
+                      onClick={() => exchangePrivateStreamCreateListenKeyMutation.mutate()}
+                      disabled={exchangePrivateStreamCreateListenKeyMutation.isPending}
+                    >
+                      Create
+                    </button>
+                    <button
+                      className="rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 py-2 text-sm"
+                      onClick={() => exchangePrivateStreamKeepaliveMutation.mutate()}
+                      disabled={
+                        exchangePrivateStreamKeepaliveMutation.isPending ||
+                        privateStreamListenKey.trim().length === 0
+                      }
+                    >
+                      Keepalive
+                    </button>
+                    <button
+                      className="rounded-xl border border-rose-400/40 bg-rose-400/10 px-4 py-2 text-sm"
+                      onClick={() => exchangePrivateStreamCloseMutation.mutate()}
+                      disabled={
+                        exchangePrivateStreamCloseMutation.isPending ||
+                        privateStreamListenKey.trim().length === 0
+                      }
+                    >
+                      Close
+                    </button>
+                  </div>
+                ) : null}
+                <InlineStatus
+                  error={
+                    getErrorMessage(exchangePrivateStreamStatusQuery.error) ??
+                    getErrorMessage(exchangePrivateStreamCreateListenKeyMutation.error) ??
+                    getErrorMessage(exchangePrivateStreamKeepaliveMutation.error) ??
+                    getErrorMessage(exchangePrivateStreamCloseMutation.error)
+                  }
+                  success={
+                    exchangePrivateStreamCreateListenKeyMutation.data?.listen_key_masked
+                      ? `created ${exchangePrivateStreamCreateListenKeyMutation.data.listen_key_masked}`
+                      : exchangePrivateStreamKeepaliveMutation.data?.listen_key_masked
+                        ? `keepalive ${exchangePrivateStreamKeepaliveMutation.data.listen_key_masked}`
+                        : exchangePrivateStreamCloseMutation.data?.listen_key_masked
+                          ? `closed ${exchangePrivateStreamCloseMutation.data.listen_key_masked}`
+                          : undefined
+                  }
+                />
               </Panel>
               <Panel title="Symbols and Balances">
                 <div className="grid gap-4 md:grid-cols-2">
@@ -2266,6 +2385,21 @@ function AuthenticatedDashboard({
                       ) : null}
                     </div>
                   ))}
+                </div>
+              </Panel>
+              <Panel title="Recent Private Stream Events">
+                <div className="space-y-2 text-sm text-slate-200">
+                  {(exchangePrivateStreamEventsQuery.data?.events ?? []).map((item) => (
+                    <div key={item.id} className="rounded-xl border border-border bg-surface/60 px-3 py-2">
+                      <div className="font-medium text-slate-100">
+                        {item.event_type} {item.client_order_id ?? shortenId(item.id)}
+                      </div>
+                      <div className="text-slate-400">
+                        {item.symbol ?? "n/a"} {item.execution_type ?? "-"} {item.order_status ?? "-"} {formatDateTime(item.received_at)}
+                      </div>
+                    </div>
+                  ))}
+                  <InlineStatus error={getErrorMessage(exchangePrivateStreamEventsQuery.error)} />
                 </div>
               </Panel>
               <Panel title="Testnet Reconciliation">

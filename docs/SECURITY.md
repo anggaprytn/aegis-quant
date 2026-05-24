@@ -27,6 +27,9 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Testnet submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
 - Testnet reconciliation is isolated in `exchange_reconciliation_runs` and `exchange_reconciliation_mismatches`, is operator-triggered, and never reads secrets from the CLI or dashboard
+- Testnet private stream events are isolated in `exchange_private_stream_events`, update only isolated `exchange_testnet_orders`, and never mutate paper/backtest/live tables
+- Spot Testnet listen keys must not be persisted in plaintext; only masked values leave the backend and only hashed values are stored in Postgres
+- Private stream runtime, API, CLI, metrics, and dashboard are testnet-only and must not use production Binance websocket endpoints
 - Reconciliation mismatches and failure events must not include API secrets or high-cardinality metric labels
 - Binance private REST support is testnet-only, signs requests with HMAC SHA256, and does not log API secrets
 - Production Binance env vars and withdrawal endpoints are intentionally absent

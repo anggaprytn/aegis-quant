@@ -18,6 +18,9 @@ import type {
   CandlesResponse,
   EvaluateStrategyResponse,
   ExchangeReconciliationMismatchesResponse,
+  ExchangePrivateStreamEventsResponse,
+  ExchangePrivateStreamListenKeyResponse,
+  ExchangePrivateStreamStatusResponse,
   ExchangeReconciliationRequest,
   ExchangeReconciliationResultResponse,
   ExchangeReconciliationRunResponse,
@@ -270,6 +273,33 @@ export const api = {
     request<CandleBackfillRunResponse>(`/market/backfill/runs/${id}`),
   getExchangeTestnetStatus: () =>
     request<ExchangeTestnetStatusResponse>("/exchange/testnet/status"),
+  getExchangeTestnetPrivateStreamStatus: () =>
+    request<ExchangePrivateStreamStatusResponse>("/exchange/testnet/private-stream/status"),
+  getExchangeTestnetPrivateStreamEvents: (
+    limit = 50,
+    clientOrderId?: string,
+    eventType?: string,
+  ) =>
+    request<ExchangePrivateStreamEventsResponse>(
+      "/exchange/testnet/private-stream/events",
+      undefined,
+      { limit, client_order_id: clientOrderId, event_type: eventType },
+    ),
+  createExchangeTestnetPrivateStreamListenKey: () =>
+    request<ExchangePrivateStreamListenKeyResponse>(
+      "/exchange/testnet/private-stream/listen-key",
+      { method: "POST", body: "{}" },
+    ),
+  keepaliveExchangeTestnetPrivateStreamListenKey: (listenKey: string) =>
+    request<ExchangePrivateStreamListenKeyResponse>(
+      "/exchange/testnet/private-stream/listen-key/keepalive",
+      { method: "POST", body: JSON.stringify({ listen_key: listenKey }) },
+    ),
+  closeExchangeTestnetPrivateStreamListenKey: (listenKey: string) =>
+    request<ExchangePrivateStreamListenKeyResponse>(
+      "/exchange/testnet/private-stream/listen-key/close",
+      { method: "POST", body: JSON.stringify({ listen_key: listenKey }) },
+    ),
   getExchangeTestnetSymbols: () =>
     request<ExchangeTestnetSymbolsResponse>("/exchange/testnet/symbols"),
   getExchangeTestnetBalances: () =>

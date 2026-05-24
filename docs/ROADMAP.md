@@ -28,6 +28,7 @@
 - Completed: DB-backed auth persistence/authorization coverage plus CLI refresh persistence, explicit `auth refresh`, and one-shot automatic refresh retry on `401`
 - Completed: Binance Spot Testnet adapter skeleton with isolated persistence, owner-gated submit/cancel, CLI support, dashboard inspection, and testnet-only guardrails
 - Completed: testnet order reconciliation with persisted runs/mismatches, operator-triggered API/CLI/dashboard controls, and testnet-only status normalization
+- Completed: Binance Spot Testnet private user-data stream skeleton with listen-key lifecycle, normalized execution-report persistence, isolated testnet order status updates, stale/disconnect tracking, and API/CLI/dashboard inspection
 - Current focus: tighten paper reconciliation and broader operator controls around paper/testnet boundaries before any live execution surface area
 
 ## Next implementation steps
@@ -42,7 +43,7 @@
 
 - Live trading
 - Production exchange order execution
-- Private exchange streams and API keys
+- Production private exchange streams and API keys
 - Multi-exchange support
 - Complex dashboard UI or heavy charting
 - Complex terminal UI

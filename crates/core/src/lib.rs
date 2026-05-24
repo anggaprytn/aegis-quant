@@ -1327,6 +1327,272 @@ impl ExchangeOrderState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangePrivateStreamStatus {
+    Connecting,
+    Connected,
+    Stale,
+    Disconnected,
+    Error,
+}
+
+impl ExchangePrivateStreamStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Connecting => "CONNECTING",
+            Self::Connected => "CONNECTED",
+            Self::Stale => "STALE",
+            Self::Disconnected => "DISCONNECTED",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+impl std::str::FromStr for ExchangePrivateStreamStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "CONNECTING" => Ok(Self::Connecting),
+            "CONNECTED" => Ok(Self::Connected),
+            "STALE" => Ok(Self::Stale),
+            "DISCONNECTED" => Ok(Self::Disconnected),
+            "ERROR" => Ok(Self::Error),
+            other => Err(CoreError::UnsupportedExchangePrivateStreamStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExchangePrivateStreamSource {
+    Websocket,
+    ListenKeyLifecycle,
+    Runtime,
+}
+
+impl ExchangePrivateStreamSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Websocket => "websocket",
+            Self::ListenKeyLifecycle => "listen_key_lifecycle",
+            Self::Runtime => "runtime",
+        }
+    }
+}
+
+impl std::str::FromStr for ExchangePrivateStreamSource {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "websocket" => Ok(Self::Websocket),
+            "listen_key_lifecycle" => Ok(Self::ListenKeyLifecycle),
+            "runtime" => Ok(Self::Runtime),
+            other => Err(CoreError::UnsupportedExchangePrivateStreamSource(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeExecutionReportType {
+    New,
+    Canceled,
+    Replaced,
+    Rejected,
+    Trade,
+    Expired,
+    TradePrevention,
+    Unknown,
+}
+
+impl ExchangeExecutionReportType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "NEW",
+            Self::Canceled => "CANCELED",
+            Self::Replaced => "REPLACED",
+            Self::Rejected => "REJECTED",
+            Self::Trade => "TRADE",
+            Self::Expired => "EXPIRED",
+            Self::TradePrevention => "TRADE_PREVENTION",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeExecutionStatus {
+    New,
+    PartiallyFilled,
+    Filled,
+    Canceled,
+    PendingCancel,
+    Rejected,
+    Expired,
+    ExpiredInMatch,
+    Unknown,
+}
+
+impl ExchangeExecutionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "NEW",
+            Self::PartiallyFilled => "PARTIALLY_FILLED",
+            Self::Filled => "FILLED",
+            Self::Canceled => "CANCELED",
+            Self::PendingCancel => "PENDING_CANCEL",
+            Self::Rejected => "REJECTED",
+            Self::Expired => "EXPIRED",
+            Self::ExpiredInMatch => "EXPIRED_IN_MATCH",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeFillEvent {
+    pub last_executed_qty: Decimal,
+    pub last_executed_price: Decimal,
+    pub commission_amount: Option<Decimal>,
+    pub commission_asset: Option<String>,
+    pub transaction_time: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeExecutionReport {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub symbol: String,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub side: ExchangeOrderSide,
+    pub order_type: ExchangeOrderType,
+    pub time_in_force: Option<ExchangeOrderTimeInForce>,
+    pub order_status: ExchangeExecutionStatus,
+    pub execution_type: ExchangeExecutionReportType,
+    pub last_executed_qty: Decimal,
+    pub cumulative_filled_qty: Decimal,
+    pub last_executed_price: Decimal,
+    pub commission_amount: Option<Decimal>,
+    pub commission_asset: Option<String>,
+    pub event_time: DateTime<Utc>,
+    pub transaction_time: Option<DateTime<Utc>>,
+    pub raw_payload: Value,
+}
+
+impl ExchangeExecutionReport {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.environment == ExchangeEnvironment::Live {
+            return Err(CoreError::LiveExchangeEnvironmentRejected);
+        }
+        if self.client_order_id.trim().is_empty() {
+            return Err(CoreError::EmptyClientOrderId);
+        }
+        Ok(())
+    }
+
+    pub fn fill_event(&self) -> Option<ExchangeFillEvent> {
+        if self.execution_type != ExchangeExecutionReportType::Trade
+            || self.last_executed_qty <= Decimal::ZERO
+        {
+            return None;
+        }
+
+        Some(ExchangeFillEvent {
+            last_executed_qty: self.last_executed_qty,
+            last_executed_price: self.last_executed_price,
+            commission_amount: self.commission_amount,
+            commission_asset: self.commission_asset.clone(),
+            transaction_time: self.transaction_time,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExchangeListenKeyStatus {
+    Missing,
+    Active,
+    Expired,
+    Closing,
+    Closed,
+}
+
+impl ExchangeListenKeyStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "MISSING",
+            Self::Active => "ACTIVE",
+            Self::Expired => "EXPIRED",
+            Self::Closing => "CLOSING",
+            Self::Closed => "CLOSED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExchangePrivateStreamState {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub status: ExchangePrivateStreamStatus,
+    pub listen_key_hash: Option<String>,
+    pub connected_at: Option<DateTime<Utc>>,
+    pub last_event_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub reconnect_count: i32,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ExchangePrivateStreamState {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.environment == ExchangeEnvironment::Live {
+            return Err(CoreError::LiveExchangeEnvironmentRejected);
+        }
+        if self.reconnect_count < 0 {
+            return Err(CoreError::InvalidExchangeReconnectCount(
+                self.reconnect_count,
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExchangePrivateStreamEvent {
+    pub exchange: ExchangeName,
+    pub environment: ExchangeEnvironment,
+    pub source: ExchangePrivateStreamSource,
+    pub event_type: String,
+    pub symbol: Option<String>,
+    pub client_order_id: Option<String>,
+    pub exchange_order_id: Option<String>,
+    pub execution_type: Option<ExchangeExecutionReportType>,
+    pub order_status: Option<ExchangeExecutionStatus>,
+    pub event_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub raw_payload: Value,
+}
+
+impl ExchangePrivateStreamEvent {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.environment == ExchangeEnvironment::Live {
+            return Err(CoreError::LiveExchangeEnvironmentRejected);
+        }
+        if self.event_type.trim().is_empty() {
+            return Err(CoreError::InvalidExchangePrivateStreamEventType);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExchangeOrderRequest {
     pub exchange: ExchangeName,
@@ -2653,6 +2919,10 @@ pub enum CoreError {
     UnsupportedExchangeName(String),
     #[error("unsupported exchange reconciliation status: {0}")]
     UnsupportedExchangeReconciliationStatus(String),
+    #[error("unsupported exchange private stream status: {0}")]
+    UnsupportedExchangePrivateStreamStatus(String),
+    #[error("unsupported exchange private stream source: {0}")]
+    UnsupportedExchangePrivateStreamSource(String),
     #[error("unsupported exchange reconciliation mismatch kind: {0}")]
     UnsupportedExchangeReconciliationMismatchKind(String),
     #[error("unsupported exchange reconciliation action: {0}")]
@@ -2711,6 +2981,10 @@ pub enum CoreError {
     ExchangeReconciliationLimitTooHigh(i64),
     #[error("exchange reconciliation status_filter cannot contain empty values")]
     InvalidExchangeReconciliationStatusFilter,
+    #[error("exchange private stream reconnect_count must be zero or greater: {0}")]
+    InvalidExchangeReconnectCount(i32),
+    #[error("exchange private stream event_type cannot be empty")]
+    InvalidExchangePrivateStreamEventType,
     #[error("candle backfill estimate exceeds supported bounds")]
     InvalidCandleBackfillEstimate,
     #[error("holding_candles must be greater than zero")]
@@ -2761,9 +3035,11 @@ pub enum CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_password_length, ExchangeEnvironment, ExchangeName, ExchangeOrderRequest,
-        ExchangeOrderSide, ExchangeOrderState, ExchangeOrderType, ExecutionState, OrderIntent,
-        PaperOrder, Permission, Side, Symbol, UserRole,
+        validate_password_length, ExchangeEnvironment, ExchangeExecutionReport,
+        ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName, ExchangeOrderRequest,
+        ExchangeOrderSide, ExchangeOrderState, ExchangeOrderType, ExchangePrivateStreamEvent,
+        ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+        ExecutionState, OrderIntent, PaperOrder, Permission, Side, Symbol, UserRole,
     };
     use chrono::Utc;
     use rust_decimal::Decimal;
@@ -2905,5 +3181,106 @@ mod tests {
 
         assert_eq!(ack.status, ExchangeOrderState::New);
         assert_eq!(ack.executed_qty, Decimal::ZERO);
+    }
+
+    #[test]
+    fn private_stream_state_rejects_live_environment() {
+        let err = ExchangePrivateStreamState {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Live,
+            status: ExchangePrivateStreamStatus::Disconnected,
+            listen_key_hash: None,
+            connected_at: None,
+            last_event_at: None,
+            last_error: None,
+            reconnect_count: 0,
+            updated_at: Utc::now(),
+        }
+        .validate()
+        .expect_err("live should be rejected");
+
+        assert!(matches!(
+            err,
+            super::CoreError::LiveExchangeEnvironmentRejected
+        ));
+    }
+
+    #[test]
+    fn trade_execution_report_emits_fill_event() {
+        let report = ExchangeExecutionReport {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: "client-1".to_string(),
+            exchange_order_id: Some("42".to_string()),
+            side: ExchangeOrderSide::Buy,
+            order_type: ExchangeOrderType::Market,
+            time_in_force: None,
+            order_status: ExchangeExecutionStatus::Filled,
+            execution_type: ExchangeExecutionReportType::Trade,
+            last_executed_qty: Decimal::new(1, 0),
+            cumulative_filled_qty: Decimal::new(1, 0),
+            last_executed_price: Decimal::new(100_000, 0),
+            commission_amount: Some(Decimal::new(25, 4)),
+            commission_asset: Some("BNB".to_string()),
+            event_time: Utc::now(),
+            transaction_time: Some(Utc::now()),
+            raw_payload: json!({"e":"executionReport"}),
+        };
+
+        let fill = report.fill_event().expect("trade should create fill event");
+        assert_eq!(fill.last_executed_qty, Decimal::new(1, 0));
+        assert_eq!(fill.commission_asset.as_deref(), Some("BNB"));
+    }
+
+    #[test]
+    fn new_execution_report_is_not_a_fill() {
+        let report = ExchangeExecutionReport {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: "client-1".to_string(),
+            exchange_order_id: Some("42".to_string()),
+            side: ExchangeOrderSide::Buy,
+            order_type: ExchangeOrderType::Limit,
+            time_in_force: None,
+            order_status: ExchangeExecutionStatus::New,
+            execution_type: ExchangeExecutionReportType::New,
+            last_executed_qty: Decimal::ZERO,
+            cumulative_filled_qty: Decimal::ZERO,
+            last_executed_price: Decimal::ZERO,
+            commission_amount: None,
+            commission_asset: None,
+            event_time: Utc::now(),
+            transaction_time: None,
+            raw_payload: json!({"e":"executionReport"}),
+        };
+
+        assert!(report.fill_event().is_none());
+    }
+
+    #[test]
+    fn private_stream_event_rejects_empty_type() {
+        let err = ExchangePrivateStreamEvent {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            source: ExchangePrivateStreamSource::Websocket,
+            event_type: " ".to_string(),
+            symbol: None,
+            client_order_id: None,
+            exchange_order_id: None,
+            execution_type: None,
+            order_status: None,
+            event_time: Utc::now(),
+            received_at: Utc::now(),
+            raw_payload: json!({}),
+        }
+        .validate()
+        .expect_err("empty event type should be rejected");
+
+        assert!(matches!(
+            err,
+            super::CoreError::InvalidExchangePrivateStreamEventType
+        ));
     }
 }

@@ -103,9 +103,13 @@ Optional environment variables:
 - `MARKET_STALE_THRESHOLD_SECONDS`
 - `BINANCE_WS_BASE_URL`
 - `BINANCE_TESTNET_REST_BASE_URL`
+- `BINANCE_TESTNET_WS_BASE_URL`
 - `BINANCE_TESTNET_API_KEY`
 - `BINANCE_TESTNET_API_SECRET`
 - `BINANCE_TESTNET_RECV_WINDOW_MS`
+- `BINANCE_TESTNET_PRIVATE_STREAM_STALE_THRESHOLD_SECONDS`
+- `BINANCE_TESTNET_PRIVATE_STREAM_KEEPALIVE_SECONDS`
+- `BINANCE_TESTNET_PRIVATE_STREAM_RECONNECT_DELAY_SECONDS`
 - `BINANCE_REST_BASE_URL`
 - `STRATEGY_DEFAULT_SYMBOLS`
 - `STRATEGY_DEFAULT_TIMEFRAME`
@@ -183,7 +187,7 @@ Notes:
 - If `AEGIS_ACCESS_TOKEN` is set, it overrides the token file for that run and the CLI will not rewrite `~/.config/aegis/token.json` unless `aegis auth login` is executed.
 - `resume` refuses locally unless `--confirm "RESUME TRADING"` matches exactly.
 - `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
-- The CLI does not print tokens by default and does not implement live trading, exchange private APIs, API keys, or any TUI layer.
+- The CLI does not print tokens by default and does not implement live trading, production exchange private APIs, API key reads, or any TUI layer.
 - Testnet exchange commands talk only to the Aegis HTTP API; the CLI never reads Binance secrets directly.
 
 ## Binance Spot Testnet adapter
@@ -203,6 +207,7 @@ Guardrails:
 Required env when using the adapter:
 
 - `BINANCE_TESTNET_REST_BASE_URL=https://testnet.binance.vision`
+- `BINANCE_TESTNET_WS_BASE_URL=wss://stream.testnet.binance.vision/ws`
 - `BINANCE_TESTNET_API_KEY`
 - `BINANCE_TESTNET_API_SECRET`
 
@@ -225,7 +230,21 @@ cargo run -p cli -- exchange testnet reconcile --limit 50
 cargo run -p cli -- exchange testnet reconciliation-runs
 cargo run -p cli -- exchange testnet reconciliation-get <run_id>
 cargo run -p cli -- exchange testnet reconciliation-mismatches <run_id>
+cargo run -p cli -- exchange testnet private-stream status
+cargo run -p cli -- exchange testnet private-stream events --limit 50
+cargo run -p cli -- exchange testnet private-stream listen-key
+cargo run -p cli -- exchange testnet private-stream keepalive --listen-key <testnet-listen-key>
+cargo run -p cli -- exchange testnet private-stream close --listen-key <testnet-listen-key>
+rtk cargo run -p exchange --bin testnet-private-stream
 ```
+
+Private stream notes:
+
+- The worker is testnet-only and uses only `wss://stream.testnet.binance.vision/ws`.
+- Raw private events are persisted in `exchange_private_stream_events`; stream lifecycle state is persisted in `exchange_private_stream_state`.
+- Normalized `executionReport` events update only `exchange_testnet_orders` when `client_order_id` matches.
+- Listen keys are hashed in Postgres; the API, CLI, logs, and dashboard use masked values only.
+- The dashboard Settings page now exposes a private-stream status card, recent private events, and operator lifecycle controls.
 
 ## Auth MVP
 

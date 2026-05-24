@@ -12,7 +12,8 @@ use aegis_core::{
     AuthenticatedActor, BacktestRequest, CandleBackfillRequest, CandleBackfillResult,
     CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
     ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
-    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeRateLimitState,
+    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
+    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
     ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
     ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo, MarketMode, OrderIntent,
     PaperCloseMode, PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
@@ -44,14 +45,15 @@ use db::{
     backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
     count_users, create_paper_order, ensure_system_state, get_backtest_equity_curve,
     get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
-    get_exchange_testnet_order_by_client_order_id, get_latest_market_tick, get_order_by_id,
-    get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
-    get_session_by_id, get_session_by_id_and_hash, get_strategy_status, get_system_event,
-    get_system_state, get_user_by_email, get_user_by_id, insert_audit_log,
-    insert_exchange_testnet_order, insert_paper_account, insert_paper_equity_snapshot,
-    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
-    insert_strategy_config_audit, insert_system_event, insert_user, list_backtest_runs,
-    list_candle_backfill_runs, list_candles, list_exchange_reconciliation_mismatches,
+    get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
+    get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
+    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
+    get_strategy_status, get_system_event, get_system_state, get_user_by_email, get_user_by_id,
+    insert_audit_log, insert_exchange_testnet_order, insert_paper_account,
+    insert_paper_equity_snapshot, insert_risk_config_audit, insert_risk_evaluation, insert_session,
+    insert_signal_deduped, insert_strategy_config_audit, insert_system_event, insert_user,
+    list_backtest_runs, list_candle_backfill_runs, list_candles,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_orders, list_market_feed_statuses,
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
@@ -64,16 +66,20 @@ use db::{
     strategy_config_audit_from_record, strategy_config_from_record,
     strategy_config_version_from_record, update_exchange_testnet_order_ack,
     update_exchange_testnet_order_status, update_strategy_state, update_user_last_login,
-    upsert_paper_position, upsert_risk_config, upsert_strategy_config, user_from_record,
-    BacktestEquityPointRecord, BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord,
-    CreateOrderError, DbConfig, ExchangeTestnetOrderRecord, InsertSignalOutcome,
-    MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
+    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
+    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
+    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord, ExchangeTestnetOrderRecord,
+    InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
     PaperEquitySnapshotRecord, PaperPositionRecord, PaperTradeJournalRecord, PgPool,
     RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
     SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
-use exchange::{BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig, ExchangeAdapter};
+use exchange::{
+    hash_listen_key, mask_listen_key, BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
+    ExchangeAdapter,
+};
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
 use replay_engine::ReplayEngine;
 use risk_engine::{validate_risk_config, RiskEvaluator};
@@ -537,9 +543,36 @@ struct ExchangeTestnetStatusResponse {
     exchange: String,
     environment: String,
     rest_base_url: String,
+    ws_base_url: String,
     configured: bool,
     request_mode: ExchangeRequestMode,
     rate_limits: ExchangeRateLimitState,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangePrivateStreamStatusResponse {
+    state: ExchangePrivateStreamStateView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangePrivateStreamEventsResponse {
+    events: Vec<ExchangePrivateStreamEventView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangePrivateStreamListenKeyResponse {
+    state: ExchangePrivateStreamStateView,
+    listen_key_status: String,
+    listen_key_masked: Option<String>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -632,14 +665,59 @@ struct ExchangeTestnetOrderView {
     updated_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Serialize)]
+struct ExchangePrivateStreamStateView {
+    exchange: String,
+    environment: String,
+    status: String,
+    listen_key_hash: Option<String>,
+    connected_at: Option<chrono::DateTime<Utc>>,
+    last_event_at: Option<chrono::DateTime<Utc>>,
+    last_error: Option<String>,
+    reconnect_count: i32,
+    updated_at: chrono::DateTime<Utc>,
+    is_stale: bool,
+}
+
+#[derive(Serialize)]
+struct ExchangePrivateStreamEventView {
+    id: Uuid,
+    exchange: String,
+    environment: String,
+    source: String,
+    event_type: String,
+    symbol: Option<String>,
+    client_order_id: Option<String>,
+    exchange_order_id: Option<String>,
+    execution_type: Option<String>,
+    order_status: Option<String>,
+    payload: Value,
+    event_time: chrono::DateTime<Utc>,
+    received_at: chrono::DateTime<Utc>,
+    correlation_id: Option<Uuid>,
+}
+
 #[derive(Deserialize)]
 struct ExchangeTestnetOrdersQuery {
     limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
+struct ExchangePrivateStreamEventsQuery {
+    limit: Option<i64>,
+    client_order_id: Option<String>,
+    event_type: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct ExchangeReconciliationRunsQuery {
     limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ExchangePrivateStreamLifecycleRequest {
+    listen_key: Option<String>,
+    correlation_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -1159,6 +1237,26 @@ async fn main() {
         .route("/risk/config/audit", get(get_risk_config_audit_handler))
         .route("/risk/evaluate", post(evaluate_risk))
         .route("/exchange/testnet/status", get(get_exchange_testnet_status))
+        .route(
+            "/exchange/testnet/private-stream/status",
+            get(get_exchange_testnet_private_stream_status),
+        )
+        .route(
+            "/exchange/testnet/private-stream/events",
+            get(list_exchange_testnet_private_stream_events),
+        )
+        .route(
+            "/exchange/testnet/private-stream/listen-key",
+            post(create_exchange_testnet_private_stream_listen_key),
+        )
+        .route(
+            "/exchange/testnet/private-stream/listen-key/keepalive",
+            post(keepalive_exchange_testnet_private_stream_listen_key),
+        )
+        .route(
+            "/exchange/testnet/private-stream/listen-key/close",
+            post(close_exchange_testnet_private_stream_listen_key),
+        )
         .route(
             "/exchange/testnet/symbols",
             get(get_exchange_testnet_symbols),
@@ -2173,6 +2271,61 @@ fn exchange_testnet_order_view(record: ExchangeTestnetOrderRecord) -> ExchangeTe
         created_by: record.created_by,
         created_at: record.created_at,
         updated_at: record.updated_at,
+    }
+}
+
+fn exchange_private_stream_state_view(
+    record: ExchangePrivateStreamStateRecord,
+) -> ExchangePrivateStreamStateView {
+    let state = ExchangePrivateStreamState {
+        exchange: ExchangeName::Binance,
+        environment: ExchangeEnvironment::Testnet,
+        status: record
+            .status
+            .parse()
+            .unwrap_or(ExchangePrivateStreamStatus::Error),
+        listen_key_hash: record.listen_key_hash.clone(),
+        connected_at: record.connected_at,
+        last_event_at: record.last_event_at,
+        last_error: record.last_error.clone(),
+        reconnect_count: record.reconnect_count,
+        updated_at: record.updated_at,
+    };
+    let is_stale =
+        exchange::private_stream_is_stale(&state, Utc::now(), std::time::Duration::from_secs(60));
+
+    ExchangePrivateStreamStateView {
+        exchange: record.exchange,
+        environment: record.environment,
+        status: record.status,
+        listen_key_hash: record.listen_key_hash,
+        connected_at: record.connected_at,
+        last_event_at: record.last_event_at,
+        last_error: record.last_error,
+        reconnect_count: record.reconnect_count,
+        updated_at: record.updated_at,
+        is_stale,
+    }
+}
+
+fn exchange_private_stream_event_view(
+    record: ExchangePrivateStreamEventRecord,
+) -> ExchangePrivateStreamEventView {
+    ExchangePrivateStreamEventView {
+        id: record.id,
+        exchange: record.exchange,
+        environment: record.environment,
+        source: ExchangePrivateStreamSource::Websocket.as_str().to_string(),
+        event_type: record.event_type,
+        symbol: record.symbol,
+        client_order_id: record.client_order_id,
+        exchange_order_id: record.exchange_order_id,
+        execution_type: record.execution_type,
+        order_status: record.order_status,
+        payload: record.payload,
+        event_time: record.event_time,
+        received_at: record.received_at,
+        correlation_id: record.correlation_id,
     }
 }
 
@@ -3812,6 +3965,7 @@ async fn get_exchange_testnet_status(
             exchange: status.exchange.as_str().to_string(),
             environment: status.environment.as_str().to_string(),
             rest_base_url: status.rest_base_url,
+            ws_base_url: status.ws_base_url,
             configured: status.configured,
             request_mode: status.request_mode,
             rate_limits: status.rate_limits,
@@ -3820,6 +3974,429 @@ async fn get_exchange_testnet_status(
             timestamp: Utc::now(),
         }),
     )
+}
+
+async fn get_exchange_testnet_private_stream_status(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match get_exchange_private_stream_state(
+        &state.db_pool,
+        ExchangeName::Binance.as_str(),
+        ExchangeEnvironment::Testnet.as_str(),
+    )
+    .await
+    {
+        Ok(Some(record)) => {
+            let view = exchange_private_stream_state_view(record);
+            telemetry().set_exchange_private_stream_status(
+                ExchangeEnvironment::Testnet.as_str(),
+                &view.status,
+            );
+            let age_seconds = view
+                .last_event_at
+                .and_then(|value| Utc::now().signed_duration_since(value).to_std().ok())
+                .map(|age| age.as_secs_f64())
+                .unwrap_or(0.0);
+            telemetry().set_exchange_private_stream_last_event_age_seconds(
+                ExchangeEnvironment::Testnet.as_str(),
+                age_seconds,
+            );
+            (
+                StatusCode::OK,
+                Json(ExchangePrivateStreamStatusResponse {
+                    state: view,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Ok(None) => {
+            telemetry().set_exchange_private_stream_status(
+                ExchangeEnvironment::Testnet.as_str(),
+                ExchangePrivateStreamStatus::Disconnected.as_str(),
+            );
+            telemetry().set_exchange_private_stream_last_event_age_seconds(
+                ExchangeEnvironment::Testnet.as_str(),
+                0.0,
+            );
+            (
+                StatusCode::OK,
+                Json(ExchangePrivateStreamStatusResponse {
+                    state: exchange_private_stream_state_view(ExchangePrivateStreamStateRecord {
+                        exchange: ExchangeName::Binance.as_str().to_string(),
+                        environment: ExchangeEnvironment::Testnet.as_str().to_string(),
+                        status: ExchangePrivateStreamStatus::Disconnected
+                            .as_str()
+                            .to_string(),
+                        listen_key_hash: None,
+                        connected_at: None,
+                        last_event_at: None,
+                        last_error: None,
+                        reconnect_count: 0,
+                        updated_at: Utc::now(),
+                    }),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to load exchange private stream state"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_exchange_private_stream_state",
+                    message: "Exchange private stream state could not be loaded.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_exchange_testnet_private_stream_events(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Query(query): Query<ExchangePrivateStreamEventsQuery>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let limit = bounded_exchange_testnet_limit(query.limit);
+
+    match list_exchange_private_stream_events(
+        &state.db_pool,
+        ExchangeEnvironment::Testnet.as_str(),
+        limit,
+        query.client_order_id.as_deref(),
+        query.event_type.as_deref(),
+    )
+    .await
+    {
+        Ok(events) => (
+            StatusCode::OK,
+            Json(ExchangePrivateStreamEventsResponse {
+                events: events
+                    .into_iter()
+                    .map(exchange_private_stream_event_view)
+                    .collect(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list exchange private stream events"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_exchange_private_stream_events",
+                    message: "Exchange private stream events could not be listed.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn create_exchange_testnet_private_stream_listen_key(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ExchangePrivateStreamLifecycleRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    match state.exchange_testnet.create_listen_key().await {
+        Ok(created) => {
+            let masked = mask_listen_key(&created.listen_key);
+            let hashed = hash_listen_key(&created.listen_key);
+            let persisted = upsert_exchange_private_stream_state(
+                &state.db_pool,
+                &ExchangePrivateStreamStateRecord {
+                    exchange: created.exchange.as_str().to_string(),
+                    environment: created.environment.as_str().to_string(),
+                    status: ExchangePrivateStreamStatus::Disconnected
+                        .as_str()
+                        .to_string(),
+                    listen_key_hash: Some(hashed),
+                    connected_at: None,
+                    last_event_at: None,
+                    last_error: None,
+                    reconnect_count: 0,
+                    updated_at: Utc::now(),
+                },
+            )
+            .await;
+
+            match persisted {
+                Ok(state_record) => {
+                    let _ = insert_audit_log(
+                        &state.db_pool,
+                        correlation_id,
+                        &actor,
+                        "exchange.testnet.private_stream.listen_key.created",
+                        ExchangeName::Binance.as_str(),
+                        &json!({ "listen_key_masked": masked }),
+                    )
+                    .await;
+                    (
+                        StatusCode::OK,
+                        Json(ExchangePrivateStreamListenKeyResponse {
+                            state: exchange_private_stream_state_view(state_record),
+                            listen_key_status: created.status.as_str().to_string(),
+                            listen_key_masked: Some(masked),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+                Err(err) => {
+                    error!(
+                        request_id = %request.request_id,
+                        correlation_id = %request.correlation_id,
+                        error = %err,
+                        "failed to persist exchange private stream state after listen key creation"
+                    );
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_persist_exchange_private_stream_state",
+                            message: "Exchange private stream state could not be persisted."
+                                .to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(err) => {
+            exchange_testnet_error_response(&request, "private_stream_create_listen_key", err)
+        }
+    }
+}
+
+async fn keepalive_exchange_testnet_private_stream_listen_key(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ExchangePrivateStreamLifecycleRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let Some(listen_key) = payload.listen_key.filter(|value| !value.trim().is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing_listen_key",
+                message: "listen_key is required for keepalive.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+
+    match state
+        .exchange_testnet
+        .keepalive_listen_key(&listen_key)
+        .await
+    {
+        Ok(keepalive) => match upsert_exchange_private_stream_state(
+            &state.db_pool,
+            &ExchangePrivateStreamStateRecord {
+                exchange: keepalive.exchange.as_str().to_string(),
+                environment: keepalive.environment.as_str().to_string(),
+                status: ExchangePrivateStreamStatus::Disconnected
+                    .as_str()
+                    .to_string(),
+                listen_key_hash: Some(hash_listen_key(&keepalive.listen_key)),
+                connected_at: None,
+                last_event_at: None,
+                last_error: None,
+                reconnect_count: 0,
+                updated_at: Utc::now(),
+            },
+        )
+        .await
+        {
+            Ok(state_record) => {
+                let _ = insert_audit_log(
+                    &state.db_pool,
+                    correlation_id,
+                    &actor,
+                    "exchange.testnet.private_stream.listen_key.keepalive",
+                    ExchangeName::Binance.as_str(),
+                    &json!({ "listen_key_masked": mask_listen_key(&listen_key) }),
+                )
+                .await;
+                (
+                    StatusCode::OK,
+                    Json(ExchangePrivateStreamListenKeyResponse {
+                        state: exchange_private_stream_state_view(state_record),
+                        listen_key_status: keepalive.status.as_str().to_string(),
+                        listen_key_masked: Some(mask_listen_key(&listen_key)),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+            Err(err) => {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    "failed to persist exchange private stream state after keepalive"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_persist_exchange_private_stream_state",
+                        message: "Exchange private stream state could not be persisted."
+                            .to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(err) => {
+            exchange_testnet_error_response(&request, "private_stream_keepalive_listen_key", err)
+        }
+    }
+}
+
+async fn close_exchange_testnet_private_stream_listen_key(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ExchangePrivateStreamLifecycleRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = required_state_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let Some(listen_key) = payload.listen_key.filter(|value| !value.trim().is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "missing_listen_key",
+                message: "listen_key is required for close.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+
+    match state.exchange_testnet.close_listen_key(&listen_key).await {
+        Ok(closed) => match upsert_exchange_private_stream_state(
+            &state.db_pool,
+            &ExchangePrivateStreamStateRecord {
+                exchange: closed.exchange.as_str().to_string(),
+                environment: closed.environment.as_str().to_string(),
+                status: ExchangePrivateStreamStatus::Disconnected
+                    .as_str()
+                    .to_string(),
+                listen_key_hash: None,
+                connected_at: None,
+                last_event_at: None,
+                last_error: None,
+                reconnect_count: 0,
+                updated_at: Utc::now(),
+            },
+        )
+        .await
+        {
+            Ok(state_record) => {
+                let _ = insert_audit_log(
+                    &state.db_pool,
+                    correlation_id,
+                    &actor,
+                    "exchange.testnet.private_stream.listen_key.closed",
+                    ExchangeName::Binance.as_str(),
+                    &json!({ "listen_key_masked": mask_listen_key(&listen_key) }),
+                )
+                .await;
+                (
+                    StatusCode::OK,
+                    Json(ExchangePrivateStreamListenKeyResponse {
+                        state: exchange_private_stream_state_view(state_record),
+                        listen_key_status: closed.status.as_str().to_string(),
+                        listen_key_masked: Some(mask_listen_key(&listen_key)),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+            Err(err) => {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    "failed to persist exchange private stream state after close"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_persist_exchange_private_stream_state",
+                        message: "Exchange private stream state could not be persisted."
+                            .to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(err) => {
+            exchange_testnet_error_response(&request, "private_stream_close_listen_key", err)
+        }
+    }
 }
 
 async fn get_exchange_testnet_symbols(
@@ -8195,7 +8772,11 @@ mod tests {
             super::RouteAccess::Owner
         ));
         assert!(matches!(
-            route_access(&axum::http::Method::POST, "/exchange/testnet/reconcile", false),
+            route_access(
+                &axum::http::Method::POST,
+                "/exchange/testnet/reconcile",
+                false
+            ),
             super::RouteAccess::Operator
         ));
     }
@@ -8418,6 +8999,7 @@ mod tests {
             exchange_testnet: BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
                 environment: ExchangeEnvironment::Testnet,
                 rest_base_url: "https://testnet.binance.vision".to_string(),
+                ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
                 api_key: None,
                 api_secret: None,
                 recv_window_ms: None,
@@ -8931,6 +9513,7 @@ mod tests {
             exchange_testnet: BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
                 environment: ExchangeEnvironment::Testnet,
                 rest_base_url: "https://testnet.binance.vision".to_string(),
+                ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
                 api_key: None,
                 api_secret: None,
                 recv_window_ms: None,

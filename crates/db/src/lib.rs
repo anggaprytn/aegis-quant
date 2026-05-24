@@ -161,6 +161,36 @@ pub struct ExchangeTestnetOrderRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangePrivateStreamEventRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub environment: String,
+    pub event_type: String,
+    pub symbol: Option<String>,
+    pub client_order_id: Option<String>,
+    pub exchange_order_id: Option<String>,
+    pub execution_type: Option<String>,
+    pub order_status: Option<String>,
+    pub payload: Value,
+    pub event_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangePrivateStreamStateRecord {
+    pub exchange: String,
+    pub environment: String,
+    pub status: String,
+    pub listen_key_hash: Option<String>,
+    pub connected_at: Option<DateTime<Utc>>,
+    pub last_event_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub reconnect_count: i32,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeReconciliationRunRecord {
     pub id: Uuid,
     pub exchange: String,
@@ -1956,6 +1986,191 @@ pub async fn list_exchange_testnet_orders_for_reconciliation(
 
     let rows = builder.build().fetch_all(pool).await?;
     Ok(rows.iter().map(map_exchange_testnet_order).collect())
+}
+
+pub async fn insert_exchange_private_stream_event(
+    pool: &PgPool,
+    record: &ExchangePrivateStreamEventRecord,
+) -> Result<ExchangePrivateStreamEventRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO exchange_private_stream_events (
+            id,
+            exchange,
+            environment,
+            event_type,
+            symbol,
+            client_order_id,
+            exchange_order_id,
+            execution_type,
+            order_status,
+            payload,
+            event_time,
+            received_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING
+            id,
+            exchange,
+            environment,
+            event_type,
+            symbol,
+            client_order_id,
+            exchange_order_id,
+            execution_type,
+            order_status,
+            payload,
+            event_time,
+            received_at,
+            correlation_id
+        "#,
+    )
+    .bind(record.id)
+    .bind(&record.exchange)
+    .bind(&record.environment)
+    .bind(&record.event_type)
+    .bind(&record.symbol)
+    .bind(&record.client_order_id)
+    .bind(&record.exchange_order_id)
+    .bind(&record.execution_type)
+    .bind(&record.order_status)
+    .bind(&record.payload)
+    .bind(record.event_time)
+    .bind(record.received_at)
+    .bind(record.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_exchange_private_stream_event(&row))
+}
+
+pub async fn list_exchange_private_stream_events(
+    pool: &PgPool,
+    environment: &str,
+    limit: i64,
+    client_order_id: Option<&str>,
+    event_type: Option<&str>,
+) -> Result<Vec<ExchangePrivateStreamEventRecord>> {
+    let mut builder = QueryBuilder::<Postgres>::new(
+        r#"
+        SELECT
+            id,
+            exchange,
+            environment,
+            event_type,
+            symbol,
+            client_order_id,
+            exchange_order_id,
+            execution_type,
+            order_status,
+            payload,
+            event_time,
+            received_at,
+            correlation_id
+        FROM exchange_private_stream_events
+        WHERE environment = 
+        "#,
+    );
+    builder.push_bind(environment);
+
+    if let Some(client_order_id) = client_order_id.filter(|value| !value.trim().is_empty()) {
+        builder.push(" AND client_order_id = ");
+        builder.push_bind(client_order_id);
+    }
+    if let Some(event_type) = event_type.filter(|value| !value.trim().is_empty()) {
+        builder.push(" AND event_type = ");
+        builder.push_bind(event_type);
+    }
+
+    builder.push(" ORDER BY received_at DESC LIMIT ");
+    builder.push_bind(limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
+    Ok(rows.iter().map(map_exchange_private_stream_event).collect())
+}
+
+pub async fn get_exchange_private_stream_state(
+    pool: &PgPool,
+    exchange: &str,
+    environment: &str,
+) -> Result<Option<ExchangePrivateStreamStateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            exchange,
+            environment,
+            status,
+            listen_key_hash,
+            connected_at,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        FROM exchange_private_stream_state
+        WHERE exchange = $1 AND environment = $2
+        "#,
+    )
+    .bind(exchange)
+    .bind(environment)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_exchange_private_stream_state))
+}
+
+pub async fn upsert_exchange_private_stream_state(
+    pool: &PgPool,
+    record: &ExchangePrivateStreamStateRecord,
+) -> Result<ExchangePrivateStreamStateRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO exchange_private_stream_state (
+            exchange,
+            environment,
+            status,
+            listen_key_hash,
+            connected_at,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (exchange, environment)
+        DO UPDATE SET
+            status = EXCLUDED.status,
+            listen_key_hash = EXCLUDED.listen_key_hash,
+            connected_at = EXCLUDED.connected_at,
+            last_event_at = EXCLUDED.last_event_at,
+            last_error = EXCLUDED.last_error,
+            reconnect_count = EXCLUDED.reconnect_count,
+            updated_at = EXCLUDED.updated_at
+        RETURNING
+            exchange,
+            environment,
+            status,
+            listen_key_hash,
+            connected_at,
+            last_event_at,
+            last_error,
+            reconnect_count,
+            updated_at
+        "#,
+    )
+    .bind(&record.exchange)
+    .bind(&record.environment)
+    .bind(&record.status)
+    .bind(&record.listen_key_hash)
+    .bind(record.connected_at)
+    .bind(record.last_event_at)
+    .bind(&record.last_error)
+    .bind(record.reconnect_count)
+    .bind(record.updated_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_exchange_private_stream_state(&row))
 }
 
 pub async fn insert_exchange_reconciliation_run(
@@ -6198,6 +6413,42 @@ fn map_exchange_testnet_order(row: &sqlx::postgres::PgRow) -> ExchangeTestnetOrd
         risk_decision_id: row.get("risk_decision_id"),
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_exchange_private_stream_event(
+    row: &sqlx::postgres::PgRow,
+) -> ExchangePrivateStreamEventRecord {
+    ExchangePrivateStreamEventRecord {
+        id: row.get("id"),
+        exchange: row.get("exchange"),
+        environment: row.get("environment"),
+        event_type: row.get("event_type"),
+        symbol: row.get("symbol"),
+        client_order_id: row.get("client_order_id"),
+        exchange_order_id: row.get("exchange_order_id"),
+        execution_type: row.get("execution_type"),
+        order_status: row.get("order_status"),
+        payload: row.get("payload"),
+        event_time: row.get("event_time"),
+        received_at: row.get("received_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_exchange_private_stream_state(
+    row: &sqlx::postgres::PgRow,
+) -> ExchangePrivateStreamStateRecord {
+    ExchangePrivateStreamStateRecord {
+        exchange: row.get("exchange"),
+        environment: row.get("environment"),
+        status: row.get("status"),
+        listen_key_hash: row.get("listen_key_hash"),
+        connected_at: row.get("connected_at"),
+        last_event_at: row.get("last_event_at"),
+        last_error: row.get("last_error"),
+        reconnect_count: row.get("reconnect_count"),
         updated_at: row.get("updated_at"),
     }
 }

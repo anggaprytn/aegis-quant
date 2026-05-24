@@ -616,6 +616,65 @@ impl ApiClient {
         self.get("/exchange/testnet/status", &[]).await
     }
 
+    pub async fn exchange_testnet_private_stream_status(
+        &self,
+    ) -> Result<ExchangePrivateStreamStatusResponse, ApiClientError> {
+        self.get("/exchange/testnet/private-stream/status", &[])
+            .await
+    }
+
+    pub async fn exchange_testnet_private_stream_events(
+        &self,
+        limit: i64,
+        client_order_id: Option<String>,
+        event_type: Option<String>,
+    ) -> Result<ExchangePrivateStreamEventsResponse, ApiClientError> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(client_order_id) = client_order_id {
+            query.push(("client_order_id", client_order_id));
+        }
+        if let Some(event_type) = event_type {
+            query.push(("event_type", event_type));
+        }
+        self.get("/exchange/testnet/private-stream/events", &query)
+            .await
+    }
+
+    pub async fn exchange_testnet_private_stream_listen_key(
+        &self,
+    ) -> Result<ExchangePrivateStreamListenKeyResponse, ApiClientError> {
+        self.post("/exchange/testnet/private-stream/listen-key", &EmptyRequest)
+            .await
+    }
+
+    pub async fn exchange_testnet_private_stream_keepalive(
+        &self,
+        listen_key: &str,
+    ) -> Result<ExchangePrivateStreamListenKeyResponse, ApiClientError> {
+        self.post(
+            "/exchange/testnet/private-stream/listen-key/keepalive",
+            &ExchangePrivateStreamListenKeyRequest {
+                listen_key: Some(listen_key.to_string()),
+                correlation_id: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn exchange_testnet_private_stream_close(
+        &self,
+        listen_key: &str,
+    ) -> Result<ExchangePrivateStreamListenKeyResponse, ApiClientError> {
+        self.post(
+            "/exchange/testnet/private-stream/listen-key/close",
+            &ExchangePrivateStreamListenKeyRequest {
+                listen_key: Some(listen_key.to_string()),
+                correlation_id: None,
+            },
+        )
+        .await
+    }
+
     pub async fn exchange_testnet_symbols(
         &self,
     ) -> Result<ExchangeTestnetSymbolsResponse, ApiClientError> {
@@ -858,6 +917,12 @@ pub struct ExchangeTestnetOrderSubmitRequest {
     pub risk_decision_id: Option<Uuid>,
     pub confirmation_text: String,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExchangePrivateStreamListenKeyRequest {
+    listen_key: Option<String>,
+    correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1174,9 +1239,68 @@ pub struct ExchangeTestnetStatusResponse {
     pub exchange: String,
     pub environment: String,
     pub rest_base_url: String,
+    pub ws_base_url: String,
     pub configured: bool,
     pub request_mode: String,
     pub rate_limits: Value,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExchangePrivateStreamStateRecord {
+    pub exchange: String,
+    pub environment: String,
+    pub status: String,
+    pub listen_key_hash: Option<String>,
+    pub connected_at: Option<DateTime<Utc>>,
+    pub last_event_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub reconnect_count: i32,
+    pub updated_at: DateTime<Utc>,
+    pub is_stale: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangePrivateStreamEventRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub environment: String,
+    pub source: String,
+    pub event_type: String,
+    pub symbol: Option<String>,
+    pub client_order_id: Option<String>,
+    pub exchange_order_id: Option<String>,
+    pub execution_type: Option<String>,
+    pub order_status: Option<String>,
+    pub payload: Value,
+    pub event_time: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangePrivateStreamStatusResponse {
+    pub state: ExchangePrivateStreamStateRecord,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangePrivateStreamEventsResponse {
+    pub events: Vec<ExchangePrivateStreamEventRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangePrivateStreamListenKeyResponse {
+    pub state: ExchangePrivateStreamStateRecord,
+    pub listen_key_status: String,
+    pub listen_key_masked: Option<String>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

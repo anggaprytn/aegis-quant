@@ -9,9 +9,9 @@ use cli::api::{
 };
 use cli::cli::{
     AuthCommands, BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands,
-    ExchangeTestnetCommands, MarketCommands, OrderCommands, PaperCommands, PipelineCommands,
-    RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
-    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ExchangeTestnetCommands, ExchangeTestnetPrivateStreamCommands, MarketCommands, OrderCommands,
+    PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
+    StrategyConfigCommands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -416,6 +416,58 @@ async fn main() -> anyhow::Result<()> {
                         output::print_exchange_testnet_status(&response);
                     }
                 }
+                ExchangeTestnetCommands::PrivateStream(command) => match command {
+                    ExchangeTestnetPrivateStreamCommands::Status => {
+                        let response = client.exchange_testnet_private_stream_status().await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_exchange_private_stream_status(&response);
+                        }
+                    }
+                    ExchangeTestnetPrivateStreamCommands::Events(args) => {
+                        let response = client
+                            .exchange_testnet_private_stream_events(
+                                args.limit,
+                                args.client_order_id,
+                                args.event_type,
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_exchange_private_stream_events(&response.events);
+                        }
+                    }
+                    ExchangeTestnetPrivateStreamCommands::ListenKey => {
+                        let response = client.exchange_testnet_private_stream_listen_key().await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_exchange_private_stream_listen_key(&response);
+                        }
+                    }
+                    ExchangeTestnetPrivateStreamCommands::Keepalive(args) => {
+                        let response = client
+                            .exchange_testnet_private_stream_keepalive(&args.listen_key)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_exchange_private_stream_listen_key(&response);
+                        }
+                    }
+                    ExchangeTestnetPrivateStreamCommands::Close(args) => {
+                        let response = client
+                            .exchange_testnet_private_stream_close(&args.listen_key)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_exchange_private_stream_listen_key(&response);
+                        }
+                    }
+                },
                 ExchangeTestnetCommands::Symbols => {
                     let response = client.exchange_testnet_symbols().await?;
                     if cli.json {

@@ -49,6 +49,10 @@ pub struct Telemetry {
     exchange_testnet_requests_total: IntCounterVec,
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
+    exchange_private_stream_events_total: IntCounterVec,
+    exchange_private_stream_status: IntGaugeVec,
+    exchange_private_stream_last_event_age_seconds: GaugeVec,
+    exchange_private_stream_errors_total: IntCounterVec,
     exchange_reconciliation_runs_total: IntCounterVec,
     exchange_reconciliation_mismatches_total: IntCounterVec,
     exchange_reconciliation_checked_orders_total: IntCounterVec,
@@ -295,6 +299,34 @@ impl Telemetry {
             registry
         )
         .expect("exchange_testnet_errors_total should register");
+        let exchange_private_stream_events_total = register_int_counter_vec_with_registry!(
+            "exchange_private_stream_events_total",
+            "Exchange private stream events by environment and event_type.",
+            &["environment", "event_type"],
+            registry
+        )
+        .expect("exchange_private_stream_events_total should register");
+        let exchange_private_stream_status = register_int_gauge_vec_with_registry!(
+            "exchange_private_stream_status",
+            "Exchange private stream status by environment and status.",
+            &["environment", "status"],
+            registry
+        )
+        .expect("exchange_private_stream_status should register");
+        let exchange_private_stream_last_event_age_seconds = register_gauge_vec_with_registry!(
+            "exchange_private_stream_last_event_age_seconds",
+            "Age of the latest private stream event in seconds by environment.",
+            &["environment"],
+            registry
+        )
+        .expect("exchange_private_stream_last_event_age_seconds should register");
+        let exchange_private_stream_errors_total = register_int_counter_vec_with_registry!(
+            "exchange_private_stream_errors_total",
+            "Exchange private stream errors by environment and kind.",
+            &["environment", "kind"],
+            registry
+        )
+        .expect("exchange_private_stream_errors_total should register");
         let exchange_reconciliation_runs_total = register_int_counter_vec_with_registry!(
             "exchange_reconciliation_runs_total",
             "Exchange reconciliation runs by environment and status.",
@@ -366,6 +398,10 @@ impl Telemetry {
             exchange_testnet_requests_total,
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
+            exchange_private_stream_events_total,
+            exchange_private_stream_status,
+            exchange_private_stream_last_event_age_seconds,
+            exchange_private_stream_errors_total,
             exchange_reconciliation_runs_total,
             exchange_reconciliation_mismatches_total,
             exchange_reconciliation_checked_orders_total,
@@ -609,6 +645,37 @@ impl Telemetry {
     pub fn inc_exchange_testnet_error(&self, operation: &str, kind: &str) {
         self.exchange_testnet_errors_total
             .with_label_values(&[operation, kind])
+            .inc();
+    }
+
+    pub fn inc_exchange_private_stream_event(&self, environment: &str, event_type: &str) {
+        self.exchange_private_stream_events_total
+            .with_label_values(&[environment, event_type])
+            .inc();
+    }
+
+    pub fn set_exchange_private_stream_status(&self, environment: &str, status: &str) {
+        for candidate in ["CONNECTING", "CONNECTED", "STALE", "DISCONNECTED", "ERROR"] {
+            let value = if candidate == status { 1 } else { 0 };
+            self.exchange_private_stream_status
+                .with_label_values(&[environment, candidate])
+                .set(value);
+        }
+    }
+
+    pub fn set_exchange_private_stream_last_event_age_seconds(
+        &self,
+        environment: &str,
+        age_seconds: f64,
+    ) {
+        self.exchange_private_stream_last_event_age_seconds
+            .with_label_values(&[environment])
+            .set(age_seconds);
+    }
+
+    pub fn inc_exchange_private_stream_error(&self, environment: &str, kind: &str) {
+        self.exchange_private_stream_errors_total
+            .with_label_values(&[environment, kind])
             .inc();
     }
 

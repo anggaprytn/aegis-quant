@@ -580,6 +580,7 @@ export type ExchangeTestnetStatusResponse = {
   exchange: string;
   environment: string;
   rest_base_url: string;
+  ws_base_url: string;
   configured: boolean;
   request_mode: string;
   rate_limits: Record<string, unknown>;
@@ -655,6 +656,59 @@ export type ExchangeTestnetOrdersResponse = {
 
 export type ExchangeTestnetOrderResponse = {
   order: ExchangeTestnetOrderRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangePrivateStreamStateRecord = {
+  exchange: string;
+  environment: string;
+  status: string;
+  listen_key_hash: string | null;
+  connected_at: string | null;
+  last_event_at: string | null;
+  last_error: string | null;
+  reconnect_count: number;
+  updated_at: string;
+  is_stale: boolean;
+};
+
+export type ExchangePrivateStreamEventRecord = {
+  id: string;
+  exchange: string;
+  environment: string;
+  source: string;
+  event_type: string;
+  symbol: string | null;
+  client_order_id: string | null;
+  exchange_order_id: string | null;
+  execution_type: string | null;
+  order_status: string | null;
+  payload: Record<string, unknown>;
+  event_time: string;
+  received_at: string;
+  correlation_id: string | null;
+};
+
+export type ExchangePrivateStreamStatusResponse = {
+  state: ExchangePrivateStreamStateRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangePrivateStreamEventsResponse = {
+  events: ExchangePrivateStreamEventRecord[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangePrivateStreamListenKeyResponse = {
+  state: ExchangePrivateStreamStateRecord;
+  listen_key_status: string;
+  listen_key_masked: string | null;
   request_id: string;
   correlation_id: string;
   timestamp: string;

@@ -95,15 +95,48 @@ pub enum ExchangeCommands {
 #[derive(Debug, Subcommand)]
 pub enum ExchangeTestnetCommands {
     Status,
+    #[command(subcommand)]
+    PrivateStream(ExchangeTestnetPrivateStreamCommands),
     Symbols,
     Balances,
     OrderSubmit(ExchangeTestnetOrderSubmitArgs),
-    OrderGet { client_order_id: String },
+    OrderGet {
+        client_order_id: String,
+    },
     OrderCancel(ExchangeTestnetOrderCancelArgs),
     Reconcile(ExchangeTestnetReconcileArgs),
     ReconciliationRuns(ExchangeReconciliationRunsArgs),
-    ReconciliationGet { run_id: Uuid },
-    ReconciliationMismatches { run_id: Uuid },
+    ReconciliationGet {
+        run_id: Uuid,
+    },
+    ReconciliationMismatches {
+        run_id: Uuid,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExchangeTestnetPrivateStreamCommands {
+    Status,
+    Events(ExchangeTestnetPrivateStreamEventsArgs),
+    ListenKey,
+    Keepalive(ExchangeTestnetPrivateStreamListenKeyArgs),
+    Close(ExchangeTestnetPrivateStreamListenKeyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetPrivateStreamEventsArgs {
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
+    #[arg(long = "client-order-id")]
+    pub client_order_id: Option<String>,
+    #[arg(long = "event-type")]
+    pub event_type: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ExchangeTestnetPrivateStreamListenKeyArgs {
+    #[arg(long = "listen-key")]
+    pub listen_key: String,
 }
 
 #[derive(Debug, Args)]
