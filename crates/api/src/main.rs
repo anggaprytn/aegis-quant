@@ -9797,19 +9797,20 @@ mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
         generate_testnet_client_order_id, is_valid_resume_confirmation,
-        is_valid_testnet_order_confirmation, login, logout, metrics, normalize_route_label,
-        order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
-        refresh, request_context_middleware, risk_decision_not_found_error, route_access,
-        AppConfig, AppState, RequestContext, StrategyRuntimeConfig, CLI_AUTH_MODE_HEADER,
-        CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT,
-        MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
+        is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs, login, logout,
+        metrics, normalize_route_label, order_view, parse_correlation_id_filter,
+        parse_order_intent, parse_risk_check_context, refresh, repair_exchange_testnet_order,
+        request_context_middleware, risk_decision_not_found_error, route_access, AppConfig,
+        AppState, RequestContext, StrategyRuntimeConfig, CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
+        DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
+        MAX_RISK_DECISIONS_LIMIT,
     };
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
         AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
         CandleInterval, ExchangeEnvironment, MarketDataSource, MarketMode, Side, Symbol,
-        TestnetRepairAction, UserRole, UserStatus,
+        TestnetExecutionState, TestnetRepairAction, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -9823,8 +9824,11 @@ mod tests {
     };
     use chrono::{TimeZone, Utc};
     use db::{
-        count_users, get_session_by_id, get_user_by_email, insert_user, test_support::TestDatabase,
-        OrderRecord, PgPool,
+        count_users, get_exchange_testnet_order_by_client_order_id, get_session_by_id,
+        get_user_by_email, insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
+        insert_user, list_exchange_testnet_order_lifecycle_events,
+        list_exchange_testnet_repair_actions, test_support::TestDatabase,
+        ExchangeTestnetOrderRecord, OrderRecord, PgPool,
     };
     use exchange::{BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig};
     use market_ingest::MarketIngestConfig;
@@ -10238,6 +10242,24 @@ mod tests {
             .with_state(state)
     }
 
+    fn repair_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/auth/login", post(login))
+            .route(
+                "/exchange/testnet/orders/:client_order_id/repair",
+                post(repair_exchange_testnet_order),
+            )
+            .route(
+                "/exchange/testnet/orders/:client_order_id/repairs",
+                get(list_exchange_testnet_order_repairs),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
     async fn response_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -10299,6 +10321,85 @@ mod tests {
         )
         .await
         .expect("user insert");
+    }
+
+    fn sample_testnet_order(
+        client_order_id: &str,
+        status: &str,
+        execution_state: TestnetExecutionState,
+        symbol: &str,
+    ) -> ExchangeTestnetOrderRecord {
+        let timestamp = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        ExchangeTestnetOrderRecord {
+            id: Uuid::new_v4(),
+            exchange: "binance".to_string(),
+            environment: "testnet".to_string(),
+            client_order_id: client_order_id.to_string(),
+            exchange_order_id: Some(format!("ex-{client_order_id}")),
+            symbol: symbol.to_string(),
+            side: "BUY".to_string(),
+            order_type: "LIMIT".to_string(),
+            time_in_force: Some("GTC".to_string()),
+            requested_qty: Some(Decimal::ONE),
+            requested_notional: None,
+            limit_price: Some(Decimal::new(100_000, 0)),
+            status: status.to_string(),
+            execution_state: execution_state.as_str().to_string(),
+            ack_payload: Some(json!({ "status": status })),
+            latest_status_payload: Some(json!({ "status": status })),
+            risk_decision_id: None,
+            created_by: None,
+            last_transition_at: Some(timestamp),
+            created_at: timestamp,
+            updated_at: timestamp,
+        }
+    }
+
+    async fn latest_audit_log_for_target(
+        pool: &PgPool,
+        action: &str,
+        target: &str,
+    ) -> (String, Value) {
+        let row = sqlx::query(
+            r#"
+            SELECT actor, metadata
+            FROM audit_logs
+            WHERE action = $1 AND target = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(action)
+        .bind(target)
+        .fetch_one(pool)
+        .await
+        .expect("audit log query should succeed");
+
+        (row.get("actor"), row.get("metadata"))
+    }
+
+    async fn system_events_for_order(
+        pool: &PgPool,
+        client_order_id: &str,
+        event_type: &str,
+    ) -> Vec<Value> {
+        sqlx::query(
+            r#"
+            SELECT payload
+            FROM system_events
+            WHERE event_type = $1
+              AND payload ->> 'client_order_id' = $2
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(event_type)
+        .bind(client_order_id)
+        .fetch_all(pool)
+        .await
+        .expect("system events query should succeed")
+        .into_iter()
+        .map(|row| row.get("payload"))
+        .collect()
     }
 
     async fn count_system_events(pool: &PgPool, event_type: &str) -> i64 {
@@ -10681,6 +10782,572 @@ mod tests {
             .await
             .expect("owner response");
         assert_eq!(owner_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn repair_action_persists_to_database() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = repair_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let user = get_user_by_email(&test_db.pool, "owner@example.com")
+            .await
+            .expect("user query")
+            .expect("user should exist");
+
+        let client_order_id = "repair-persist-client-1";
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "UNKNOWN_EXCHANGE_STATE",
+                TestnetExecutionState::UnknownExchangeState,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/exchange/testnet/orders/{client_order_id}/repair"),
+                &login_payload.access_token,
+                json!({
+                    "action": "MARK_FAILED",
+                    "confirmation_text": format!("REPAIR TESTNET {client_order_id}"),
+                    "reason": "operator_marked_failed_for_test"
+                }),
+            ))
+            .await
+            .expect("repair response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+
+        assert_eq!(
+            payload.get("action").and_then(Value::as_str),
+            Some("MARK_FAILED")
+        );
+        assert_eq!(
+            payload.get("status").and_then(Value::as_str),
+            Some("APPLIED")
+        );
+
+        let repairs = list_exchange_testnet_repair_actions(&test_db.pool, client_order_id)
+            .await
+            .expect("repair actions should list");
+        assert_eq!(repairs.len(), 1);
+        let repair = &repairs[0];
+        assert_eq!(repair.action, "MARK_FAILED");
+        assert_eq!(repair.status, "APPLIED");
+        assert_eq!(
+            repair.previous_state.as_deref(),
+            Some("UNKNOWN_EXCHANGE_STATE")
+        );
+        assert_eq!(repair.next_state.as_deref(), Some("FAILED"));
+        assert_eq!(
+            repair.reason.as_deref(),
+            Some("operator_marked_failed_for_test")
+        );
+        assert_eq!(repair.actor_id, Some(user.id));
+        let correlation_id = payload
+            .get("correlation_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok());
+        assert_eq!(repair.correlation_id, correlation_id);
+        assert!(repair.created_at <= Utc::now());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn repair_appends_lifecycle_event_and_moves_to_reconciliation_required() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = repair_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+
+        let client_order_id = "repair-lifecycle-client-1";
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "RECONCILIATION_REQUIRED",
+                TestnetExecutionState::UnknownExchangeState,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/exchange/testnet/orders/{client_order_id}/repair"),
+                &login_payload.access_token,
+                json!({
+                    "action": "MARK_RECONCILIATION_REQUIRED",
+                    "confirmation_text": format!("REPAIR TESTNET {client_order_id}"),
+                    "reason": "needs_manual_reconciliation"
+                }),
+            ))
+            .await
+            .expect("repair response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let events = list_exchange_testnet_order_lifecycle_events(&test_db.pool, client_order_id)
+            .await
+            .expect("lifecycle events should list");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].transition_source,
+            "OPERATOR_MARK_RECONCILIATION_REQUIRED"
+        );
+        assert_eq!(
+            events[0].previous_state.as_deref(),
+            Some("UNKNOWN_EXCHANGE_STATE")
+        );
+        assert_eq!(events[0].next_state, "RECONCILIATION_REQUIRED");
+
+        let updated = get_exchange_testnet_order_by_client_order_id(&test_db.pool, client_order_id)
+            .await
+            .expect("order query should succeed")
+            .expect("order should exist");
+        assert_eq!(updated.execution_state, "RECONCILIATION_REQUIRED");
+        assert_eq!(updated.status, "RECONCILIATION_REQUIRED");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn repair_writes_audit_and_system_events() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = repair_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+
+        let client_order_id = "repair-audit-client-1";
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "RECONCILIATION_REQUIRED",
+                TestnetExecutionState::Failed,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/exchange/testnet/orders/{client_order_id}/repair"),
+                &login_payload.access_token,
+                json!({
+                    "action": "MARK_RECONCILIATION_REQUIRED",
+                    "confirmation_text": format!("REPAIR TESTNET {client_order_id}"),
+                    "reason": "audit_and_system_event_test"
+                }),
+            ))
+            .await
+            .expect("repair response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let user = get_user_by_email(&test_db.pool, "operator@example.com")
+            .await
+            .expect("user query")
+            .expect("user should exist");
+        let (actor, metadata) = latest_audit_log_for_target(
+            &test_db.pool,
+            "exchange.testnet.repair.requested",
+            client_order_id,
+        )
+        .await;
+        assert_eq!(actor, "user:operator@example.com");
+        assert_eq!(
+            metadata.get("action").and_then(Value::as_str),
+            Some("MARK_RECONCILIATION_REQUIRED")
+        );
+        assert_eq!(metadata.get("force").and_then(Value::as_bool), Some(false));
+
+        let repair_rows = list_exchange_testnet_repair_actions(&test_db.pool, client_order_id)
+            .await
+            .expect("repair rows should list");
+        assert_eq!(repair_rows[0].actor_id, Some(user.id));
+
+        let requested = system_events_for_order(
+            &test_db.pool,
+            client_order_id,
+            "exchange.testnet.repair.requested",
+        )
+        .await;
+        let applied = system_events_for_order(
+            &test_db.pool,
+            client_order_id,
+            "exchange.testnet.repair.applied",
+        )
+        .await;
+        assert_eq!(requested.len(), 1);
+        assert_eq!(applied.len(), 1);
+        assert_eq!(
+            requested[0].get("action").and_then(Value::as_str),
+            Some("MARK_RECONCILIATION_REQUIRED")
+        );
+        assert_eq!(
+            applied[0].get("next_state").and_then(Value::as_str),
+            Some("RECONCILIATION_REQUIRED")
+        );
+
+        let requested_payload_text = requested[0].to_string();
+        let applied_payload_text = applied[0].to_string();
+        assert!(!requested_payload_text.contains("api_secret"));
+        assert!(!requested_payload_text.contains("api_key"));
+        assert!(!applied_payload_text.contains("api_secret"));
+        assert!(!applied_payload_text.contains("api_key"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn rejected_repair_persists_rejection_without_lifecycle_transition() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = repair_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+
+        let client_order_id = "repair-rejected-client-1";
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "FILLED",
+                TestnetExecutionState::Filled,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/exchange/testnet/orders/{client_order_id}/repair"),
+                &login_payload.access_token,
+                json!({
+                    "action": "MARK_ACKED",
+                    "confirmation_text": format!("REPAIR TESTNET {client_order_id}"),
+                    "reason": "invalid_terminal_transition"
+                }),
+            ))
+            .await
+            .expect("repair response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload.get("status").and_then(Value::as_str),
+            Some("REJECTED")
+        );
+
+        let repairs = list_exchange_testnet_repair_actions(&test_db.pool, client_order_id)
+            .await
+            .expect("repair rows should list");
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].status, "REJECTED");
+        assert_eq!(repairs[0].action, "MARK_ACKED");
+        assert_eq!(repairs[0].next_state.as_deref(), Some("EXCHANGE_ACKED"));
+
+        let rejected = system_events_for_order(
+            &test_db.pool,
+            client_order_id,
+            "exchange.testnet.repair.rejected",
+        )
+        .await;
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(
+            rejected[0].get("reason").and_then(Value::as_str),
+            Some("invalid_repair_transition")
+        );
+
+        let lifecycle_events =
+            list_exchange_testnet_order_lifecycle_events(&test_db.pool, client_order_id)
+                .await
+                .expect("lifecycle events should list");
+        assert!(lifecycle_events.is_empty());
+
+        let order = get_exchange_testnet_order_by_client_order_id(&test_db.pool, client_order_id)
+            .await
+            .expect("order query should succeed")
+            .expect("order should exist");
+        assert_eq!(order.execution_state, "FILLED");
+        assert_eq!(order.status, "FILLED");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn repair_history_listing_is_isolated_per_client_order_id() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = repair_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let user = get_user_by_email(&test_db.pool, "operator@example.com")
+            .await
+            .expect("user query")
+            .expect("user should exist");
+
+        let target_client_order_id = "repair-history-target";
+        let other_client_order_id = "repair-history-other";
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                target_client_order_id,
+                "FAILED",
+                TestnetExecutionState::Failed,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("target order insert");
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                other_client_order_id,
+                "FAILED",
+                TestnetExecutionState::Failed,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("other order insert");
+
+        let older_time = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 1).unwrap();
+        let newer_time = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 2).unwrap();
+        insert_exchange_testnet_repair_action(
+            &test_db.pool,
+            &db::ExchangeTestnetRepairActionRecord {
+                id: Uuid::new_v4(),
+                client_order_id: target_client_order_id.to_string(),
+                action: "MARK_FAILED".to_string(),
+                status: "APPLIED".to_string(),
+                previous_state: Some("UNKNOWN_EXCHANGE_STATE".to_string()),
+                next_state: Some("FAILED".to_string()),
+                reason: Some("older".to_string()),
+                payload: Some(json!({ "force": false })),
+                actor_id: Some(user.id),
+                created_at: older_time,
+                correlation_id: Some(Uuid::new_v4()),
+            },
+        )
+        .await
+        .expect("older repair insert");
+        insert_exchange_testnet_repair_action(
+            &test_db.pool,
+            &db::ExchangeTestnetRepairActionRecord {
+                id: Uuid::new_v4(),
+                client_order_id: target_client_order_id.to_string(),
+                action: "MARK_RECONCILIATION_REQUIRED".to_string(),
+                status: "APPLIED".to_string(),
+                previous_state: Some("FAILED".to_string()),
+                next_state: Some("RECONCILIATION_REQUIRED".to_string()),
+                reason: Some("newer".to_string()),
+                payload: Some(json!({ "force": false })),
+                actor_id: Some(user.id),
+                created_at: newer_time,
+                correlation_id: Some(Uuid::new_v4()),
+            },
+        )
+        .await
+        .expect("newer repair insert");
+        insert_exchange_testnet_repair_action(
+            &test_db.pool,
+            &db::ExchangeTestnetRepairActionRecord {
+                id: Uuid::new_v4(),
+                client_order_id: other_client_order_id.to_string(),
+                action: "MARK_FAILED".to_string(),
+                status: "REJECTED".to_string(),
+                previous_state: Some("FILLED".to_string()),
+                next_state: Some("FAILED".to_string()),
+                reason: Some("other-order".to_string()),
+                payload: Some(json!({ "force": false })),
+                actor_id: Some(user.id),
+                created_at: newer_time,
+                correlation_id: Some(Uuid::new_v4()),
+            },
+        )
+        .await
+        .expect("other repair insert");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .oneshot(bearer_request(
+                "GET",
+                &format!("/exchange/testnet/orders/{target_client_order_id}/repairs"),
+                &login_payload.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("repairs response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        let repairs = payload
+            .get("repairs")
+            .and_then(Value::as_array)
+            .expect("repairs array should exist");
+
+        assert_eq!(
+            payload.get("client_order_id").and_then(Value::as_str),
+            Some(target_client_order_id)
+        );
+        assert_eq!(repairs.len(), 2);
+        assert!(repairs.iter().all(|repair| {
+            repair.get("client_order_id").and_then(Value::as_str) == Some(target_client_order_id)
+        }));
+        assert_eq!(
+            repairs[0].get("reason").and_then(Value::as_str),
+            Some("newer")
+        );
+        assert_eq!(
+            repairs[1].get("reason").and_then(Value::as_str),
+            Some("older")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn safe_cancel_validation_persists_without_network_dependency() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = repair_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+
+        let client_order_id = "repair-safe-cancel-client-1";
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "FILLED",
+                TestnetExecutionState::Filled,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/exchange/testnet/orders/{client_order_id}/repair"),
+                &login_payload.access_token,
+                json!({
+                    "action": "SAFE_CANCEL_REQUEST",
+                    "confirmation_text": format!("CANCEL TESTNET {client_order_id}"),
+                    "reason": "validation_only"
+                }),
+            ))
+            .await
+            .expect("safe cancel response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload.get("status").and_then(Value::as_str),
+            Some("REJECTED")
+        );
+
+        let repairs = list_exchange_testnet_repair_actions(&test_db.pool, client_order_id)
+            .await
+            .expect("repair rows should list");
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].action, "SAFE_CANCEL_REQUEST");
+        assert_eq!(repairs[0].status, "REJECTED");
+        assert_eq!(repairs[0].next_state.as_deref(), Some("CANCEL_REQUESTED"));
+
+        let cancel_requested = system_events_for_order(
+            &test_db.pool,
+            client_order_id,
+            "exchange.testnet.repair.cancel_requested",
+        )
+        .await;
+        let rejected = system_events_for_order(
+            &test_db.pool,
+            client_order_id,
+            "exchange.testnet.repair.rejected",
+        )
+        .await;
+        assert_eq!(cancel_requested.len(), 1);
+        assert_eq!(rejected.len(), 1);
+
+        let lifecycle_events =
+            list_exchange_testnet_order_lifecycle_events(&test_db.pool, client_order_id)
+                .await
+                .expect("lifecycle events should list");
+        assert!(lifecycle_events.is_empty());
     }
 
     fn test_app_state() -> AppState {
