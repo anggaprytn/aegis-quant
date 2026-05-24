@@ -197,6 +197,26 @@ Notes:
 - Private user-data events persist into `exchange_private_stream_events`, stream connectivity persists into `exchange_private_stream_state`, and normalized `executionReport` handling updates only the isolated `exchange_testnet_orders` table.
 - Private stream confirmation stops at isolated testnet order status. It must not auto-bridge into paper orders, paper positions, paper PnL, replay tables, or any live execution path.
 
+Testnet execution lifecycle flow:
+
+```txt
+local submit intent
+-> ORDER_SUBMIT_REQUESTED
+-> exchange REST ACK
+-> EXCHANGE_ACKED
+-> private executionReport / REST reconciliation
+-> NEW / PARTIALLY_FILLED / FILLED / CANCELLED / REJECTED / EXPIRED
+-> invalid or unknown exchange evidence
+-> RECONCILIATION_REQUIRED or UNKNOWN_EXCHANGE_STATE
+```
+
+Rules:
+
+- `EXCHANGE_ACKED` is not a fill.
+- `FILLED`, `CANCELLED`, `REJECTED`, and `EXPIRED` are terminal.
+- Private stream and REST reconciliation share the same transition validator.
+- Every accepted transition appends an event into `exchange_testnet_order_lifecycle_events`.
+
 ## Frontend cockpit overview
 
 The dashboard is intentionally dense and operational:

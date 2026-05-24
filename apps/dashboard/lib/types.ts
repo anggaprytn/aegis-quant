@@ -639,6 +639,13 @@ export type ExchangeTestnetOrderRecord = {
   requested_notional: string | null;
   limit_price: string | null;
   status: string;
+  execution_state: string;
+  last_transition_at: string | null;
+  lifecycle_summary: {
+    current_state: string;
+    total_events: number;
+    last_transition_at: string | null;
+  };
   ack_payload: Record<string, unknown> | null;
   latest_status_payload: Record<string, unknown> | null;
   risk_decision_id: string | null;
@@ -656,6 +663,23 @@ export type ExchangeTestnetOrdersResponse = {
 
 export type ExchangeTestnetOrderResponse = {
   order: ExchangeTestnetOrderRecord;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExchangeTestnetOrderLifecycleEvent = {
+  previous_state: string | null;
+  next_state: string;
+  transition_source: string;
+  reason: string | null;
+  created_at: string;
+};
+
+export type ExchangeTestnetOrderLifecycleResponse = {
+  client_order_id: string;
+  current_state: string;
+  events: ExchangeTestnetOrderLifecycleEvent[];
   request_id: string;
   correlation_id: string;
   timestamp: string;

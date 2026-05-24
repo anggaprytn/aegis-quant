@@ -1327,6 +1327,182 @@ impl ExchangeOrderState {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetExecutionState {
+    IntentCreated,
+    RiskApproved,
+    OrderPrepared,
+    OrderSubmitRequested,
+    ExchangeAcked,
+    New,
+    PartiallyFilled,
+    Filled,
+    CancelRequested,
+    Cancelled,
+    Rejected,
+    Expired,
+    ReconciliationRequired,
+    UnknownExchangeState,
+    Failed,
+}
+
+impl TestnetExecutionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IntentCreated => "INTENT_CREATED",
+            Self::RiskApproved => "RISK_APPROVED",
+            Self::OrderPrepared => "ORDER_PREPARED",
+            Self::OrderSubmitRequested => "ORDER_SUBMIT_REQUESTED",
+            Self::ExchangeAcked => "EXCHANGE_ACKED",
+            Self::New => "NEW",
+            Self::PartiallyFilled => "PARTIALLY_FILLED",
+            Self::Filled => "FILLED",
+            Self::CancelRequested => "CANCEL_REQUESTED",
+            Self::Cancelled => "CANCELLED",
+            Self::Rejected => "REJECTED",
+            Self::Expired => "EXPIRED",
+            Self::ReconciliationRequired => "RECONCILIATION_REQUIRED",
+            Self::UnknownExchangeState => "UNKNOWN_EXCHANGE_STATE",
+            Self::Failed => "FAILED",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Filled | Self::Cancelled | Self::Rejected | Self::Expired | Self::Failed
+        )
+    }
+}
+
+impl std::str::FromStr for TestnetExecutionState {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "INTENT_CREATED" => Ok(Self::IntentCreated),
+            "RISK_APPROVED" => Ok(Self::RiskApproved),
+            "ORDER_PREPARED" => Ok(Self::OrderPrepared),
+            "ORDER_SUBMIT_REQUESTED" => Ok(Self::OrderSubmitRequested),
+            "EXCHANGE_ACKED" => Ok(Self::ExchangeAcked),
+            "NEW" => Ok(Self::New),
+            "PARTIALLY_FILLED" => Ok(Self::PartiallyFilled),
+            "FILLED" => Ok(Self::Filled),
+            "CANCEL_REQUESTED" => Ok(Self::CancelRequested),
+            "CANCELLED" => Ok(Self::Cancelled),
+            "REJECTED" => Ok(Self::Rejected),
+            "EXPIRED" => Ok(Self::Expired),
+            "RECONCILIATION_REQUIRED" => Ok(Self::ReconciliationRequired),
+            "UNKNOWN_EXCHANGE_STATE" => Ok(Self::UnknownExchangeState),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedTestnetExecutionState(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TestnetExecutionTransitionSource {
+    ApiSubmit,
+    ExchangeAck,
+    PrivateStream,
+    RestReconciliation,
+    ApiCancel,
+    ExchangeCancelAck,
+    OperatorMarkReconciliationRequired,
+}
+
+impl TestnetExecutionTransitionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApiSubmit => "API_SUBMIT",
+            Self::ExchangeAck => "EXCHANGE_ACK",
+            Self::PrivateStream => "PRIVATE_STREAM",
+            Self::RestReconciliation => "REST_RECONCILIATION",
+            Self::ApiCancel => "API_CANCEL",
+            Self::ExchangeCancelAck => "EXCHANGE_CANCEL_ACK",
+            Self::OperatorMarkReconciliationRequired => "OPERATOR_MARK_RECONCILIATION_REQUIRED",
+        }
+    }
+}
+
+impl std::str::FromStr for TestnetExecutionTransitionSource {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "API_SUBMIT" => Ok(Self::ApiSubmit),
+            "EXCHANGE_ACK" => Ok(Self::ExchangeAck),
+            "PRIVATE_STREAM" => Ok(Self::PrivateStream),
+            "REST_RECONCILIATION" => Ok(Self::RestReconciliation),
+            "API_CANCEL" => Ok(Self::ApiCancel),
+            "EXCHANGE_CANCEL_ACK" => Ok(Self::ExchangeCancelAck),
+            "OPERATOR_MARK_RECONCILIATION_REQUIRED" => Ok(Self::OperatorMarkReconciliationRequired),
+            other => Err(CoreError::UnsupportedTestnetExecutionTransitionSource(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestnetOrderLifecycleSnapshot {
+    pub order_id: Option<Uuid>,
+    pub client_order_id: String,
+    pub exchange_order_id: Option<String>,
+    pub current_state: TestnetExecutionState,
+    pub last_transition_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetExecutionLifecycleEvent {
+    pub id: Uuid,
+    pub order_id: Option<Uuid>,
+    pub client_order_id: String,
+    pub previous_state: Option<TestnetExecutionState>,
+    pub next_state: TestnetExecutionState,
+    pub transition_source: TestnetExecutionTransitionSource,
+    pub reason: Option<String>,
+    pub payload: Option<Value>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetExecutionTransition {
+    pub previous_state: Option<TestnetExecutionState>,
+    pub next_state: TestnetExecutionState,
+    pub source: TestnetExecutionTransitionSource,
+    pub reason: Option<String>,
+    pub payload: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestnetExecutionTransitionResult {
+    pub previous_state: Option<TestnetExecutionState>,
+    pub next_state: TestnetExecutionState,
+    pub source: TestnetExecutionTransitionSource,
+    pub accepted: bool,
+    pub terminal: bool,
+    pub requires_reconciliation: bool,
+}
+
+#[derive(Debug, Clone, Error, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TestnetExecutionStateError {
+    #[error(
+        "invalid transition from {previous_state:?} to {next_state:?} via {transition_source:?}"
+    )]
+    InvalidTransition {
+        previous_state: Option<TestnetExecutionState>,
+        next_state: TestnetExecutionState,
+        transition_source: TestnetExecutionTransitionSource,
+    },
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ExchangePrivateStreamStatus {
@@ -2923,6 +3099,10 @@ pub enum CoreError {
     UnsupportedExchangePrivateStreamStatus(String),
     #[error("unsupported exchange private stream source: {0}")]
     UnsupportedExchangePrivateStreamSource(String),
+    #[error("unsupported testnet execution state: {0}")]
+    UnsupportedTestnetExecutionState(String),
+    #[error("unsupported testnet execution transition source: {0}")]
+    UnsupportedTestnetExecutionTransitionSource(String),
     #[error("unsupported exchange reconciliation mismatch kind: {0}")]
     UnsupportedExchangeReconciliationMismatchKind(String),
     #[error("unsupported exchange reconciliation action: {0}")]
@@ -2985,6 +3165,12 @@ pub enum CoreError {
     InvalidExchangeReconnectCount(i32),
     #[error("exchange private stream event_type cannot be empty")]
     InvalidExchangePrivateStreamEventType,
+    #[error("invalid testnet execution transition from {previous_state:?} to {next_state:?} via {transition_source:?}")]
+    InvalidTestnetExecutionTransition {
+        previous_state: Option<TestnetExecutionState>,
+        next_state: TestnetExecutionState,
+        transition_source: TestnetExecutionTransitionSource,
+    },
     #[error("candle backfill estimate exceeds supported bounds")]
     InvalidCandleBackfillEstimate,
     #[error("holding_candles must be greater than zero")]

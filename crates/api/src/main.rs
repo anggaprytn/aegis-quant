@@ -22,8 +22,8 @@ use aegis_core::{
     RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
     StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol, UserRole,
-    UserStatus,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyStatus, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, UserRole, UserStatus,
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
@@ -42,9 +42,10 @@ use axum::{
 };
 use chrono::Utc;
 use db::{
-    backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
-    count_users, create_paper_order, ensure_system_state, get_backtest_equity_curve,
-    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
+    append_exchange_testnet_lifecycle_event_and_update_order, backtest_result_from_record,
+    candle_backfill_result_from_record, check_health, connect_pool, count_users,
+    create_paper_order, ensure_system_state, get_backtest_equity_curve, get_backtest_run,
+    get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
     get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
     get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
@@ -54,31 +55,32 @@ use db::{
     insert_signal_deduped, insert_strategy_config_audit, insert_system_event, insert_user,
     list_backtest_runs, list_candle_backfill_runs, list_candles,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
-    list_exchange_reconciliation_runs, list_exchange_testnet_orders, list_market_feed_statuses,
-    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
-    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
-    list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
-    list_strategy_config_audit, list_strategy_config_versions, list_strategy_status,
-    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
-    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
-    revoke_session, risk_config_audit_from_record, risk_config_from_record,
-    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
-    strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, update_exchange_testnet_order_ack,
-    update_exchange_testnet_order_status, update_strategy_state, update_user_last_login,
-    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
-    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
-    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
-    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord, ExchangeTestnetOrderRecord,
-    InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
+    list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
+    list_exchange_testnet_orders, list_market_feed_statuses, list_open_paper_positions,
+    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
+    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
+    list_risk_config_audit, list_risk_config_versions, list_strategy_config_audit,
+    list_strategy_config_versions, list_strategy_status, load_risk_state_snapshot,
+    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
+    persist_risk_config_version, persist_strategy_config_version, revoke_session,
+    risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
+    rotate_session_refresh_token, set_kill_switch_state, strategy_config_audit_from_record,
+    strategy_config_from_record, strategy_config_version_from_record, update_strategy_state,
+    update_user_last_login, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
+    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, InsertSignalOutcome,
+    MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
     PaperEquitySnapshotRecord, PaperPositionRecord, PaperTradeJournalRecord, PgPool,
     RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
     SystemStateRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
-    hash_listen_key, mask_listen_key, BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
-    ExchangeAdapter,
+    apply_testnet_transition, hash_listen_key, map_cancel_ack_to_transition,
+    map_exchange_ack_to_transition, map_rest_reconciliation_status_to_transition, mask_listen_key,
+    BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig, ExchangeAdapter,
 };
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
 use replay_engine::ReplayEngine;
@@ -603,6 +605,16 @@ struct ExchangeTestnetOrderResponse {
 }
 
 #[derive(Serialize)]
+struct ExchangeTestnetOrderLifecycleResponse {
+    client_order_id: String,
+    current_state: String,
+    events: Vec<TestnetExecutionLifecycleEventView>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ExchangeTestnetOrdersResponse {
     orders: Vec<ExchangeTestnetOrderView>,
     request_id: String,
@@ -657,12 +669,31 @@ struct ExchangeTestnetOrderView {
     requested_notional: Option<String>,
     limit_price: Option<String>,
     status: String,
+    execution_state: String,
+    last_transition_at: Option<chrono::DateTime<Utc>>,
+    lifecycle_summary: ExchangeTestnetOrderLifecycleSummaryView,
     ack_payload: Option<Value>,
     latest_status_payload: Option<Value>,
     risk_decision_id: Option<Uuid>,
     created_by: Option<Uuid>,
     created_at: chrono::DateTime<Utc>,
     updated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ExchangeTestnetOrderLifecycleSummaryView {
+    current_state: String,
+    total_events: usize,
+    last_transition_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
+struct TestnetExecutionLifecycleEventView {
+    previous_state: Option<String>,
+    next_state: String,
+    transition_source: String,
+    reason: Option<String>,
+    created_at: chrono::DateTime<Utc>,
 }
 
 #[derive(Serialize)]
@@ -1276,6 +1307,10 @@ async fn main() {
         .route(
             "/exchange/testnet/orders/:client_order_id",
             get(get_exchange_testnet_order),
+        )
+        .route(
+            "/exchange/testnet/orders/:client_order_id/lifecycle",
+            get(get_exchange_testnet_order_lifecycle),
         )
         .route(
             "/exchange/testnet/orders/:client_order_id/cancel",
@@ -2265,6 +2300,13 @@ fn exchange_testnet_order_view(record: ExchangeTestnetOrderRecord) -> ExchangeTe
         requested_notional: record.requested_notional.map(|value| value.to_string()),
         limit_price: record.limit_price.map(|value| value.to_string()),
         status: record.status,
+        execution_state: record.execution_state.clone(),
+        last_transition_at: record.last_transition_at,
+        lifecycle_summary: ExchangeTestnetOrderLifecycleSummaryView {
+            current_state: record.execution_state,
+            total_events: 0,
+            last_transition_at: record.last_transition_at,
+        },
         ack_payload: record.ack_payload,
         latest_status_payload: record.latest_status_payload,
         risk_decision_id: record.risk_decision_id,
@@ -2272,6 +2314,102 @@ fn exchange_testnet_order_view(record: ExchangeTestnetOrderRecord) -> ExchangeTe
         created_at: record.created_at,
         updated_at: record.updated_at,
     }
+}
+
+fn lifecycle_event_view(
+    record: ExchangeTestnetOrderLifecycleEventRecord,
+) -> TestnetExecutionLifecycleEventView {
+    TestnetExecutionLifecycleEventView {
+        previous_state: record.previous_state,
+        next_state: record.next_state,
+        transition_source: record.transition_source,
+        reason: record.reason,
+        created_at: record.created_at,
+    }
+}
+
+fn parse_testnet_execution_state(value: &str) -> TestnetExecutionState {
+    value.parse().unwrap_or(TestnetExecutionState::Failed)
+}
+
+async fn build_exchange_testnet_order_view(
+    pool: &PgPool,
+    record: ExchangeTestnetOrderRecord,
+) -> anyhow::Result<ExchangeTestnetOrderView> {
+    let events =
+        list_exchange_testnet_order_lifecycle_events(pool, &record.client_order_id).await?;
+    let mut view = exchange_testnet_order_view(record);
+    view.lifecycle_summary.total_events = events.len();
+    Ok(view)
+}
+
+async fn append_testnet_lifecycle_transition(
+    pool: &PgPool,
+    order: &ExchangeTestnetOrderRecord,
+    next_state: TestnetExecutionState,
+    source: TestnetExecutionTransitionSource,
+    status: Option<&str>,
+    exchange_order_id: Option<&str>,
+    reason: Option<String>,
+    payload: Option<Value>,
+    created_by: Option<Uuid>,
+    correlation_id: Option<Uuid>,
+    is_ack_payload: bool,
+) -> anyhow::Result<Option<ExchangeTestnetOrderRecord>> {
+    let snapshot = aegis_core::TestnetOrderLifecycleSnapshot {
+        order_id: Some(order.id),
+        client_order_id: order.client_order_id.clone(),
+        exchange_order_id: order.exchange_order_id.clone(),
+        current_state: parse_testnet_execution_state(&order.execution_state),
+        last_transition_at: order.last_transition_at,
+    };
+    let transition = apply_testnet_transition(
+        &snapshot,
+        next_state,
+        source,
+        reason.clone(),
+        payload.clone(),
+    )?;
+    telemetry()
+        .inc_exchange_testnet_lifecycle_transition(source.as_str(), transition.next_state.as_str());
+    telemetry().apply_exchange_testnet_order_state_transition(
+        transition.previous_state.map(|value| value.as_str()),
+        transition.next_state.as_str(),
+    );
+    let event = ExchangeTestnetOrderLifecycleEventRecord {
+        id: Uuid::new_v4(),
+        order_id: Some(order.id),
+        client_order_id: order.client_order_id.clone(),
+        previous_state: transition
+            .previous_state
+            .map(|value| value.as_str().to_string()),
+        next_state: transition.next_state.as_str().to_string(),
+        transition_source: transition.source.as_str().to_string(),
+        reason,
+        payload: payload.clone(),
+        created_by,
+        created_at: Utc::now(),
+        correlation_id,
+    };
+    append_exchange_testnet_lifecycle_event_and_update_order(
+        pool,
+        &event,
+        exchange_order_id,
+        status,
+        transition.next_state,
+        if is_ack_payload {
+            None
+        } else {
+            payload.as_ref()
+        },
+        if is_ack_payload {
+            payload.as_ref()
+        } else {
+            None
+        },
+    )
+    .await
+    .map_err(Into::into)
 }
 
 fn exchange_private_stream_state_view(
@@ -4458,19 +4596,37 @@ async fn list_exchange_testnet_orders_handler(
     let limit = bounded_exchange_testnet_limit(query.limit);
 
     match list_exchange_testnet_orders(&state.db_pool, limit).await {
-        Ok(orders) => (
-            StatusCode::OK,
-            Json(ExchangeTestnetOrdersResponse {
-                orders: orders
-                    .into_iter()
-                    .map(exchange_testnet_order_view)
-                    .collect(),
-                request_id: request.request_id,
-                correlation_id: request.correlation_id,
-                timestamp: Utc::now(),
-            }),
-        )
-            .into_response(),
+        Ok(orders) => {
+            let mut views = Vec::with_capacity(orders.len());
+            for order in orders {
+                match build_exchange_testnet_order_view(&state.db_pool, order).await {
+                    Ok(view) => views.push(view),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_build_exchange_testnet_order_view",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(ExchangeTestnetOrdersResponse {
+                    orders: views,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
         Err(err) => {
             error!(
                 request_id = %request.request_id,
@@ -4511,45 +4667,65 @@ async fn get_exchange_testnet_order(
                 Ok(status) => {
                     telemetry().inc_exchange_testnet_request("get_order_status", "ok");
                     let payload = status.raw_payload.clone();
-                    let local_status = local_testnet_status_from_exchange_state(status.status)
-                        .unwrap_or(status.status.as_str());
-                    match update_exchange_testnet_order_status(
+                    let (next_state, reason) =
+                        map_rest_reconciliation_status_to_transition(&status);
+                    match append_testnet_lifecycle_transition(
                         &state.db_pool,
-                        &client_order_id,
+                        &order,
+                        next_state,
+                        TestnetExecutionTransitionSource::RestReconciliation,
+                        Some(status.status.as_str()),
                         status.exchange_order_id.as_deref(),
-                        local_status,
-                        &payload,
+                        reason.map(ToString::to_string),
+                        Some(payload),
+                        None,
+                        Some(parse_correlation_id(&request.correlation_id)),
+                        false,
                     )
                     .await
                     {
-                        Ok(Some(updated)) => (
-                            StatusCode::OK,
-                            Json(ExchangeTestnetOrderResponse {
-                                order: exchange_testnet_order_view(updated),
-                                request_id: request.request_id,
-                                correlation_id: request.correlation_id,
-                                timestamp: Utc::now(),
-                            }),
-                        )
-                            .into_response(),
-                        Ok(None) | Err(_) => (
-                            StatusCode::OK,
-                            Json(ExchangeTestnetOrderResponse {
-                                order: exchange_testnet_order_view(order),
-                                request_id: request.request_id,
-                                correlation_id: request.correlation_id,
-                                timestamp: Utc::now(),
-                            }),
-                        )
-                            .into_response(),
+                        Ok(Some(updated)) => {
+                            let view = build_exchange_testnet_order_view(&state.db_pool, updated)
+                                .await
+                                .unwrap_or_else(|_| exchange_testnet_order_view(order.clone()));
+                            (
+                                StatusCode::OK,
+                                Json(ExchangeTestnetOrderResponse {
+                                    order: view,
+                                    request_id: request.request_id,
+                                    correlation_id: request.correlation_id,
+                                    timestamp: Utc::now(),
+                                }),
+                            )
+                                .into_response()
+                        }
+                        Ok(None) | Err(_) => {
+                            let view =
+                                build_exchange_testnet_order_view(&state.db_pool, order.clone())
+                                    .await
+                                    .unwrap_or_else(|_| exchange_testnet_order_view(order.clone()));
+                            (
+                                StatusCode::OK,
+                                Json(ExchangeTestnetOrderResponse {
+                                    order: view,
+                                    request_id: request.request_id,
+                                    correlation_id: request.correlation_id,
+                                    timestamp: Utc::now(),
+                                }),
+                            )
+                                .into_response()
+                        }
                     }
                 }
                 Err(err) => {
                     if matches!(err, aegis_core::ExchangeError::Configuration(_)) {
+                        let view = build_exchange_testnet_order_view(&state.db_pool, order.clone())
+                            .await
+                            .unwrap_or_else(|_| exchange_testnet_order_view(order));
                         (
                             StatusCode::OK,
                             Json(ExchangeTestnetOrderResponse {
-                                order: exchange_testnet_order_view(order),
+                                order: view,
                                 request_id: request.request_id,
                                 correlation_id: request.correlation_id,
                                 timestamp: Utc::now(),
@@ -4592,6 +4768,67 @@ async fn get_exchange_testnet_order(
             )
                 .into_response()
         }
+    }
+}
+
+async fn get_exchange_testnet_order_lifecycle(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Path(client_order_id): Path<String>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_exchange_testnet_order_by_client_order_id(&state.db_pool, &client_order_id).await {
+        Ok(Some(order)) => {
+            match list_exchange_testnet_order_lifecycle_events(&state.db_pool, &client_order_id)
+                .await
+            {
+                Ok(events) => (
+                    StatusCode::OK,
+                    Json(ExchangeTestnetOrderLifecycleResponse {
+                        client_order_id,
+                        current_state: order.execution_state,
+                        events: events.into_iter().map(lifecycle_event_view).collect(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_list_exchange_testnet_order_lifecycle",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "exchange_testnet_order_not_found",
+                message: "Exchange testnet order was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_exchange_testnet_order",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -4770,10 +5007,14 @@ async fn submit_exchange_testnet_order(
         requested_notional: quote_notional,
         limit_price,
         status: "SUBMIT_REQUESTED".to_string(),
+        execution_state: TestnetExecutionState::OrderSubmitRequested
+            .as_str()
+            .to_string(),
         ack_payload: None,
         latest_status_payload: None,
         risk_decision_id: Some(risk_decision_id),
         created_by: actor.actor_id,
+        last_transition_at: Some(Utc::now()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };
@@ -4816,6 +5057,33 @@ async fn submit_exchange_testnet_order(
         )
             .into_response();
     }
+
+    let _ = append_exchange_testnet_lifecycle_event_and_update_order(
+        &state.db_pool,
+        &ExchangeTestnetOrderLifecycleEventRecord {
+            id: Uuid::new_v4(),
+            order_id: Some(persisted.id),
+            client_order_id: persisted.client_order_id.clone(),
+            previous_state: None,
+            next_state: TestnetExecutionState::OrderSubmitRequested
+                .as_str()
+                .to_string(),
+            transition_source: TestnetExecutionTransitionSource::ApiSubmit
+                .as_str()
+                .to_string(),
+            reason: Some("submit_requested".to_string()),
+            payload: None,
+            created_by: actor.actor_id,
+            created_at: Utc::now(),
+            correlation_id: Some(correlation_id),
+        },
+        None,
+        Some("SUBMIT_REQUESTED"),
+        TestnetExecutionState::OrderSubmitRequested,
+        None,
+        None,
+    )
+    .await;
 
     telemetry().inc_exchange_testnet_request("submit_order", "attempt");
     match state.exchange_testnet.submit_order(order).await {
@@ -4955,6 +5223,25 @@ async fn cancel_exchange_testnet_order(
         ),
     )
     .await;
+
+    let existing_order = match append_testnet_lifecycle_transition(
+        &state.db_pool,
+        &existing_order,
+        TestnetExecutionState::CancelRequested,
+        TestnetExecutionTransitionSource::ApiCancel,
+        None,
+        existing_order.exchange_order_id.as_deref(),
+        Some("cancel_requested".to_string()),
+        None,
+        actor.actor_id,
+        Some(correlation_id),
+        false,
+    )
+    .await
+    {
+        Ok(Some(updated)) => updated,
+        _ => existing_order,
+    };
 
     telemetry().inc_exchange_testnet_request("cancel_order", "attempt");
     match state.exchange_testnet.cancel_order(request_model).await {
@@ -5274,18 +5561,25 @@ async fn submit_exchange_testnet_order_success(
     telemetry().inc_exchange_testnet_request("submit_order", "ok");
     let local_status =
         local_testnet_status_from_exchange_state(ack.status).unwrap_or(ack.status.as_str());
+    let (next_state, reason) = map_exchange_ack_to_transition(&ack);
     telemetry().inc_exchange_testnet_order(
         &fallback_record.symbol,
         &fallback_record.side,
         local_status,
     );
     let ack_payload = ack.raw_payload.clone();
-    let updated = update_exchange_testnet_order_ack(
+    let updated = append_testnet_lifecycle_transition(
         &state.db_pool,
-        &fallback_record.client_order_id,
+        &fallback_record,
+        next_state,
+        TestnetExecutionTransitionSource::ExchangeAck,
+        Some(local_status),
         ack.exchange_order_id.as_deref(),
-        local_status,
-        &ack_payload,
+        reason.map(ToString::to_string),
+        Some(ack_payload),
+        actor.actor_id,
+        Some(correlation_id),
+        true,
     )
     .await;
     let _ = insert_audit_log(
@@ -5309,26 +5603,36 @@ async fn submit_exchange_testnet_order_success(
     .await;
 
     match updated {
-        Ok(Some(order_record)) => (
-            StatusCode::CREATED,
-            Json(ExchangeTestnetOrderResponse {
-                order: exchange_testnet_order_view(order_record),
-                request_id: request.request_id.clone(),
-                correlation_id: request.correlation_id.clone(),
-                timestamp: Utc::now(),
-            }),
-        )
-            .into_response(),
-        Ok(None) | Err(_) => (
-            StatusCode::CREATED,
-            Json(ExchangeTestnetOrderResponse {
-                order: exchange_testnet_order_view(fallback_record),
-                request_id: request.request_id.clone(),
-                correlation_id: request.correlation_id.clone(),
-                timestamp: Utc::now(),
-            }),
-        )
-            .into_response(),
+        Ok(Some(order_record)) => {
+            let view = build_exchange_testnet_order_view(&state.db_pool, order_record)
+                .await
+                .unwrap_or_else(|_| exchange_testnet_order_view(fallback_record.clone()));
+            (
+                StatusCode::CREATED,
+                Json(ExchangeTestnetOrderResponse {
+                    order: view,
+                    request_id: request.request_id.clone(),
+                    correlation_id: request.correlation_id.clone(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Ok(None) | Err(_) => {
+            let view = build_exchange_testnet_order_view(&state.db_pool, fallback_record.clone())
+                .await
+                .unwrap_or_else(|_| exchange_testnet_order_view(fallback_record));
+            (
+                StatusCode::CREATED,
+                Json(ExchangeTestnetOrderResponse {
+                    order: view,
+                    request_id: request.request_id.clone(),
+                    correlation_id: request.correlation_id.clone(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -5343,18 +5647,25 @@ async fn cancel_exchange_testnet_order_success(
     telemetry().inc_exchange_testnet_request("cancel_order", "ok");
     let local_status =
         local_testnet_status_from_exchange_state(ack.status).unwrap_or(ack.status.as_str());
+    let (next_state, reason) = map_cancel_ack_to_transition(&ack);
     telemetry().inc_exchange_testnet_order(
         &fallback_record.symbol,
         &fallback_record.side,
         local_status,
     );
     let payload = ack.raw_payload.clone();
-    let updated = update_exchange_testnet_order_status(
+    let updated = append_testnet_lifecycle_transition(
         &state.db_pool,
-        &fallback_record.client_order_id,
+        &fallback_record,
+        next_state,
+        TestnetExecutionTransitionSource::ExchangeCancelAck,
+        Some(local_status),
         ack.exchange_order_id.as_deref(),
-        local_status,
-        &payload,
+        reason.map(ToString::to_string),
+        Some(payload),
+        actor.actor_id,
+        Some(correlation_id),
+        false,
     )
     .await;
     let _ = insert_audit_log(
@@ -5378,26 +5689,36 @@ async fn cancel_exchange_testnet_order_success(
     .await;
 
     match updated {
-        Ok(Some(order_record)) => (
-            StatusCode::OK,
-            Json(ExchangeTestnetOrderResponse {
-                order: exchange_testnet_order_view(order_record),
-                request_id: request.request_id.clone(),
-                correlation_id: request.correlation_id.clone(),
-                timestamp: Utc::now(),
-            }),
-        )
-            .into_response(),
-        Ok(None) | Err(_) => (
-            StatusCode::OK,
-            Json(ExchangeTestnetOrderResponse {
-                order: exchange_testnet_order_view(fallback_record),
-                request_id: request.request_id.clone(),
-                correlation_id: request.correlation_id.clone(),
-                timestamp: Utc::now(),
-            }),
-        )
-            .into_response(),
+        Ok(Some(order_record)) => {
+            let view = build_exchange_testnet_order_view(&state.db_pool, order_record)
+                .await
+                .unwrap_or_else(|_| exchange_testnet_order_view(fallback_record.clone()));
+            (
+                StatusCode::OK,
+                Json(ExchangeTestnetOrderResponse {
+                    order: view,
+                    request_id: request.request_id.clone(),
+                    correlation_id: request.correlation_id.clone(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Ok(None) | Err(_) => {
+            let view = build_exchange_testnet_order_view(&state.db_pool, fallback_record.clone())
+                .await
+                .unwrap_or_else(|_| exchange_testnet_order_view(fallback_record));
+            (
+                StatusCode::OK,
+                Json(ExchangeTestnetOrderResponse {
+                    order: view,
+                    request_id: request.request_id.clone(),
+                    correlation_id: request.correlation_id.clone(),
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 

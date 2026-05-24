@@ -515,6 +515,16 @@ async fn main() -> anyhow::Result<()> {
                         output::print_exchange_testnet_order(&response);
                     }
                 }
+                ExchangeTestnetCommands::OrderLifecycle { client_order_id } => {
+                    let response = client
+                        .exchange_testnet_order_lifecycle(&client_order_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_exchange_testnet_order_lifecycle(&response);
+                    }
+                }
                 ExchangeTestnetCommands::OrderCancel(args) => {
                     let response = client
                         .exchange_testnet_order_cancel(

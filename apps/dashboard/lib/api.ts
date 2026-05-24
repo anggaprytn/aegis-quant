@@ -26,6 +26,7 @@ import type {
   ExchangeReconciliationRunResponse,
   ExchangeReconciliationRunsResponse,
   ExchangeTestnetBalancesResponse,
+  ExchangeTestnetOrderLifecycleResponse,
   ExchangeTestnetOrderResponse,
   ExchangeTestnetOrdersResponse,
   ExchangeTestnetStatusResponse,
@@ -306,6 +307,10 @@ export const api = {
     request<ExchangeTestnetBalancesResponse>("/exchange/testnet/balances"),
   getExchangeTestnetOrders: (limit = 20) =>
     request<ExchangeTestnetOrdersResponse>("/exchange/testnet/orders", undefined, { limit }),
+  getExchangeTestnetOrderLifecycle: (clientOrderId: string) =>
+    request<ExchangeTestnetOrderLifecycleResponse>(
+      `/exchange/testnet/orders/${clientOrderId}/lifecycle`,
+    ),
   reconcileExchangeTestnetOrders: (payload: ExchangeReconciliationRequest) =>
     request<ExchangeReconciliationResultResponse>("/exchange/testnet/reconcile", {
       method: "POST",

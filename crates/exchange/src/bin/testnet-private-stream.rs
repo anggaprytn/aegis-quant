@@ -3,13 +3,15 @@ use std::{env, time::Duration};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use db::{
-    connect_pool, insert_exchange_private_stream_event, update_exchange_testnet_order_status,
+    append_exchange_testnet_lifecycle_event_and_update_order, connect_pool,
+    get_exchange_testnet_order_by_client_order_id, insert_exchange_private_stream_event,
     upsert_exchange_private_stream_state, DbConfig, ExchangePrivateStreamEventRecord,
-    ExchangePrivateStreamStateRecord,
+    ExchangePrivateStreamStateRecord, ExchangeTestnetOrderLifecycleEventRecord,
 };
 use exchange::{
-    build_private_stream_state, hash_listen_key,
-    local_testnet_order_status_from_private_execution_report, parse_binance_private_stream_event,
+    apply_testnet_transition, build_private_stream_state, hash_listen_key,
+    local_testnet_order_status_from_private_execution_report,
+    map_private_execution_report_to_transition, parse_binance_private_stream_event,
     private_stream_is_stale, BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
 };
 use futures_util::StreamExt;
@@ -296,14 +298,101 @@ async fn handle_message(
     .await?;
 
     if let Some(report) = processed.execution_report {
-        let _ = update_exchange_testnet_order_status(
-            db_pool,
-            &report.client_order_id,
-            report.exchange_order_id.as_deref(),
-            local_testnet_order_status_from_private_execution_report(&report),
-            &report.raw_payload,
-        )
-        .await?;
+        if let Some(order) =
+            get_exchange_testnet_order_by_client_order_id(db_pool, &report.client_order_id).await?
+        {
+            let (next_state, reason) = map_private_execution_report_to_transition(&report);
+            let payload = report.raw_payload.clone();
+            let event = match apply_testnet_transition(
+                &aegis_core::TestnetOrderLifecycleSnapshot {
+                    order_id: Some(order.id),
+                    client_order_id: order.client_order_id.clone(),
+                    exchange_order_id: order.exchange_order_id.clone(),
+                    current_state: order
+                        .execution_state
+                        .parse()
+                        .unwrap_or(aegis_core::TestnetExecutionState::Failed),
+                    last_transition_at: order.last_transition_at,
+                },
+                next_state,
+                aegis_core::TestnetExecutionTransitionSource::PrivateStream,
+                reason.map(ToString::to_string),
+                Some(payload.clone()),
+            ) {
+                Ok(transition) => {
+                    telemetry().inc_exchange_testnet_lifecycle_transition(
+                        aegis_core::TestnetExecutionTransitionSource::PrivateStream.as_str(),
+                        transition.next_state.as_str(),
+                    );
+                    telemetry().apply_exchange_testnet_order_state_transition(
+                        transition.previous_state.map(|value| value.as_str()),
+                        transition.next_state.as_str(),
+                    );
+                    ExchangeTestnetOrderLifecycleEventRecord {
+                        id: Uuid::new_v4(),
+                        order_id: Some(order.id),
+                        client_order_id: order.client_order_id.clone(),
+                        previous_state: transition
+                            .previous_state
+                            .map(|value| value.as_str().to_string()),
+                        next_state: transition.next_state.as_str().to_string(),
+                        transition_source: transition.source.as_str().to_string(),
+                        reason: transition.reason,
+                        payload: transition.payload.clone(),
+                        created_by: None,
+                        created_at: Utc::now(),
+                        correlation_id: None,
+                    }
+                }
+                Err(_) => {
+                    telemetry().inc_exchange_testnet_lifecycle_invalid_transition(
+                        aegis_core::TestnetExecutionTransitionSource::PrivateStream.as_str(),
+                    );
+                    telemetry().inc_exchange_testnet_lifecycle_transition(
+                        aegis_core::TestnetExecutionTransitionSource::PrivateStream.as_str(),
+                        aegis_core::TestnetExecutionState::ReconciliationRequired.as_str(),
+                    );
+                    telemetry().apply_exchange_testnet_order_state_transition(
+                        Some(order.execution_state.as_str()),
+                        aegis_core::TestnetExecutionState::ReconciliationRequired.as_str(),
+                    );
+                    ExchangeTestnetOrderLifecycleEventRecord {
+                        id: Uuid::new_v4(),
+                        order_id: Some(order.id),
+                        client_order_id: order.client_order_id.clone(),
+                        previous_state: Some(order.execution_state.clone()),
+                        next_state: aegis_core::TestnetExecutionState::ReconciliationRequired
+                            .as_str()
+                            .to_string(),
+                        transition_source:
+                            aegis_core::TestnetExecutionTransitionSource::PrivateStream
+                                .as_str()
+                                .to_string(),
+                        reason: Some("invalid_private_stream_transition".to_string()),
+                        payload: Some(payload.clone()),
+                        created_by: None,
+                        created_at: Utc::now(),
+                        correlation_id: None,
+                    }
+                }
+            };
+            let lifecycle_state = event
+                .next_state
+                .parse()
+                .unwrap_or(aegis_core::TestnetExecutionState::ReconciliationRequired);
+            let _ = append_exchange_testnet_lifecycle_event_and_update_order(
+                db_pool,
+                &event,
+                report.exchange_order_id.as_deref(),
+                Some(local_testnet_order_status_from_private_execution_report(
+                    &report,
+                )),
+                lifecycle_state,
+                Some(&payload),
+                None,
+            )
+            .await?;
+        }
     }
 
     *last_event_at = Some(event.event_time);

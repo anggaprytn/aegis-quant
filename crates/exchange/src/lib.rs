@@ -7,7 +7,9 @@ use aegis_core::{
     ExchangeOrderSide, ExchangeOrderState, ExchangeOrderStatus, ExchangeOrderTimeInForce,
     ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
     ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
-    ExchangeRequestMode, ExchangeSymbolInfo,
+    ExchangeRequestMode, ExchangeSymbolInfo, TestnetExecutionState, TestnetExecutionStateError,
+    TestnetExecutionTransition, TestnetExecutionTransitionResult, TestnetExecutionTransitionSource,
+    TestnetOrderLifecycleSnapshot,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -582,6 +584,251 @@ pub fn local_testnet_order_status_from_private_execution_report(
     report.order_status.as_str()
 }
 
+pub fn validate_testnet_transition(
+    previous: Option<TestnetExecutionState>,
+    next: TestnetExecutionState,
+    source: TestnetExecutionTransitionSource,
+) -> std::result::Result<TestnetExecutionTransitionResult, TestnetExecutionStateError> {
+    if matches!(next, TestnetExecutionState::UnknownExchangeState) {
+        return Ok(TestnetExecutionTransitionResult {
+            previous_state: previous,
+            next_state: next,
+            source,
+            accepted: true,
+            terminal: false,
+            requires_reconciliation: true,
+        });
+    }
+
+    let accepted = match previous {
+        None => matches!(
+            next,
+            TestnetExecutionState::IntentCreated
+                | TestnetExecutionState::RiskApproved
+                | TestnetExecutionState::OrderPrepared
+                | TestnetExecutionState::OrderSubmitRequested
+                | TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::UnknownExchangeState
+                | TestnetExecutionState::Failed
+        ),
+        Some(prev) if prev.is_terminal() => false,
+        Some(TestnetExecutionState::IntentCreated) => matches!(
+            next,
+            TestnetExecutionState::RiskApproved
+                | TestnetExecutionState::OrderPrepared
+                | TestnetExecutionState::OrderSubmitRequested
+                | TestnetExecutionState::Rejected
+                | TestnetExecutionState::Failed
+                | TestnetExecutionState::ReconciliationRequired
+        ),
+        Some(TestnetExecutionState::RiskApproved) => matches!(
+            next,
+            TestnetExecutionState::OrderPrepared
+                | TestnetExecutionState::OrderSubmitRequested
+                | TestnetExecutionState::Rejected
+                | TestnetExecutionState::Failed
+                | TestnetExecutionState::ReconciliationRequired
+        ),
+        Some(TestnetExecutionState::OrderPrepared) => matches!(
+            next,
+            TestnetExecutionState::OrderSubmitRequested
+                | TestnetExecutionState::Rejected
+                | TestnetExecutionState::Failed
+                | TestnetExecutionState::ReconciliationRequired
+        ),
+        Some(TestnetExecutionState::OrderSubmitRequested) => matches!(
+            next,
+            TestnetExecutionState::ExchangeAcked
+                | TestnetExecutionState::New
+                | TestnetExecutionState::PartiallyFilled
+                | TestnetExecutionState::Filled
+                | TestnetExecutionState::Rejected
+                | TestnetExecutionState::Expired
+                | TestnetExecutionState::CancelRequested
+                | TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::Failed
+        ),
+        Some(TestnetExecutionState::ExchangeAcked) => matches!(
+            next,
+            TestnetExecutionState::New
+                | TestnetExecutionState::PartiallyFilled
+                | TestnetExecutionState::Filled
+                | TestnetExecutionState::CancelRequested
+                | TestnetExecutionState::Cancelled
+                | TestnetExecutionState::Rejected
+                | TestnetExecutionState::Expired
+                | TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::Failed
+        ),
+        Some(TestnetExecutionState::New) => matches!(
+            next,
+            TestnetExecutionState::PartiallyFilled
+                | TestnetExecutionState::Filled
+                | TestnetExecutionState::CancelRequested
+                | TestnetExecutionState::Cancelled
+                | TestnetExecutionState::Rejected
+                | TestnetExecutionState::Expired
+                | TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::Failed
+        ),
+        Some(TestnetExecutionState::PartiallyFilled) => matches!(
+            next,
+            TestnetExecutionState::PartiallyFilled
+                | TestnetExecutionState::Filled
+                | TestnetExecutionState::CancelRequested
+                | TestnetExecutionState::Cancelled
+                | TestnetExecutionState::Expired
+                | TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::Failed
+        ),
+        Some(TestnetExecutionState::CancelRequested) => matches!(
+            next,
+            TestnetExecutionState::Cancelled
+                | TestnetExecutionState::Filled
+                | TestnetExecutionState::PartiallyFilled
+                | TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::Failed
+        ),
+        Some(TestnetExecutionState::ReconciliationRequired) => matches!(
+            next,
+            TestnetExecutionState::ExchangeAcked
+                | TestnetExecutionState::New
+                | TestnetExecutionState::PartiallyFilled
+                | TestnetExecutionState::Filled
+                | TestnetExecutionState::CancelRequested
+                | TestnetExecutionState::Cancelled
+                | TestnetExecutionState::Rejected
+                | TestnetExecutionState::Expired
+                | TestnetExecutionState::UnknownExchangeState
+                | TestnetExecutionState::Failed
+                | TestnetExecutionState::ReconciliationRequired
+        ),
+        Some(TestnetExecutionState::UnknownExchangeState) => matches!(
+            next,
+            TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::UnknownExchangeState
+                | TestnetExecutionState::Failed
+        ),
+        Some(TestnetExecutionState::Filled)
+        | Some(TestnetExecutionState::Cancelled)
+        | Some(TestnetExecutionState::Rejected)
+        | Some(TestnetExecutionState::Expired)
+        | Some(TestnetExecutionState::Failed) => false,
+    };
+
+    if !accepted {
+        return Err(TestnetExecutionStateError::InvalidTransition {
+            previous_state: previous,
+            next_state: next,
+            transition_source: source,
+        });
+    }
+
+    Ok(TestnetExecutionTransitionResult {
+        previous_state: previous,
+        next_state: next,
+        source,
+        accepted: true,
+        terminal: next.is_terminal(),
+        requires_reconciliation: matches!(
+            next,
+            TestnetExecutionState::ReconciliationRequired
+                | TestnetExecutionState::UnknownExchangeState
+        ),
+    })
+}
+
+pub fn apply_testnet_transition(
+    snapshot: &TestnetOrderLifecycleSnapshot,
+    next_state: TestnetExecutionState,
+    source: TestnetExecutionTransitionSource,
+    reason: Option<String>,
+    payload: Option<Value>,
+) -> std::result::Result<TestnetExecutionTransition, TestnetExecutionStateError> {
+    validate_testnet_transition(Some(snapshot.current_state), next_state, source)?;
+    Ok(TestnetExecutionTransition {
+        previous_state: Some(snapshot.current_state),
+        next_state,
+        source,
+        reason,
+        payload,
+    })
+}
+
+pub fn map_exchange_ack_to_transition(
+    ack: &ExchangeOrderAck,
+) -> (TestnetExecutionState, Option<&'static str>) {
+    let next = match ack.status {
+        ExchangeOrderState::New => TestnetExecutionState::ExchangeAcked,
+        ExchangeOrderState::PartiallyFilled => TestnetExecutionState::PartiallyFilled,
+        ExchangeOrderState::Filled => TestnetExecutionState::Filled,
+        ExchangeOrderState::Canceled | ExchangeOrderState::PendingCancel => {
+            TestnetExecutionState::ReconciliationRequired
+        }
+        ExchangeOrderState::Rejected => TestnetExecutionState::Rejected,
+        ExchangeOrderState::Expired => TestnetExecutionState::Expired,
+    };
+    (next, Some("exchange_ack"))
+}
+
+pub fn map_private_execution_report_to_transition(
+    report: &ExchangeExecutionReport,
+) -> (TestnetExecutionState, Option<&'static str>) {
+    let next = match report.order_status {
+        ExchangeExecutionStatus::New => TestnetExecutionState::New,
+        ExchangeExecutionStatus::PartiallyFilled => TestnetExecutionState::PartiallyFilled,
+        ExchangeExecutionStatus::Filled => TestnetExecutionState::Filled,
+        ExchangeExecutionStatus::Canceled => TestnetExecutionState::Cancelled,
+        ExchangeExecutionStatus::PendingCancel => TestnetExecutionState::CancelRequested,
+        ExchangeExecutionStatus::Rejected => TestnetExecutionState::Rejected,
+        ExchangeExecutionStatus::Expired | ExchangeExecutionStatus::ExpiredInMatch => {
+            TestnetExecutionState::Expired
+        }
+        ExchangeExecutionStatus::Unknown => TestnetExecutionState::UnknownExchangeState,
+    };
+    let reason = match report.execution_type {
+        ExchangeExecutionReportType::New => Some("execution_report_new"),
+        ExchangeExecutionReportType::Canceled => Some("execution_report_canceled"),
+        ExchangeExecutionReportType::Rejected => Some("execution_report_rejected"),
+        ExchangeExecutionReportType::Trade => Some("execution_report_trade"),
+        ExchangeExecutionReportType::Expired => Some("execution_report_expired"),
+        ExchangeExecutionReportType::TradePrevention => Some("execution_report_trade_prevention"),
+        ExchangeExecutionReportType::Replaced => Some("execution_report_replaced"),
+        ExchangeExecutionReportType::Unknown => Some("execution_report_unknown"),
+    };
+    (next, reason)
+}
+
+pub fn map_rest_reconciliation_status_to_transition(
+    status: &ExchangeOrderStatus,
+) -> (TestnetExecutionState, Option<&'static str>) {
+    let next = match status.status {
+        ExchangeOrderState::New => TestnetExecutionState::New,
+        ExchangeOrderState::PartiallyFilled => TestnetExecutionState::PartiallyFilled,
+        ExchangeOrderState::Filled => TestnetExecutionState::Filled,
+        ExchangeOrderState::Canceled => TestnetExecutionState::Cancelled,
+        ExchangeOrderState::PendingCancel => TestnetExecutionState::CancelRequested,
+        ExchangeOrderState::Rejected => TestnetExecutionState::Rejected,
+        ExchangeOrderState::Expired => TestnetExecutionState::Expired,
+    };
+    (next, Some("rest_reconciliation_status"))
+}
+
+pub fn map_cancel_ack_to_transition(
+    ack: &ExchangeCancelAck,
+) -> (TestnetExecutionState, Option<&'static str>) {
+    let next = match ack.status {
+        ExchangeOrderState::Canceled => TestnetExecutionState::Cancelled,
+        ExchangeOrderState::PendingCancel => TestnetExecutionState::CancelRequested,
+        ExchangeOrderState::PartiallyFilled => TestnetExecutionState::PartiallyFilled,
+        ExchangeOrderState::Filled => TestnetExecutionState::Filled,
+        ExchangeOrderState::New => TestnetExecutionState::ReconciliationRequired,
+        ExchangeOrderState::Rejected => TestnetExecutionState::ReconciliationRequired,
+        ExchangeOrderState::Expired => TestnetExecutionState::Expired,
+    };
+    (next, Some("exchange_cancel_ack"))
+}
+
 pub fn hash_listen_key(listen_key: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(listen_key.as_bytes());
@@ -936,13 +1183,19 @@ fn stringify_json_scalar(value: Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_query_string, hash_listen_key, mask_listen_key, parse_binance_execution_report,
-        sign_query, BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
+        build_query_string, hash_listen_key, map_cancel_ack_to_transition,
+        map_exchange_ack_to_transition, map_private_execution_report_to_transition,
+        map_rest_reconciliation_status_to_transition, mask_listen_key,
+        parse_binance_execution_report, sign_query, validate_testnet_transition,
+        BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
     };
     use aegis_core::{
-        ExchangeEnvironment, ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName,
-        ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderType, Symbol,
+        ExchangeCancelAck, ExchangeEnvironment, ExchangeExecutionReportType,
+        ExchangeExecutionStatus, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest,
+        ExchangeOrderSide, ExchangeOrderState, ExchangeOrderStatus, ExchangeOrderType, Symbol,
+        TestnetExecutionState, TestnetExecutionTransitionSource,
     };
+    use chrono::Utc;
     use rust_decimal::Decimal;
     use serde_json::json;
 
@@ -1192,5 +1445,166 @@ mod tests {
             super::local_testnet_order_status_from_private_execution_report(&report),
             "PARTIALLY_FILLED"
         );
+    }
+
+    #[test]
+    fn ack_does_not_imply_fill() {
+        let ack = ExchangeOrderAck {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: "client-1".to_string(),
+            exchange_order_id: Some("123".to_string()),
+            status: ExchangeOrderState::New,
+            transact_time: Utc::now(),
+            executed_qty: Decimal::ZERO,
+            cumulative_quote_qty: Decimal::ZERO,
+            is_working: Some(true),
+            raw_payload: json!({"status":"NEW"}),
+        };
+
+        let (next, _) = map_exchange_ack_to_transition(&ack);
+        assert_eq!(next, TestnetExecutionState::ExchangeAcked);
+    }
+
+    #[test]
+    fn valid_transition_acked_to_new() {
+        validate_testnet_transition(
+            Some(TestnetExecutionState::ExchangeAcked),
+            TestnetExecutionState::New,
+            TestnetExecutionTransitionSource::PrivateStream,
+        )
+        .expect("transition should be valid");
+    }
+
+    #[test]
+    fn valid_new_to_partial_to_filled() {
+        validate_testnet_transition(
+            Some(TestnetExecutionState::New),
+            TestnetExecutionState::PartiallyFilled,
+            TestnetExecutionTransitionSource::PrivateStream,
+        )
+        .expect("new to partial");
+        validate_testnet_transition(
+            Some(TestnetExecutionState::PartiallyFilled),
+            TestnetExecutionState::Filled,
+            TestnetExecutionTransitionSource::PrivateStream,
+        )
+        .expect("partial to filled");
+    }
+
+    #[test]
+    fn valid_new_to_cancel_requested_to_cancelled() {
+        validate_testnet_transition(
+            Some(TestnetExecutionState::New),
+            TestnetExecutionState::CancelRequested,
+            TestnetExecutionTransitionSource::ApiCancel,
+        )
+        .expect("new to cancel_requested");
+        validate_testnet_transition(
+            Some(TestnetExecutionState::CancelRequested),
+            TestnetExecutionState::Cancelled,
+            TestnetExecutionTransitionSource::ExchangeCancelAck,
+        )
+        .expect("cancel_requested to cancelled");
+    }
+
+    #[test]
+    fn invalid_filled_to_new_rejected() {
+        assert!(validate_testnet_transition(
+            Some(TestnetExecutionState::Filled),
+            TestnetExecutionState::New,
+            TestnetExecutionTransitionSource::PrivateStream,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn invalid_cancelled_to_partial_rejected() {
+        assert!(validate_testnet_transition(
+            Some(TestnetExecutionState::Cancelled),
+            TestnetExecutionState::PartiallyFilled,
+            TestnetExecutionTransitionSource::PrivateStream,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unknown_exchange_state_maps_safely() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport","E":1710000000000i64,"s":"BTCUSDT","c":"client-unknown-lifecycle",
+            "i":12345,"S":"BUY","o":"MARKET","f":"GTC","x":"UNKNOWN","X":"MYSTERY_STATUS",
+            "l":"0","z":"0","L":"0","n":"0","N":null,"T":1710000000400i64
+        }))
+        .expect("report should parse");
+        let (next, _) = map_private_execution_report_to_transition(&report);
+        assert!(matches!(
+            next,
+            TestnetExecutionState::UnknownExchangeState
+                | TestnetExecutionState::ReconciliationRequired
+        ));
+    }
+
+    #[test]
+    fn private_stream_report_maps_through_validator() {
+        let report = parse_binance_execution_report(&json!({
+            "e":"executionReport","E":1710000000000i64,"s":"BTCUSDT","c":"client-stream",
+            "i":12345,"S":"BUY","o":"MARKET","f":"GTC","x":"NEW","X":"NEW",
+            "l":"0","z":"0","L":"0","n":"0","N":null,"T":1710000000000i64
+        }))
+        .expect("report should parse");
+        let (next, _) = map_private_execution_report_to_transition(&report);
+        let result = validate_testnet_transition(
+            Some(TestnetExecutionState::ExchangeAcked),
+            next,
+            TestnetExecutionTransitionSource::PrivateStream,
+        )
+        .expect("validator should accept");
+        assert_eq!(result.next_state, TestnetExecutionState::New);
+    }
+
+    #[test]
+    fn rest_reconciliation_maps_through_same_validator() {
+        let status = ExchangeOrderStatus {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: "client-rest".to_string(),
+            exchange_order_id: Some("123".to_string()),
+            status: ExchangeOrderState::PartiallyFilled,
+            side: ExchangeOrderSide::Buy,
+            order_type: ExchangeOrderType::Market,
+            time_in_force: None,
+            original_qty: Some(Decimal::new(1, 0)),
+            executed_qty: Decimal::new(5, 1),
+            cumulative_quote_qty: Decimal::new(500, 0),
+            limit_price: None,
+            updated_at: Utc::now(),
+            raw_payload: json!({"status":"PARTIALLY_FILLED"}),
+        };
+        let (next, _) = map_rest_reconciliation_status_to_transition(&status);
+        let result = validate_testnet_transition(
+            Some(TestnetExecutionState::New),
+            next,
+            TestnetExecutionTransitionSource::RestReconciliation,
+        )
+        .expect("same validator");
+        assert_eq!(result.next_state, TestnetExecutionState::PartiallyFilled);
+    }
+
+    #[test]
+    fn cancel_ack_does_not_blindly_imply_success() {
+        let ack = ExchangeCancelAck {
+            exchange: ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: "client-cancel-ack".to_string(),
+            exchange_order_id: Some("123".to_string()),
+            status: ExchangeOrderState::New,
+            cancelled_at: Utc::now(),
+            raw_payload: json!({"status":"NEW"}),
+        };
+        let (next, _) = map_cancel_ack_to_transition(&ack);
+        assert_eq!(next, TestnetExecutionState::ReconciliationRequired);
     }
 }

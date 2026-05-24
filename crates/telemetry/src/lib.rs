@@ -49,6 +49,9 @@ pub struct Telemetry {
     exchange_testnet_requests_total: IntCounterVec,
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
+    exchange_testnet_lifecycle_transitions_total: IntCounterVec,
+    exchange_testnet_lifecycle_invalid_transitions_total: IntCounterVec,
+    exchange_testnet_orders_by_state: IntGaugeVec,
     exchange_private_stream_events_total: IntCounterVec,
     exchange_private_stream_status: IntGaugeVec,
     exchange_private_stream_last_event_age_seconds: GaugeVec,
@@ -299,6 +302,28 @@ impl Telemetry {
             registry
         )
         .expect("exchange_testnet_errors_total should register");
+        let exchange_testnet_lifecycle_transitions_total = register_int_counter_vec_with_registry!(
+            "exchange_testnet_lifecycle_transitions_total",
+            "Testnet lifecycle transitions by source and next_state.",
+            &["source", "next_state"],
+            registry
+        )
+        .expect("exchange_testnet_lifecycle_transitions_total should register");
+        let exchange_testnet_lifecycle_invalid_transitions_total =
+            register_int_counter_vec_with_registry!(
+                "exchange_testnet_lifecycle_invalid_transitions_total",
+                "Invalid testnet lifecycle transitions by source.",
+                &["source"],
+                registry
+            )
+            .expect("exchange_testnet_lifecycle_invalid_transitions_total should register");
+        let exchange_testnet_orders_by_state = register_int_gauge_vec_with_registry!(
+            "exchange_testnet_orders_by_state",
+            "Current testnet order counts by execution state.",
+            &["state"],
+            registry
+        )
+        .expect("exchange_testnet_orders_by_state should register");
         let exchange_private_stream_events_total = register_int_counter_vec_with_registry!(
             "exchange_private_stream_events_total",
             "Exchange private stream events by environment and event_type.",
@@ -398,6 +423,9 @@ impl Telemetry {
             exchange_testnet_requests_total,
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
+            exchange_testnet_lifecycle_transitions_total,
+            exchange_testnet_lifecycle_invalid_transitions_total,
+            exchange_testnet_orders_by_state,
             exchange_private_stream_events_total,
             exchange_private_stream_status,
             exchange_private_stream_last_event_age_seconds,
@@ -645,6 +673,33 @@ impl Telemetry {
     pub fn inc_exchange_testnet_error(&self, operation: &str, kind: &str) {
         self.exchange_testnet_errors_total
             .with_label_values(&[operation, kind])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_lifecycle_transition(&self, source: &str, next_state: &str) {
+        self.exchange_testnet_lifecycle_transitions_total
+            .with_label_values(&[source, next_state])
+            .inc();
+    }
+
+    pub fn inc_exchange_testnet_lifecycle_invalid_transition(&self, source: &str) {
+        self.exchange_testnet_lifecycle_invalid_transitions_total
+            .with_label_values(&[source])
+            .inc();
+    }
+
+    pub fn apply_exchange_testnet_order_state_transition(
+        &self,
+        previous_state: Option<&str>,
+        next_state: &str,
+    ) {
+        if let Some(previous_state) = previous_state {
+            self.exchange_testnet_orders_by_state
+                .with_label_values(&[previous_state])
+                .dec();
+        }
+        self.exchange_testnet_orders_by_state
+            .with_label_values(&[next_state])
             .inc();
     }
 

@@ -29,6 +29,7 @@
 - Completed: Binance Spot Testnet adapter skeleton with isolated persistence, owner-gated submit/cancel, CLI support, dashboard inspection, and testnet-only guardrails
 - Completed: testnet order reconciliation with persisted runs/mismatches, operator-triggered API/CLI/dashboard controls, and testnet-only status normalization
 - Completed: Binance Spot Testnet private user-data stream skeleton with listen-key lifecycle, normalized execution-report persistence, isolated testnet order status updates, stale/disconnect tracking, and API/CLI/dashboard inspection
+- Completed: isolated testnet execution lifecycle bridge with deterministic transitions across submit ACK, private stream, reconciliation, and cancel flows
 - Current focus: tighten paper reconciliation and broader operator controls around paper/testnet boundaries before any live execution surface area
 
 ## Next implementation steps

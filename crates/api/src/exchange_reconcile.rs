@@ -3,18 +3,21 @@ use aegis_core::{
     ExchangeOrderStatus, ExchangeReconciliationAction, ExchangeReconciliationMismatch,
     ExchangeReconciliationMismatchKind, ExchangeReconciliationRequest,
     ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeReconciliationStatus,
-    ExchangeReconciliationSummary,
+    ExchangeReconciliationSummary, TestnetExecutionState, TestnetExecutionTransitionSource,
 };
 use anyhow::Context;
 use chrono::Utc;
 use db::{
-    complete_exchange_reconciliation_run, fail_exchange_reconciliation_run, insert_audit_log,
-    insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
-    insert_system_event, list_exchange_testnet_orders_for_reconciliation,
-    update_exchange_testnet_order_status, ExchangeReconciliationMismatchRecord,
-    ExchangeReconciliationRunRecord, ExchangeTestnetOrderRecord, PgPool, StateActor,
+    append_exchange_testnet_lifecycle_event_and_update_order, complete_exchange_reconciliation_run,
+    fail_exchange_reconciliation_run, insert_audit_log, insert_exchange_reconciliation_mismatch,
+    insert_exchange_reconciliation_run, insert_system_event,
+    list_exchange_testnet_orders_for_reconciliation, ExchangeReconciliationMismatchRecord,
+    ExchangeReconciliationRunRecord, ExchangeTestnetOrderLifecycleEventRecord,
+    ExchangeTestnetOrderRecord, PgPool, StateActor,
 };
-use exchange::ExchangeAdapter;
+use exchange::{
+    apply_testnet_transition, map_rest_reconciliation_status_to_transition, ExchangeAdapter,
+};
 use serde_json::{json, Value};
 use telemetry::telemetry;
 use uuid::Uuid;
@@ -147,20 +150,91 @@ pub async fn reconcile_testnet_orders<A: ExchangeAdapter>(
                 let persisted_status = evaluation
                     .canonical_local_status
                     .unwrap_or(order.status.as_str());
-                update_exchange_testnet_order_status(
-                    pool,
-                    &order.client_order_id,
-                    exchange_status.exchange_order_id.as_deref(),
-                    persisted_status,
-                    &exchange_status.raw_payload,
-                )
-                .await
-                .with_context(|| {
-                    format!(
-                        "update local exchange testnet order status for {}",
-                        order.client_order_id
-                    )
-                })?;
+                let (next_state, reason) =
+                    map_rest_reconciliation_status_to_transition(&exchange_status);
+                let _updated = match apply_testnet_transition(
+                    &aegis_core::TestnetOrderLifecycleSnapshot {
+                        order_id: Some(order.id),
+                        client_order_id: order.client_order_id.clone(),
+                        exchange_order_id: order.exchange_order_id.clone(),
+                        current_state: order
+                            .execution_state
+                            .parse()
+                            .unwrap_or(TestnetExecutionState::Failed),
+                        last_transition_at: order.last_transition_at,
+                    },
+                    next_state,
+                    TestnetExecutionTransitionSource::RestReconciliation,
+                    reason.map(ToString::to_string),
+                    Some(exchange_status.raw_payload.clone()),
+                ) {
+                    Ok(transition) => {
+                        append_exchange_testnet_lifecycle_event_and_update_order(
+                            pool,
+                            &ExchangeTestnetOrderLifecycleEventRecord {
+                                id: Uuid::new_v4(),
+                                order_id: Some(order.id),
+                                client_order_id: order.client_order_id.clone(),
+                                previous_state: transition
+                                    .previous_state
+                                    .map(|value| value.as_str().to_string()),
+                                next_state: transition.next_state.as_str().to_string(),
+                                transition_source: transition.source.as_str().to_string(),
+                                reason: transition.reason,
+                                payload: transition.payload.clone(),
+                                created_by: actor.actor_id,
+                                created_at: Utc::now(),
+                                correlation_id: Some(correlation_id),
+                            },
+                            exchange_status.exchange_order_id.as_deref(),
+                            Some(persisted_status),
+                            transition.next_state,
+                            transition.payload.as_ref(),
+                            None,
+                        )
+                        .await?
+                    }
+                    Err(_) => {
+                        telemetry().inc_exchange_testnet_lifecycle_invalid_transition(
+                            TestnetExecutionTransitionSource::RestReconciliation.as_str(),
+                        );
+                        telemetry().inc_exchange_testnet_lifecycle_transition(
+                            TestnetExecutionTransitionSource::RestReconciliation.as_str(),
+                            TestnetExecutionState::ReconciliationRequired.as_str(),
+                        );
+                        telemetry().apply_exchange_testnet_order_state_transition(
+                            Some(order.execution_state.as_str()),
+                            TestnetExecutionState::ReconciliationRequired.as_str(),
+                        );
+                        append_exchange_testnet_lifecycle_event_and_update_order(
+                            pool,
+                            &ExchangeTestnetOrderLifecycleEventRecord {
+                                id: Uuid::new_v4(),
+                                order_id: Some(order.id),
+                                client_order_id: order.client_order_id.clone(),
+                                previous_state: Some(order.execution_state.clone()),
+                                next_state: TestnetExecutionState::ReconciliationRequired
+                                    .as_str()
+                                    .to_string(),
+                                transition_source:
+                                    TestnetExecutionTransitionSource::RestReconciliation
+                                        .as_str()
+                                        .to_string(),
+                                reason: Some("invalid_rest_reconciliation_transition".to_string()),
+                                payload: Some(exchange_status.raw_payload.clone()),
+                                created_by: actor.actor_id,
+                                created_at: Utc::now(),
+                                correlation_id: Some(correlation_id),
+                            },
+                            exchange_status.exchange_order_id.as_deref(),
+                            Some(persisted_status),
+                            TestnetExecutionState::ReconciliationRequired,
+                            Some(&exchange_status.raw_payload),
+                            None,
+                        )
+                        .await?
+                    }
+                };
 
                 if let Some((kind, action, payload)) = evaluation.mismatch {
                     summary.mismatched_orders += 1;
@@ -588,10 +662,12 @@ mod tests {
             requested_notional: None,
             limit_price: Some(Decimal::new(100_000, 0)),
             status: status.to_string(),
+            execution_state: status.to_string(),
             ack_payload: Some(json!({"status":"NEW"})),
             latest_status_payload: None,
             risk_decision_id: None,
             created_by: None,
+            last_transition_at: Some(Utc::now()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

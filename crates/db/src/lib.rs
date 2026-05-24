@@ -9,7 +9,7 @@ use aegis_core::{
     PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
     RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session, Side, SignalReason,
     StrategyConfig, StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal,
-    Symbol, User, UserRole, UserStatus,
+    Symbol, TestnetExecutionState, User, UserRole, UserStatus,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -152,12 +152,29 @@ pub struct ExchangeTestnetOrderRecord {
     pub requested_notional: Option<Decimal>,
     pub limit_price: Option<Decimal>,
     pub status: String,
+    pub execution_state: String,
     pub ack_payload: Option<Value>,
     pub latest_status_payload: Option<Value>,
     pub risk_decision_id: Option<Uuid>,
     pub created_by: Option<Uuid>,
+    pub last_transition_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExchangeTestnetOrderLifecycleEventRecord {
+    pub id: Uuid,
+    pub order_id: Option<Uuid>,
+    pub client_order_id: String,
+    pub previous_state: Option<String>,
+    pub next_state: String,
+    pub transition_source: String,
+    pub reason: Option<String>,
+    pub payload: Option<Value>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1712,15 +1729,17 @@ pub async fn insert_exchange_testnet_order(
             requested_notional,
             limit_price,
             status,
+            execution_state,
             ack_payload,
             latest_status_payload,
             risk_decision_id,
             created_by,
+            last_transition_at,
             created_at,
             updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
         )
         RETURNING
             id,
@@ -1736,10 +1755,12 @@ pub async fn insert_exchange_testnet_order(
             requested_notional,
             limit_price,
             status,
+            execution_state,
             ack_payload,
             latest_status_payload,
             risk_decision_id,
             created_by,
+            last_transition_at,
             created_at,
             updated_at
         "#,
@@ -1757,10 +1778,12 @@ pub async fn insert_exchange_testnet_order(
     .bind(record.requested_notional)
     .bind(record.limit_price)
     .bind(&record.status)
+    .bind(&record.execution_state)
     .bind(&record.ack_payload)
     .bind(&record.latest_status_payload)
     .bind(record.risk_decision_id)
     .bind(record.created_by)
+    .bind(record.last_transition_at)
     .bind(record.created_at)
     .bind(record.updated_at)
     .fetch_one(pool)
@@ -1774,7 +1797,9 @@ pub async fn update_exchange_testnet_order_ack(
     client_order_id: &str,
     exchange_order_id: Option<&str>,
     status: &str,
+    execution_state: &str,
     ack_payload: &Value,
+    last_transition_at: Option<DateTime<Utc>>,
 ) -> Result<Option<ExchangeTestnetOrderRecord>> {
     let row = sqlx::query(
         r#"
@@ -1782,8 +1807,10 @@ pub async fn update_exchange_testnet_order_ack(
         SET
             exchange_order_id = COALESCE($2, exchange_order_id),
             status = $3,
-            ack_payload = $4,
-            latest_status_payload = COALESCE(latest_status_payload, $4),
+            execution_state = $4,
+            ack_payload = $5,
+            latest_status_payload = COALESCE(latest_status_payload, $5),
+            last_transition_at = COALESCE($6, last_transition_at, NOW()),
             updated_at = NOW()
         WHERE client_order_id = $1
         RETURNING
@@ -1800,10 +1827,12 @@ pub async fn update_exchange_testnet_order_ack(
             requested_notional,
             limit_price,
             status,
+            execution_state,
             ack_payload,
             latest_status_payload,
             risk_decision_id,
             created_by,
+            last_transition_at,
             created_at,
             updated_at
         "#,
@@ -1811,7 +1840,9 @@ pub async fn update_exchange_testnet_order_ack(
     .bind(client_order_id)
     .bind(exchange_order_id)
     .bind(status)
+    .bind(execution_state)
     .bind(ack_payload)
+    .bind(last_transition_at)
     .fetch_optional(pool)
     .await?;
 
@@ -1823,7 +1854,9 @@ pub async fn update_exchange_testnet_order_status(
     client_order_id: &str,
     exchange_order_id: Option<&str>,
     status: &str,
+    execution_state: &str,
     latest_status_payload: &Value,
+    last_transition_at: Option<DateTime<Utc>>,
 ) -> Result<Option<ExchangeTestnetOrderRecord>> {
     let row = sqlx::query(
         r#"
@@ -1831,7 +1864,9 @@ pub async fn update_exchange_testnet_order_status(
         SET
             exchange_order_id = COALESCE($2, exchange_order_id),
             status = $3,
-            latest_status_payload = $4,
+            execution_state = $4,
+            latest_status_payload = $5,
+            last_transition_at = COALESCE($6, last_transition_at, NOW()),
             updated_at = NOW()
         WHERE client_order_id = $1
         RETURNING
@@ -1848,10 +1883,12 @@ pub async fn update_exchange_testnet_order_status(
             requested_notional,
             limit_price,
             status,
+            execution_state,
             ack_payload,
             latest_status_payload,
             risk_decision_id,
             created_by,
+            last_transition_at,
             created_at,
             updated_at
         "#,
@@ -1859,7 +1896,9 @@ pub async fn update_exchange_testnet_order_status(
     .bind(client_order_id)
     .bind(exchange_order_id)
     .bind(status)
+    .bind(execution_state)
     .bind(latest_status_payload)
+    .bind(last_transition_at)
     .fetch_optional(pool)
     .await?;
 
@@ -1886,10 +1925,12 @@ pub async fn get_exchange_testnet_order_by_client_order_id(
             requested_notional,
             limit_price,
             status,
+            execution_state,
             ack_payload,
             latest_status_payload,
             risk_decision_id,
             created_by,
+            last_transition_at,
             created_at,
             updated_at
         FROM exchange_testnet_orders
@@ -1923,10 +1964,12 @@ pub async fn list_exchange_testnet_orders(
             requested_notional,
             limit_price,
             status,
+            execution_state,
             ack_payload,
             latest_status_payload,
             risk_decision_id,
             created_by,
+            last_transition_at,
             created_at,
             updated_at
         FROM exchange_testnet_orders
@@ -1962,10 +2005,12 @@ pub async fn list_exchange_testnet_orders_for_reconciliation(
             requested_notional,
             limit_price,
             status,
+            execution_state,
             ack_payload,
             latest_status_payload,
             risk_decision_id,
             created_by,
+            last_transition_at,
             created_at,
             updated_at
         FROM exchange_testnet_orders
@@ -1986,6 +2031,182 @@ pub async fn list_exchange_testnet_orders_for_reconciliation(
 
     let rows = builder.build().fetch_all(pool).await?;
     Ok(rows.iter().map(map_exchange_testnet_order).collect())
+}
+
+pub async fn insert_exchange_testnet_order_lifecycle_event(
+    pool: &PgPool,
+    record: &ExchangeTestnetOrderLifecycleEventRecord,
+) -> Result<ExchangeTestnetOrderLifecycleEventRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO exchange_testnet_order_lifecycle_events (
+            id,
+            order_id,
+            client_order_id,
+            previous_state,
+            next_state,
+            transition_source,
+            reason,
+            payload,
+            created_by,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING
+            id,
+            order_id,
+            client_order_id,
+            previous_state,
+            next_state,
+            transition_source,
+            reason,
+            payload,
+            created_by,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(record.id)
+    .bind(record.order_id)
+    .bind(&record.client_order_id)
+    .bind(&record.previous_state)
+    .bind(&record.next_state)
+    .bind(&record.transition_source)
+    .bind(&record.reason)
+    .bind(&record.payload)
+    .bind(record.created_by)
+    .bind(record.created_at)
+    .bind(record.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_exchange_testnet_order_lifecycle_event(&row))
+}
+
+pub async fn list_exchange_testnet_order_lifecycle_events(
+    pool: &PgPool,
+    client_order_id: &str,
+) -> Result<Vec<ExchangeTestnetOrderLifecycleEventRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            order_id,
+            client_order_id,
+            previous_state,
+            next_state,
+            transition_source,
+            reason,
+            payload,
+            created_by,
+            created_at,
+            correlation_id
+        FROM exchange_testnet_order_lifecycle_events
+        WHERE client_order_id = $1
+        ORDER BY created_at ASC, id ASC
+        "#,
+    )
+    .bind(client_order_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(map_exchange_testnet_order_lifecycle_event)
+        .collect())
+}
+
+pub async fn append_exchange_testnet_lifecycle_event_and_update_order(
+    pool: &PgPool,
+    event: &ExchangeTestnetOrderLifecycleEventRecord,
+    exchange_order_id: Option<&str>,
+    status: Option<&str>,
+    execution_state: TestnetExecutionState,
+    latest_status_payload: Option<&Value>,
+    ack_payload: Option<&Value>,
+) -> Result<Option<ExchangeTestnetOrderRecord>> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        r#"
+        INSERT INTO exchange_testnet_order_lifecycle_events (
+            id,
+            order_id,
+            client_order_id,
+            previous_state,
+            next_state,
+            transition_source,
+            reason,
+            payload,
+            created_by,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "#,
+    )
+    .bind(event.id)
+    .bind(event.order_id)
+    .bind(&event.client_order_id)
+    .bind(&event.previous_state)
+    .bind(&event.next_state)
+    .bind(&event.transition_source)
+    .bind(&event.reason)
+    .bind(&event.payload)
+    .bind(event.created_by)
+    .bind(event.created_at)
+    .bind(event.correlation_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let row = sqlx::query(
+        r#"
+        UPDATE exchange_testnet_orders
+        SET
+            exchange_order_id = COALESCE($2, exchange_order_id),
+            status = COALESCE($3, status),
+            execution_state = $4,
+            latest_status_payload = COALESCE($5, latest_status_payload),
+            ack_payload = COALESCE($6, ack_payload),
+            last_transition_at = $7,
+            updated_at = NOW()
+        WHERE client_order_id = $1
+        RETURNING
+            id,
+            exchange,
+            environment,
+            client_order_id,
+            exchange_order_id,
+            symbol,
+            side,
+            order_type,
+            time_in_force,
+            requested_qty,
+            requested_notional,
+            limit_price,
+            status,
+            execution_state,
+            ack_payload,
+            latest_status_payload,
+            risk_decision_id,
+            created_by,
+            last_transition_at,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(&event.client_order_id)
+    .bind(exchange_order_id)
+    .bind(status)
+    .bind(execution_state.as_str())
+    .bind(latest_status_payload)
+    .bind(ack_payload)
+    .bind(event.created_at)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(row.as_ref().map(map_exchange_testnet_order))
 }
 
 pub async fn insert_exchange_private_stream_event(
@@ -6408,12 +6629,32 @@ fn map_exchange_testnet_order(row: &sqlx::postgres::PgRow) -> ExchangeTestnetOrd
         requested_notional: row.get("requested_notional"),
         limit_price: row.get("limit_price"),
         status: row.get("status"),
+        execution_state: row.get("execution_state"),
         ack_payload: row.get("ack_payload"),
         latest_status_payload: row.get("latest_status_payload"),
         risk_decision_id: row.get("risk_decision_id"),
         created_by: row.get("created_by"),
+        last_transition_at: row.get("last_transition_at"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_exchange_testnet_order_lifecycle_event(
+    row: &sqlx::postgres::PgRow,
+) -> ExchangeTestnetOrderLifecycleEventRecord {
+    ExchangeTestnetOrderLifecycleEventRecord {
+        id: row.get("id"),
+        order_id: row.get("order_id"),
+        client_order_id: row.get("client_order_id"),
+        previous_state: row.get("previous_state"),
+        next_state: row.get("next_state"),
+        transition_source: row.get("transition_source"),
+        reason: row.get("reason"),
+        payload: row.get("payload"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
     }
 }
 

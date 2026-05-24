@@ -103,6 +103,9 @@ pub enum ExchangeTestnetCommands {
     OrderGet {
         client_order_id: String,
     },
+    OrderLifecycle {
+        client_order_id: String,
+    },
     OrderCancel(ExchangeTestnetOrderCancelArgs),
     Reconcile(ExchangeTestnetReconcileArgs),
     ReconciliationRuns(ExchangeReconciliationRunsArgs),

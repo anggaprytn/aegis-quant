@@ -312,6 +312,7 @@ function AuthenticatedDashboard({
   const [testnetQuantity, setTestnetQuantity] = useState("");
   const [testnetLimitPrice, setTestnetLimitPrice] = useState("");
   const [testnetRiskDecisionId, setTestnetRiskDecisionId] = useState("");
+  const [selectedTestnetOrderId, setSelectedTestnetOrderId] = useState<string | null>(null);
   const [privateStreamListenKey, setPrivateStreamListenKey] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [eventSourceFilter, setEventSourceFilter] = useState("");
@@ -384,6 +385,14 @@ function AuthenticatedDashboard({
     queryKey: ["exchange-testnet-orders"],
     queryFn: () => api.getExchangeTestnetOrders(20),
     enabled: user.role === "OWNER" || user.role === "OPERATOR",
+    refetchInterval: 10_000,
+  });
+  const exchangeTestnetLifecycleQuery = useQuery({
+    queryKey: ["exchange-testnet-order-lifecycle", selectedTestnetOrderId],
+    queryFn: () => api.getExchangeTestnetOrderLifecycle(selectedTestnetOrderId ?? ""),
+    enabled:
+      (user.role === "OWNER" || user.role === "OPERATOR") &&
+      Boolean(selectedTestnetOrderId),
     refetchInterval: 10_000,
   });
   const exchangeReconciliationRunsQuery = useQuery({
@@ -2369,10 +2378,27 @@ function AuthenticatedDashboard({
               <Panel title="Recent Testnet Orders">
                 <div className="space-y-2 text-sm text-slate-200">
                   {(exchangeTestnetOrdersQuery.data?.orders ?? []).map((item) => (
-                    <div key={item.id} className="rounded-xl border border-border bg-surface/60 px-3 py-2">
+                    <div
+                      key={item.id}
+                      className={cn(
+                        "w-full rounded-xl border bg-surface/60 px-3 py-2 text-left",
+                        selectedTestnetOrderId === item.client_order_id
+                          ? "border-accent"
+                          : "border-border",
+                      )}
+                      onClick={() => setSelectedTestnetOrderId(item.client_order_id)}
+                    >
                       <div>{item.client_order_id}</div>
                       <div className="text-slate-400">
-                        {item.symbol} {item.side} {item.order_type} {item.status}
+                        {item.symbol} {item.side} {item.order_type} status={item.status}
+                      </div>
+                      <div className="text-slate-400">
+                        execution={item.execution_state}
+                        {item.execution_state === "RECONCILIATION_REQUIRED" ||
+                        item.execution_state === "UNKNOWN_EXCHANGE_STATE" ||
+                        item.execution_state === "FAILED"
+                          ? "  attention"
+                          : ""}
                       </div>
                       {user.role === "OWNER" ? (
                         <button
@@ -2386,6 +2412,25 @@ function AuthenticatedDashboard({
                     </div>
                   ))}
                 </div>
+                {exchangeTestnetLifecycleQuery.data ? (
+                  <div className="mt-4 rounded-xl border border-border bg-surface/40 px-3 py-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">
+                      Lifecycle {exchangeTestnetLifecycleQuery.data.current_state}
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {exchangeTestnetLifecycleQuery.data.events.map((event, index) => (
+                        <div key={`${event.created_at}-${index}`} className="rounded-lg border border-border/60 px-2 py-2">
+                          <div>
+                            {event.previous_state ?? "-"} to {event.next_state}
+                          </div>
+                          <div className="text-slate-400">
+                            {event.transition_source} {event.reason ?? "-"} {formatDateTime(event.created_at)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </Panel>
               <Panel title="Recent Private Stream Events">
                 <div className="space-y-2 text-sm text-slate-200">

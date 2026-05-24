@@ -200,6 +200,7 @@ pub fn print_exchange_testnet_order(response: &ExchangeTestnetOrderResponse) {
     println!("Side: {}", order.side);
     println!("Type: {}", order.order_type);
     println!("Status: {}", order.status);
+    println!("Execution state: {}", order.execution_state);
     println!(
         "Requested quantity: {}",
         order.requested_qty.as_deref().unwrap_or("-")
@@ -208,6 +209,23 @@ pub fn print_exchange_testnet_order(response: &ExchangeTestnetOrderResponse) {
         "Requested quote notional: {}",
         order.requested_notional.as_deref().unwrap_or("-")
     );
+}
+
+pub fn print_exchange_testnet_order_lifecycle(
+    response: &crate::api::ExchangeTestnetOrderLifecycleResponse,
+) {
+    println!("Client order ID: {}", response.client_order_id);
+    println!("Current state: {}", response.current_state);
+    for event in &response.events {
+        println!(
+            "{} {} -> {} source={} reason={}",
+            event.created_at,
+            event.previous_state.as_deref().unwrap_or("-"),
+            event.next_state,
+            event.transition_source,
+            event.reason.as_deref().unwrap_or("-")
+        );
+    }
 }
 
 pub fn print_exchange_reconciliation_result(result: &ExchangeReconciliationResult) {

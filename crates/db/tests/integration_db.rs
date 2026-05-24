@@ -162,10 +162,12 @@ fn sample_exchange_testnet_order_record() -> ExchangeTestnetOrderRecord {
         requested_notional: None,
         limit_price: Some(Decimal::new(100_000, 0)),
         status: "NEW".to_string(),
+        execution_state: "NEW".to_string(),
         ack_payload: Some(json!({"status":"NEW"})),
         latest_status_payload: Some(json!({"status":"NEW"})),
         risk_decision_id: None,
         created_by: None,
+        last_transition_at: Some(fixed_time()),
         created_at: fixed_time(),
         updated_at: fixed_time(),
     }
@@ -712,7 +714,9 @@ async fn private_stream_state_updates_and_testnet_order_mapping_stays_isolated()
         &order.client_order_id,
         order.exchange_order_id.as_deref(),
         "FILLED",
+        "FILLED",
         &json!({"source":"private_stream"}),
+        Some(fixed_time()),
     )
     .await
     .expect("testnet order should update")

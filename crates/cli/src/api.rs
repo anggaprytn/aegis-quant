@@ -703,6 +703,17 @@ impl ApiClient {
             .await
     }
 
+    pub async fn exchange_testnet_order_lifecycle(
+        &self,
+        client_order_id: &str,
+    ) -> Result<ExchangeTestnetOrderLifecycleResponse, ApiClientError> {
+        self.get(
+            &format!("/exchange/testnet/orders/{client_order_id}/lifecycle"),
+            &[],
+        )
+        .await
+    }
+
     pub async fn exchange_testnet_order_submit(
         &self,
         request: &ExchangeTestnetOrderSubmitRequest,
@@ -1361,6 +1372,8 @@ pub struct ExchangeTestnetOrderRecord {
     pub requested_notional: Option<String>,
     pub limit_price: Option<String>,
     pub status: String,
+    pub execution_state: String,
+    pub last_transition_at: Option<DateTime<Utc>>,
     pub ack_payload: Option<Value>,
     pub latest_status_payload: Option<Value>,
     pub risk_decision_id: Option<Uuid>,
@@ -1372,6 +1385,25 @@ pub struct ExchangeTestnetOrderRecord {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExchangeTestnetOrdersResponse {
     pub orders: Vec<ExchangeTestnetOrderRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetOrderLifecycleEventRecord {
+    pub previous_state: Option<String>,
+    pub next_state: String,
+    pub transition_source: String,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ExchangeTestnetOrderLifecycleResponse {
+    pub client_order_id: String,
+    pub current_state: String,
+    pub events: Vec<ExchangeTestnetOrderLifecycleEventRecord>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
