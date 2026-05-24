@@ -36,6 +36,7 @@ demo:
 	./scripts/demo-v0.1.sh
 
 compose-up:
+	docker compose -f $(COMPOSE_FILE) run --rm migrate
 	docker compose -f $(COMPOSE_FILE) up -d postgres api
 
 compose-down:

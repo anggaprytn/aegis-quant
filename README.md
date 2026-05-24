@@ -119,20 +119,22 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 
 1. Copy `.env.example` to `.env`.
 2. Review `.env` and set a real local `AEGIS_JWT_SECRET`.
-3. Start core services:
+3. Apply database migrations:
+   `docker compose -f infra/docker-compose.yml --env-file .env run --rm migrate`
+4. Start core services:
    `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres api`
-4. Bootstrap the owner:
+5. Bootstrap the owner:
    `curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner`
-5. Log in:
+6. Log in:
    `cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"`
-6. Optional dashboard:
+7. Optional dashboard:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
    This Compose profile builds and runs the dashboard as a production Next.js container for VPS/deployed usage.
-7. Optional market ingest:
+8. Optional market ingest:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
-8. Optional shadow runner:
+9. Optional shadow runner:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
-9. Optional Prometheus:
+10. Optional Prometheus:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
 
 Local dashboard auth note:
@@ -142,6 +144,9 @@ Local dashboard auth note:
 
 Core API + DB:
 `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres api`
+
+Migrations:
+`docker compose -f infra/docker-compose.yml --env-file .env run --rm migrate`
 
 Dashboard:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
@@ -159,6 +164,21 @@ Shadow runner:
 
 Prometheus:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
+
+## Deploy
+
+For VPS or any fresh environment, run migrations before starting API or DB-backed workers:
+
+```bash
+docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
+docker compose -f infra/docker-compose.yml --env-file .env run --rm migrate
+docker compose -f infra/docker-compose.yml --env-file .env up -d api
+docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
+docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
+docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
+```
+
+`api`, `market-ingest`, and `testnet-shadow-runner` also depend on the `migrate` service completing successfully, so Compose will not start them against an unmigrated database.
 
 Optional workers:
 

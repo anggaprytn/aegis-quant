@@ -21,6 +21,21 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    image: ghcr.io/kawamuray/sqlx-cli:0.8.6
+    container_name: aegis-quant-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis_quant
+    volumes:
+      - ../crates/db/migrations:/migrations:ro
+    entrypoint: ["sqlx"]
+    command: ["migrate", "run", "--source", "/migrations"]
+
   api:
     build:
       context: ..
@@ -30,6 +45,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
@@ -47,6 +64,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
@@ -63,6 +82,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
