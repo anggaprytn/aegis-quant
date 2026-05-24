@@ -1,5 +1,6 @@
 use aegis_core::PaperTradingPipelineRequest;
 use anyhow::Context;
+use chrono::Utc;
 use clap::Parser;
 use cli::api::{
     build_backtest_request, build_candle_backfill_request, build_pipeline_request,
@@ -11,8 +12,14 @@ use cli::cli::{
     PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
     StrategyConfigCommands, RESUME_CONFIRMATION_TEXT,
 };
-use cli::config::{clear_token_file, save_token_file, CliConfig};
+use cli::config::{
+    clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
+};
 use cli::output;
+
+fn login_required_message() -> &'static str {
+    "login required: run `aegis auth login --email <EMAIL> --password <PASSWORD>` or set AEGIS_ACCESS_TOKEN"
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,9 +28,15 @@ async fn main() -> anyhow::Result<()> {
 
     let config = CliConfig::from_env().context("failed to load CLI config")?;
     let client = config
-        .access_token
+        .auth
         .clone()
-        .map(|token| ApiClient::new(config.api_base_url.clone()).with_bearer_token(token))
+        .map(|session| {
+            ApiClient::new(config.api_base_url.clone()).with_auth_session(
+                session,
+                config.token_path.clone(),
+                !config.auth_from_env,
+            )
+        })
         .unwrap_or_else(|| ApiClient::new(config.api_base_url.clone()));
 
     match cli.command {
@@ -32,7 +45,35 @@ async fn main() -> anyhow::Result<()> {
                 let response = ApiClient::new(config.api_base_url.clone())
                     .auth_login(&args.email, &args.password)
                     .await?;
-                save_token_file(&config.token_path, &response.access_token)?;
+                let refresh_token = response
+                    .refresh_token
+                    .clone()
+                    .context("login response did not include a CLI refresh token")?;
+                let session = StoredAuthSession {
+                    access_token: response.access_token.clone(),
+                    refresh_token: Some(refresh_token),
+                    expires_at: Some(response.expires_at),
+                    user: Some(StoredUserSummary::from(&response.user)),
+                    saved_at: Utc::now(),
+                };
+                save_token_file(&config.token_path, &session)?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_auth_login(&response.user);
+                }
+            }
+            AuthCommands::Refresh => {
+                if config.auth.is_none() {
+                    anyhow::bail!("{}", login_required_message());
+                }
+                let response = client.auth_refresh().await.map_err(|err| {
+                    if err.is_login_required() {
+                        anyhow::anyhow!("{}", err)
+                    } else {
+                        anyhow::Error::from(err)
+                    }
+                })?;
                 if cli.json {
                     output::print_json(&response)?;
                 } else {
@@ -40,10 +81,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             AuthCommands::Me => {
-                if config.access_token.is_none() {
-                    anyhow::bail!(
-                        "not authenticated; run `aegis auth login --email <EMAIL> --password <PASSWORD>` or set AEGIS_ACCESS_TOKEN"
-                    );
+                if config.auth.is_none() {
+                    anyhow::bail!("{}", login_required_message());
                 }
                 let response = client.auth_me().await?;
                 if cli.json {
@@ -53,10 +92,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             AuthCommands::Logout => {
-                if config.access_token.is_none() {
-                    anyhow::bail!(
-                        "not authenticated; run `aegis auth login --email <EMAIL> --password <PASSWORD>` or set AEGIS_ACCESS_TOKEN"
-                    );
+                if config.auth.is_none() {
+                    anyhow::bail!("{}", login_required_message());
                 }
                 let response = client.auth_logout().await?;
                 clear_token_file(&config.token_path)?;

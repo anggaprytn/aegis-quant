@@ -65,6 +65,7 @@ pub enum Commands {
 #[derive(Debug, Subcommand)]
 pub enum AuthCommands {
     Login(AuthLoginArgs),
+    Refresh,
     Me,
     Logout,
 }

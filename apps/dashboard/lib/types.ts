@@ -35,6 +35,13 @@ export type AuthLogoutResponse = {
   logged_out: boolean;
 };
 
+export type AuthRefreshResponse = {
+  user: AuthUser;
+  access_token: string;
+  expires_at: string;
+  refresh_token?: string;
+};
+
 export type HealthResponse = {
   status: string;
   service: string;

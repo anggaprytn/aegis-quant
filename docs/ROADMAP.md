@@ -25,6 +25,7 @@
 - Completed: Prometheus-compatible telemetry, `/metrics`, CLI metrics fetch, and dashboard telemetry inspection
 - Completed: strategy config validation, version history, audit logging, dry-run evaluation, and operator-facing config controls in API/CLI/dashboard
 - Completed: local operator auth MVP with OWNER/OPERATOR/VIEWER roles, dashboard login, CLI bearer login flow, DB-backed sessions, refresh rotation, and protected mutating endpoints
+- Completed: DB-backed auth persistence/authorization coverage plus CLI refresh persistence, explicit `auth refresh`, and one-shot automatic refresh retry on `401`
 - Current focus: tighten operator visibility, reconciliation, and truthful paper-state inspection before any live execution surface area
 
 ## Next implementation steps

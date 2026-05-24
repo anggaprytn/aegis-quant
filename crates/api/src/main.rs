@@ -97,6 +97,8 @@ const DEFAULT_BACKFILL_RUNS_LIMIT: i64 = 20;
 const MAX_BACKFILL_RUNS_LIMIT: i64 = 200;
 const DEFAULT_PAPER_LIMIT: i64 = 50;
 const MAX_PAPER_LIMIT: i64 = 500;
+const CLI_AUTH_MODE_HEADER: &str = "x-aegis-auth-mode";
+const CLI_AUTH_MODE_VALUE: &str = "cli";
 
 #[derive(Clone)]
 struct AppState {
@@ -206,6 +208,11 @@ impl AppConfig {
 struct RequestContext {
     request_id: String,
     correlation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthRefreshRequest {
+    refresh_token: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1383,6 +1390,14 @@ fn refresh_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
         })
 }
 
+fn prefers_cli_auth_response(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(CLI_AUTH_MODE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.eq_ignore_ascii_case(CLI_AUTH_MODE_VALUE))
+        .unwrap_or(false)
+}
+
 fn user_agent(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get(USER_AGENT)
@@ -2231,6 +2246,7 @@ async fn login(
 ) -> impl IntoResponse {
     let request = request_context(request);
     let correlation_id = parse_correlation_id(&request.correlation_id);
+    let cli_auth = prefers_cli_auth_response(&headers);
     let email = payload.email.trim().to_ascii_lowercase();
     let user_agent = user_agent(&headers);
     let ip_address = request_ip(&headers);
@@ -2377,6 +2393,7 @@ async fn login(
             user,
             access_token: access.token,
             expires_at: access.expires_at,
+            refresh_token: cli_auth.then_some(refresh_token.raw.clone()),
         }),
     )
         .into_response();
@@ -2443,10 +2460,16 @@ async fn refresh(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
     headers: axum::http::HeaderMap,
+    payload: Option<Json<AuthRefreshRequest>>,
 ) -> impl IntoResponse {
     let request = request_context(request);
     let correlation_id = parse_correlation_id(&request.correlation_id);
-    let Some(refresh_token_raw) = refresh_cookie(&headers) else {
+    let cli_auth = prefers_cli_auth_response(&headers);
+    let refresh_token_from_body = payload
+        .map(|Json(payload)| payload.refresh_token)
+        .filter(|value| !value.trim().is_empty());
+    let refresh_token_raw = refresh_cookie(&headers).or(refresh_token_from_body);
+    let Some(refresh_token_raw) = refresh_token_raw else {
         return unauthorized_response(
             request,
             "missing_refresh_token",
@@ -2595,6 +2618,7 @@ async fn refresh(
             user,
             access_token: access.token,
             expires_at: access.expires_at,
+            refresh_token: cli_auth.then_some(next_refresh_token.raw.clone()),
         }),
     )
         .into_response();
@@ -6527,26 +6551,40 @@ async fn evaluate_strategy_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_recent_events_limit, bounded_risk_decisions_limit, is_valid_resume_confirmation,
-        metrics, normalize_route_label, order_view, parse_correlation_id_filter,
-        parse_order_intent, parse_risk_check_context, request_context_middleware,
-        risk_decision_not_found_error, AppConfig, AppState, RequestContext, StrategyRuntimeConfig,
+        bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
+        is_valid_resume_confirmation, login, logout, metrics, normalize_route_label, order_view,
+        parse_correlation_id_filter, parse_order_intent, parse_risk_check_context, refresh,
+        request_context_middleware, risk_decision_not_found_error, AppConfig, AppState,
+        RequestContext, StrategyRuntimeConfig, CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
         DEFAULT_RECENT_EVENTS_LIMIT, DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT,
         MAX_RISK_DECISIONS_LIMIT,
     };
-    use crate::auth::AuthConfig;
+    use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
-    use aegis_core::{CandleInterval, MarketDataSource, MarketMode, Side, Symbol};
+    use aegis_core::{
+        AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
+        CandleInterval, MarketDataSource, MarketMode, Side, Symbol, UserRole, UserStatus,
+    };
     use axum::{
         body::Body,
-        http::{Request, StatusCode},
-        routing::get,
-        Router,
+        http::{
+            header::{AUTHORIZATION, SET_COOKIE},
+            Request, StatusCode,
+        },
+        middleware,
+        routing::{get, post},
+        Json, Router,
     };
-    use chrono::Utc;
-    use db::OrderRecord;
+    use chrono::{TimeZone, Utc};
+    use db::{
+        count_users, get_session_by_id, get_user_by_email, insert_user, test_support::TestDatabase,
+        OrderRecord, PgPool,
+    };
     use market_ingest::MarketIngestConfig;
     use rust_decimal::Decimal;
+    use serde::de::DeserializeOwned;
+    use serde_json::{json, Value};
+    use sqlx::Row;
     use telemetry::telemetry;
     use tower::util::ServiceExt;
     use uuid::Uuid;
@@ -6781,6 +6819,515 @@ mod tests {
         let encoded = telemetry().encode().expect("metrics encode");
         assert!(encoded.contains("path=\"/orders/:id\""));
         assert!(!encoded.contains("path=\"/orders/123e4567-e89b-12d3-a456-426614174000\""));
+    }
+
+    fn auth_test_state(
+        pool: PgPool,
+        bootstrap_email: Option<&str>,
+        bootstrap_password: Option<&str>,
+    ) -> AppState {
+        AppState {
+            config: AppConfig {
+                app_name: "aegis-test-api".to_string(),
+                environment: "test".to_string(),
+                bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
+                database_url: "postgres://unused".to_string(),
+                database_max_connections: 5,
+            },
+            auth_config: AuthConfig {
+                disabled: false,
+                jwt_secret: Some("test-secret".to_string()),
+                access_token_ttl: std::time::Duration::from_secs(900),
+                refresh_token_ttl: std::time::Duration::from_secs(86_400),
+                cookie_secure: false,
+                protect_metrics: false,
+                bootstrap_owner_email: bootstrap_email.map(|value| value.to_string()),
+                bootstrap_owner_password: bootstrap_password.map(|value| value.to_string()),
+            },
+            db_pool: pool,
+            started_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            market_mode: MarketMode::Paper,
+            market_config: MarketIngestConfig {
+                exchange: MarketDataSource::Binance,
+                symbols: vec![Symbol::new("BTCUSDT").expect("symbol")],
+                stale_threshold: std::time::Duration::from_secs(10),
+                binance_ws_base_url: "wss://example.invalid".to_string(),
+                binance_rest_base_url: "https://example.invalid".to_string(),
+            },
+            strategy_runtime: StrategyRuntimeConfig {
+                default_symbols: vec![Symbol::new("BTCUSDT").expect("symbol")],
+                default_timeframe: CandleInterval::OneMinute,
+                default_notional: Decimal::new(100_000, 0),
+                momentum_lookback_candles: 3,
+                breakout_lookback_candles: 20,
+            },
+        }
+    }
+
+    fn auth_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/auth/bootstrap-owner", post(bootstrap_owner))
+            .route("/auth/login", post(login))
+            .route("/auth/refresh", post(refresh))
+            .route("/auth/logout", post(logout))
+            .route(
+                "/strategy/:id/enable",
+                post(|| async { (StatusCode::OK, Json(json!({ "ok": true }))) }),
+            )
+            .route(
+                "/risk/resume",
+                post(|| async { (StatusCode::OK, Json(json!({ "ok": true }))) }),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
+    async fn response_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body bytes");
+        serde_json::from_slice(&body).expect("json body")
+    }
+
+    fn cli_request(method: &str, uri: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header(CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE)
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    }
+
+    fn bearer_request(method: &str, uri: &str, token: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    }
+
+    fn extract_set_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
+        headers
+            .get(SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_string())
+    }
+
+    async fn login_cli(app: &Router, email: &str, password: &str) -> (AuthLoginResponse, String) {
+        let response = app
+            .clone()
+            .oneshot(cli_request(
+                "POST",
+                "/auth/login",
+                json!({ "email": email, "password": password }),
+            ))
+            .await
+            .expect("login response");
+        let cookie = extract_set_cookie(response.headers()).expect("refresh cookie");
+        let payload = response_json::<AuthLoginResponse>(response).await;
+        (payload, cookie)
+    }
+
+    async fn insert_test_user(pool: &PgPool, email: &str, password: &str, role: UserRole) {
+        let password_hash = hash_password(password).expect("password hash");
+        insert_user(
+            pool,
+            Uuid::new_v4(),
+            email,
+            &password_hash,
+            role,
+            UserStatus::Active,
+        )
+        .await
+        .expect("user insert");
+    }
+
+    async fn count_system_events(pool: &PgPool, event_type: &str) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM system_events WHERE event_type = $1")
+            .bind(event_type)
+            .fetch_one(pool)
+            .await
+            .expect("system event count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_audit_logs(pool: &PgPool, action: &str) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM audit_logs WHERE action = $1")
+            .bind(action)
+            .fetch_one(pool)
+            .await
+            .expect("audit log count")
+            .get::<i64, _>("count")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn bootstrap_owner_persists_user_and_audit() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(
+            test_db.pool.clone(),
+            Some("owner@example.com"),
+            Some("replace-with-a-12-char-min-password"),
+        );
+        let app = auth_test_router(state);
+
+        let response = app
+            .oneshot(cli_request("POST", "/auth/bootstrap-owner", json!({})))
+            .await
+            .expect("bootstrap response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let payload = response_json::<AuthUserResponse>(response).await;
+
+        let user = get_user_by_email(&test_db.pool, "owner@example.com")
+            .await
+            .expect("user query")
+            .expect("owner should exist");
+        assert_eq!(payload.user.id, user.id);
+        assert_eq!(user.role, UserRole::Owner.as_str());
+        assert_ne!(user.password_hash, "replace-with-a-12-char-min-password");
+        assert_eq!(
+            count_system_events(&test_db.pool, "auth.owner_bootstrapped").await,
+            1
+        );
+        assert_eq!(
+            count_audit_logs(&test_db.pool, "auth.owner_bootstrapped").await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn bootstrap_owner_only_allowed_once() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(
+            test_db.pool.clone(),
+            Some("owner@example.com"),
+            Some("replace-with-a-12-char-min-password"),
+        );
+        let app = auth_test_router(state);
+
+        let first = app
+            .clone()
+            .oneshot(cli_request("POST", "/auth/bootstrap-owner", json!({})))
+            .await
+            .expect("first bootstrap");
+        assert_eq!(first.status(), StatusCode::CREATED);
+
+        let second = app
+            .oneshot(cli_request("POST", "/auth/bootstrap-owner", json!({})))
+            .await
+            .expect("second bootstrap");
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        assert_eq!(count_users(&test_db.pool).await.expect("user count"), 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn login_creates_session_and_updates_last_login() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(
+            test_db.pool.clone(),
+            Some("owner@example.com"),
+            Some("replace-with-a-12-char-min-password"),
+        );
+        let app = auth_test_router(state.clone());
+        let _ = app
+            .clone()
+            .oneshot(cli_request("POST", "/auth/bootstrap-owner", json!({})))
+            .await
+            .expect("bootstrap response");
+
+        let (payload, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let claims = decode_access_token(&state.auth_config, &payload.access_token)
+            .expect("access token claims");
+        let session_id = Uuid::parse_str(&claims.session_id).expect("session id");
+        let session = get_session_by_id(&test_db.pool, session_id)
+            .await
+            .expect("session query")
+            .expect("session should exist");
+        let user = get_user_by_email(&test_db.pool, "owner@example.com")
+            .await
+            .expect("user query")
+            .expect("owner should exist");
+
+        assert!(payload.refresh_token.is_some());
+        assert_eq!(session.user_id, user.id);
+        assert_ne!(
+            session.refresh_token_hash,
+            payload.refresh_token.expect("refresh token")
+        );
+        assert!(user.last_login_at.is_some());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn login_rejects_wrong_password_without_session() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(
+            test_db.pool.clone(),
+            Some("owner@example.com"),
+            Some("replace-with-a-12-char-min-password"),
+        );
+        let app = auth_test_router(state);
+        let _ = app
+            .clone()
+            .oneshot(cli_request("POST", "/auth/bootstrap-owner", json!({})))
+            .await
+            .expect("bootstrap response");
+
+        let response = app
+            .oneshot(cli_request(
+                "POST",
+                "/auth/login",
+                json!({ "email": "owner@example.com", "password": "wrong-password-value" }),
+            ))
+            .await
+            .expect("login response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            count_system_events(&test_db.pool, "auth.login.failed").await,
+            1
+        );
+        assert_eq!(
+            sqlx::query("SELECT COUNT(*) AS count FROM sessions")
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("session count")
+                .get::<i64, _>("count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn refresh_rotates_session_and_issues_new_access_token() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(
+            test_db.pool.clone(),
+            Some("owner@example.com"),
+            Some("replace-with-a-12-char-min-password"),
+        );
+        let app = auth_test_router(state.clone());
+        let _ = app
+            .clone()
+            .oneshot(cli_request("POST", "/auth/bootstrap-owner", json!({})))
+            .await
+            .expect("bootstrap response");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let original_claims = decode_access_token(&state.auth_config, &login_payload.access_token)
+            .expect("original claims");
+        let original_session = get_session_by_id(
+            &test_db.pool,
+            Uuid::parse_str(&original_claims.session_id).expect("session id"),
+        )
+        .await
+        .expect("session query")
+        .expect("session exists");
+
+        let refresh_response = app
+            .clone()
+            .oneshot(cli_request(
+                "POST",
+                "/auth/refresh",
+                json!({ "refresh_token": login_payload.refresh_token.clone().expect("refresh token") }),
+            ))
+            .await
+            .expect("refresh response");
+        assert_eq!(refresh_response.status(), StatusCode::OK);
+        let refreshed = response_json::<AuthRefreshResponse>(refresh_response).await;
+        let refreshed_claims = decode_access_token(&state.auth_config, &refreshed.access_token)
+            .expect("refreshed claims");
+        let rotated_session = get_session_by_id(
+            &test_db.pool,
+            Uuid::parse_str(&refreshed_claims.session_id).expect("session id"),
+        )
+        .await
+        .expect("session query")
+        .expect("rotated session exists");
+
+        assert_eq!(original_session.id, rotated_session.id);
+        assert_ne!(
+            original_session.refresh_token_hash,
+            rotated_session.refresh_token_hash
+        );
+        assert_ne!(
+            login_payload.refresh_token.expect("original refresh"),
+            refreshed.refresh_token.expect("new refresh")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn logout_revokes_session_and_blocks_refresh() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(
+            test_db.pool.clone(),
+            Some("owner@example.com"),
+            Some("replace-with-a-12-char-min-password"),
+        );
+        let app = auth_test_router(state.clone());
+        let _ = app
+            .clone()
+            .oneshot(cli_request("POST", "/auth/bootstrap-owner", json!({})))
+            .await
+            .expect("bootstrap response");
+
+        let (login_payload, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let claims =
+            decode_access_token(&state.auth_config, &login_payload.access_token).expect("claims");
+        let session_id = Uuid::parse_str(&claims.session_id).expect("session id");
+
+        let logout_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/auth/logout",
+                &login_payload.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("logout response");
+        assert_eq!(logout_response.status(), StatusCode::OK);
+        let _ = response_json::<AuthLogoutResponse>(logout_response).await;
+
+        let session = get_session_by_id(&test_db.pool, session_id)
+            .await
+            .expect("session query")
+            .expect("session exists");
+        assert!(session.revoked_at.is_some());
+
+        let refresh_response = app
+            .oneshot(cli_request(
+                "POST",
+                "/auth/refresh",
+                json!({ "refresh_token": login_payload.refresh_token.expect("refresh token") }),
+            ))
+            .await
+            .expect("refresh response");
+        assert_eq!(refresh_response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn protected_mutating_endpoint_rejects_unauthenticated() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = auth_test_router(auth_test_state(test_db.pool.clone(), None, None));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/risk/resume")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({}).to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn role_authorization_enforces_viewer_operator_and_owner() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = auth_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "viewer@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+
+        let (viewer_login, _) = login_cli(
+            &app,
+            "viewer@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let viewer_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/strategy/momentum_v1/enable",
+                &viewer_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("viewer response");
+        assert_eq!(viewer_response.status(), StatusCode::FORBIDDEN);
+
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let operator_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/risk/resume",
+                &operator_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("operator response");
+        assert_eq!(operator_response.status(), StatusCode::FORBIDDEN);
+
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let owner_response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/risk/resume",
+                &owner_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("owner response");
+        assert_eq!(owner_response.status(), StatusCode::OK);
     }
 
     fn test_app_state() -> AppState {

@@ -2,6 +2,7 @@ import type {
   AuthLoginRequest,
   AuthLoginResponse,
   AuthLogoutResponse,
+  AuthRefreshResponse,
   AuthUserResponse,
   ApiError,
   BacktestEquityCurveResponse,
@@ -84,21 +85,52 @@ function withQuery(path: string, query?: Record<string, string | number | undefi
   return url.toString();
 }
 
+async function refreshAccessToken(): Promise<boolean> {
+  try {
+    const response = await fetch(withQuery("/auth/refresh"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      credentials: "include",
+      cache: "no-store",
+      body: "{}",
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const payload = (await response.json()) as AuthRefreshResponse;
+    api.setAccessToken(payload.access_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
   query?: Record<string, string | number | undefined>,
 ): Promise<T> {
-  const response = await fetch(withQuery(path, query), {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
-      ...(init?.headers ?? {}),
-    },
-    credentials: "include",
-    cache: "no-store",
-  });
+  const send = () =>
+    fetch(withQuery(path, query), {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+      credentials: "include",
+      cache: "no-store",
+    });
+
+  let response = await send();
+  if (response.status === 401 && path !== "/auth/login" && path !== "/auth/refresh") {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      response = await send();
+    }
+  }
 
   if (!response.ok) {
     let payload: ApiError | undefined;
@@ -122,15 +154,24 @@ async function requestText(
   init?: RequestInit,
   query?: Record<string, string | number | undefined>,
 ): Promise<string> {
-  const response = await fetch(withQuery(path, query), {
-    ...init,
-    headers: {
-      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
-      ...(init?.headers ?? {}),
-    },
-    credentials: "include",
-    cache: "no-store",
-  });
+  const send = () =>
+    fetch(withQuery(path, query), {
+      ...init,
+      headers: {
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+      credentials: "include",
+      cache: "no-store",
+    });
+
+  let response = await send();
+  if (response.status === 401 && path !== "/auth/refresh") {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      response = await send();
+    }
+  }
 
   if (!response.ok) {
     throw new HttpError(response.status, `Request failed with status ${response.status}`);

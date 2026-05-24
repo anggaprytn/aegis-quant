@@ -1,6 +1,7 @@
+use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
-    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthUserResponse, BacktestRequest,
-    CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
+    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
+    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
     PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
     RiskConfigVersion, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
@@ -12,7 +13,14 @@ use reqwest::{Method, StatusCode, Url};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use uuid::Uuid;
+
+const CLI_AUTH_MODE_HEADER: &str = "x-aegis-auth-mode";
+const CLI_AUTH_MODE_VALUE: &str = "cli";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiClientError {
@@ -25,13 +33,28 @@ pub enum ApiClientError {
         message: String,
         body: Option<String>,
     },
+    #[error("{message}")]
+    LoginRequired { message: String },
+}
+
+impl ApiClientError {
+    pub fn is_login_required(&self) -> bool {
+        matches!(self, Self::LoginRequired { .. })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClientAuthState {
+    session: StoredAuthSession,
+    token_path: PathBuf,
+    persist_session: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     base_url: Url,
     http: reqwest::Client,
-    auth_header: Option<String>,
+    auth: Arc<Mutex<Option<ClientAuthState>>>,
 }
 
 impl ApiClient {
@@ -39,12 +62,21 @@ impl ApiClient {
         Self {
             base_url,
             http: reqwest::Client::new(),
-            auth_header: None,
+            auth: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
-        self.auth_header = Some(format!("Bearer {}", token.into()));
+    pub fn with_auth_session(
+        mut self,
+        session: StoredAuthSession,
+        token_path: PathBuf,
+        persist_session: bool,
+    ) -> Self {
+        self.auth = Arc::new(Mutex::new(Some(ClientAuthState {
+            session,
+            token_path,
+            persist_session,
+        })));
         self
     }
 
@@ -94,6 +126,192 @@ impl ApiClient {
             })
     }
 
+    fn current_session(&self) -> Result<Option<StoredAuthSession>, ApiClientError> {
+        self.auth
+            .lock()
+            .map(|guard| guard.as_ref().map(|state| state.session.clone()))
+            .map_err(|err| ApiClientError::Transport {
+                endpoint: "auth/session".to_string(),
+                message: format!("failed to lock auth session: {err}"),
+            })
+    }
+
+    fn current_auth_header(&self) -> Result<Option<String>, ApiClientError> {
+        Ok(self
+            .current_session()?
+            .map(|session| format!("Bearer {}", session.access_token)))
+    }
+
+    fn update_session(&self, session: StoredAuthSession) -> Result<(), ApiClientError> {
+        let state = {
+            let mut guard = self.auth.lock().map_err(|err| ApiClientError::Transport {
+                endpoint: "auth/session".to_string(),
+                message: format!("failed to lock auth session: {err}"),
+            })?;
+            if let Some(existing) = guard.as_mut() {
+                existing.session = session.clone();
+                Some(existing.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(state) = state {
+            if state.persist_session {
+                save_token_file(&state.token_path, &state.session).map_err(|err| {
+                    ApiClientError::Transport {
+                        endpoint: "auth/session".to_string(),
+                        message: format!("failed to persist refreshed session: {err}"),
+                    }
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn send_request(
+        &self,
+        method: Method,
+        endpoint: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        cli_auth: bool,
+    ) -> Result<reqwest::Response, ApiClientError> {
+        let mut url = self.endpoint_url(endpoint)?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            for (key, value) in query {
+                if !value.is_empty() {
+                    pairs.append_pair(key, value);
+                }
+            }
+        }
+
+        let mut request = self.http.request(method, url);
+        if body.is_some() {
+            request = request.header("content-type", "application/json");
+        }
+        if let Some(auth_header) = self.current_auth_header()? {
+            request = request.header("authorization", auth_header);
+        }
+        if cli_auth {
+            request = request.header(CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE);
+        }
+        if let Some(payload) = body {
+            request = request.json(payload);
+        }
+
+        request
+            .send()
+            .await
+            .map_err(|err| ApiClientError::Transport {
+                endpoint: endpoint.to_string(),
+                message: err.to_string(),
+            })
+    }
+
+    async fn read_response(
+        &self,
+        endpoint: &str,
+        response: reqwest::Response,
+    ) -> Result<(StatusCode, Vec<u8>), ApiClientError> {
+        let status = response.status();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|err| ApiClientError::Transport {
+                endpoint: endpoint.to_string(),
+                message: err.to_string(),
+            })?;
+        Ok((status, bytes.to_vec()))
+    }
+
+    fn http_error(endpoint: &str, status: StatusCode, bytes: &[u8]) -> ApiClientError {
+        let safe_body = String::from_utf8_lossy(bytes).trim().to_string();
+        let message = if safe_body.is_empty() {
+            format!("request failed with status {status}")
+        } else {
+            safe_body.clone()
+        };
+        ApiClientError::Http {
+            endpoint: endpoint.to_string(),
+            status,
+            message,
+            body: if safe_body.is_empty() {
+                None
+            } else {
+                Some(safe_body)
+            },
+        }
+    }
+
+    fn should_auto_refresh(&self, endpoint: &str) -> bool {
+        endpoint != "/auth/login" && endpoint != "/auth/refresh"
+    }
+
+    fn stored_session_from_auth(
+        &self,
+        user: &aegis_core::User,
+        access_token: String,
+        refresh_token: Option<String>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<StoredAuthSession, ApiClientError> {
+        let refresh_token = refresh_token.ok_or_else(|| ApiClientError::Transport {
+            endpoint: "auth/refresh".to_string(),
+            message: "server did not return a refresh token for CLI auth".to_string(),
+        })?;
+
+        Ok(StoredAuthSession {
+            access_token,
+            refresh_token: Some(refresh_token),
+            expires_at,
+            user: Some(StoredUserSummary::from(user)),
+            saved_at: Utc::now(),
+        })
+    }
+
+    async fn refresh_session(&self) -> Result<AuthRefreshResponse, ApiClientError> {
+        let refresh_token = self
+            .current_session()?
+            .and_then(|session| session.refresh_token.clone())
+            .ok_or_else(|| ApiClientError::LoginRequired {
+                message: "login required: run `aegis auth login` to create a refreshable session"
+                    .to_string(),
+            })?;
+        let payload = build_auth_refresh_request(&refresh_token);
+        let payload = serde_json::to_value(&payload).map_err(|err| ApiClientError::Transport {
+            endpoint: "/auth/refresh".to_string(),
+            message: format!("failed to encode refresh request: {err}"),
+        })?;
+        let response = self
+            .send_request(Method::POST, "/auth/refresh", &[], Some(&payload), true)
+            .await?;
+        let (status, bytes) = self.read_response("/auth/refresh", response).await?;
+        if !status.is_success() {
+            return Err(ApiClientError::LoginRequired {
+                message: "login required: stored session could not be refreshed; run `aegis auth login` again".to_string(),
+            });
+        }
+        let refreshed: AuthRefreshResponse =
+            serde_json::from_slice(&bytes).map_err(|err| ApiClientError::Transport {
+                endpoint: "/auth/refresh".to_string(),
+                message: format!("failed to parse JSON response: {err}"),
+            })?;
+        let session = self.stored_session_from_auth(
+            &refreshed.user,
+            refreshed.access_token.clone(),
+            refreshed.refresh_token.clone(),
+            Some(refreshed.expires_at),
+        )?;
+        self.update_session(session)?;
+        Ok(refreshed)
+    }
+
+    async fn try_auto_refresh(&self) -> Result<(), ApiClientError> {
+        self.refresh_session().await.map(|_| ())
+    }
+
     async fn request<T, B>(
         &self,
         method: Method,
@@ -105,58 +323,32 @@ impl ApiClient {
         T: for<'de> Deserialize<'de>,
         B: Serialize + ?Sized,
     {
-        let mut url = self.endpoint_url(endpoint)?;
-        {
-            let mut pairs = url.query_pairs_mut();
-            for (key, value) in query {
-                if !value.is_empty() {
-                    pairs.append_pair(key, value);
-                }
+        let body = body.map(serde_json::to_value).transpose().map_err(|err| {
+            ApiClientError::Transport {
+                endpoint: endpoint.to_string(),
+                message: format!("failed to encode request body: {err}"),
             }
-        }
-
-        let mut request = self.http.request(method, url.clone());
-        request = request.header("content-type", "application/json");
-        if let Some(auth_header) = &self.auth_header {
-            request = request.header("authorization", auth_header);
-        }
-        if let Some(payload) = body {
-            request = request.json(payload);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|err| ApiClientError::Transport {
+        })?;
+        let response = self
+            .send_request(method.clone(), endpoint, query, body.as_ref(), false)
+            .await?;
+        let (status, bytes) = self.read_response(endpoint, response).await?;
+        if status == StatusCode::UNAUTHORIZED && self.should_auto_refresh(endpoint) {
+            self.try_auto_refresh().await?;
+            let response = self
+                .send_request(method, endpoint, query, body.as_ref(), false)
+                .await?;
+            let (status, bytes) = self.read_response(endpoint, response).await?;
+            if !status.is_success() {
+                return Err(Self::http_error(endpoint, status, &bytes));
+            }
+            return serde_json::from_slice(&bytes).map_err(|err| ApiClientError::Transport {
                 endpoint: endpoint.to_string(),
-                message: err.to_string(),
-            })?;
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| ApiClientError::Transport {
-                endpoint: endpoint.to_string(),
-                message: err.to_string(),
-            })?;
-
-        if !status.is_success() {
-            let safe_body = String::from_utf8_lossy(&bytes).trim().to_string();
-            let message = if safe_body.is_empty() {
-                format!("request failed with status {status}")
-            } else {
-                safe_body.clone()
-            };
-            return Err(ApiClientError::Http {
-                endpoint: endpoint.to_string(),
-                status,
-                message,
-                body: if safe_body.is_empty() {
-                    None
-                } else {
-                    Some(safe_body)
-                },
+                message: format!("failed to parse JSON response: {err}"),
             });
+        }
+        if !status.is_success() {
+            return Err(Self::http_error(endpoint, status, &bytes));
         }
 
         serde_json::from_slice(&bytes).map_err(|err| ApiClientError::Transport {
@@ -171,54 +363,23 @@ impl ApiClient {
         endpoint: &str,
         query: &[(&str, String)],
     ) -> Result<String, ApiClientError> {
-        let mut url = self.endpoint_url(endpoint)?;
-        {
-            let mut pairs = url.query_pairs_mut();
-            for (key, value) in query {
-                if !value.is_empty() {
-                    pairs.append_pair(key, value);
-                }
+        let response = self
+            .send_request(method.clone(), endpoint, query, None, false)
+            .await?;
+        let (status, bytes) = self.read_response(endpoint, response).await?;
+        if status == StatusCode::UNAUTHORIZED && self.should_auto_refresh(endpoint) {
+            self.try_auto_refresh().await?;
+            let response = self
+                .send_request(method, endpoint, query, None, false)
+                .await?;
+            let (status, bytes) = self.read_response(endpoint, response).await?;
+            if !status.is_success() {
+                return Err(Self::http_error(endpoint, status, &bytes));
             }
+            return Ok(String::from_utf8_lossy(&bytes).into_owned());
         }
-
-        let mut request = self.http.request(method, url);
-        if let Some(auth_header) = &self.auth_header {
-            request = request.header("authorization", auth_header);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|err| ApiClientError::Transport {
-                endpoint: endpoint.to_string(),
-                message: err.to_string(),
-            })?;
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| ApiClientError::Transport {
-                endpoint: endpoint.to_string(),
-                message: err.to_string(),
-            })?;
-
         if !status.is_success() {
-            let safe_body = String::from_utf8_lossy(&bytes).trim().to_string();
-            let message = if safe_body.is_empty() {
-                format!("request failed with status {status}")
-            } else {
-                safe_body.clone()
-            };
-            return Err(ApiClientError::Http {
-                endpoint: endpoint.to_string(),
-                status,
-                message,
-                body: if safe_body.is_empty() {
-                    None
-                } else {
-                    Some(safe_body)
-                },
-            });
+            return Err(Self::http_error(endpoint, status, &bytes));
         }
 
         Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -233,14 +394,29 @@ impl ApiClient {
         email: &str,
         password: &str,
     ) -> Result<AuthLoginResponse, ApiClientError> {
-        self.post(
-            "/auth/login",
-            &AuthLoginRequest {
-                email: email.to_string(),
-                password: password.to_string(),
-            },
-        )
-        .await
+        let payload = serde_json::to_value(AuthLoginRequest {
+            email: email.to_string(),
+            password: password.to_string(),
+        })
+        .map_err(|err| ApiClientError::Transport {
+            endpoint: "/auth/login".to_string(),
+            message: format!("failed to encode login request: {err}"),
+        })?;
+        let response = self
+            .send_request(Method::POST, "/auth/login", &[], Some(&payload), true)
+            .await?;
+        let (status, bytes) = self.read_response("/auth/login", response).await?;
+        if !status.is_success() {
+            return Err(Self::http_error("/auth/login", status, &bytes));
+        }
+        serde_json::from_slice(&bytes).map_err(|err| ApiClientError::Transport {
+            endpoint: "/auth/login".to_string(),
+            message: format!("failed to parse JSON response: {err}"),
+        })
+    }
+
+    pub async fn auth_refresh(&self) -> Result<AuthRefreshResponse, ApiClientError> {
+        self.refresh_session().await
     }
 
     pub async fn auth_me(&self) -> Result<AuthUserResponse, ApiClientError> {
@@ -571,6 +747,11 @@ struct KillSwitchRequest {
 struct ResumeRequest {
     confirmation_text: String,
     reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthRefreshRequestPayload {
+    pub refresh_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1182,16 +1363,73 @@ pub fn build_candle_backfill_request(
     Ok(request)
 }
 
+pub fn build_auth_refresh_request(refresh_token: &str) -> AuthRefreshRequestPayload {
+    AuthRefreshRequestPayload {
+        refresh_token: refresh_token.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_backtest_request, build_candle_backfill_request, build_pipeline_request,
-        RecentEventsQuery, RiskDecisionsQuery,
+        build_auth_refresh_request, build_backtest_request, build_candle_backfill_request,
+        build_pipeline_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
     };
     use crate::cli::{BacktestRunArgs, MarketBackfillArgs, PipelineRunArgs};
+    use crate::config::{clear_token_file, load_token_file, StoredAuthSession, StoredUserSummary};
+    use aegis_core::{User, UserRole, UserStatus};
+    use axum::{
+        extract::State,
+        http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::{get, post},
+        Json, Router,
+    };
     use chrono::{TimeZone, Utc};
     use rust_decimal::Decimal;
+    use std::{
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
     use uuid::Uuid;
+
+    #[derive(Clone)]
+    struct MockAuthState {
+        protected_hits: Arc<AtomicUsize>,
+    }
+
+    fn sample_user() -> User {
+        User {
+            id: Uuid::from_u128(0x1234),
+            email: "owner@example.com".to_string(),
+            role: UserRole::Owner,
+            status: UserStatus::Active,
+            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            last_login_at: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 1, 0).unwrap()),
+        }
+    }
+
+    fn sample_stored_session() -> StoredAuthSession {
+        StoredAuthSession {
+            access_token: "expired-access-token".to_string(),
+            refresh_token: Some("refresh-token-1".to_string()),
+            expires_at: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 15, 0).unwrap()),
+            user: Some(StoredUserSummary::from(&sample_user())),
+            saved_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 1, 0).unwrap(),
+        }
+    }
+
+    fn temp_token_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "aegis-cli-api-{name}-{}-{}.json",
+            std::process::id(),
+            Uuid::new_v4()
+        ))
+    }
 
     #[test]
     fn recent_events_query_builds_expected_params() {
@@ -1292,5 +1530,103 @@ mod tests {
         assert_eq!(value["symbol"], "BTCUSDT");
         assert_eq!(value["interval"], "1m");
         assert_eq!(value["limit_per_request"], 1000);
+    }
+
+    #[test]
+    fn refresh_request_payload_serializes_expected_wire_shape() {
+        let payload = build_auth_refresh_request("refresh-token-1");
+        let value = serde_json::to_value(payload).expect("serializes");
+
+        assert_eq!(value["refresh_token"], "refresh-token-1");
+    }
+
+    #[tokio::test]
+    async fn auto_refresh_retries_once_and_persists_rotated_session() {
+        async fn protected(
+            headers: HeaderMap,
+            State(state): State<MockAuthState>,
+        ) -> impl IntoResponse {
+            state.protected_hits.fetch_add(1, Ordering::SeqCst);
+            let token = headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            if token == "Bearer refreshed-access-token" {
+                (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+            } else {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({ "error": "expired" })),
+                )
+                    .into_response()
+            }
+        }
+
+        async fn refresh(
+            headers: HeaderMap,
+            Json(payload): Json<super::AuthRefreshRequestPayload>,
+        ) -> impl IntoResponse {
+            let auth_mode = headers
+                .get(super::CLI_AUTH_MODE_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            if auth_mode != super::CLI_AUTH_MODE_VALUE || payload.refresh_token != "refresh-token-1"
+            {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({ "error": "invalid_refresh" })),
+                )
+                    .into_response();
+            }
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "user": sample_user(),
+                    "access_token": "refreshed-access-token",
+                    "expires_at": Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
+                    "refresh_token": "refresh-token-2"
+                })),
+            )
+                .into_response()
+        }
+
+        let state = MockAuthState {
+            protected_hits: Arc::new(AtomicUsize::new(0)),
+        };
+        let app = Router::new()
+            .route("/protected", get(protected))
+            .route("/auth/refresh", post(refresh))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server should run");
+        });
+
+        let token_path = temp_token_path("auto-refresh");
+        let stored = sample_stored_session();
+        crate::config::save_token_file(&token_path, &stored).expect("token file save");
+
+        let client =
+            ApiClient::new(reqwest::Url::parse(&format!("http://{}", addr)).expect("base url"))
+                .with_auth_session(stored, token_path.clone(), true);
+
+        let response = client
+            .get_value("/protected", &[])
+            .await
+            .expect("protected request should succeed");
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(state.protected_hits.load(Ordering::SeqCst), 2);
+
+        let rotated = load_token_file(&token_path).expect("rotated token file");
+        assert_eq!(rotated.access_token, "refreshed-access-token");
+        assert_eq!(rotated.refresh_token.as_deref(), Some("refresh-token-2"));
+
+        clear_token_file(&token_path).expect("token file clear");
+        server.abort();
     }
 }

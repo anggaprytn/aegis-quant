@@ -16,7 +16,9 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Paper accounting is simulated only and never submits exchange orders
 - Passwords are hashed with Argon2id; plaintext passwords are never stored or returned
 - Access tokens are short-lived JWTs and refresh tokens are stored only as hashes in Postgres
-- Dashboard login stores only the access token client-side; refresh tokens are sent as HTTP-only cookies
+- Dashboard login stores only the access token client-side; refresh tokens stay in HTTP-only cookies and the dashboard refreshes access on `401`
+- CLI login receives a refresh token only in explicit CLI JSON auth flows, persists it locally for operator use, and never prints it by default
+- CLI refresh rotates the persisted refresh token, updates the local session file when file-backed auth is active, and does not overwrite the token file when the run is using `AEGIS_ACCESS_TOKEN`
 - Auth-disabled mode is local-development only and injects a synthetic OWNER actor with a startup warning
 - Paper position close is simulated only, requires typed confirmation `CLOSE <SYMBOL>`, and rejects missing/stale public mark prices by default
 - Strategy config changes are audited, versioned, and emitted as system events; live mode remains blocked even in config validation/update paths
@@ -28,6 +30,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Database role hardening is not implemented yet
 - Operator auth is intentionally local/single-tenant: OWNER, OPERATOR, VIEWER
 - Bootstrap owner creation is one-time only and requires `AEGIS_BOOTSTRAP_OWNER_EMAIL` plus `AEGIS_BOOTSTRAP_OWNER_PASSWORD`
+- DB-backed auth tests cover bootstrap, login/session persistence, refresh rotation, logout revocation, unauthenticated rejection, and role-based forbids against Postgres
 - Request signing and exchange credential handling are intentionally deferred until after paper trading is stable
 - Replay/backtest reads stored candles only and must not mutate production `signals`, `risk_decisions`, or `orders`
 - Paper accounting reads only stored paper orders and stored public market data; it does not call exchange private endpoints or handle API keys

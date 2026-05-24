@@ -125,6 +125,7 @@ Examples:
 
 ```bash
 cargo run -p cli -- auth login --email owner@example.com --password 'replace-with-a-12-char-min-password'
+cargo run -p cli -- auth refresh
 cargo run -p cli -- auth me
 cargo run -p cli -- status
 cargo run -p cli -- kill --reason "manual operator halt"
@@ -171,7 +172,11 @@ cargo run -p cli -- auth logout
 Notes:
 
 - Add `--json` before the command for raw API-shaped output.
-- Access tokens are loaded from `AEGIS_ACCESS_TOKEN` first, then `~/.config/aegis/token.json`.
+- CLI auth state is loaded from `AEGIS_ACCESS_TOKEN` first, then `~/.config/aegis/token.json`.
+- The token file stores the access token, refresh token, access expiry, and a small user summary so `aegis auth refresh` and one-shot `401` retries can work across CLI runs.
+- When a stored refresh token exists, the CLI will automatically refresh once on `401` and retry the original request once.
+- If refresh fails, the CLI returns a clear login-required error instead of printing tokens.
+- If `AEGIS_ACCESS_TOKEN` is set, it overrides the token file for that run and the CLI will not rewrite `~/.config/aegis/token.json` unless `aegis auth login` is executed.
 - `resume` refuses locally unless `--confirm "RESUME TRADING"` matches exactly.
 - `orders list --limit` trims results client-side because `/orders` is currently unfiltered.
 - The CLI does not print tokens by default and does not implement live trading, exchange private APIs, API keys, or any TUI layer.

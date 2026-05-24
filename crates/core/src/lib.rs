@@ -255,6 +255,8 @@ pub struct AuthLoginResponse {
     pub user: User,
     pub access_token: String,
     pub expires_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -272,6 +274,8 @@ pub struct AuthRefreshResponse {
     pub user: User,
     pub access_token: String,
     pub expires_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
 }
 
 pub fn validate_password_length(password: &str) -> Result<(), CoreError> {
