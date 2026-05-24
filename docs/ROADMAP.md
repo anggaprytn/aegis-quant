@@ -13,6 +13,7 @@
 9. Deterministic paper pipeline: closed candles -> signal -> risk decision -> paper order lifecycle
 10. Persistent kill switch and paper-only order lifecycle APIs
 11. Deterministic replay/backtest MVP on stored candles and persisted strategy configs
+12. Minimal operational dashboard shell for paper-only inspection and control
 
 ## Next implementation steps
 
@@ -21,6 +22,7 @@
 3. Add paper trading reconciliation and lifecycle extensions
 4. Add kill switch operator workflows and monitoring polish
 5. Add strategy scheduling and bounded automation around the existing pipeline
+6. Add simple charts only when the operational shell is already stable
 
 ## Explicitly deferred
 
@@ -28,6 +30,6 @@
 - Real exchange order execution
 - Private exchange streams and API keys
 - Multi-exchange support
-- Complex dashboard UI
+- Complex dashboard UI or heavy charting
 - AuthN/AuthZ
 - Production secrets management

@@ -34,5 +34,22 @@ services:
     ports:
       - "3000:3000"
 
+  dashboard:
+    image: node:20-alpine
+    container_name: aegis-quant-dashboard
+    profiles: ["dashboard"]
+    restart: unless-stopped
+    working_dir: /app/apps/dashboard
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://api:3000
+    command: ["sh", "-c", "npm install && npm run dev -- --hostname 0.0.0.0 --port 3001"]
+    volumes:
+      - ..:/app
+    ports:
+      - "3001:3001"
+
 volumes:
   postgres_data:

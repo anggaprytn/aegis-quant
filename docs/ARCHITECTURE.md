@@ -23,6 +23,7 @@ LLM components are advisory only and do not have execution authority.
 - `crates/execution-engine`: paper execution lifecycle boundary
 - `crates/exchange`: exchange adapter boundary, disabled for live execution in MVP
 - `crates/llm-analyst`: advisory-only market commentary boundary
+- `apps/dashboard`: Next.js operational cockpit for paper-only inspection and operator actions
 
 ## Data boundaries
 
@@ -106,7 +107,23 @@ For MVP local development:
 
 - One Axum API process
 - One market-ingest process
+- One Next.js dashboard process
 - One PostgreSQL instance
 - Docker Compose orchestration
 
 No Kubernetes, no microservice decomposition, and no paid infrastructure assumptions are introduced in this foundation.
+
+## Frontend cockpit overview
+
+The dashboard is intentionally dense and operational:
+
+- Sidebar sections: Command Center, Market Data, Strategies, Risk, Orders, Backtests, Logs / Events, Settings placeholder
+- Sticky header: mode, kill switch state, feed state, data age, daily PnL placeholder, API health
+- Paper-only controls: kill switch activation, typed resume confirmation, strategy evaluation, paper pipeline run, and backtest run
+
+Frontend constraints:
+
+- No live trading controls
+- No exchange private API or secret handling
+- No chart-heavy UX in MVP
+- Defensive rendering around backend errors and optional data shapes

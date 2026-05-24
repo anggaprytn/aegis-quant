@@ -13,6 +13,7 @@ This repository foundation includes:
 - Deterministic candle-only strategy evaluation for `momentum_v1` and `volatility_breakout_v1`
 - Deterministic paper trading pipeline from closed candles to risk-gated paper order lifecycle
 - Deterministic replay/backtest engine from stored candles and persisted strategy configs
+- Minimal Next.js operational dashboard shell for paper-only inspection and control
 - Event model and publisher trait skeleton
 - Postgres migration baseline
 - Local development Docker Compose setup
@@ -23,7 +24,6 @@ This repository foundation includes:
 - Live trading
 - Real exchange order execution
 - Exchange secrets
-- Frontend/dashboard implementation
 - Automatic strategy scheduling
 
 ## Quick start
@@ -45,6 +45,11 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/strategy/list'`
    `curl 'http://127.0.0.1:3000/signals/recent?symbol=BTCUSDT&limit=50'`
    `curl 'http://127.0.0.1:3000/backtest/runs?limit=10'`
+8. Start the dashboard:
+   `cd apps/dashboard`
+   `npm install`
+   `npm run dev`
+9. Open `http://127.0.0.1:3001`.
 
 Required environment variables:
 
@@ -67,6 +72,40 @@ Optional environment variables:
 - `MOMENTUM_LOOKBACK_CANDLES`
 - `BREAKOUT_LOOKBACK_CANDLES`
 - `RUST_LOG`
+- `NEXT_PUBLIC_API_BASE_URL`
+
+## Dashboard shell
+
+`apps/dashboard` is a minimal operational cockpit, not a marketing site. It exposes paper-only controls and inspection views for:
+
+- Command Center
+- Market Data
+- Strategies
+- Risk
+- Orders
+- Backtests
+- Logs / Events
+
+Safety constraints:
+
+- No live trading controls
+- No exchange private API usage
+- No API key entry
+- Resume requires typed confirmation exactly equal to `RESUME TRADING`
+- Kill switch activation and resume both flow through the existing backend endpoints
+
+Local frontend env:
+
+```bash
+cd apps/dashboard
+printf 'NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:3000\n' > .env.local
+```
+
+Optional Docker Compose profile:
+
+```bash
+docker compose -f infra/docker-compose.yml --profile dashboard up dashboard
+```
 
 ## Running DB integration tests
 
