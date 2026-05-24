@@ -13071,18 +13071,21 @@ async fn evaluate_strategy_handler(
 mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
-        cancel_exchange_testnet_order, generate_testnet_client_order_id,
-        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
+        cancel_exchange_testnet_order, check_execution_readiness_handler,
+        generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
+        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
         is_valid_resume_confirmation, is_valid_testnet_order_confirmation,
         list_exchange_testnet_order_repairs, list_exchange_testnet_shadow_promotions_handler,
-        list_exchange_testnet_shadow_runs_handler, login, logout, metrics, normalize_route_label,
-        order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
-        preview_exchange_testnet_pipeline, preview_exchange_testnet_shadow_promotion_handler,
+        list_exchange_testnet_shadow_runs_handler, list_execution_readiness_snapshots_handler,
+        login, logout, metrics, normalize_route_label, order_view, parse_correlation_id_filter,
+        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline,
+        preview_exchange_testnet_shadow_promotion_handler,
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
         repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
         route_access, run_exchange_testnet_shadow_handler, submit_exchange_testnet_pipeline,
         submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
-        ExchangeTestnetPipelinePreviewResponse, RequestContext, StrategyRuntimeConfig,
+        ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
+        ExecutionReadinessSnapshotsResponse, RequestContext, StrategyRuntimeConfig,
         TestnetShadowPromotionResponse, TestnetShadowPromotionSubmitResponse,
         TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
         CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT,
@@ -13093,10 +13096,13 @@ mod tests {
     use aegis_core::{
         expected_testnet_pipeline_confirmation, expected_testnet_shadow_promotion_confirmation,
         AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse, Candle,
-        CandleInterval, DataFreshnessStatus, ExchangeEnvironment, ExchangeOrderState, FeedStatus,
-        MarketDataSource, MarketMode, MarketTick, RiskConfig, Side, StrategyConfig, StrategyId,
-        StrategyMode, Symbol, TestnetExecutionState, TestnetRepairAction, TestnetShadowDecision,
-        TestnetShadowPromotionStatus, TestnetShadowPromotionSubmitRequest, UserRole, UserStatus,
+        CandleInterval, DataFreshnessStatus, ExchangeEnvironment, ExchangeOrderState,
+        ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
+        ExecutionReadinessStatus, ExecutionReadinessTarget, FeedStatus, MarketDataSource,
+        MarketMode, MarketTick, PaperAccount, PaperAccountStatus, RiskConfig, Side, StrategyConfig,
+        StrategyId, StrategyMode, Symbol, TestnetExecutionState, TestnetRepairAction,
+        TestnetShadowDecision, TestnetShadowPromotionStatus, TestnetShadowPromotionSubmitRequest,
+        TestnetShadowRunnerState, TestnetShadowRunnerStatus, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -13111,14 +13117,17 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use db::{
         count_users, get_exchange_testnet_order_by_client_order_id, get_session_by_id,
-        get_user_by_email, insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-        insert_market_tick, insert_user, list_exchange_reconciliation_mismatches,
+        get_user_by_email, insert_exchange_reconciliation_run, insert_exchange_testnet_order,
+        insert_exchange_testnet_repair_action, insert_market_tick, insert_paper_account,
+        insert_testnet_shadow_run, insert_user, list_exchange_reconciliation_mismatches,
         list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
         list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_orders,
         list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
         set_kill_switch_state, test_support::TestDatabase, upsert_candle,
-        upsert_market_feed_status, upsert_risk_config, upsert_strategy_config,
-        ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor,
+        upsert_exchange_private_stream_state, upsert_market_feed_status, upsert_risk_config,
+        upsert_strategy_config, upsert_testnet_shadow_runner_state,
+        ExchangePrivateStreamStateRecord, ExchangeReconciliationRunRecord,
+        ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor, TestnetShadowRunRecord,
     };
     use exchange::{
         testing::{FakeExchangeAdapter, FakeOrderStatus, FakeSubmitAck},
@@ -13270,6 +13279,26 @@ mod tests {
             route_access(
                 &axum::http::Method::GET,
                 "/exchange/testnet/orders/client-1/repairs",
+                false
+            ),
+            super::RouteAccess::Authenticated
+        ));
+    }
+
+    #[test]
+    fn readiness_route_access_matches_role_expectations() {
+        assert!(matches!(
+            route_access(&axum::http::Method::POST, "/readiness/check", false),
+            super::RouteAccess::Operator
+        ));
+        assert!(matches!(
+            route_access(&axum::http::Method::GET, "/readiness/snapshots", false),
+            super::RouteAccess::Authenticated
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::GET,
+                "/readiness/snapshots/123e4567-e89b-12d3-a456-426614174000",
                 false
             ),
             super::RouteAccess::Authenticated
@@ -13669,6 +13698,25 @@ mod tests {
             .with_state(state)
     }
 
+    fn readiness_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/auth/login", post(login))
+            .route("/readiness/check", post(check_execution_readiness_handler))
+            .route(
+                "/readiness/snapshots",
+                get(list_execution_readiness_snapshots_handler),
+            )
+            .route(
+                "/readiness/snapshots/:id",
+                get(get_execution_readiness_snapshot_handler),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
     async fn response_json<T: DeserializeOwned>(response: axum::response::Response) -> T {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -13885,6 +13933,22 @@ mod tests {
             .get::<i64, _>("count")
     }
 
+    async fn count_execution_readiness_snapshots(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM execution_readiness_snapshots")
+            .fetch_one(pool)
+            .await
+            .expect("readiness snapshot count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_exchange_testnet_orders(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM exchange_testnet_orders")
+            .fetch_one(pool)
+            .await
+            .expect("testnet order count")
+            .get::<i64, _>("count")
+    }
+
     async fn count_backtest_runs(pool: &PgPool) -> i64 {
         sqlx::query("SELECT COUNT(*) AS count FROM backtest_runs")
             .fetch_one(pool)
@@ -13914,6 +13978,14 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("paper position count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_paper_orders(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM orders")
+            .fetch_one(pool)
+            .await
+            .expect("paper order count")
             .get::<i64, _>("count")
     }
 
@@ -13978,6 +14050,96 @@ mod tests {
         upsert_candle(pool, &candle)
             .await
             .expect("recent candle should persist");
+    }
+
+    fn readiness_risk_config() -> RiskConfig {
+        RiskConfig {
+            max_open_positions: 2,
+            max_daily_loss_pct: Decimal::new(2, 0),
+            max_weekly_loss_pct: Decimal::new(5, 0),
+            max_position_notional: Decimal::new(500_000, 0),
+            max_slippage_pct: Decimal::new(1, 0),
+            max_consecutive_losses: 3,
+            cooldown_seconds: 900,
+            max_signal_age_ms: 5_000,
+            stale_feed_threshold_seconds: 10,
+        }
+    }
+
+    async fn insert_active_paper_account(pool: &PgPool) {
+        insert_paper_account(
+            pool,
+            &PaperAccount {
+                id: Uuid::new_v4(),
+                name: "Default Paper".to_string(),
+                base_currency: "USDT".to_string(),
+                initial_equity: Decimal::new(1_000_000, 0),
+                current_equity: Decimal::new(1_000_000, 0),
+                realized_pnl: Decimal::ZERO,
+                unrealized_pnl: Decimal::ZERO,
+                status: PaperAccountStatus::Active,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("paper account");
+    }
+
+    async fn seed_readiness_market(pool: &PgPool, symbol: &str) {
+        seed_shadow_feed(pool, symbol).await;
+        seed_shadow_candles(pool, symbol, &[100_000, 101_000, 102_000, 103_000]).await;
+        insert_market_tick(pool, &sample_market_tick(symbol, Decimal::new(103_000, 0)))
+            .await
+            .expect("market tick");
+    }
+
+    async fn assert_readiness_read_only(
+        pool: &PgPool,
+        expected_snapshot_count: i64,
+        before: (i64, i64, i64, i64, i64),
+    ) {
+        assert_eq!(count_paper_orders(pool).await, before.0);
+        assert_eq!(count_exchange_testnet_orders(pool).await, before.1);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(pool).await,
+            before.2
+        );
+        assert_eq!(count_backtest_runs(pool).await, before.3);
+        assert_eq!(count_backtest_trades(pool).await, before.4);
+        assert_eq!(
+            count_execution_readiness_snapshots(pool).await,
+            expected_snapshot_count
+        );
+    }
+
+    async fn readiness_mutation_counts(pool: &PgPool) -> (i64, i64, i64, i64, i64) {
+        (
+            count_paper_orders(pool).await,
+            count_exchange_testnet_orders(pool).await,
+            count_exchange_testnet_lifecycle_events(pool).await,
+            count_backtest_runs(pool).await,
+            count_backtest_trades(pool).await,
+        )
+    }
+
+    fn sample_shadow_run_would_submit(created_at: chrono::DateTime<Utc>) -> TestnetShadowRunRecord {
+        TestnetShadowRunRecord {
+            id: Uuid::new_v4(),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            decision: "WOULD_SUBMIT".to_string(),
+            signal_id: None,
+            risk_decision_id: None,
+            would_submit_payload: Some(json!({"symbol":"BTCUSDT"})),
+            price_source: Some("local_tick".to_string()),
+            resolved_price: Some(Decimal::new(103_000, 0)),
+            reasons: vec!["shadow coverage".to_string()],
+            status: "COMPLETED".to_string(),
+            created_at,
+            correlation_id: Some(Uuid::new_v4()),
+        }
     }
 
     fn shadow_strategy_config(enabled: bool) -> StrategyConfig {
@@ -17158,6 +17320,486 @@ mod tests {
                 .await
                 .expect("lifecycle events should list");
         assert!(lifecycle_events.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn readiness_snapshot_persistence_list_and_get_work() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = readiness_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "viewer@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        upsert_risk_config(&test_db.pool, &readiness_risk_config())
+            .await
+            .expect("risk config");
+        seed_readiness_market(&test_db.pool, "BTCUSDT").await;
+        insert_active_paper_account(&test_db.pool).await;
+        let before = readiness_mutation_counts(&test_db.pool).await;
+
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (viewer_login, _) = login_cli(
+            &app,
+            "viewer@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let first = response_json::<ExecutionReadinessResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    "/readiness/check",
+                    &operator_login.access_token,
+                    json!({
+                        "target": "PAPER_PIPELINE",
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m",
+                        "persist": true
+                    }),
+                ))
+                .await
+                .expect("first readiness response"),
+        )
+        .await;
+        let second = response_json::<ExecutionReadinessResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    "/readiness/check",
+                    &operator_login.access_token,
+                    json!({
+                        "target": "PAPER_PIPELINE",
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m",
+                        "persist": true
+                    }),
+                ))
+                .await
+                .expect("second readiness response"),
+        )
+        .await;
+
+        assert_eq!(count_execution_readiness_snapshots(&test_db.pool).await, 2);
+        assert_readiness_read_only(&test_db.pool, 2, before).await;
+
+        let listed = response_json::<ExecutionReadinessSnapshotsResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "GET",
+                    "/readiness/snapshots?limit=1",
+                    &viewer_login.access_token,
+                    json!({}),
+                ))
+                .await
+                .expect("snapshot list response"),
+        )
+        .await;
+        assert_eq!(listed.snapshots.len(), 1);
+        assert_eq!(listed.snapshots[0].id, second.readiness.readiness_id);
+
+        let fetched = response_json::<ExecutionReadinessResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "GET",
+                    &format!("/readiness/snapshots/{}", first.readiness.readiness_id),
+                    &viewer_login.access_token,
+                    json!({}),
+                ))
+                .await
+                .expect("snapshot get response"),
+        )
+        .await;
+        assert_eq!(fetched.readiness.readiness_id, first.readiness.readiness_id);
+        assert_eq!(fetched.readiness.status, first.readiness.status);
+        assert_eq!(fetched.readiness.score, first.readiness.score);
+        assert_eq!(
+            fetched.readiness.blocking_reasons,
+            first.readiness.blocking_reasons
+        );
+        assert_eq!(fetched.readiness.checks, first.readiness.checks);
+        assert_eq!(
+            fetched.readiness.recommendations,
+            first.readiness.recommendations
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn readiness_paper_pipeline_status_matrix_is_read_only() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = readiness_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_risk_config(&test_db.pool, &readiness_risk_config())
+            .await
+            .expect("risk config");
+        seed_readiness_market(&test_db.pool, "BTCUSDT").await;
+        insert_active_paper_account(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(false))
+            .await
+            .expect("disabled strategy");
+        let before_disabled = readiness_mutation_counts(&test_db.pool).await;
+        let disabled = response_json::<ExecutionReadinessResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    "/readiness/check",
+                    &operator_login.access_token,
+                    json!({
+                        "target": "PAPER_PIPELINE",
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m"
+                    }),
+                ))
+                .await
+                .expect("disabled readiness response"),
+        )
+        .await;
+        assert_eq!(
+            disabled.readiness.status,
+            ExecutionReadinessStatus::NotReady
+        );
+        assert!(disabled
+            .readiness
+            .blocking_reasons
+            .contains(&aegis_core::ExecutionReadinessBlockingReason::StrategyDisabled));
+        assert_readiness_read_only(&test_db.pool, 0, before_disabled).await;
+
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("enabled strategy");
+        let before_healthy = readiness_mutation_counts(&test_db.pool).await;
+        let healthy = response_json::<ExecutionReadinessResponse>(
+            app.oneshot(bearer_request(
+                "POST",
+                "/readiness/check",
+                &operator_login.access_token,
+                json!({
+                    "target": "PAPER_PIPELINE",
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("healthy readiness response"),
+        )
+        .await;
+        assert!(matches!(
+            healthy.readiness.status,
+            ExecutionReadinessStatus::Ready | ExecutionReadinessStatus::Degraded
+        ));
+        for blocker in [
+            aegis_core::ExecutionReadinessBlockingReason::StrategyDisabled,
+            aegis_core::ExecutionReadinessBlockingReason::StaleMarketFeed,
+            aegis_core::ExecutionReadinessBlockingReason::MissingRecentMarketPrice,
+            aegis_core::ExecutionReadinessBlockingReason::PaperAccountMissing,
+            aegis_core::ExecutionReadinessBlockingReason::PaperAccountUnhealthy,
+        ] {
+            assert!(!healthy.readiness.blocking_reasons.contains(&blocker));
+        }
+        assert_readiness_read_only(&test_db.pool, 0, before_healthy).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn readiness_target_specific_blockers_are_classified_without_execution_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let app = readiness_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        upsert_risk_config(&test_db.pool, &readiness_risk_config())
+            .await
+            .expect("risk config");
+        seed_readiness_market(&test_db.pool, "BTCUSDT").await;
+        upsert_testnet_shadow_runner_state(
+            &test_db.pool,
+            &TestnetShadowRunnerState {
+                id: db::TESTNET_SHADOW_RUNNER_STATE_ID,
+                status: TestnetShadowRunnerStatus::Paused,
+                last_tick_at: Some(Utc::now()),
+                last_success_at: Some(Utc::now()),
+                last_error: None,
+                total_ticks: 1,
+                total_runs: 1,
+                updated_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("runner state");
+        upsert_exchange_private_stream_state(
+            &test_db.pool,
+            &ExchangePrivateStreamStateRecord {
+                exchange: "binance".to_string(),
+                environment: "testnet".to_string(),
+                status: "CONNECTED".to_string(),
+                listen_key_hash: Some("hash".to_string()),
+                connected_at: Some(Utc::now()),
+                last_event_at: Some(Utc::now()),
+                last_error: None,
+                reconnect_count: 0,
+                updated_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("private stream");
+        let risk_decision_id =
+            insert_test_risk_decision(&test_db.pool, "approved", "BTCUSDT", "BUY", Decimal::ONE)
+                .await;
+
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let before_shadow = readiness_mutation_counts(&test_db.pool).await;
+        let shadow = response_json::<ExecutionReadinessResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    "/readiness/check",
+                    &operator_login.access_token,
+                    json!({
+                        "target": "TESTNET_SHADOW",
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m"
+                    }),
+                ))
+                .await
+                .expect("shadow readiness response"),
+        )
+        .await;
+        assert!(matches!(
+            shadow.readiness.status,
+            ExecutionReadinessStatus::Degraded | ExecutionReadinessStatus::NotReady
+        ));
+        assert!(shadow
+            .readiness
+            .warnings
+            .iter()
+            .any(|warning| warning.summary.contains("paused or stopped")));
+        assert_readiness_read_only(&test_db.pool, 0, before_shadow).await;
+
+        let before_promotion = readiness_mutation_counts(&test_db.pool).await;
+        let promotion = response_json::<ExecutionReadinessResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    "/readiness/check",
+                    &operator_login.access_token,
+                    json!({
+                        "target": "TESTNET_PROMOTION",
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m"
+                    }),
+                ))
+                .await
+                .expect("promotion readiness response"),
+        )
+        .await;
+        assert_eq!(
+            promotion.readiness.status,
+            ExecutionReadinessStatus::NotReady
+        );
+        assert!(promotion
+            .readiness
+            .blocking_reasons
+            .contains(&aegis_core::ExecutionReadinessBlockingReason::ZeroShadowWouldSubmitCount));
+        assert!(promotion
+            .readiness
+            .recommendations
+            .contains(&ExecutionReadinessRecommendation::IncreaseShadowCoverage));
+        assert_readiness_read_only(&test_db.pool, 0, before_promotion).await;
+
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                "recon-required",
+                "NEW",
+                TestnetExecutionState::ReconciliationRequired,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("testnet order");
+        let before_submit = readiness_mutation_counts(&test_db.pool).await;
+        let submit = response_json::<ExecutionReadinessResponse>(
+            app.clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    "/readiness/check",
+                    &owner_login.access_token,
+                    json!({
+                        "target": "TESTNET_SUBMIT",
+                        "strategy_id": "momentum_v1",
+                        "symbol": "BTCUSDT",
+                        "timeframe": "1m",
+                        "risk_decision_id": risk_decision_id
+                    }),
+                ))
+                .await
+                .expect("submit readiness response"),
+        )
+        .await;
+        assert_eq!(submit.readiness.status, ExecutionReadinessStatus::NotReady);
+        assert!(submit.readiness.blocking_reasons.contains(
+            &aegis_core::ExecutionReadinessBlockingReason::ReconciliationRequiredOrdersPresent
+        ));
+        assert!(submit
+            .readiness
+            .recommendations
+            .contains(&ExecutionReadinessRecommendation::ReconcileTestnetOrders));
+        assert_readiness_read_only(&test_db.pool, 0, before_submit).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn readiness_submit_blocks_stale_private_stream_and_missing_adapter_config() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake = FakeExchangeAdapter::new();
+        let mut status = FakeExchangeAdapter::status();
+        status.configured = false;
+        let app = readiness_test_router(auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake),
+            status,
+        ));
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        upsert_risk_config(&test_db.pool, &readiness_risk_config())
+            .await
+            .expect("risk config");
+        seed_readiness_market(&test_db.pool, "BTCUSDT").await;
+        upsert_exchange_private_stream_state(
+            &test_db.pool,
+            &ExchangePrivateStreamStateRecord {
+                exchange: "binance".to_string(),
+                environment: "testnet".to_string(),
+                status: "STALE".to_string(),
+                listen_key_hash: Some("hash".to_string()),
+                connected_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                last_event_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                last_error: Some("stale".to_string()),
+                reconnect_count: 1,
+                updated_at: Utc::now(),
+            },
+        )
+        .await
+        .expect("private stream");
+        let risk_decision_id =
+            insert_test_risk_decision(&test_db.pool, "approved", "BTCUSDT", "BUY", Decimal::ONE)
+                .await;
+        let before = readiness_mutation_counts(&test_db.pool).await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = response_json::<ExecutionReadinessResponse>(
+            app.oneshot(bearer_request(
+                "POST",
+                "/readiness/check",
+                &owner_login.access_token,
+                json!({
+                    "target": "TESTNET_SUBMIT",
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m",
+                    "risk_decision_id": risk_decision_id
+                }),
+            ))
+            .await
+            .expect("submit readiness response"),
+        )
+        .await;
+
+        assert_eq!(
+            response.readiness.status,
+            ExecutionReadinessStatus::NotReady
+        );
+        assert!(response
+            .readiness
+            .blocking_reasons
+            .contains(&aegis_core::ExecutionReadinessBlockingReason::PrivateStreamStale));
+        assert!(response
+            .readiness
+            .blocking_reasons
+            .contains(&aegis_core::ExecutionReadinessBlockingReason::TestnetAdapterNotConfigured));
+        assert!(response
+            .readiness
+            .recommendations
+            .contains(&ExecutionReadinessRecommendation::ReconnectPrivateStream));
+        assert_readiness_read_only(&test_db.pool, 0, before).await;
     }
 
     fn test_app_state() -> AppState {

@@ -418,6 +418,13 @@ pub async fn compute_execution_readiness(
                     ExecutionReadinessCheckSeverity::Medium,
                     "Shadow runner is paused or stopped.".to_string(),
                 );
+                push_warning(
+                    &mut checks,
+                    "shadow_runner_not_active",
+                    "Shadow runner not actively processing ticks",
+                    ExecutionReadinessCheckSeverity::Medium,
+                    "Shadow runner is not actively processing shadow ticks.".to_string(),
+                );
                 recommendations.insert(ExecutionReadinessRecommendation::VerifyRunnerState);
             }
         }
@@ -830,48 +837,21 @@ pub async fn compute_execution_readiness(
         });
     }
 
-    let mut score = score_execution_readiness(&checks);
-    if !blockers.is_empty() {
-        score = score.min(40);
-    }
-    let warnings = checks
-        .iter()
-        .filter(|check| !check.passed && !check.blocking)
-        .cloned()
-        .collect::<Vec<_>>();
-    let status = if checks.iter().any(|check| {
-        !check.passed
-            && check.blocking
-            && check.severity == ExecutionReadinessCheckSeverity::Critical
-    }) {
-        ExecutionReadinessStatus::Unknown
-    } else if !blockers.is_empty() || score < 60 {
-        ExecutionReadinessStatus::NotReady
-    } else if score >= 85 {
-        ExecutionReadinessStatus::Ready
-    } else {
-        ExecutionReadinessStatus::Degraded
-    };
+    let result = finalize_readiness_result(
+        request.target,
+        checks,
+        blockers,
+        recommendations,
+        context.now,
+        correlation_id,
+    );
 
-    telemetry().inc_execution_readiness_check(request.target.as_str(), status.as_str());
-    telemetry().set_execution_readiness_score(request.target.as_str(), f64::from(score));
-    for reason in &blockers {
+    telemetry().inc_execution_readiness_check(request.target.as_str(), result.status.as_str());
+    telemetry().set_execution_readiness_score(request.target.as_str(), f64::from(result.score));
+    for reason in &result.blocking_reasons {
         telemetry()
             .inc_execution_readiness_blocker(request.target.as_str(), blocker_label(*reason));
     }
-
-    let result = ExecutionReadinessResult {
-        readiness_id: Uuid::new_v4(),
-        target: request.target,
-        status,
-        score,
-        blocking_reasons: blockers.clone(),
-        warnings,
-        checks: checks.clone(),
-        recommendations: recommendations.into_iter().collect(),
-        computed_at: context.now,
-        correlation_id,
-    };
 
     if request.persist {
         let snapshot = ExecutionReadinessSnapshot {
@@ -891,6 +871,52 @@ pub async fn compute_execution_readiness(
     }
 
     Ok(result)
+}
+
+fn finalize_readiness_result(
+    target: ExecutionReadinessTarget,
+    checks: Vec<ExecutionReadinessCheck>,
+    blockers: Vec<ExecutionReadinessBlockingReason>,
+    recommendations: BTreeSet<ExecutionReadinessRecommendation>,
+    computed_at: DateTime<Utc>,
+    correlation_id: Uuid,
+) -> ExecutionReadinessResult {
+    let mut score = score_execution_readiness(&checks);
+    if !blockers.is_empty() {
+        score = score.min(40);
+    }
+
+    let warnings = checks
+        .iter()
+        .filter(|check| !check.passed && !check.blocking)
+        .cloned()
+        .collect::<Vec<_>>();
+    let status = if checks.iter().any(|check| {
+        !check.passed
+            && check.blocking
+            && check.severity == ExecutionReadinessCheckSeverity::Critical
+    }) {
+        ExecutionReadinessStatus::Unknown
+    } else if !blockers.is_empty() || score < 60 {
+        ExecutionReadinessStatus::NotReady
+    } else if score >= 85 {
+        ExecutionReadinessStatus::Ready
+    } else {
+        ExecutionReadinessStatus::Degraded
+    };
+
+    ExecutionReadinessResult {
+        readiness_id: Uuid::new_v4(),
+        target,
+        status,
+        score,
+        blocking_reasons: blockers,
+        warnings,
+        checks,
+        recommendations: recommendations.into_iter().collect(),
+        computed_at,
+        correlation_id,
+    }
 }
 
 pub async fn list_snapshots(
@@ -996,7 +1022,7 @@ fn push_check(
 ) {
     if !passed {
         recommendations.insert(recommendation);
-        if blocking {
+        if blocking && !blockers.contains(&blocker) {
             blockers.push(blocker);
         }
     }
@@ -1079,5 +1105,313 @@ fn blocker_label(reason: ExecutionReadinessBlockingReason) -> &'static str {
             "missing_approved_risk_decision"
         }
         ExecutionReadinessBlockingReason::NonOwnerActor => "non_owner_actor",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{finalize_readiness_result, push_check, push_warning};
+    use aegis_core::{
+        ExecutionReadinessBlockingReason, ExecutionReadinessCheck, ExecutionReadinessCheckSeverity,
+        ExecutionReadinessRecommendation, ExecutionReadinessStatus, ExecutionReadinessTarget,
+    };
+    use chrono::Utc;
+    use std::collections::BTreeSet;
+    use uuid::Uuid;
+
+    fn failed_warning(
+        code: &str,
+        severity: ExecutionReadinessCheckSeverity,
+    ) -> ExecutionReadinessCheck {
+        ExecutionReadinessCheck {
+            code: code.to_string(),
+            name: code.to_string(),
+            passed: false,
+            blocking: false,
+            severity,
+            summary: code.to_string(),
+            details: None,
+        }
+    }
+
+    #[test]
+    fn hard_blocker_forces_not_ready() {
+        let result = finalize_readiness_result(
+            ExecutionReadinessTarget::PaperPipeline,
+            vec![ExecutionReadinessCheck {
+                code: "kill_switch_inactive".to_string(),
+                name: "Kill switch inactive".to_string(),
+                passed: false,
+                blocking: true,
+                severity: ExecutionReadinessCheckSeverity::High,
+                summary: "Kill switch is active.".to_string(),
+                details: None,
+            }],
+            vec![ExecutionReadinessBlockingReason::KillSwitchActive],
+            BTreeSet::from([ExecutionReadinessRecommendation::ResumeFromKillSwitch]),
+            Utc::now(),
+            Uuid::new_v4(),
+        );
+
+        assert_eq!(result.status, ExecutionReadinessStatus::NotReady);
+        assert_eq!(result.score, 40);
+    }
+
+    #[test]
+    fn unknown_when_critical_context_is_missing() {
+        let result = finalize_readiness_result(
+            ExecutionReadinessTarget::TestnetSubmit,
+            vec![ExecutionReadinessCheck {
+                code: "minimal_context_missing".to_string(),
+                name: "Minimal context missing".to_string(),
+                passed: false,
+                blocking: true,
+                severity: ExecutionReadinessCheckSeverity::Critical,
+                summary: "Target-specific checks are incomplete.".to_string(),
+                details: None,
+            }],
+            vec![ExecutionReadinessBlockingReason::MissingRecentMarketPrice],
+            BTreeSet::new(),
+            Utc::now(),
+            Uuid::new_v4(),
+        );
+
+        assert_eq!(result.status, ExecutionReadinessStatus::Unknown);
+        assert_eq!(result.score, 40);
+    }
+
+    #[test]
+    fn no_backtest_warning_does_not_hard_block() {
+        let result = finalize_readiness_result(
+            ExecutionReadinessTarget::PaperPipeline,
+            vec![failed_warning(
+                "no_recent_backtest",
+                ExecutionReadinessCheckSeverity::Low,
+            )],
+            Vec::new(),
+            BTreeSet::from([ExecutionReadinessRecommendation::RunRecentBacktest]),
+            Utc::now(),
+            Uuid::new_v4(),
+        );
+
+        assert_eq!(result.status, ExecutionReadinessStatus::Ready);
+        assert_eq!(result.score, 97);
+        assert!(result.blocking_reasons.is_empty());
+    }
+
+    #[test]
+    fn high_risk_rejection_rate_warning_is_degraded_not_blocking() {
+        let result = finalize_readiness_result(
+            ExecutionReadinessTarget::TestnetPromotion,
+            vec![
+                failed_warning(
+                    "risk_rejection_rate_high",
+                    ExecutionReadinessCheckSeverity::Medium,
+                ),
+                failed_warning(
+                    "promotion_submit_rate_low",
+                    ExecutionReadinessCheckSeverity::Low,
+                ),
+            ],
+            Vec::new(),
+            BTreeSet::from([ExecutionReadinessRecommendation::ReduceRiskRejections]),
+            Utc::now(),
+            Uuid::new_v4(),
+        );
+
+        assert!(matches!(
+            result.status,
+            ExecutionReadinessStatus::Ready | ExecutionReadinessStatus::Degraded
+        ));
+        assert_eq!(result.score, 89);
+        assert!(result.blocking_reasons.is_empty());
+    }
+
+    #[test]
+    fn recommendation_generation_is_deterministic() {
+        let result = finalize_readiness_result(
+            ExecutionReadinessTarget::TestnetSubmit,
+            vec![failed_warning(
+                "private_stream_quiet",
+                ExecutionReadinessCheckSeverity::Low,
+            )],
+            Vec::new(),
+            BTreeSet::from([
+                ExecutionReadinessRecommendation::ReconnectPrivateStream,
+                ExecutionReadinessRecommendation::ReconcileTestnetOrders,
+                ExecutionReadinessRecommendation::ResumeFromKillSwitch,
+            ]),
+            Utc::now(),
+            Uuid::new_v4(),
+        );
+
+        assert_eq!(
+            result.recommendations,
+            vec![
+                ExecutionReadinessRecommendation::ResumeFromKillSwitch,
+                ExecutionReadinessRecommendation::ReconnectPrivateStream,
+                ExecutionReadinessRecommendation::ReconcileTestnetOrders,
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_blockers_are_deduped() {
+        let mut checks = Vec::new();
+        let mut blockers = Vec::new();
+        let mut recommendations = BTreeSet::new();
+
+        push_check(
+            &mut checks,
+            &mut blockers,
+            &mut recommendations,
+            "kill_switch_inactive",
+            "Kill switch inactive",
+            false,
+            true,
+            ExecutionReadinessCheckSeverity::High,
+            "ok",
+            "blocked",
+            ExecutionReadinessBlockingReason::KillSwitchActive,
+            ExecutionReadinessRecommendation::ResumeFromKillSwitch,
+        );
+        push_check(
+            &mut checks,
+            &mut blockers,
+            &mut recommendations,
+            "kill_switch_duplicate",
+            "Kill switch duplicate",
+            false,
+            true,
+            ExecutionReadinessCheckSeverity::High,
+            "ok",
+            "blocked",
+            ExecutionReadinessBlockingReason::KillSwitchActive,
+            ExecutionReadinessRecommendation::ResumeFromKillSwitch,
+        );
+
+        assert_eq!(
+            blockers,
+            vec![ExecutionReadinessBlockingReason::KillSwitchActive]
+        );
+        assert_eq!(
+            recommendations.into_iter().collect::<Vec<_>>(),
+            vec![ExecutionReadinessRecommendation::ResumeFromKillSwitch]
+        );
+    }
+
+    #[test]
+    fn kill_switch_blocks_all_targets() {
+        for target in [
+            ExecutionReadinessTarget::PaperPipeline,
+            ExecutionReadinessTarget::TestnetShadow,
+            ExecutionReadinessTarget::TestnetPromotion,
+            ExecutionReadinessTarget::TestnetSubmit,
+        ] {
+            let result = finalize_readiness_result(
+                target,
+                vec![ExecutionReadinessCheck {
+                    code: "kill_switch_inactive".to_string(),
+                    name: "Kill switch inactive".to_string(),
+                    passed: false,
+                    blocking: true,
+                    severity: ExecutionReadinessCheckSeverity::High,
+                    summary: "Kill switch is active.".to_string(),
+                    details: None,
+                }],
+                vec![ExecutionReadinessBlockingReason::KillSwitchActive],
+                BTreeSet::from([ExecutionReadinessRecommendation::ResumeFromKillSwitch]),
+                Utc::now(),
+                Uuid::new_v4(),
+            );
+
+            assert_eq!(result.status, ExecutionReadinessStatus::NotReady);
+            assert_eq!(
+                result.blocking_reasons,
+                vec![ExecutionReadinessBlockingReason::KillSwitchActive]
+            );
+        }
+    }
+
+    #[test]
+    fn stale_market_feed_blocks_all_targets() {
+        for target in [
+            ExecutionReadinessTarget::PaperPipeline,
+            ExecutionReadinessTarget::TestnetShadow,
+            ExecutionReadinessTarget::TestnetPromotion,
+            ExecutionReadinessTarget::TestnetSubmit,
+        ] {
+            let result = finalize_readiness_result(
+                target,
+                vec![ExecutionReadinessCheck {
+                    code: "market_feed_fresh".to_string(),
+                    name: "Market feed fresh".to_string(),
+                    passed: false,
+                    blocking: true,
+                    severity: ExecutionReadinessCheckSeverity::High,
+                    summary: "Market feed is stale or unavailable.".to_string(),
+                    details: None,
+                }],
+                vec![ExecutionReadinessBlockingReason::StaleMarketFeed],
+                BTreeSet::from([ExecutionReadinessRecommendation::RefreshMarketFeed]),
+                Utc::now(),
+                Uuid::new_v4(),
+            );
+
+            assert_eq!(result.status, ExecutionReadinessStatus::NotReady);
+            assert_eq!(
+                result.blocking_reasons,
+                vec![ExecutionReadinessBlockingReason::StaleMarketFeed]
+            );
+        }
+    }
+
+    #[test]
+    fn missing_recent_price_blocks_relevant_targets() {
+        for target in [
+            ExecutionReadinessTarget::PaperPipeline,
+            ExecutionReadinessTarget::TestnetShadow,
+            ExecutionReadinessTarget::TestnetPromotion,
+            ExecutionReadinessTarget::TestnetSubmit,
+        ] {
+            let result = finalize_readiness_result(
+                target,
+                vec![ExecutionReadinessCheck {
+                    code: "recent_market_price".to_string(),
+                    name: "Recent market price".to_string(),
+                    passed: false,
+                    blocking: true,
+                    severity: ExecutionReadinessCheckSeverity::High,
+                    summary: "Recent market price is missing or stale.".to_string(),
+                    details: None,
+                }],
+                vec![ExecutionReadinessBlockingReason::MissingRecentMarketPrice],
+                BTreeSet::from([ExecutionReadinessRecommendation::SeedRecentMarketPrice]),
+                Utc::now(),
+                Uuid::new_v4(),
+            );
+
+            assert_eq!(result.status, ExecutionReadinessStatus::NotReady);
+            assert_eq!(
+                result.blocking_reasons,
+                vec![ExecutionReadinessBlockingReason::MissingRecentMarketPrice]
+            );
+        }
+    }
+
+    #[test]
+    fn push_warning_produces_non_blocking_warning_check() {
+        let mut checks = Vec::new();
+        push_warning(
+            &mut checks,
+            "shadow_runner_paused",
+            "Shadow runner paused or stopped",
+            ExecutionReadinessCheckSeverity::Medium,
+            "Shadow runner is paused or stopped.".to_string(),
+        );
+
+        assert_eq!(checks.len(), 1);
+        assert!(!checks[0].blocking);
+        assert!(!checks[0].passed);
     }
 }

@@ -168,15 +168,10 @@ pub fn print_execution_readiness(response: &ExecutionReadinessResponse) {
     if readiness.blocking_reasons.is_empty() {
         println!("Blockers: none");
     } else {
-        println!(
-            "Blockers: {}",
-            readiness
-                .blocking_reasons
-                .iter()
-                .map(|reason| format!("{reason:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        println!("Blockers:");
+        for reason in &readiness.blocking_reasons {
+            println!("  - {:?}", reason);
+        }
     }
 
     if readiness.warnings.is_empty() {
@@ -195,15 +190,10 @@ pub fn print_execution_readiness(response: &ExecutionReadinessResponse) {
     if readiness.recommendations.is_empty() {
         println!("Recommendations: none");
     } else {
-        println!(
-            "Recommendations: {}",
-            readiness
-                .recommendations
-                .iter()
-                .map(|item| format!("{item:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        println!("Recommendations:");
+        for item in &readiness.recommendations {
+            println!("  - {}", item.message());
+        }
     }
 }
 

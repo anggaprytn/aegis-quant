@@ -1620,6 +1620,75 @@ pub enum ExecutionReadinessRecommendation {
     VerifyRunnerState,
 }
 
+impl ExecutionReadinessRecommendation {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::RestoreDatabaseHealth => {
+                "Restore database health before trusting readiness output."
+            }
+            Self::ResumeFromKillSwitch => "Clear only after investigating active blockers.",
+            Self::ValidateRiskConfig => {
+                "Validate and persist the risk config before relying on execution gating."
+            }
+            Self::RefreshMarketFeed => {
+                "Restore fresh market-feed updates before relying on target-specific checks."
+            }
+            Self::EnableAuth => "Enable auth before using readiness for operator escalation.",
+            Self::SeedRecentMarketPrice => {
+                "Restore a recent local market price before relying on execution checks."
+            }
+            Self::EnableStrategy => {
+                "Enable strategy only after validating config and reviewing recent analytics."
+            }
+            Self::FixStrategyConfig => {
+                "Fix strategy validation errors before re-checking readiness."
+            }
+            Self::BackfillClosedCandles => {
+                "Backfill recent closed candles before relying on execution readiness."
+            }
+            Self::CreateOrRepairPaperAccount => {
+                "Create or repair the default paper account before paper execution checks."
+            }
+            Self::ReviewPaperPnl => "Review recent paper PnL before operator escalation.",
+            Self::RestartShadowRunner => {
+                "Restart the shadow runner and confirm it is healthy before proceeding."
+            }
+            Self::IncreaseShadowCoverage => "Continue shadow mode before promotion.",
+            Self::ReducePromotionRejections => {
+                "Review recent promotion failures before widening promotion scope."
+            }
+            Self::ReduceRiskRejections => {
+                "Review elevated risk rejections before escalating execution."
+            }
+            Self::ConfigureTestnetAdapter => {
+                "Configure the testnet adapter before any submit-readiness checks."
+            }
+            Self::ReconnectPrivateStream => {
+                "Restart private stream worker or verify listen-key lifecycle."
+            }
+            Self::ReconcileTestnetOrders => {
+                "Run reconciliation and repair before further testnet submits."
+            }
+            Self::ResolveRepairFailures => {
+                "Resolve recent repair failures before relying on submit readiness."
+            }
+            Self::PreviewOrRenewPromotion => {
+                "Preview or renew the promotion before submit-readiness checks."
+            }
+            Self::ApproveRiskDecision => {
+                "Use a recent approved risk decision before checking submit readiness."
+            }
+            Self::UseOwnerActor => "Use an owner actor for submit-readiness verification.",
+            Self::RunRecentBacktest => {
+                "Run a recent backtest to improve confidence, but it is not a hard blocker."
+            }
+            Self::VerifyRunnerState => {
+                "Resume the shadow runner only after confirming the pause reason is understood."
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionReadinessCheck {
     pub code: String,
@@ -5199,10 +5268,11 @@ mod tests {
         ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
         ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
         ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionReadinessCheck,
-        ExecutionReadinessCheckSeverity, ExecutionReadinessStatus, ExecutionState, OperatorReport,
-        OperatorReportFinding, OperatorReportFormat, OperatorReportRecommendation,
-        OperatorReportRequest, OperatorReportSection, OperatorReportSeverity, OperatorReportStatus,
-        OperatorReportSummary, OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
+        ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
+        ExecutionReadinessStatus, ExecutionState, OperatorReport, OperatorReportFinding,
+        OperatorReportFormat, OperatorReportRecommendation, OperatorReportRequest,
+        OperatorReportSection, OperatorReportSeverity, OperatorReportStatus, OperatorReportSummary,
+        OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
         StrategyPerformanceSummary, Symbol, TestnetExecutionState, TestnetRepairAction,
         TestnetRepairRequest, UserRole,
     };
@@ -5810,6 +5880,30 @@ mod tests {
         assert_eq!(
             execution_readiness_status_from_checks(&checks, score),
             ExecutionReadinessStatus::NotReady
+        );
+    }
+
+    #[test]
+    fn readiness_recommendation_messages_match_operator_guidance() {
+        assert_eq!(
+            ExecutionReadinessRecommendation::ResumeFromKillSwitch.message(),
+            "Clear only after investigating active blockers."
+        );
+        assert_eq!(
+            ExecutionReadinessRecommendation::ReconnectPrivateStream.message(),
+            "Restart private stream worker or verify listen-key lifecycle."
+        );
+        assert_eq!(
+            ExecutionReadinessRecommendation::ReconcileTestnetOrders.message(),
+            "Run reconciliation and repair before further testnet submits."
+        );
+        assert_eq!(
+            ExecutionReadinessRecommendation::EnableStrategy.message(),
+            "Enable strategy only after validating config and reviewing recent analytics."
+        );
+        assert_eq!(
+            ExecutionReadinessRecommendation::IncreaseShadowCoverage.message(),
+            "Continue shadow mode before promotion."
         );
     }
 }
