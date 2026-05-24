@@ -24,6 +24,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 pub type Result<T> = std::result::Result<T, ExchangeError>;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub mod testing;
+
 const DEFAULT_TESTNET_BASE_URL: &str = "https://testnet.binance.vision";
 const DEFAULT_TESTNET_WS_BASE_URL: &str = "wss://stream.testnet.binance.vision/ws";
 const HEADER_API_KEY: &str = "X-MBX-APIKEY";

@@ -50,9 +50,9 @@ pub struct ReconciliationRunDetails {
     pub run: ExchangeReconciliationRun,
 }
 
-pub async fn reconcile_testnet_orders<A: ExchangeAdapter>(
+pub async fn reconcile_testnet_orders(
     pool: &PgPool,
-    adapter: &A,
+    adapter: &dyn ExchangeAdapter,
     app_name: &str,
     actor: &StateActor,
     request: &ExchangeReconciliationRequest,

@@ -2,7 +2,7 @@ mod auth;
 mod exchange_reconcile;
 mod pipeline;
 
-use std::{env, net::SocketAddr, time::Instant};
+use std::{env, net::SocketAddr, sync::Arc, time::Instant};
 
 use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
@@ -86,7 +86,7 @@ use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
     apply_testnet_transition, hash_listen_key, map_cancel_ack_to_transition,
     map_exchange_ack_to_transition, map_rest_reconciliation_status_to_transition, mask_listen_key,
-    BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig, ExchangeAdapter,
+    BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig, BinanceTestnetStatus, ExchangeAdapter,
 };
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
 use replay_engine::ReplayEngine;
@@ -148,7 +148,10 @@ struct AppState {
     market_mode: MarketMode,
     market_config: MarketIngestConfig,
     strategy_runtime: StrategyRuntimeConfig,
-    exchange_testnet: BinanceSpotTestnetAdapter,
+    exchange_testnet_binance: Option<BinanceSpotTestnetAdapter>,
+    exchange_testnet: Arc<dyn ExchangeAdapter>,
+    exchange_testnet_environment: ExchangeEnvironment,
+    exchange_testnet_status: BinanceTestnetStatus,
 }
 
 #[derive(Clone)]
@@ -1291,7 +1294,10 @@ async fn main() {
         MarketIngestConfig::from_env().expect("invalid market ingest configuration");
     let strategy_runtime =
         StrategyRuntimeConfig::from_env().expect("invalid strategy configuration");
-    let exchange_testnet = BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig::from_env());
+    let exchange_testnet_adapter =
+        BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig::from_env());
+    let exchange_testnet_status = exchange_testnet_adapter.status();
+    let exchange_testnet_environment = exchange_testnet_status.environment;
 
     event_publisher
         .publish(SystemEventType::SystemStarted.into_event(
@@ -1314,7 +1320,10 @@ async fn main() {
         market_mode: MarketMode::Paper,
         market_config,
         strategy_runtime,
-        exchange_testnet,
+        exchange_testnet_binance: Some(exchange_testnet_adapter.clone()),
+        exchange_testnet: Arc::new(exchange_testnet_adapter),
+        exchange_testnet_environment,
+        exchange_testnet_status,
     };
 
     let app = Router::new()
@@ -2850,7 +2859,7 @@ async fn status(
                 status: "configured",
             },
             exchange_execution: DependencyStatus {
-                status: if state.exchange_testnet.status().configured {
+                status: if state.exchange_testnet_status.configured {
                     "testnet_configured"
                 } else {
                     "testnet_unconfigured"
@@ -4351,7 +4360,7 @@ async fn get_exchange_testnet_status(
     request: Option<Extension<RequestContext>>,
 ) -> impl IntoResponse {
     let request = request_context(request);
-    let status = state.exchange_testnet.status();
+    let status = state.exchange_testnet_status.clone();
 
     (
         StatusCode::OK,
@@ -4527,7 +4536,17 @@ async fn create_exchange_testnet_private_stream_listen_key(
         .correlation_id
         .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
 
-    match state.exchange_testnet.create_listen_key().await {
+    let Some(adapter) = state.exchange_testnet_binance.as_ref() else {
+        return exchange_testnet_error_response(
+            &request,
+            "private_stream_create_listen_key",
+            aegis_core::ExchangeError::Configuration(
+                "binance private stream adapter unavailable".to_string(),
+            ),
+        );
+    };
+
+    match adapter.create_listen_key().await {
         Ok(created) => {
             let masked = mask_listen_key(&created.listen_key);
             let hashed = hash_listen_key(&created.listen_key);
@@ -4626,11 +4645,17 @@ async fn keepalive_exchange_testnet_private_stream_listen_key(
             .into_response();
     };
 
-    match state
-        .exchange_testnet
-        .keepalive_listen_key(&listen_key)
-        .await
-    {
+    let Some(adapter) = state.exchange_testnet_binance.as_ref() else {
+        return exchange_testnet_error_response(
+            &request,
+            "private_stream_keepalive_listen_key",
+            aegis_core::ExchangeError::Configuration(
+                "binance private stream adapter unavailable".to_string(),
+            ),
+        );
+    };
+
+    match adapter.keepalive_listen_key(&listen_key).await {
         Ok(keepalive) => match upsert_exchange_private_stream_state(
             &state.db_pool,
             &ExchangePrivateStreamStateRecord {
@@ -4724,7 +4749,17 @@ async fn close_exchange_testnet_private_stream_listen_key(
             .into_response();
     };
 
-    match state.exchange_testnet.close_listen_key(&listen_key).await {
+    let Some(adapter) = state.exchange_testnet_binance.as_ref() else {
+        return exchange_testnet_error_response(
+            &request,
+            "private_stream_close_listen_key",
+            aegis_core::ExchangeError::Configuration(
+                "binance private stream adapter unavailable".to_string(),
+            ),
+        );
+    };
+
+    match adapter.close_listen_key(&listen_key).await {
         Ok(closed) => match upsert_exchange_private_stream_state(
             &state.db_pool,
             &ExchangePrivateStreamStateRecord {
@@ -6228,7 +6263,7 @@ async fn reconcile_exchange_testnet_orders_handler(
 
     match reconcile_testnet_orders(
         &state.db_pool,
-        &state.exchange_testnet,
+        state.exchange_testnet.as_ref(),
         &state.config.app_name,
         &actor,
         &request_model,
@@ -6701,7 +6736,7 @@ async fn build_exchange_testnet_pipeline_preview(
     risk_decision_id: Uuid,
     correlation_id: Uuid,
 ) -> std::result::Result<PreparedExchangeTestnetPipelinePreview, Response> {
-    if state.exchange_testnet.config().environment != ExchangeEnvironment::Testnet {
+    if state.exchange_testnet_environment != ExchangeEnvironment::Testnet {
         telemetry().inc_exchange_testnet_pipeline_run("preview_invalid_environment");
         return Err(exchange_testnet_pipeline_rejected_response_sync(
             correlation_id,
@@ -7136,7 +7171,7 @@ async fn ensure_testnet_submission_allowed(
     risk_decision_id: Uuid,
     symbol: &str,
 ) -> std::result::Result<(), Response> {
-    if state.exchange_testnet.config().environment != ExchangeEnvironment::Testnet {
+    if state.exchange_testnet_environment != ExchangeEnvironment::Testnet {
         return Err(exchange_testnet_rejected_response(
             state,
             actor,
@@ -10379,12 +10414,14 @@ async fn evaluate_strategy_handler(
 mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
-        generate_testnet_client_order_id, is_valid_resume_confirmation,
-        is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs, login, logout,
-        metrics, normalize_route_label, order_view, parse_correlation_id_filter,
-        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline, refresh,
-        repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
-        route_access, submit_exchange_testnet_pipeline, AppConfig, AppState,
+        cancel_exchange_testnet_order, generate_testnet_client_order_id,
+        is_valid_resume_confirmation, is_valid_testnet_order_confirmation,
+        list_exchange_testnet_order_repairs, login, logout, metrics, normalize_route_label,
+        order_view, parse_correlation_id_filter, parse_order_intent, parse_risk_check_context,
+        preview_exchange_testnet_pipeline, reconcile_exchange_testnet_orders_handler,
+        reconcile_testnet_orders, refresh, repair_exchange_testnet_order,
+        request_context_middleware, risk_decision_not_found_error, route_access,
+        submit_exchange_testnet_pipeline, AppConfig, AppState,
         ExchangeTestnetPipelinePreviewResponse, RequestContext, StrategyRuntimeConfig,
         CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT,
         DEFAULT_RISK_DECISIONS_LIMIT, MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
@@ -10394,8 +10431,8 @@ mod tests {
     use aegis_core::{
         expected_testnet_pipeline_confirmation, AuthLoginResponse, AuthLogoutResponse,
         AuthRefreshResponse, AuthUserResponse, Candle, CandleInterval, ExchangeEnvironment,
-        MarketDataSource, MarketMode, MarketTick, Side, Symbol, TestnetExecutionState,
-        TestnetRepairAction, UserRole, UserStatus,
+        ExchangeOrderState, MarketDataSource, MarketMode, MarketTick, Side, Symbol,
+        TestnetExecutionState, TestnetRepairAction, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -10411,17 +10448,23 @@ mod tests {
     use db::{
         count_users, get_exchange_testnet_order_by_client_order_id, get_session_by_id,
         get_user_by_email, insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-        insert_market_tick, insert_user, list_exchange_testnet_order_lifecycle_events,
+        insert_market_tick, insert_user, list_exchange_reconciliation_mismatches,
+        list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
         list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_orders,
+        list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
         set_kill_switch_state, test_support::TestDatabase, upsert_candle,
         ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor,
     };
-    use exchange::{BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig};
+    use exchange::{
+        testing::{FakeExchangeAdapter, FakeOrderStatus, FakeSubmitAck},
+        BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig,
+    };
     use market_ingest::MarketIngestConfig;
     use rust_decimal::Decimal;
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
     use sqlx::Row;
+    use std::sync::Arc;
     use telemetry::telemetry;
     use tower::util::ServiceExt;
     use uuid::Uuid;
@@ -10772,10 +10815,25 @@ mod tests {
         assert!(!encoded.contains("path=\"/orders/123e4567-e89b-12d3-a456-426614174000\""));
     }
 
-    fn auth_test_state(
+    fn default_testnet_status() -> exchange::BinanceTestnetStatus {
+        BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
+            environment: ExchangeEnvironment::Testnet,
+            rest_base_url: "https://testnet.binance.vision".to_string(),
+            ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
+            api_key: None,
+            api_secret: None,
+            recv_window_ms: None,
+        })
+        .status()
+    }
+
+    fn auth_test_state_with_adapter(
         pool: PgPool,
         bootstrap_email: Option<&str>,
         bootstrap_password: Option<&str>,
+        exchange_testnet_binance: Option<BinanceSpotTestnetAdapter>,
+        exchange_testnet: Arc<dyn exchange::ExchangeAdapter>,
+        exchange_testnet_status: exchange::BinanceTestnetStatus,
     ) -> AppState {
         AppState {
             config: AppConfig {
@@ -10812,15 +10870,35 @@ mod tests {
                 momentum_lookback_candles: 3,
                 breakout_lookback_candles: 20,
             },
-            exchange_testnet: BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
-                environment: ExchangeEnvironment::Testnet,
-                rest_base_url: "https://testnet.binance.vision".to_string(),
-                ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
-                api_key: None,
-                api_secret: None,
-                recv_window_ms: None,
-            }),
+            exchange_testnet_binance,
+            exchange_testnet,
+            exchange_testnet_environment: ExchangeEnvironment::Testnet,
+            exchange_testnet_status,
         }
+    }
+
+    fn auth_test_state(
+        pool: PgPool,
+        bootstrap_email: Option<&str>,
+        bootstrap_password: Option<&str>,
+    ) -> AppState {
+        let adapter = BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
+            environment: ExchangeEnvironment::Testnet,
+            rest_base_url: "https://testnet.binance.vision".to_string(),
+            ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
+            api_key: None,
+            api_secret: None,
+            recv_window_ms: None,
+        });
+        let status = adapter.status();
+        auth_test_state_with_adapter(
+            pool,
+            bootstrap_email,
+            bootstrap_password,
+            Some(adapter.clone()),
+            Arc::new(adapter.clone()),
+            status,
+        )
     }
 
     fn auth_test_router(state: AppState) -> Router {
@@ -10848,12 +10926,20 @@ mod tests {
         Router::new()
             .route("/auth/login", post(login))
             .route(
+                "/exchange/testnet/orders/:client_order_id/cancel",
+                post(cancel_exchange_testnet_order),
+            )
+            .route(
                 "/exchange/testnet/orders/:client_order_id/repair",
                 post(repair_exchange_testnet_order),
             )
             .route(
                 "/exchange/testnet/orders/:client_order_id/repairs",
                 get(list_exchange_testnet_order_repairs),
+            )
+            .route(
+                "/exchange/testnet/reconcile",
+                post(reconcile_exchange_testnet_orders_handler),
             )
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -11102,6 +11188,56 @@ mod tests {
             .await
             .expect("backtest run count")
             .get::<i64, _>("count")
+    }
+
+    async fn count_backtest_trades(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM backtest_trades")
+            .fetch_one(pool)
+            .await
+            .expect("backtest trade count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_paper_fills(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM paper_fills")
+            .fetch_one(pool)
+            .await
+            .expect("paper fill count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_paper_positions(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM paper_positions")
+            .fetch_one(pool)
+            .await
+            .expect("paper position count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_paper_equity_snapshots(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM paper_equity_snapshots")
+            .fetch_one(pool)
+            .await
+            .expect("paper equity snapshot count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_paper_trade_journal_rows(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM paper_trade_journal")
+            .fetch_one(pool)
+            .await
+            .expect("paper trade journal count")
+            .get::<i64, _>("count")
+    }
+
+    async fn assert_no_paper_or_backtest_mutation(pool: &PgPool) {
+        assert!(list_orders(pool).await.expect("paper orders").is_empty());
+        assert_eq!(count_paper_positions(pool).await, 0);
+        assert_eq!(count_paper_fills(pool).await, 0);
+        assert_eq!(count_paper_equity_snapshots(pool).await, 0);
+        assert_eq!(count_paper_trade_journal_rows(pool).await, 0);
+        assert_eq!(count_backtest_runs(pool).await, 0);
+        assert_eq!(count_backtest_trades(pool).await, 0);
     }
 
     async fn count_system_events_for_target(pool: &PgPool, event_type: &str, target: &str) -> i64 {
@@ -11426,9 +11562,121 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
-    async fn testnet_pipeline_submit_creates_isolated_order_and_lifecycle_events() {
+    async fn testnet_pipeline_submit_happy_path_uses_fake_adapter_and_stays_isolated() {
         let test_db = TestDatabase::setup().await.expect("test db");
-        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let fake_exchange = FakeExchangeAdapter::new();
+        fake_exchange.push_submit_ack(FakeSubmitAck {
+            exchange_order_id: Some("fake-submit-ack-1".to_string()),
+            ..FakeSubmitAck::default()
+        });
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange),
+            FakeExchangeAdapter::status(),
+        );
+        let app = pipeline_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let risk_decision_id = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "buy",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(100_000, 0)),
+        )
+        .await
+        .expect("market tick");
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/pipeline/submit",
+                &owner_login.access_token,
+                json!({
+                    "risk_decision_id": risk_decision_id,
+                    "confirmation_text": expected_testnet_pipeline_confirmation("BTCUSDT")
+                }),
+            ))
+            .await
+            .expect("submit response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let orders = list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("list testnet orders");
+        assert_eq!(orders.len(), 1);
+        let order = &orders[0];
+        assert_eq!(order.symbol, "BTCUSDT");
+        assert_eq!(order.risk_decision_id, Some(risk_decision_id));
+        assert_eq!(order.execution_state, "EXCHANGE_ACKED");
+        assert_eq!(
+            order.exchange_order_id.as_deref(),
+            Some("fake-submit-ack-1")
+        );
+        let lifecycle =
+            list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
+                .await
+                .expect("lifecycle events");
+        assert_eq!(lifecycle.len(), 2);
+        assert_eq!(lifecycle[0].next_state, "ORDER_SUBMIT_REQUESTED");
+        assert_eq!(lifecycle[1].next_state, "EXCHANGE_ACKED");
+        assert_eq!(
+            count_system_events_for_target(
+                &test_db.pool,
+                "exchange.testnet.pipeline.submit_requested",
+                "BTCUSDT",
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            system_events_for_order(
+                &test_db.pool,
+                &order.client_order_id,
+                "exchange.testnet.order.acked"
+            )
+            .await
+            .len(),
+            1
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_pipeline_submit_adapter_failure_persists_request_without_acking() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        fake_exchange.push_submit_error(aegis_core::ExchangeError::Transport(
+            "deterministic timeout".to_string(),
+        ));
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange),
+            FakeExchangeAdapter::status(),
+        );
         let app = pipeline_test_router(state);
         insert_test_user(
             &test_db.pool,
@@ -11472,13 +11720,12 @@ mod tests {
             .expect("submit response");
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
-        let orders = list_exchange_testnet_orders(&test_db.pool, 20)
+        let order = list_exchange_testnet_orders(&test_db.pool, 20)
             .await
-            .expect("list testnet orders");
-        assert_eq!(orders.len(), 1);
-        let order = &orders[0];
-        assert_eq!(order.symbol, "BTCUSDT");
-        assert_eq!(order.risk_decision_id, Some(risk_decision_id));
+            .expect("list testnet orders")
+            .into_iter()
+            .next()
+            .expect("order should exist");
         assert_eq!(order.execution_state, "ORDER_SUBMIT_REQUESTED");
         let lifecycle =
             list_exchange_testnet_order_lifecycle_events(&test_db.pool, &order.client_order_id)
@@ -11486,14 +11733,317 @@ mod tests {
                 .expect("lifecycle events");
         assert_eq!(lifecycle.len(), 1);
         assert_eq!(lifecycle[0].next_state, "ORDER_SUBMIT_REQUESTED");
-        assert!(lifecycle
-            .iter()
-            .all(|event| event.next_state != "EXCHANGE_ACKED"));
-        assert!(list_orders(&test_db.pool)
+        assert!(system_events_for_order(
+            &test_db.pool,
+            &order.client_order_id,
+            "exchange.testnet.order.acked"
+        )
+        .await
+        .is_empty());
+        let (_, metadata) = latest_audit_log_for_target(
+            &test_db.pool,
+            "exchange.testnet.order.rejected",
+            "BTCUSDT",
+        )
+        .await;
+        assert_eq!(
+            metadata.get("error").and_then(Value::as_str),
+            Some("exchange_testnet_request_rejected")
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn testnet_cancel_happy_path_with_fake_adapter_updates_lifecycle() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        fake_exchange.push_cancel_ack(exchange::testing::FakeCancelAck::default());
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange),
+            FakeExchangeAdapter::status(),
+        );
+        let app = repair_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        let client_order_id = "cancel-happy-client-1";
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "ACKED",
+                TestnetExecutionState::ExchangeAcked,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+        let (owner_login, _) = login_cli(
+            &app,
+            "owner@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/exchange/testnet/orders/{client_order_id}/cancel"),
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": "TESTNET ORDER"
+                }),
+            ))
             .await
-            .expect("list paper orders")
-            .is_empty());
-        assert_eq!(count_backtest_runs(&test_db.pool).await, 0);
+            .expect("cancel response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let order = get_exchange_testnet_order_by_client_order_id(&test_db.pool, client_order_id)
+            .await
+            .expect("order query")
+            .expect("order should exist");
+        assert_eq!(order.execution_state, "CANCELLED");
+        let lifecycle =
+            list_exchange_testnet_order_lifecycle_events(&test_db.pool, client_order_id)
+                .await
+                .expect("lifecycle events");
+        assert_eq!(lifecycle.len(), 2);
+        assert_eq!(lifecycle[0].next_state, "CANCEL_REQUESTED");
+        assert_eq!(lifecycle[1].next_state, "CANCELLED");
+        assert_eq!(
+            system_events_for_order(
+                &test_db.pool,
+                client_order_id,
+                "exchange.testnet.order.cancel_requested",
+            )
+            .await
+            .len(),
+            1
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn reconciliation_happy_path_with_fake_adapter_updates_order_and_run() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        let client_order_id = "reconcile-happy-client-1";
+        fake_exchange.set_order_status(
+            client_order_id,
+            FakeOrderStatus::new(ExchangeOrderState::Filled),
+        );
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "NEW",
+                TestnetExecutionState::New,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+
+        let request = aegis_core::ExchangeReconciliationRequest {
+            exchange: aegis_core::ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            limit: 20,
+            status_filter: vec!["NEW".to_string()],
+            correlation_id: Some(Uuid::new_v4()),
+        };
+        let details = reconcile_testnet_orders(
+            &test_db.pool,
+            &fake_exchange,
+            "aegis-test-api",
+            &StateActor::system("test"),
+            &request,
+        )
+        .await
+        .expect("reconciliation should succeed");
+
+        assert_eq!(details.run.status.as_str(), "COMPLETED");
+        let order = get_exchange_testnet_order_by_client_order_id(&test_db.pool, client_order_id)
+            .await
+            .expect("order query")
+            .expect("order should exist");
+        assert_eq!(order.execution_state, "FILLED");
+        let lifecycle =
+            list_exchange_testnet_order_lifecycle_events(&test_db.pool, client_order_id)
+                .await
+                .expect("lifecycle events");
+        assert_eq!(lifecycle.len(), 1);
+        assert_eq!(lifecycle[0].transition_source, "REST_RECONCILIATION");
+        let runs = list_exchange_reconciliation_runs(
+            &test_db.pool,
+            ExchangeEnvironment::Testnet.as_str(),
+            10,
+        )
+        .await
+        .expect("reconciliation runs");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "COMPLETED");
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn reconciliation_mismatch_path_with_fake_adapter_marks_reconciliation_required() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        let client_order_id = "reconcile-mismatch-client-1";
+        fake_exchange.set_order_status(
+            client_order_id,
+            FakeOrderStatus::new(ExchangeOrderState::New),
+        );
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "FILLED",
+                TestnetExecutionState::Filled,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+
+        let request = aegis_core::ExchangeReconciliationRequest {
+            exchange: aegis_core::ExchangeName::Binance,
+            environment: ExchangeEnvironment::Testnet,
+            limit: 20,
+            status_filter: vec!["FILLED".to_string()],
+            correlation_id: Some(Uuid::new_v4()),
+        };
+        let _ = reconcile_testnet_orders(
+            &test_db.pool,
+            &fake_exchange,
+            "aegis-test-api",
+            &StateActor::system("test"),
+            &request,
+        )
+        .await
+        .expect("reconciliation should succeed");
+
+        let order = get_exchange_testnet_order_by_client_order_id(&test_db.pool, client_order_id)
+            .await
+            .expect("order query")
+            .expect("order should exist");
+        assert_eq!(order.execution_state, "RECONCILIATION_REQUIRED");
+        let mismatches = list_exchange_reconciliation_mismatches(
+            &test_db.pool,
+            list_exchange_reconciliation_runs(
+                &test_db.pool,
+                ExchangeEnvironment::Testnet.as_str(),
+                10,
+            )
+            .await
+            .expect("reconciliation runs")[0]
+                .id,
+        )
+        .await
+        .expect("reconciliation mismatches");
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].mismatch_kind, "STATUS_MISMATCH");
+        let lifecycle =
+            list_exchange_testnet_order_lifecycle_events(&test_db.pool, client_order_id)
+                .await
+                .expect("lifecycle events");
+        assert_eq!(lifecycle[0].next_state, "RECONCILIATION_REQUIRED");
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn manual_recheck_repair_with_fake_adapter_applies_transition() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let fake_exchange = FakeExchangeAdapter::new();
+        let client_order_id = "manual-recheck-client-1";
+        fake_exchange.set_order_status(
+            client_order_id,
+            FakeOrderStatus::new(ExchangeOrderState::Canceled),
+        );
+        let state = auth_test_state_with_adapter(
+            test_db.pool.clone(),
+            None,
+            None,
+            None,
+            Arc::new(fake_exchange),
+            FakeExchangeAdapter::status(),
+        );
+        let app = repair_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        insert_exchange_testnet_order(
+            &test_db.pool,
+            &sample_testnet_order(
+                client_order_id,
+                "RECONCILIATION_REQUIRED",
+                TestnetExecutionState::ReconciliationRequired,
+                "BTCUSDT",
+            ),
+        )
+        .await
+        .expect("order insert");
+        let (login_payload, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/exchange/testnet/orders/{client_order_id}/repair"),
+                &login_payload.access_token,
+                json!({
+                    "action": "MANUAL_RECHECK",
+                    "confirmation_text": format!("REPAIR TESTNET {client_order_id}"),
+                    "reason": "deterministic_manual_recheck"
+                }),
+            ))
+            .await
+            .expect("manual recheck response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let order = get_exchange_testnet_order_by_client_order_id(&test_db.pool, client_order_id)
+            .await
+            .expect("order query")
+            .expect("order should exist");
+        assert_eq!(order.execution_state, "CANCELLED");
+        let repairs = list_exchange_testnet_repair_actions(&test_db.pool, client_order_id)
+            .await
+            .expect("repair rows");
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].action, "MANUAL_RECHECK");
+        assert_eq!(repairs[0].status, "APPLIED");
+        assert_eq!(repairs[0].next_state.as_deref(), Some("CANCELLED"));
+        assert_eq!(
+            system_events_for_order(
+                &test_db.pool,
+                client_order_id,
+                "exchange.testnet.repair.applied"
+            )
+            .await
+            .len(),
+            1
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
     }
 
     #[tokio::test]
@@ -12531,6 +13081,15 @@ mod tests {
     }
 
     fn test_app_state() -> AppState {
+        let adapter = BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
+            environment: ExchangeEnvironment::Testnet,
+            rest_base_url: "https://testnet.binance.vision".to_string(),
+            ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
+            api_key: None,
+            api_secret: None,
+            recv_window_ms: None,
+        });
+        let status = adapter.status();
         AppState {
             config: AppConfig {
                 app_name: "aegis-test-api".to_string(),
@@ -12567,14 +13126,10 @@ mod tests {
                 momentum_lookback_candles: 3,
                 breakout_lookback_candles: 20,
             },
-            exchange_testnet: BinanceSpotTestnetAdapter::new(BinanceSpotTestnetConfig {
-                environment: ExchangeEnvironment::Testnet,
-                rest_base_url: "https://testnet.binance.vision".to_string(),
-                ws_base_url: "wss://stream.testnet.binance.vision/ws".to_string(),
-                api_key: None,
-                api_secret: None,
-                recv_window_ms: None,
-            }),
+            exchange_testnet_binance: Some(adapter.clone()),
+            exchange_testnet: Arc::new(adapter),
+            exchange_testnet_environment: ExchangeEnvironment::Testnet,
+            exchange_testnet_status: status,
         }
     }
 }
