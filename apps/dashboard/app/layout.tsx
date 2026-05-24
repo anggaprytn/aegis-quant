@@ -14,8 +14,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body><QueryProvider>{children}</QueryProvider></body>
+    <html lang="en" suppressHydrationWarning>
+      <body suppressHydrationWarning>
+        {/* Browser extensions can inject bis_* attributes before hydration. */}
+        <QueryProvider>{children}</QueryProvider>
+      </body>
     </html>
   );
 }

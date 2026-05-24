@@ -127,6 +127,7 @@ scripts/          Local helper scripts, including the v0.1 demo flow
    `cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"`
 6. Optional dashboard:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
+   This Compose profile builds and runs the dashboard as a production Next.js container for VPS/deployed usage.
 7. Optional market ingest:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
 8. Optional shadow runner:
@@ -144,6 +145,8 @@ Core API + DB:
 
 Dashboard:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
+
+For local frontend development, run the dashboard manually with `npm --prefix apps/dashboard install` and `npm --prefix apps/dashboard run dev -- --hostname 0.0.0.0 --port 3001`.
 
 If you run the dashboard outside Compose on `http://localhost:3001`, keep `AEGIS_CORS_ALLOWED_ORIGINS` aligned with the browser origin. Example:
 `AEGIS_CORS_ALLOWED_ORIGINS=http://localhost:3001,http://127.0.0.1:3001,https://aegis.anggaprytn.com`
