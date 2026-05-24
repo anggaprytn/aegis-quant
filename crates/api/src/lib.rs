@@ -212,10 +212,13 @@ pub fn reason_code(reason: RiskRejectionReason) -> &'static str {
         RiskRejectionReason::KillSwitchActive => "kill_switch_active",
         RiskRejectionReason::MaxOpenPositionsExceeded => "max_open_positions_exceeded",
         RiskRejectionReason::MaxDailyLossExceeded => "max_daily_loss_exceeded",
+        RiskRejectionReason::MaxWeeklyLossExceeded => "max_weekly_loss_exceeded",
+        RiskRejectionReason::MaxConsecutiveLossesExceeded => "max_consecutive_losses_exceeded",
         RiskRejectionReason::SignalTooOld => "signal_too_old",
         RiskRejectionReason::DuplicateOrderDetected => "duplicate_order_detected",
         RiskRejectionReason::DataStale => "data_stale",
         RiskRejectionReason::PositionNotionalExceeded => "position_notional_exceeded",
+        RiskRejectionReason::CooldownActive => "cooldown_active",
         RiskRejectionReason::UnsupportedState => "unsupported_state",
     }
 }

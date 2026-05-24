@@ -185,7 +185,40 @@ pub struct EventsListArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RiskCommands {
+    #[command(subcommand)]
+    Config(RiskConfigCommands),
     Decisions(RiskDecisionsArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RiskConfigCommands {
+    Get,
+    Validate(RiskConfigArgs),
+    Update(RiskConfigArgs),
+    Versions,
+    Audit,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct RiskConfigArgs {
+    #[arg(long = "max-open-positions")]
+    pub max_open_positions: u32,
+    #[arg(long = "max-daily-loss-pct")]
+    pub max_daily_loss_pct: rust_decimal::Decimal,
+    #[arg(long = "max-weekly-loss-pct")]
+    pub max_weekly_loss_pct: rust_decimal::Decimal,
+    #[arg(long = "max-position-notional")]
+    pub max_position_notional: rust_decimal::Decimal,
+    #[arg(long = "max-slippage-pct")]
+    pub max_slippage_pct: rust_decimal::Decimal,
+    #[arg(long = "max-consecutive-losses")]
+    pub max_consecutive_losses: u32,
+    #[arg(long = "cooldown-seconds")]
+    pub cooldown_seconds: u32,
+    #[arg(long = "max-signal-age-ms")]
+    pub max_signal_age_ms: i64,
+    #[arg(long = "stale-feed-threshold-seconds")]
+    pub stale_feed_threshold_seconds: u32,
 }
 
 #[derive(Debug, Subcommand)]

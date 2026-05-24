@@ -9,7 +9,8 @@ use aegis_core::{
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, CandleInterval, MarketMode,
     OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
     PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
     RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyConfigAuditEntry,
     StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
     StrategyDryRunRequest, StrategyDryRunResult, StrategyEvaluationContext, StrategyId,
@@ -33,20 +34,22 @@ use db::{
     create_paper_order, ensure_system_state, get_backtest_equity_curve, get_backtest_run,
     get_backtest_trades, get_candle_backfill_run, get_default_paper_account,
     get_latest_market_tick, get_order_by_id, get_paper_position_by_id, get_recent_closed_candles,
-    get_risk_decision_by_id, get_strategy_status, get_system_event, get_system_state,
-    insert_paper_account, insert_paper_equity_snapshot, insert_risk_evaluation,
-    insert_signal_deduped, insert_strategy_config_audit, insert_system_event, list_backtest_runs,
-    list_candle_backfill_runs, list_candles, list_market_feed_statuses, list_open_paper_positions,
-    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
-    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_strategy_config_audit, list_strategy_config_versions, list_strategy_status,
-    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
-    paper_position_from_record, persist_strategy_config_version, set_kill_switch_state,
-    strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, update_strategy_state, upsert_paper_position,
-    upsert_strategy_config, BacktestEquityPointRecord, BacktestTradeRecord,
-    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig, InsertSignalOutcome,
-    MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
+    get_risk_config, get_risk_decision_by_id, get_strategy_status, get_system_event,
+    get_system_state, insert_paper_account, insert_paper_equity_snapshot, insert_risk_config_audit,
+    insert_risk_evaluation, insert_signal_deduped, insert_strategy_config_audit,
+    insert_system_event, list_backtest_runs, list_candle_backfill_runs, list_candles,
+    list_market_feed_statuses, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
+    list_paper_positions, list_paper_trade_journal, list_recent_risk_decisions_filtered,
+    list_recent_signals, list_recent_system_events_filtered, list_risk_config_audit,
+    list_risk_config_versions, list_strategy_config_audit, list_strategy_config_versions,
+    list_strategy_status, load_risk_state_snapshot, paper_account_from_record,
+    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
+    persist_strategy_config_version, risk_config_audit_from_record, risk_config_from_record,
+    risk_config_version_from_record, set_kill_switch_state, strategy_config_audit_from_record,
+    strategy_config_from_record, strategy_config_version_from_record, update_strategy_state,
+    upsert_paper_position, upsert_risk_config, upsert_strategy_config, BacktestEquityPointRecord,
+    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    InsertSignalOutcome, MarketFeedStatusRecord, MarketTickRecord, OrderRecord, PaperAccountRecord,
     PaperEquitySnapshotRecord, PaperPositionRecord, PaperTradeJournalRecord, PgPool,
     RiskDecisionRecord, SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord,
     SystemStateRecord,
@@ -54,7 +57,7 @@ use db::{
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
 use replay_engine::ReplayEngine;
-use risk_engine::RiskEvaluator;
+use risk_engine::{validate_risk_config, RiskEvaluator};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -348,6 +351,55 @@ struct RiskActionResponse {
     paper_trading_allowed: bool,
     live_trading_allowed: bool,
     kill_switch: KillSwitchResponse,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskConfigView {
+    config_id: Uuid,
+    max_open_positions: i32,
+    max_daily_loss_pct: String,
+    max_weekly_loss_pct: String,
+    max_position_notional: String,
+    max_slippage_pct: String,
+    max_consecutive_losses: i32,
+    cooldown_seconds: i32,
+    max_signal_age_ms: i64,
+    stale_feed_threshold_seconds: i32,
+    config_version: i32,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskConfigResponse {
+    config: RiskConfigView,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskConfigValidationResponse {
+    validation: RiskConfigValidationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskConfigVersionsResponse {
+    versions: Vec<RiskConfigVersion>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RiskConfigAuditResponse {
+    audit: Vec<RiskConfigAuditEntry>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -881,6 +933,14 @@ async fn main() {
         .route("/risk/decisions/:id", get(get_risk_decision))
         .route("/risk/kill-switch", post(enable_kill_switch))
         .route("/risk/resume", post(resume_trading))
+        .route("/risk/config", get(get_risk_config_handler))
+        .route("/risk/config/validate", post(validate_risk_config_handler))
+        .route("/risk/config/update", post(update_risk_config_handler))
+        .route(
+            "/risk/config/versions",
+            get(get_risk_config_versions_handler),
+        )
+        .route("/risk/config/audit", get(get_risk_config_audit_handler))
         .route("/risk/evaluate", post(evaluate_risk))
         .route("/paper/orders", post(create_order))
         .route("/paper/pipeline/run", post(run_paper_pipeline_handler))
@@ -1234,6 +1294,14 @@ async fn ensure_strategy_config(
     Ok(strategy_config_from_record(&record)?)
 }
 
+async fn ensure_risk_config(state: &AppState) -> Result<db::RiskConfigRecord, anyhow::Error> {
+    if let Some(record) = get_risk_config(&state.db_pool).await? {
+        return Ok(record);
+    }
+
+    Ok(upsert_risk_config(&state.db_pool, &RiskConfig::default()).await?)
+}
+
 fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
     let state = record.state;
     StrategyStatusView {
@@ -1290,6 +1358,24 @@ fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfi
         take_profit_pct: config.take_profit_pct,
         holding_candles: config.holding_candles,
         notes: config.notes.clone(),
+    }
+}
+
+fn risk_config_view(record: &db::RiskConfigRecord) -> RiskConfigView {
+    RiskConfigView {
+        config_id: record.config_id,
+        max_open_positions: record.max_open_positions,
+        max_daily_loss_pct: record.max_daily_loss_pct.to_string(),
+        max_weekly_loss_pct: record.max_weekly_loss_pct.to_string(),
+        max_position_notional: record.max_position_notional.to_string(),
+        max_slippage_pct: record.max_slippage_pct.to_string(),
+        max_consecutive_losses: record.max_consecutive_losses,
+        cooldown_seconds: record.cooldown_seconds,
+        max_signal_age_ms: record.max_signal_age_ms,
+        stale_feed_threshold_seconds: record.stale_feed_threshold_seconds,
+        config_version: record.current_version,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
     }
 }
 
@@ -2031,6 +2117,265 @@ async fn resume_trading(
     }
 }
 
+async fn get_risk_config_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match ensure_risk_config(&state).await {
+        Ok(record) => (
+            StatusCode::OK,
+            Json(RiskConfigResponse {
+                config: risk_config_view(&record),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_risk_config",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn validate_risk_config_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<RiskConfig>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let validation = validate_risk_config(&payload);
+    telemetry().inc_risk_config_validation(if validation.valid {
+        "valid"
+    } else {
+        "rejected"
+    });
+    let event_type = if validation.valid {
+        "risk.config.validated"
+    } else {
+        "risk.config.rejected"
+    };
+    let _ = insert_system_event(
+        &state.db_pool,
+        &events::EventEnvelope::new(
+            event_type,
+            parse_correlation_id(&request.correlation_id),
+            state.config.app_name.clone(),
+            json!({ "issues": validation.issues }),
+        ),
+    )
+    .await;
+
+    (
+        if validation.valid {
+            StatusCode::OK
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        },
+        Json(RiskConfigValidationResponse {
+            validation,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+async fn update_risk_config_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<RiskConfig>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let validation = validate_risk_config(&payload);
+    let current_record = ensure_risk_config(&state).await.ok();
+    let current_config = current_record
+        .as_ref()
+        .and_then(|record| risk_config_from_record(record).ok());
+    telemetry().inc_risk_config_validation(if validation.valid {
+        "valid"
+    } else {
+        "rejected"
+    });
+
+    if !validation.valid {
+        telemetry().inc_risk_config_update("rejected");
+        let config_id = current_record
+            .as_ref()
+            .map(|record| record.config_id)
+            .unwrap_or_else(Uuid::new_v4);
+        let _ = insert_risk_config_audit(
+            &state.db_pool,
+            &RiskConfigAuditEntry {
+                audit_id: Uuid::new_v4(),
+                config_id,
+                version: None,
+                old_config: current_config,
+                new_config: None,
+                validation_issues: validation.issues.clone(),
+                actor_id: None,
+                correlation_id,
+                created_at: Utc::now(),
+            },
+        )
+        .await;
+        let _ = insert_system_event(
+            &state.db_pool,
+            &events::EventEnvelope::new(
+                "risk.config.rejected",
+                correlation_id,
+                state.config.app_name.clone(),
+                json!({ "issues": validation.issues }),
+            ),
+        )
+        .await;
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(RiskConfigValidationResponse {
+                validation,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let config = validation
+        .normalized_config
+        .clone()
+        .expect("valid config must be present");
+    let _ = insert_system_event(
+        &state.db_pool,
+        &events::EventEnvelope::new(
+            "risk.config.validated",
+            correlation_id,
+            state.config.app_name.clone(),
+            json!({}),
+        ),
+    )
+    .await;
+
+    match persist_risk_config_version(&state.db_pool, &config, None, correlation_id).await {
+        Ok(record) => {
+            telemetry().inc_risk_config_update("updated");
+            let _ = insert_system_event(
+                &state.db_pool,
+                &events::EventEnvelope::new(
+                    "risk.config.updated",
+                    correlation_id,
+                    state.config.app_name.clone(),
+                    json!({ "config_id": record.config_id, "version": record.current_version }),
+                ),
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(RiskConfigResponse {
+                    config: risk_config_view(&record),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_update_risk_config",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_risk_config_versions_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match list_risk_config_versions(&state.db_pool).await {
+        Ok(records) => (
+            StatusCode::OK,
+            Json(RiskConfigVersionsResponse {
+                versions: records
+                    .iter()
+                    .map(risk_config_version_from_record)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_risk_config_versions",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_risk_config_audit_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match list_risk_config_audit(&state.db_pool).await {
+        Ok(records) => (
+            StatusCode::OK,
+            Json(RiskConfigAuditResponse {
+                audit: records
+                    .iter()
+                    .map(risk_config_audit_from_record)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap_or_default(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_risk_config_audit",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 fn parse_correlation_id(value: &str) -> Uuid {
     Uuid::parse_str(value).unwrap_or_else(|_| Uuid::new_v4())
 }
@@ -2040,10 +2385,13 @@ fn reason_code(reason: RiskRejectionReason) -> &'static str {
         RiskRejectionReason::KillSwitchActive => "kill_switch_active",
         RiskRejectionReason::MaxOpenPositionsExceeded => "max_open_positions_exceeded",
         RiskRejectionReason::MaxDailyLossExceeded => "max_daily_loss_exceeded",
+        RiskRejectionReason::MaxWeeklyLossExceeded => "max_weekly_loss_exceeded",
+        RiskRejectionReason::MaxConsecutiveLossesExceeded => "max_consecutive_losses_exceeded",
         RiskRejectionReason::SignalTooOld => "signal_too_old",
         RiskRejectionReason::DuplicateOrderDetected => "duplicate_order_detected",
         RiskRejectionReason::DataStale => "data_stale",
         RiskRejectionReason::PositionNotionalExceeded => "position_notional_exceeded",
+        RiskRejectionReason::CooldownActive => "cooldown_active",
         RiskRejectionReason::UnsupportedState => "unsupported_state",
     }
 }
@@ -2160,7 +2508,39 @@ async fn evaluate_risk(
         }
     };
 
-    let evaluator = RiskEvaluator::new(aegis_core::RiskConfig::default());
+    let risk_config = match ensure_risk_config(&state).await {
+        Ok(record) => match risk_config_from_record(&record) {
+            Ok(config) => config,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "invalid_persisted_risk_config",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_risk_config",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let evaluator = RiskEvaluator::new(risk_config);
     let evaluation = evaluator.evaluate(&context, &snapshot);
     telemetry().inc_risk_decision(
         match evaluation.decision {

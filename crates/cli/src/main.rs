@@ -3,11 +3,12 @@ use anyhow::Context;
 use clap::Parser;
 use cli::api::{
     build_backtest_request, build_candle_backfill_request, build_pipeline_request,
-    build_strategy_config_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
+    build_risk_config_request, build_strategy_config_request, ApiClient, RecentEventsQuery,
+    RiskDecisionsQuery,
 };
 use cli::cli::{
     BacktestCommands, Cli, Commands, EventsCommands, MarketCommands, OrderCommands, PaperCommands,
-    PipelineCommands, RiskCommands, StrategyCommands, StrategyConfigCommands,
+    PipelineCommands, RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
     RESUME_CONFIRMATION_TEXT,
 };
 use cli::config::CliConfig;
@@ -211,6 +212,50 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Risk(command) => match command {
+            RiskCommands::Config(command) => match command {
+                RiskConfigCommands::Get => {
+                    let response = client.risk_config().await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_risk_config(&response);
+                    }
+                }
+                RiskConfigCommands::Validate(args) => {
+                    let request = build_risk_config_request(&args)?;
+                    let response = client.validate_risk_config(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_risk_config_validation(&response);
+                    }
+                }
+                RiskConfigCommands::Update(args) => {
+                    let request = build_risk_config_request(&args)?;
+                    let response = client.update_risk_config(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_risk_config(&response);
+                    }
+                }
+                RiskConfigCommands::Versions => {
+                    let response = client.risk_config_versions().await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_risk_config_versions(&response);
+                    }
+                }
+                RiskConfigCommands::Audit => {
+                    let response = client.risk_config_audit().await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_risk_config_audit(&response);
+                    }
+                }
+            },
             RiskCommands::Decisions(args) => {
                 let response = client
                     .risk_decisions(&RiskDecisionsQuery {

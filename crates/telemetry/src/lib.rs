@@ -29,6 +29,8 @@ pub struct Telemetry {
     strategy_disabled_total: IntCounterVec,
     strategy_config_validations_total: IntCounterVec,
     strategy_config_updates_total: IntCounterVec,
+    risk_config_validations_total: IntCounterVec,
+    risk_config_updates_total: IntCounterVec,
     strategy_dry_runs_total: IntCounterVec,
     risk_decisions_total: IntCounterVec,
     risk_rejections_total: IntCounterVec,
@@ -151,6 +153,20 @@ impl Telemetry {
             registry
         )
         .expect("strategy_config_updates_total should register");
+        let risk_config_validations_total = register_int_counter_vec_with_registry!(
+            "risk_config_validations_total",
+            "Risk config validations by result.",
+            &["result"],
+            registry
+        )
+        .expect("risk_config_validations_total should register");
+        let risk_config_updates_total = register_int_counter_vec_with_registry!(
+            "risk_config_updates_total",
+            "Risk config updates by result.",
+            &["result"],
+            registry
+        )
+        .expect("risk_config_updates_total should register");
         let strategy_dry_runs_total = register_int_counter_vec_with_registry!(
             "strategy_dry_runs_total",
             "Strategy dry-runs by result.",
@@ -282,6 +298,8 @@ impl Telemetry {
             strategy_disabled_total,
             strategy_config_validations_total,
             strategy_config_updates_total,
+            risk_config_validations_total,
+            risk_config_updates_total,
             strategy_dry_runs_total,
             risk_decisions_total,
             risk_rejections_total,
@@ -411,6 +429,18 @@ impl Telemetry {
     pub fn inc_strategy_config_update(&self, strategy_id: &str, result: &str) {
         self.strategy_config_updates_total
             .with_label_values(&[strategy_id, result])
+            .inc();
+    }
+
+    pub fn inc_risk_config_validation(&self, result: &str) {
+        self.risk_config_validations_total
+            .with_label_values(&[result])
+            .inc();
+    }
+
+    pub fn inc_risk_config_update(&self, result: &str) {
+        self.risk_config_updates_total
+            .with_label_values(&[result])
             .inc();
     }
 

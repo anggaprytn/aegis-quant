@@ -8,9 +8,9 @@ use aegis_core::{
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use db::{
-    create_paper_order, get_order_by_idempotency_key, get_recent_closed_candles,
+    create_paper_order, get_order_by_idempotency_key, get_recent_closed_candles, get_risk_config,
     insert_risk_decision, insert_signal_deduped, insert_system_event, list_market_feed_statuses,
-    load_risk_state_snapshot, update_strategy_state, CreateOrderError,
+    load_risk_state_snapshot, risk_config_from_record, update_strategy_state, CreateOrderError,
 };
 use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
@@ -216,7 +216,14 @@ pub async fn run_paper_pipeline(
         let snapshot = load_risk_state_snapshot(&state.db_pool)
             .await
             .context("failed to load risk state snapshot")?;
-        let evaluator = RiskEvaluator::new(aegis_core::RiskConfig::default());
+        let risk_config = get_risk_config(&state.db_pool)
+            .await
+            .context("failed to load persisted risk config")?
+            .map(|record| risk_config_from_record(&record))
+            .transpose()
+            .context("persisted risk config is invalid")?
+            .unwrap_or_default();
+        let evaluator = RiskEvaluator::new(risk_config);
         let risk_evaluation = evaluator.evaluate(&risk_context, &snapshot);
         let persisted_risk = insert_risk_decision(
             &state.db_pool,

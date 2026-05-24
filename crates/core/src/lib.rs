@@ -1017,10 +1017,13 @@ pub enum RiskRejectionReason {
     KillSwitchActive,
     MaxOpenPositionsExceeded,
     MaxDailyLossExceeded,
+    MaxWeeklyLossExceeded,
+    MaxConsecutiveLossesExceeded,
     SignalTooOld,
     DuplicateOrderDetected,
     DataStale,
     PositionNotionalExceeded,
+    CooldownActive,
     UnsupportedState,
 }
 
@@ -1032,21 +1035,116 @@ pub struct RiskRuleResult {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RiskConfig {
     pub max_open_positions: u32,
-    pub max_daily_loss: Decimal,
-    pub max_signal_age_secs: i64,
+    pub max_daily_loss_pct: Decimal,
+    pub max_weekly_loss_pct: Decimal,
     pub max_position_notional: Decimal,
+    pub max_slippage_pct: Decimal,
+    pub max_consecutive_losses: u32,
+    pub cooldown_seconds: u32,
+    pub max_signal_age_ms: i64,
+    pub stale_feed_threshold_seconds: u32,
+}
+
+impl RiskConfig {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.max_open_positions == 0 {
+            return Err(CoreError::InvalidRiskConfig(
+                "max_open_positions must be greater than zero".to_string(),
+            ));
+        }
+        if self.max_daily_loss_pct <= Decimal::ZERO {
+            return Err(CoreError::InvalidRiskConfig(
+                "max_daily_loss_pct must be greater than zero".to_string(),
+            ));
+        }
+        if self.max_weekly_loss_pct <= Decimal::ZERO {
+            return Err(CoreError::InvalidRiskConfig(
+                "max_weekly_loss_pct must be greater than zero".to_string(),
+            ));
+        }
+        if self.max_position_notional <= Decimal::ZERO {
+            return Err(CoreError::InvalidRiskConfig(
+                "max_position_notional must be greater than zero".to_string(),
+            ));
+        }
+        if self.max_slippage_pct < Decimal::ZERO {
+            return Err(CoreError::InvalidRiskConfig(
+                "max_slippage_pct cannot be negative".to_string(),
+            ));
+        }
+        if self.max_consecutive_losses == 0 {
+            return Err(CoreError::InvalidRiskConfig(
+                "max_consecutive_losses must be greater than zero".to_string(),
+            ));
+        }
+        if self.max_signal_age_ms <= 0 {
+            return Err(CoreError::InvalidRiskConfig(
+                "max_signal_age_ms must be greater than zero".to_string(),
+            ));
+        }
+        if self.stale_feed_threshold_seconds == 0 {
+            return Err(CoreError::InvalidRiskConfig(
+                "stale_feed_threshold_seconds must be greater than zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RiskConfigValidationIssue {
+    pub severity: StrategyConfigValidationSeverity,
+    pub code: String,
+    pub field: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RiskConfigValidationResult {
+    pub valid: bool,
+    pub issues: Vec<RiskConfigValidationIssue>,
+    pub normalized_config: Option<RiskConfig>,
+    pub validated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RiskConfigVersion {
+    pub config_id: Uuid,
+    pub version: i32,
+    pub config: RiskConfig,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RiskConfigAuditEntry {
+    pub audit_id: Uuid,
+    pub config_id: Uuid,
+    pub version: Option<i32>,
+    pub old_config: Option<RiskConfig>,
+    pub new_config: Option<RiskConfig>,
+    pub validation_issues: Vec<RiskConfigValidationIssue>,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
 }
 
 impl Default for RiskConfig {
     fn default() -> Self {
         Self {
             max_open_positions: 2,
-            max_daily_loss: Decimal::new(20_000, 0),
-            max_signal_age_secs: 30,
+            max_daily_loss_pct: Decimal::new(2, 0),
+            max_weekly_loss_pct: Decimal::new(5, 0),
             max_position_notional: Decimal::new(150_000, 0),
+            max_slippage_pct: Decimal::new(1, 0),
+            max_consecutive_losses: 3,
+            cooldown_seconds: 900,
+            max_signal_age_ms: 5_000,
+            stale_feed_threshold_seconds: 10,
         }
     }
 }
@@ -1879,6 +1977,8 @@ pub enum CoreError {
     InvalidStrategyNotional,
     #[error("strategy max_signal_age_ms must be greater than zero: {0}")]
     InvalidStrategyMaxSignalAgeMs(i64),
+    #[error("invalid risk config: {0}")]
+    InvalidRiskConfig(String),
     #[error("strategy symbols cannot be empty")]
     EmptyStrategySymbols,
     #[error("signal confidence must be between 0 and 1: {0}")]

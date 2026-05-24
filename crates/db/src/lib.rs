@@ -6,7 +6,8 @@ use aegis_core::{
     PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder,
     PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
     PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, Side, SignalReason, StrategyConfig,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
+    RiskEvaluationResult, Side, SignalReason, StrategyConfig,
     StrategyConfigAuditEntry, StrategyConfigVersion, StrategyId, StrategySignal, Symbol,
 };
 use anyhow::Result;
@@ -21,6 +22,7 @@ use uuid::Uuid;
 
 pub const MIGRATIONS_DIR: &str = "crates/db/migrations";
 const GLOBAL_SYSTEM_STATE_KEY: &str = "global";
+const GLOBAL_RISK_CONFIG_KEY: &str = "global";
 pub use sqlx::PgPool;
 pub mod test_support;
 
@@ -309,6 +311,50 @@ pub struct StrategyConfigVersionRecord {
 pub struct StrategyConfigAuditRecord {
     pub id: Uuid,
     pub strategy_id: String,
+    pub version: Option<i32>,
+    pub old_config: Option<Value>,
+    pub new_config: Option<Value>,
+    pub validation_issues: Value,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskConfigRecord {
+    pub config_key: String,
+    pub config_id: Uuid,
+    pub max_open_positions: i32,
+    pub max_daily_loss_pct: Decimal,
+    pub max_weekly_loss_pct: Decimal,
+    pub max_position_notional: Decimal,
+    pub max_slippage_pct: Decimal,
+    pub max_consecutive_losses: i32,
+    pub cooldown_seconds: i32,
+    pub max_signal_age_ms: i64,
+    pub stale_feed_threshold_seconds: i32,
+    pub current_version: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskConfigVersionRecord {
+    pub id: Uuid,
+    pub config_key: String,
+    pub config_id: Uuid,
+    pub version: i32,
+    pub config: Value,
+    pub actor_id: Option<Uuid>,
+    pub correlation_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskConfigAuditRecord {
+    pub id: Uuid,
+    pub config_key: String,
+    pub config_id: Uuid,
     pub version: Option<i32>,
     pub old_config: Option<Value>,
     pub new_config: Option<Value>,
@@ -669,13 +715,103 @@ pub async fn load_risk_state_snapshot(pool: &PgPool) -> Result<risk_engine::Risk
     .await
     .ok()
     .flatten();
+    let open_positions_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM paper_positions
+        WHERE status = 'OPEN'
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .ok()
+    .and_then(|count| u32::try_from(count).ok());
+    let current_equity = sqlx::query_scalar::<_, Option<Decimal>>(
+        r#"
+        SELECT current_equity
+        FROM paper_accounts
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten();
+    let daily_realized_loss = sqlx::query_scalar::<_, Option<Decimal>>(
+        r#"
+        SELECT ABS(COALESCE(SUM(pnl), 0))
+        FROM paper_trade_journal
+        WHERE pnl < 0
+          AND created_at >= date_trunc('day', NOW())
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten();
+    let weekly_realized_loss = sqlx::query_scalar::<_, Option<Decimal>>(
+        r#"
+        SELECT ABS(COALESCE(SUM(pnl), 0))
+        FROM paper_trade_journal
+        WHERE pnl < 0
+          AND created_at >= date_trunc('week', NOW())
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten();
+    let recent_pnls = sqlx::query_scalar::<_, Decimal>(
+        r#"
+        SELECT pnl
+        FROM paper_trade_journal
+        WHERE pnl IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 20
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let consecutive_losses = recent_pnls
+        .iter()
+        .take_while(|pnl| **pnl < Decimal::ZERO)
+        .count();
+    let last_trade_at = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        r#"
+        SELECT MAX(COALESCE(filled_at, submitted_at, created_at))
+        FROM orders
+        WHERE execution_state IN ('PAPER_CREATED', 'PAPER_FILLED')
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten();
+
+    let daily_loss_pct = match (daily_realized_loss, current_equity) {
+        (Some(loss), Some(equity)) if equity > Decimal::ZERO => {
+            Some((loss / equity) * Decimal::new(100, 0))
+        }
+        _ => None,
+    };
+    let weekly_loss_pct = match (weekly_realized_loss, current_equity) {
+        (Some(loss), Some(equity)) if equity > Decimal::ZERO => {
+            Some((loss / equity) * Decimal::new(100, 0))
+        }
+        _ => None,
+    };
 
     Ok(risk_engine::RiskStateSnapshot {
         kill_switch_enabled: system_state.kill_switch_enabled,
         kill_switch_reason: system_state.kill_switch_reason,
-        open_positions_count: None,
-        daily_loss: None,
+        open_positions_count,
+        daily_loss_pct,
+        weekly_loss_pct,
+        consecutive_losses: u32::try_from(consecutive_losses).ok(),
         latest_market_data_at,
+        last_trade_at,
     })
 }
 
@@ -3862,6 +3998,397 @@ fn strategy_config_to_value(config: &StrategyConfig) -> Result<Value> {
     Ok(serde_json::to_value(config)?)
 }
 
+pub async fn upsert_risk_config(pool: &PgPool, config: &RiskConfig) -> Result<RiskConfigRecord> {
+    let mut tx = pool.begin().await?;
+    let existing = get_risk_config_tx(&mut tx).await?;
+    let current_version = existing
+        .as_ref()
+        .map(|record| record.current_version)
+        .unwrap_or(1);
+    let config_id = existing
+        .as_ref()
+        .map(|record| record.config_id)
+        .unwrap_or_else(Uuid::new_v4);
+    let record = upsert_risk_config_tx(&mut tx, config_id, config, current_version).await?;
+    tx.commit().await?;
+    Ok(record)
+}
+
+async fn upsert_risk_config_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    config_id: Uuid,
+    config: &RiskConfig,
+    current_version: i32,
+) -> Result<RiskConfigRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO risk_configs (
+            config_key,
+            config_id,
+            max_open_positions,
+            max_daily_loss_pct,
+            max_weekly_loss_pct,
+            max_position_notional,
+            max_slippage_pct,
+            max_consecutive_losses,
+            cooldown_seconds,
+            max_signal_age_ms,
+            stale_feed_threshold_seconds,
+            current_version,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+        ON CONFLICT (config_key) DO UPDATE
+        SET
+            config_id = EXCLUDED.config_id,
+            max_open_positions = EXCLUDED.max_open_positions,
+            max_daily_loss_pct = EXCLUDED.max_daily_loss_pct,
+            max_weekly_loss_pct = EXCLUDED.max_weekly_loss_pct,
+            max_position_notional = EXCLUDED.max_position_notional,
+            max_slippage_pct = EXCLUDED.max_slippage_pct,
+            max_consecutive_losses = EXCLUDED.max_consecutive_losses,
+            cooldown_seconds = EXCLUDED.cooldown_seconds,
+            max_signal_age_ms = EXCLUDED.max_signal_age_ms,
+            stale_feed_threshold_seconds = EXCLUDED.stale_feed_threshold_seconds,
+            current_version = EXCLUDED.current_version,
+            updated_at = NOW()
+        RETURNING
+            config_key,
+            config_id,
+            max_open_positions,
+            max_daily_loss_pct,
+            max_weekly_loss_pct,
+            max_position_notional,
+            max_slippage_pct,
+            max_consecutive_losses,
+            cooldown_seconds,
+            max_signal_age_ms,
+            stale_feed_threshold_seconds,
+            current_version,
+            created_at,
+            updated_at
+        "#,
+    )
+    .bind(GLOBAL_RISK_CONFIG_KEY)
+    .bind(config_id)
+    .bind(config.max_open_positions as i32)
+    .bind(config.max_daily_loss_pct)
+    .bind(config.max_weekly_loss_pct)
+    .bind(config.max_position_notional)
+    .bind(config.max_slippage_pct)
+    .bind(config.max_consecutive_losses as i32)
+    .bind(config.cooldown_seconds as i32)
+    .bind(config.max_signal_age_ms)
+    .bind(config.stale_feed_threshold_seconds as i32)
+    .bind(current_version)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(map_risk_config(&row))
+}
+
+async fn get_risk_config_tx(
+    tx: &mut Transaction<'_, Postgres>,
+) -> Result<Option<RiskConfigRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            config_key,
+            config_id,
+            max_open_positions,
+            max_daily_loss_pct,
+            max_weekly_loss_pct,
+            max_position_notional,
+            max_slippage_pct,
+            max_consecutive_losses,
+            cooldown_seconds,
+            max_signal_age_ms,
+            stale_feed_threshold_seconds,
+            current_version,
+            created_at,
+            updated_at
+        FROM risk_configs
+        WHERE config_key = $1
+        "#,
+    )
+    .bind(GLOBAL_RISK_CONFIG_KEY)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    Ok(row.as_ref().map(map_risk_config))
+}
+
+pub async fn get_risk_config(pool: &PgPool) -> Result<Option<RiskConfigRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            config_key,
+            config_id,
+            max_open_positions,
+            max_daily_loss_pct,
+            max_weekly_loss_pct,
+            max_position_notional,
+            max_slippage_pct,
+            max_consecutive_losses,
+            cooldown_seconds,
+            max_signal_age_ms,
+            stale_feed_threshold_seconds,
+            current_version,
+            created_at,
+            updated_at
+        FROM risk_configs
+        WHERE config_key = $1
+        "#,
+    )
+    .bind(GLOBAL_RISK_CONFIG_KEY)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_risk_config))
+}
+
+pub fn risk_config_from_record(record: &RiskConfigRecord) -> Result<RiskConfig> {
+    let config = RiskConfig {
+        max_open_positions: record.max_open_positions as u32,
+        max_daily_loss_pct: record.max_daily_loss_pct,
+        max_weekly_loss_pct: record.max_weekly_loss_pct,
+        max_position_notional: record.max_position_notional,
+        max_slippage_pct: record.max_slippage_pct,
+        max_consecutive_losses: record.max_consecutive_losses as u32,
+        cooldown_seconds: record.cooldown_seconds as u32,
+        max_signal_age_ms: record.max_signal_age_ms,
+        stale_feed_threshold_seconds: record.stale_feed_threshold_seconds as u32,
+    };
+    config.validate()?;
+    Ok(config)
+}
+
+pub async fn persist_risk_config_version(
+    pool: &PgPool,
+    config: &RiskConfig,
+    actor_id: Option<Uuid>,
+    correlation_id: Uuid,
+) -> Result<RiskConfigRecord> {
+    let mut tx = pool.begin().await?;
+    let existing = get_risk_config_tx(&mut tx).await?;
+    let next_version = existing
+        .as_ref()
+        .map(|record| record.current_version + 1)
+        .unwrap_or(1);
+    let config_id = existing
+        .as_ref()
+        .map(|record| record.config_id)
+        .unwrap_or_else(Uuid::new_v4);
+    let record = upsert_risk_config_tx(&mut tx, config_id, config, next_version).await?;
+    let config_json = risk_config_to_value(config)?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO risk_config_versions (
+            id,
+            config_key,
+            config_id,
+            version,
+            config,
+            actor_id,
+            correlation_id,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(GLOBAL_RISK_CONFIG_KEY)
+    .bind(config_id)
+    .bind(next_version)
+    .bind(config_json)
+    .bind(actor_id)
+    .bind(correlation_id)
+    .execute(&mut *tx)
+    .await?;
+
+    insert_risk_config_audit_tx(
+        &mut tx,
+        &RiskConfigAuditEntry {
+            audit_id: Uuid::new_v4(),
+            config_id,
+            version: Some(next_version),
+            old_config: existing.as_ref().map(risk_config_from_record).transpose()?,
+            new_config: Some(config.clone()),
+            validation_issues: Vec::new(),
+            actor_id,
+            correlation_id,
+            created_at: Utc::now(),
+        },
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(record)
+}
+
+pub async fn insert_risk_config_audit(
+    pool: &PgPool,
+    entry: &RiskConfigAuditEntry,
+) -> Result<RiskConfigAuditRecord> {
+    let mut tx = pool.begin().await?;
+    let record = insert_risk_config_audit_tx(&mut tx, entry).await?;
+    tx.commit().await?;
+    Ok(record)
+}
+
+pub async fn list_risk_config_versions(pool: &PgPool) -> Result<Vec<RiskConfigVersionRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            config_key,
+            config_id,
+            version,
+            config,
+            actor_id,
+            correlation_id,
+            created_at
+        FROM risk_config_versions
+        WHERE config_key = $1
+        ORDER BY version DESC, created_at DESC
+        "#,
+    )
+    .bind(GLOBAL_RISK_CONFIG_KEY)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_risk_config_version).collect())
+}
+
+pub async fn list_risk_config_audit(pool: &PgPool) -> Result<Vec<RiskConfigAuditRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            config_key,
+            config_id,
+            version,
+            old_config,
+            new_config,
+            validation_issues,
+            actor_id,
+            correlation_id,
+            created_at
+        FROM risk_config_audit
+        WHERE config_key = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(GLOBAL_RISK_CONFIG_KEY)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_risk_config_audit).collect())
+}
+
+pub fn risk_config_version_from_record(
+    record: &RiskConfigVersionRecord,
+) -> Result<RiskConfigVersion> {
+    Ok(RiskConfigVersion {
+        config_id: record.config_id,
+        version: record.version,
+        config: serde_json::from_value(record.config.clone())?,
+        actor_id: record.actor_id,
+        correlation_id: record.correlation_id,
+        created_at: record.created_at,
+    })
+}
+
+pub fn risk_config_audit_from_record(
+    record: &RiskConfigAuditRecord,
+) -> Result<RiskConfigAuditEntry> {
+    Ok(RiskConfigAuditEntry {
+        audit_id: record.id,
+        config_id: record.config_id,
+        version: record.version,
+        old_config: record
+            .old_config
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()?,
+        new_config: record
+            .new_config
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()?,
+        validation_issues: serde_json::from_value(record.validation_issues.clone())?,
+        actor_id: record.actor_id,
+        correlation_id: record.correlation_id,
+        created_at: record.created_at,
+    })
+}
+
+async fn insert_risk_config_audit_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    entry: &RiskConfigAuditEntry,
+) -> Result<RiskConfigAuditRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO risk_config_audit (
+            id,
+            config_key,
+            config_id,
+            version,
+            old_config,
+            new_config,
+            validation_issues,
+            actor_id,
+            correlation_id,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING
+            id,
+            config_key,
+            config_id,
+            version,
+            old_config,
+            new_config,
+            validation_issues,
+            actor_id,
+            correlation_id,
+            created_at
+        "#,
+    )
+    .bind(entry.audit_id)
+    .bind(GLOBAL_RISK_CONFIG_KEY)
+    .bind(entry.config_id)
+    .bind(entry.version)
+    .bind(
+        entry
+            .old_config
+            .as_ref()
+            .map(risk_config_to_value)
+            .transpose()?,
+    )
+    .bind(
+        entry
+            .new_config
+            .as_ref()
+            .map(risk_config_to_value)
+            .transpose()?,
+    )
+    .bind(serde_json::to_value(&entry.validation_issues)?)
+    .bind(entry.actor_id)
+    .bind(entry.correlation_id)
+    .bind(entry.created_at)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(map_risk_config_audit(&row))
+}
+
+fn risk_config_to_value(config: &RiskConfig) -> Result<Value> {
+    Ok(serde_json::to_value(config)?)
+}
+
 pub async fn upsert_market_feed_status(
     pool: &PgPool,
     exchange: MarketDataSource,
@@ -4248,6 +4775,53 @@ fn map_strategy_config_audit(row: &sqlx::postgres::PgRow) -> StrategyConfigAudit
     StrategyConfigAuditRecord {
         id: row.get("id"),
         strategy_id: row.get("strategy_id"),
+        version: row.get("version"),
+        old_config: row.get("old_config"),
+        new_config: row.get("new_config"),
+        validation_issues: row.get("validation_issues"),
+        actor_id: row.get("actor_id"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_risk_config(row: &sqlx::postgres::PgRow) -> RiskConfigRecord {
+    RiskConfigRecord {
+        config_key: row.get("config_key"),
+        config_id: row.get("config_id"),
+        max_open_positions: row.get("max_open_positions"),
+        max_daily_loss_pct: row.get("max_daily_loss_pct"),
+        max_weekly_loss_pct: row.get("max_weekly_loss_pct"),
+        max_position_notional: row.get("max_position_notional"),
+        max_slippage_pct: row.get("max_slippage_pct"),
+        max_consecutive_losses: row.get("max_consecutive_losses"),
+        cooldown_seconds: row.get("cooldown_seconds"),
+        max_signal_age_ms: row.get("max_signal_age_ms"),
+        stale_feed_threshold_seconds: row.get("stale_feed_threshold_seconds"),
+        current_version: row.get("current_version"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn map_risk_config_version(row: &sqlx::postgres::PgRow) -> RiskConfigVersionRecord {
+    RiskConfigVersionRecord {
+        id: row.get("id"),
+        config_key: row.get("config_key"),
+        config_id: row.get("config_id"),
+        version: row.get("version"),
+        config: row.get("config"),
+        actor_id: row.get("actor_id"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_risk_config_audit(row: &sqlx::postgres::PgRow) -> RiskConfigAuditRecord {
+    RiskConfigAuditRecord {
+        id: row.get("id"),
+        config_key: row.get("config_key"),
+        config_id: row.get("config_id"),
         version: row.get("version"),
         old_config: row.get("old_config"),
         new_config: row.get("new_config"),

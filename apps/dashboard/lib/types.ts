@@ -75,6 +75,88 @@ export type RiskActionResponse = {
   timestamp: string;
 };
 
+export type RiskConfig = {
+  max_open_positions: number;
+  max_daily_loss_pct: string;
+  max_weekly_loss_pct: string;
+  max_position_notional: string;
+  max_slippage_pct: string;
+  max_consecutive_losses: number;
+  cooldown_seconds: number;
+  max_signal_age_ms: number;
+  stale_feed_threshold_seconds: number;
+};
+
+export type RiskConfigView = RiskConfig & {
+  config_id: string;
+  config_version: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RiskConfigResponse = {
+  config: RiskConfigView;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type RiskConfigValidationIssue = {
+  severity: "ERROR" | "WARN";
+  code: string;
+  field: string;
+  message: string;
+};
+
+export type RiskConfigValidationResult = {
+  valid: boolean;
+  issues: RiskConfigValidationIssue[];
+  normalized_config: RiskConfig | null;
+  validated_at: string;
+};
+
+export type RiskConfigValidationResponse = {
+  validation: RiskConfigValidationResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type RiskConfigVersion = {
+  config_id: string;
+  version: number;
+  config: RiskConfig;
+  actor_id: string | null;
+  correlation_id: string;
+  created_at: string;
+};
+
+export type RiskConfigVersionsResponse = {
+  versions: RiskConfigVersion[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type RiskConfigAuditEntry = {
+  audit_id: string;
+  config_id: string;
+  version: number | null;
+  old_config: RiskConfig | null;
+  new_config: RiskConfig | null;
+  validation_issues: RiskConfigValidationIssue[];
+  actor_id: string | null;
+  correlation_id: string;
+  created_at: string;
+};
+
+export type RiskConfigAuditResponse = {
+  audit: RiskConfigAuditEntry[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type RiskDecisionRecord = {
   id: string;
   signal_id: string | null;

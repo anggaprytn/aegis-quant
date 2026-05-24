@@ -29,6 +29,11 @@ import type {
   PaperTradeJournalResponse,
   RecentSignalsResponse,
   RiskActionResponse,
+  RiskConfig,
+  RiskConfigAuditResponse,
+  RiskConfigResponse,
+  RiskConfigValidationResponse,
+  RiskConfigVersionsResponse,
   RiskDecisionResponse,
   RiskDecisionsResponse,
   RiskStatusResponse,
@@ -136,6 +141,19 @@ export const api = {
   getMetricsText: () => requestText("/metrics"),
   getSystemStatus: () => request<StatusResponse>("/system/status"),
   getRiskStatus: () => request<RiskStatusResponse>("/risk/status"),
+  getRiskConfig: () => request<RiskConfigResponse>("/risk/config"),
+  validateRiskConfig: (payload: RiskConfig) =>
+    request<RiskConfigValidationResponse>("/risk/config/validate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateRiskConfig: (payload: RiskConfig) =>
+    request<RiskConfigResponse>("/risk/config/update", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getRiskConfigVersions: () => request<RiskConfigVersionsResponse>("/risk/config/versions"),
+  getRiskConfigAudit: () => request<RiskConfigAuditResponse>("/risk/config/audit"),
   activateKillSwitch: (reason?: string) =>
     request<RiskActionResponse>("/risk/kill-switch", {
       method: "POST",

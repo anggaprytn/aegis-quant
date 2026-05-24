@@ -7,7 +7,8 @@ use crate::api::{
     CandleBackfillRunsResponse, FeedStatusResponse, HealthResponse, OrderRecord,
     PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse,
     PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse,
-    RiskActionResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
+    RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
+    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
     StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDryRunResponse, StrategyListResponse, StrategyStatusResponse,
 };
@@ -97,6 +98,64 @@ pub fn print_risk_action(response: &RiskActionResponse) {
         }
     );
     println!("Correlation ID: {}", response.correlation_id);
+}
+
+pub fn print_risk_config(response: &RiskConfigResponse) {
+    let config = &response.config;
+    println!("Risk config ID: {}", config.config_id);
+    println!("Max open positions: {}", config.max_open_positions);
+    println!("Max daily loss %: {}", config.max_daily_loss_pct);
+    println!("Max weekly loss %: {}", config.max_weekly_loss_pct);
+    println!("Max position notional: {}", config.max_position_notional);
+    println!("Max slippage %: {}", config.max_slippage_pct);
+    println!("Max consecutive losses: {}", config.max_consecutive_losses);
+    println!("Cooldown seconds: {}", config.cooldown_seconds);
+    println!("Max signal age ms: {}", config.max_signal_age_ms);
+    println!(
+        "Stale feed threshold seconds: {}",
+        config.stale_feed_threshold_seconds
+    );
+    println!("Config version: {}", config.config_version);
+}
+
+pub fn print_risk_config_validation(response: &RiskConfigValidationResponse) {
+    println!("Valid: {}", response.validation.valid);
+    for issue in &response.validation.issues {
+        println!(
+            "{}  {} {} {}",
+            issue.severity.as_str(),
+            issue.code,
+            issue.field,
+            issue.message
+        );
+    }
+}
+
+pub fn print_risk_config_versions(response: &RiskConfigVersionsResponse) {
+    for version in &response.versions {
+        println!(
+            "v{}  config_id={} max_open_positions={} max_notional={}",
+            version.version,
+            version.config_id,
+            version.config.max_open_positions,
+            version.config.max_position_notional
+        );
+    }
+}
+
+pub fn print_risk_config_audit(response: &RiskConfigAuditResponse) {
+    for entry in &response.audit {
+        println!(
+            "{}  config_id={} version={} issues={}",
+            entry.created_at.to_rfc3339(),
+            entry.config_id,
+            entry
+                .version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            entry.validation_issues.len()
+        );
+    }
 }
 
 pub fn print_pipeline_result(result: &PaperTradingPipelineResult) {

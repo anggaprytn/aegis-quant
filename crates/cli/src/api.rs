@@ -1,6 +1,7 @@
 use aegis_core::{
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, PaperTradingPipelineRequest,
-    PaperTradingPipelineResult, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
+    RiskConfigVersion, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDryRunRequest,
     StrategyDryRunResult,
 };
@@ -231,6 +232,32 @@ impl ApiClient {
 
     pub async fn risk_status(&self) -> Result<RiskStatusResponse, ApiClientError> {
         self.get("/risk/status", &[]).await
+    }
+
+    pub async fn risk_config(&self) -> Result<RiskConfigResponse, ApiClientError> {
+        self.get("/risk/config", &[]).await
+    }
+
+    pub async fn validate_risk_config(
+        &self,
+        request: &RiskConfig,
+    ) -> Result<RiskConfigValidationResponse, ApiClientError> {
+        self.post("/risk/config/validate", request).await
+    }
+
+    pub async fn update_risk_config(
+        &self,
+        request: &RiskConfig,
+    ) -> Result<RiskConfigResponse, ApiClientError> {
+        self.post("/risk/config/update", request).await
+    }
+
+    pub async fn risk_config_versions(&self) -> Result<RiskConfigVersionsResponse, ApiClientError> {
+        self.get("/risk/config/versions", &[]).await
+    }
+
+    pub async fn risk_config_audit(&self) -> Result<RiskConfigAuditResponse, ApiClientError> {
+        self.get("/risk/config/audit", &[]).await
     }
 
     pub async fn market_feed_status(&self) -> Result<FeedStatusResponse, ApiClientError> {
@@ -598,6 +625,55 @@ pub struct RiskActionResponse {
     pub paper_trading_allowed: bool,
     pub live_trading_allowed: bool,
     pub kill_switch: SystemStateSnapshot,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RiskConfigView {
+    pub config_id: Uuid,
+    pub max_open_positions: i32,
+    pub max_daily_loss_pct: String,
+    pub max_weekly_loss_pct: String,
+    pub max_position_notional: String,
+    pub max_slippage_pct: String,
+    pub max_consecutive_losses: i32,
+    pub cooldown_seconds: i32,
+    pub max_signal_age_ms: i64,
+    pub stale_feed_threshold_seconds: i32,
+    pub config_version: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RiskConfigResponse {
+    pub config: RiskConfigView,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RiskConfigValidationResponse {
+    pub validation: RiskConfigValidationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RiskConfigVersionsResponse {
+    pub versions: Vec<RiskConfigVersion>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RiskConfigAuditResponse {
+    pub audit: Vec<RiskConfigAuditEntry>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -1032,6 +1108,22 @@ pub fn build_strategy_config_request(
         holding_candles: args.holding_candles,
         notes: args.notes.clone(),
     })
+}
+
+pub fn build_risk_config_request(args: &crate::cli::RiskConfigArgs) -> anyhow::Result<RiskConfig> {
+    let config = RiskConfig {
+        max_open_positions: args.max_open_positions,
+        max_daily_loss_pct: args.max_daily_loss_pct,
+        max_weekly_loss_pct: args.max_weekly_loss_pct,
+        max_position_notional: args.max_position_notional,
+        max_slippage_pct: args.max_slippage_pct,
+        max_consecutive_losses: args.max_consecutive_losses,
+        cooldown_seconds: args.cooldown_seconds,
+        max_signal_age_ms: args.max_signal_age_ms,
+        stale_feed_threshold_seconds: args.stale_feed_threshold_seconds,
+    };
+    config.validate().context("invalid risk config request")?;
+    Ok(config)
 }
 
 pub fn build_pipeline_request(args: &crate::cli::PipelineRunArgs) -> PaperTradingPipelineRequest {

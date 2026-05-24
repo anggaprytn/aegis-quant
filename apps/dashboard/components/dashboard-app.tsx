@@ -18,6 +18,7 @@ import type {
   MarketFeedStatusRecord,
   OrderRecord,
   PaperPositionRecord,
+  RiskConfig,
   RiskDecisionRecord,
   StrategyConfigUpdateRequest,
   StrategyStatusView,
@@ -94,6 +95,20 @@ function strategyConfigFormFromStatus(
     take_profit_pct: strategy?.take_profit_pct ?? null,
     holding_candles: strategy?.holding_candles ?? 3,
     notes: strategy?.notes ?? "",
+  };
+}
+
+function riskConfigFormFromView(config?: RiskConfig): RiskConfig {
+  return {
+    max_open_positions: config?.max_open_positions ?? 2,
+    max_daily_loss_pct: config?.max_daily_loss_pct ?? "2",
+    max_weekly_loss_pct: config?.max_weekly_loss_pct ?? "5",
+    max_position_notional: config?.max_position_notional ?? "150000",
+    max_slippage_pct: config?.max_slippage_pct ?? "1",
+    max_consecutive_losses: config?.max_consecutive_losses ?? 3,
+    cooldown_seconds: config?.cooldown_seconds ?? 900,
+    max_signal_age_ms: config?.max_signal_age_ms ?? 5000,
+    stale_feed_threshold_seconds: config?.stale_feed_threshold_seconds ?? 10,
   };
 }
 
@@ -190,6 +205,7 @@ export function DashboardApp() {
     useState<CandleBackfillResult | null>(null);
   const [strategyConfigForm, setStrategyConfigForm] =
     useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
+  const [riskConfigForm, setRiskConfigForm] = useState<RiskConfig>(riskConfigFormFromView());
 
   const healthQuery = useQuery({
     queryKey: ["system-health"],
@@ -269,6 +285,21 @@ export function DashboardApp() {
   const latestRiskDecisionsQuery = useQuery({
     queryKey: ["risk-decisions-latest"],
     queryFn: () => api.getRiskDecisions(undefined, 20),
+    refetchInterval: 10_000,
+  });
+  const riskConfigQuery = useQuery({
+    queryKey: ["risk-config"],
+    queryFn: api.getRiskConfig,
+    refetchInterval: 10_000,
+  });
+  const riskConfigVersionsQuery = useQuery({
+    queryKey: ["risk-config-versions"],
+    queryFn: api.getRiskConfigVersions,
+    refetchInterval: 10_000,
+  });
+  const riskConfigAuditQuery = useQuery({
+    queryKey: ["risk-config-audit"],
+    queryFn: api.getRiskConfigAudit,
     refetchInterval: 10_000,
   });
   const backtestRunsQuery = useQuery({
@@ -398,6 +429,12 @@ export function DashboardApp() {
   }, [selectedStrategyStatusQuery.data?.strategy]);
 
   useEffect(() => {
+    if (riskConfigQuery.data?.config) {
+      setRiskConfigForm(riskConfigFormFromView(riskConfigQuery.data.config));
+    }
+  }, [riskConfigQuery.data?.config]);
+
+  useEffect(() => {
     if (!selectedOrderId && ordersQuery.data?.orders[0]) {
       setSelectedOrderId(ordersQuery.data.orders[0].order_id);
     }
@@ -424,6 +461,9 @@ export function DashboardApp() {
   const refreshOperationalData = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["risk-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["risk-config"] }),
+      queryClient.invalidateQueries({ queryKey: ["risk-config-versions"] }),
+      queryClient.invalidateQueries({ queryKey: ["risk-config-audit"] }),
       queryClient.invalidateQueries({ queryKey: ["risk-decisions"] }),
       queryClient.invalidateQueries({ queryKey: ["orders"] }),
       queryClient.invalidateQueries({ queryKey: ["signals"] }),
@@ -509,6 +549,20 @@ export function DashboardApp() {
         timeframe: strategyConfigForm.timeframe,
         config_override: strategyConfigForm,
       }),
+  });
+
+  const validateRiskConfigMutation = useMutation({
+    mutationFn: () => api.validateRiskConfig(riskConfigForm),
+  });
+
+  const updateRiskConfigMutation = useMutation({
+    mutationFn: () => api.updateRiskConfig(riskConfigForm),
+    onSuccess: async () => {
+      await refreshOperationalData();
+      await queryClient.invalidateQueries({ queryKey: ["risk-config"] });
+      await queryClient.invalidateQueries({ queryKey: ["risk-config-versions"] });
+      await queryClient.invalidateQueries({ queryKey: ["risk-config-audit"] });
+    },
   });
 
   const runBacktestMutation = useMutation({
@@ -1382,6 +1436,151 @@ export function DashboardApp() {
                   loading={riskQuery.isLoading}
                   error={getErrorMessage(riskQuery.error)}
                 />
+              </Panel>
+              <Panel className="xl:col-span-8" title="Risk Config">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field
+                    label="Max Open Positions"
+                    value={String(riskConfigForm.max_open_positions)}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        max_open_positions: Number(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Daily Loss %"
+                    value={riskConfigForm.max_daily_loss_pct}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        max_daily_loss_pct: value,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Weekly Loss %"
+                    value={riskConfigForm.max_weekly_loss_pct}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        max_weekly_loss_pct: value,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Position Notional"
+                    value={riskConfigForm.max_position_notional}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        max_position_notional: value,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Slippage %"
+                    value={riskConfigForm.max_slippage_pct}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        max_slippage_pct: value,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Consecutive Losses"
+                    value={String(riskConfigForm.max_consecutive_losses)}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        max_consecutive_losses: Number(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Cooldown Seconds"
+                    value={String(riskConfigForm.cooldown_seconds)}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        cooldown_seconds: Number(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Signal Age ms"
+                    value={String(riskConfigForm.max_signal_age_ms)}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        max_signal_age_ms: Number(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Stale Feed Threshold s"
+                    value={String(riskConfigForm.stale_feed_threshold_seconds)}
+                    onChange={(value) =>
+                      setRiskConfigForm((current) => ({
+                        ...current,
+                        stale_feed_threshold_seconds: Number(value),
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <ActionButton
+                    label="Validate"
+                    onClick={() => validateRiskConfigMutation.mutate()}
+                    busy={validateRiskConfigMutation.isPending}
+                  />
+                  <ActionButton
+                    label="Update"
+                    onClick={() => updateRiskConfigMutation.mutate()}
+                    busy={updateRiskConfigMutation.isPending}
+                  />
+                </div>
+                <InlineStatus
+                  error={
+                    getErrorMessage(validateRiskConfigMutation.error) ??
+                    getErrorMessage(updateRiskConfigMutation.error)
+                  }
+                  success={
+                    validateRiskConfigMutation.data
+                      ? `validation: ${validateRiskConfigMutation.data.validation.valid ? "valid" : "rejected"}`
+                      : updateRiskConfigMutation.data
+                        ? "risk config updated"
+                        : undefined
+                  }
+                />
+                <div className="mt-3 rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                  <div className="font-medium text-slate-100">Validation Issues</div>
+                  {(validateRiskConfigMutation.data?.validation.issues ?? []).map((issue) => (
+                    <div key={`${issue.field}-${issue.code}`}>
+                      {issue.severity} {issue.field}: {issue.message}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                  <div className="font-medium text-slate-100">Config Versions</div>
+                  {(riskConfigVersionsQuery.data?.versions ?? []).slice(0, 5).map((entry) => (
+                    <div key={`${entry.config_id}-${entry.version}`}>
+                      v{entry.version} max_open_positions={entry.config.max_open_positions} max_notional=
+                      {entry.config.max_position_notional}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                  <div className="font-medium text-slate-100">Recent Config Audit</div>
+                  {(riskConfigAuditQuery.data?.audit ?? []).slice(0, 5).map((entry) => (
+                    <div key={entry.audit_id}>
+                      {formatDateTime(entry.created_at)} v{entry.version ?? "-"} issues=
+                      {entry.validation_issues.length}
+                    </div>
+                  ))}
+                </div>
               </Panel>
               <Panel className="xl:col-span-8" title="Recent Risk Events">
                 <EventsTable
