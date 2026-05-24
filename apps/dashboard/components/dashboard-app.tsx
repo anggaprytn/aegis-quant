@@ -125,7 +125,7 @@ function strategyConfigFormFromStatus(
     symbols: strategy?.symbols ?? ["BTCUSDT"],
     timeframe: strategy?.timeframe ?? "1m",
     suggested_notional: strategy?.suggested_notional ?? "100000",
-    max_signal_age_ms: strategy?.max_signal_age_ms ?? 5000,
+    max_signal_age_ms: strategy?.max_signal_age_ms ?? 180000,
     cooldown_seconds: strategy?.cooldown_seconds ?? 900,
     lookback_candles: strategy?.lookback_candles ?? 3,
     confidence_floor: strategy?.confidence_floor ?? null,

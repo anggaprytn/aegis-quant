@@ -1901,7 +1901,7 @@ ROTATE API KEY
   "mode": "paper",
   "symbols": ["BTCUSDT", "ETHUSDT"],
   "timeframe": "5m",
-  "max_signal_age_ms": 5000,
+  "max_signal_age_ms": 180000,
   "cooldown_seconds": 900
 }
 ```

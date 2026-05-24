@@ -155,6 +155,14 @@ pub fn validate_strategy_config(
             "max_signal_age_ms must be between 1_000 and 300_000",
         ));
     }
+    if timeframe == CandleInterval::OneMinute && request.max_signal_age_ms < 60_000 {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Warn,
+            "max_signal_age_ms_too_low_for_1m",
+            "max_signal_age_ms",
+            "1m candle strategies should use at least 60_000ms; recommended range is 120_000-300_000ms",
+        ));
+    }
 
     if request.cooldown_seconds > 86_400 {
         issues.push(issue(
@@ -843,7 +851,7 @@ pub fn build_default_strategy_configs(
             symbols: symbols.clone(),
             timeframe,
             suggested_notional,
-            max_signal_age_ms: 5_000,
+            max_signal_age_ms: 180_000,
             cooldown_seconds: 900,
             lookback_candles: momentum_lookback_candles,
             confidence_floor: None,
@@ -859,7 +867,7 @@ pub fn build_default_strategy_configs(
             symbols,
             timeframe,
             suggested_notional,
-            max_signal_age_ms: 5_000,
+            max_signal_age_ms: 180_000,
             cooldown_seconds: 900,
             lookback_candles: breakout_lookback_candles,
             confidence_floor: None,
@@ -938,8 +946,8 @@ mod tests {
     };
     use aegis_core::{
         Candle, CandleInterval, MarketDataSource, SignalReason, StrategyConfigUpdateRequest,
-        StrategyDiagnosticsDecision, StrategyEvaluationContext, StrategyId, StrategyMode,
-        StrategyNoSignalReason, Symbol,
+        StrategyConfigValidationSeverity, StrategyDiagnosticsDecision, StrategyEvaluationContext,
+        StrategyId, StrategyMode, StrategyNoSignalReason, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -1011,7 +1019,7 @@ mod tests {
             symbols: vec!["BTCUSDT".to_string()],
             timeframe: "1m".to_string(),
             suggested_notional: Decimal::new(100_000, 0),
-            max_signal_age_ms: 5_000,
+            max_signal_age_ms: 180_000,
             cooldown_seconds: 900,
             lookback_candles: 3,
             confidence_floor: None,
@@ -1200,6 +1208,20 @@ mod tests {
     }
 
     #[test]
+    fn default_strategy_configs_use_safer_1m_signal_age() {
+        let configs = build_default_strategy_configs(
+            vec![Symbol::new("BTCUSDT").expect("valid symbol")],
+            CandleInterval::OneMinute,
+            Decimal::new(100_000, 0),
+            3,
+            20,
+        );
+        assert!(configs
+            .iter()
+            .all(|config| config.max_signal_age_ms == 180_000));
+    }
+
+    #[test]
     fn unknown_strategy_rejected() {
         let result = validate_strategy_config(&sample_request("nope"), &validation_context());
         assert!(!result.valid);
@@ -1276,5 +1298,40 @@ mod tests {
         request.take_profit_pct = Some(Decimal::new(51, 0));
         let result = validate_strategy_config(&request, &validation_context());
         assert!(!result.valid);
+    }
+
+    #[test]
+    fn one_minute_strategy_with_low_signal_age_emits_warning() {
+        let mut request = sample_request("momentum_v1");
+        request.max_signal_age_ms = 5_000;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(result.valid);
+        assert!(result.issues.iter().any(|issue| {
+            issue.severity == StrategyConfigValidationSeverity::Warn
+                && issue.code == "max_signal_age_ms_too_low_for_1m"
+        }));
+    }
+
+    #[test]
+    fn one_minute_strategy_with_180000_signal_age_has_no_warning() {
+        let request = sample_request("momentum_v1");
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(result.valid);
+        assert!(!result.issues.iter().any(|issue| {
+            issue.severity == StrategyConfigValidationSeverity::Warn
+                && issue.field == "max_signal_age_ms"
+        }));
+    }
+
+    #[test]
+    fn max_signal_age_outside_hard_bounds_is_still_rejected() {
+        let mut request = sample_request("momentum_v1");
+        request.max_signal_age_ms = 999;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|issue| {
+            issue.severity == StrategyConfigValidationSeverity::Error
+                && issue.code == "invalid_max_signal_age_ms"
+        }));
     }
 }

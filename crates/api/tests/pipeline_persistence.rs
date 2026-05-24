@@ -48,7 +48,7 @@ fn strategy_config() -> StrategyConfig {
         symbols: vec![Symbol::new("BTCUSDT").expect("valid symbol")],
         timeframe: CandleInterval::OneMinute,
         suggested_notional: Decimal::new(100_000, 0),
-        max_signal_age_ms: 5_000,
+        max_signal_age_ms: 180_000,
         cooldown_seconds: 900,
         lookback_candles: 3,
         confidence_floor: None,
