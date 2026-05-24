@@ -15,7 +15,7 @@ use aegis_core::{
     Side, SignalReason, StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
     StrategyConfigVersion, StrategyDecisionBreakdown, StrategyId, StrategyPerformanceMode,
     StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
-    StrategyRiskBreakdown, StrategySignal, Symbol, TestnetExecutionState,
+    StrategyRiskBreakdown, StrategySignal, StrategyStatus, Symbol, TestnetExecutionState,
     TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
     TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetPromotionQualitySignal, TestnetShadowDecision,
@@ -1475,17 +1475,17 @@ pub async fn get_risk_decision_by_id(
     let row = sqlx::query(
         r#"
         SELECT
-            id,
-            correlation_id,
-            signal_id,
-            decision,
-            rationale,
-            decided_at,
-            COALESCE(s.strategy_id, rationale::jsonb ->> 'strategy_id') AS strategy_id,
-            COALESCE(s.symbol, rationale::jsonb ->> 'symbol') AS symbol
-        FROM risk_decisions
-        LEFT JOIN signals s ON s.id = risk_decisions.signal_id
-        WHERE id = $1
+            rd.id,
+            rd.correlation_id,
+            rd.signal_id,
+            rd.decision,
+            rd.rationale,
+            rd.decided_at,
+            COALESCE(s.strategy_id, rd.rationale::jsonb ->> 'strategy_id') AS strategy_id,
+            COALESCE(s.symbol, rd.rationale::jsonb ->> 'symbol') AS symbol
+        FROM risk_decisions rd
+        LEFT JOIN signals s ON s.id = rd.signal_id
+        WHERE rd.id = $1
         "#,
     )
     .bind(risk_decision_id)
@@ -1500,21 +1500,21 @@ pub async fn list_recent_risk_decisions_filtered(
     symbol: Option<&str>,
     limit: i64,
 ) -> Result<Vec<RiskDecisionRecord>> {
-    let row = sqlx::query(
+    let rows = sqlx::query(
         r#"
         SELECT
-            id,
-            correlation_id,
-            signal_id,
-            decision,
-            rationale,
-            decided_at,
-            COALESCE(s.strategy_id, rationale::jsonb ->> 'strategy_id') AS strategy_id,
-            COALESCE(s.symbol, rationale::jsonb ->> 'symbol') AS symbol
-        FROM risk_decisions
-        LEFT JOIN signals s ON s.id = risk_decisions.signal_id
-        WHERE ($1::text IS NULL OR COALESCE(s.symbol, rationale::jsonb ->> 'symbol') = $1)
-        ORDER BY decided_at DESC
+            rd.id,
+            rd.correlation_id,
+            rd.signal_id,
+            rd.decision,
+            rd.rationale,
+            rd.decided_at,
+            COALESCE(s.strategy_id, rd.rationale::jsonb ->> 'strategy_id') AS strategy_id,
+            COALESCE(s.symbol, rd.rationale::jsonb ->> 'symbol') AS symbol
+        FROM risk_decisions rd
+        LEFT JOIN signals s ON s.id = rd.signal_id
+        WHERE ($1::text IS NULL OR COALESCE(s.symbol, rd.rationale::jsonb ->> 'symbol') = $1)
+        ORDER BY rd.decided_at DESC
         LIMIT $2
         "#,
     )
@@ -1523,7 +1523,7 @@ pub async fn list_recent_risk_decisions_filtered(
     .fetch_all(pool)
     .await?;
 
-    Ok(row.iter().map(map_risk_decision).collect())
+    Ok(rows.iter().map(map_risk_decision).collect())
 }
 
 pub async fn list_recent_risk_decisions(
@@ -7057,6 +7057,11 @@ async fn upsert_strategy_config_tx(
     config: &StrategyConfig,
     current_version: i32,
 ) -> Result<StrategyConfigRecord> {
+    let status = if config.enabled {
+        StrategyStatus::Enabled
+    } else {
+        StrategyStatus::Disabled
+    };
     let symbols = config
         .symbols
         .iter()
@@ -7068,11 +7073,14 @@ async fn upsert_strategy_config_tx(
         r#"
         INSERT INTO strategy_configs (
             strategy_id,
+            status,
             enabled,
             mode,
             symbols,
             timeframe,
             suggested_notional,
+            momentum_lookback_candles,
+            breakout_lookback_candles,
             max_signal_age_ms,
             cooldown_seconds,
             lookback_candles,
@@ -7085,14 +7093,19 @@ async fn upsert_strategy_config_tx(
             created_at,
             updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
+        )
         ON CONFLICT (strategy_id) DO UPDATE
         SET
+            status = EXCLUDED.status,
             enabled = EXCLUDED.enabled,
             mode = EXCLUDED.mode,
             symbols = EXCLUDED.symbols,
             timeframe = EXCLUDED.timeframe,
             suggested_notional = EXCLUDED.suggested_notional,
+            momentum_lookback_candles = EXCLUDED.momentum_lookback_candles,
+            breakout_lookback_candles = EXCLUDED.breakout_lookback_candles,
             max_signal_age_ms = EXCLUDED.max_signal_age_ms,
             cooldown_seconds = EXCLUDED.cooldown_seconds,
             lookback_candles = EXCLUDED.lookback_candles,
@@ -7124,11 +7137,14 @@ async fn upsert_strategy_config_tx(
         "#,
     )
     .bind(config.strategy_id.as_str())
+    .bind(status.as_str())
     .bind(config.enabled)
     .bind(config.mode.as_str())
     .bind(symbols)
     .bind(config.timeframe.as_str())
     .bind(config.suggested_notional)
+    .bind(config.lookback_candles as i32)
+    .bind(config.lookback_candles as i32)
     .bind(config.max_signal_age_ms)
     .bind(config.cooldown_seconds as i32)
     .bind(config.lookback_candles as i32)

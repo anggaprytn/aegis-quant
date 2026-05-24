@@ -13130,12 +13130,13 @@ mod tests {
         build_cors_layer, cancel_exchange_testnet_order, check_execution_readiness_handler,
         generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
         get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
-        is_valid_resume_confirmation, is_valid_testnet_order_confirmation,
-        list_exchange_testnet_order_repairs, list_exchange_testnet_shadow_promotions_handler,
-        list_exchange_testnet_shadow_runs_handler, list_execution_readiness_snapshots_handler,
-        login, logout, metrics, normalize_route_label, order_view, parse_correlation_id_filter,
-        parse_cors_allowed_origins, parse_order_intent, parse_risk_check_context,
-        preview_exchange_testnet_pipeline, preview_exchange_testnet_shadow_promotion_handler,
+        get_risk_decisions, get_strategy_list, is_valid_resume_confirmation,
+        is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
+        list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
+        list_execution_readiness_snapshots_handler, login, logout, metrics, normalize_route_label,
+        order_view, parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
+        parse_risk_check_context, preview_exchange_testnet_pipeline,
+        preview_exchange_testnet_shadow_promotion_handler,
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
         repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
         route_access, run_exchange_testnet_shadow_handler, submit_exchange_testnet_pipeline,
@@ -13834,6 +13835,26 @@ mod tests {
             .with_state(state)
     }
 
+    fn risk_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/risk/decisions", get(get_risk_decisions))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
+    fn strategy_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/strategy/list", get(get_strategy_list))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
     fn readiness_test_router(state: AppState) -> Router {
         Router::new()
             .route("/auth/login", post(login))
@@ -13878,6 +13899,28 @@ mod tests {
             .header(AUTHORIZATION, format!("Bearer {token}"))
             .body(Body::from(body.to_string()))
             .expect("request")
+    }
+
+    fn get_request(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    async fn setup_optional_test_db() -> Option<TestDatabase> {
+        match TestDatabase::setup().await {
+            Ok(test_db) => Some(test_db),
+            Err(err)
+                if err
+                    .to_string()
+                    .contains("refusing to run integration tests against database") =>
+            {
+                None
+            }
+            Err(err) => panic!("test db: {err}"),
+        }
     }
 
     fn extract_set_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -14159,8 +14202,172 @@ mod tests {
         .bind(target)
         .fetch_one(pool)
         .await
-        .expect("system event count for target")
-        .get::<i64, _>("count")
+            .expect("system event count for target")
+            .get::<i64, _>("count")
+    }
+
+    #[tokio::test]
+    async fn risk_decisions_returns_empty_array_when_no_rows_exist() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = risk_test_router(auth_test_state(test_db.pool.clone(), None, None));
+
+        let response = app
+            .oneshot(get_request("/risk/decisions"))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload["decisions"]
+                .as_array()
+                .expect("decisions array")
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn risk_decisions_returns_recent_decisions_without_symbol_filter() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = risk_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let btc_decision = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "BUY",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        let eth_decision = insert_test_risk_decision(
+            &test_db.pool,
+            "RISK_REJECTED",
+            "ETHUSDT",
+            "SELL",
+            Decimal::new(50_000, 0),
+        )
+        .await;
+
+        let response = app
+            .oneshot(get_request("/risk/decisions"))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload = response_json::<Value>(response).await;
+        let decisions = payload["decisions"].as_array().expect("decisions array");
+        let ids = decisions
+            .iter()
+            .filter_map(|decision| decision["id"].as_str())
+            .collect::<Vec<_>>();
+        let symbols = decisions
+            .iter()
+            .filter_map(|decision| decision["symbol"].as_str())
+            .collect::<Vec<_>>();
+        let btc_id = btc_decision.to_string();
+        let eth_id = eth_decision.to_string();
+
+        assert_eq!(decisions.len(), 2);
+        assert!(ids.contains(&btc_id.as_str()));
+        assert!(ids.contains(&eth_id.as_str()));
+        assert!(symbols.contains(&"BTCUSDT"));
+        assert!(symbols.contains(&"ETHUSDT"));
+    }
+
+    #[tokio::test]
+    async fn risk_decisions_applies_symbol_filter() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = risk_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let btc_decision = insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "BTCUSDT",
+            "BUY",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+        insert_test_risk_decision(
+            &test_db.pool,
+            "APPROVED",
+            "ETHUSDT",
+            "BUY",
+            Decimal::new(100_000, 0),
+        )
+        .await;
+
+        let response = app
+            .oneshot(get_request("/risk/decisions?symbol=BTCUSDT"))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload = response_json::<Value>(response).await;
+        let decisions = payload["decisions"].as_array().expect("decisions array");
+        let btc_id = btc_decision.to_string();
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0]["id"].as_str(), Some(btc_id.as_str()));
+        assert_eq!(decisions[0]["symbol"].as_str(), Some("BTCUSDT"));
+    }
+
+    #[tokio::test]
+    async fn strategy_list_bootstraps_configs_with_status_and_is_idempotent() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = strategy_test_router(auth_test_state(test_db.pool.clone(), None, None));
+
+        let first_response = app
+            .clone()
+            .oneshot(get_request("/strategy/list"))
+            .await
+            .expect("first response");
+        assert_eq!(first_response.status(), StatusCode::OK);
+
+        let first_payload = response_json::<Value>(first_response).await;
+        let strategies = first_payload["strategies"]
+            .as_array()
+            .expect("strategies array");
+        assert_eq!(strategies.len(), 2);
+        assert!(strategies
+            .iter()
+            .all(|strategy| strategy["enabled"].as_bool() == Some(true)));
+
+        let rows = sqlx::query(
+            r#"
+            SELECT strategy_id, status
+            FROM strategy_configs
+            ORDER BY strategy_id
+            "#,
+        )
+        .fetch_all(&test_db.pool)
+        .await
+        .expect("strategy config rows");
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|row| row.get::<String, _>("status") == "enabled"));
+
+        let second_response = app
+            .oneshot(get_request("/strategy/list"))
+            .await
+            .expect("second response");
+        assert_eq!(second_response.status(), StatusCode::OK);
+
+        let config_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM strategy_configs")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("strategy config count");
+        assert_eq!(config_count, 2);
     }
 
     async fn insert_recent_closed_candle(pool: &PgPool, symbol: &str, close: Decimal) {
