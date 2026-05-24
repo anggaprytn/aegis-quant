@@ -2,19 +2,24 @@ use std::{net::SocketAddr, time::Duration};
 
 use aegis_core::{
     Candle, CandleInterval, DataFreshnessStatus, FeedStatus, MarketDataSource, MarketMode,
-    PaperTradingPipelineRequest, PipelineDecision, PipelineStepStatus, StrategyConfig, StrategyId,
-    StrategyMode, Symbol,
+    MarketTick, PaperCloseMode, PaperClosePositionRequest, PaperCloseStatus,
+    PaperCloseValidationIssue, PaperPositionStatusFilter, PaperTradingPipelineRequest,
+    PipelineDecision, PipelineStepStatus, StrategyConfig, StrategyId, StrategyMode, Symbol,
 };
-use api::{pipeline::run_paper_pipeline, AppConfig, AppState, StrategyRuntimeConfig};
+use api::{
+    close_paper_position, pipeline::run_paper_pipeline, AppConfig, AppState, StrategyRuntimeConfig,
+};
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use db::{
-    get_default_paper_account, get_order_by_id, get_risk_decision, list_open_paper_positions,
-    list_orders, list_paper_equity_snapshots, list_paper_trade_journal, list_recent_signals,
-    list_recent_system_events, set_kill_switch_state, test_support::TestDatabase, upsert_candle,
-    upsert_market_feed_status, upsert_strategy_config, StateActor,
+    get_default_paper_account, get_order_by_id, get_paper_position, get_risk_decision,
+    insert_market_tick, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
+    list_paper_positions, list_paper_trade_journal, list_recent_signals, list_recent_system_events,
+    set_kill_switch_state, test_support::TestDatabase, upsert_candle, upsert_market_feed_status,
+    upsert_strategy_config, StateActor,
 };
 use market_ingest::MarketIngestConfig;
 use rust_decimal::Decimal;
+use sqlx::Row;
 use uuid::Uuid;
 
 fn runtime_config() -> StrategyRuntimeConfig {
@@ -115,6 +120,82 @@ async fn seed_pipeline_happy_path(pool: &db::PgPool) {
             .await
             .expect("candle should persist");
     }
+}
+
+fn sample_market_tick(price: Decimal, received_at: chrono::DateTime<Utc>) -> MarketTick {
+    MarketTick {
+        id: Uuid::new_v4(),
+        exchange: MarketDataSource::Binance,
+        symbol: Symbol::new("BTCUSDT").expect("valid symbol"),
+        price,
+        quantity: Decimal::ONE,
+        trade_time: received_at,
+        received_at,
+        raw_payload: None,
+    }
+}
+
+async fn seed_open_position(
+    pool: &db::PgPool,
+    correlation_id: Uuid,
+) -> (db::PaperAccountRecord, db::PaperPositionRecord) {
+    seed_pipeline_happy_path(pool).await;
+    let state = app_state(pool.clone());
+
+    let result = run_paper_pipeline(
+        &state,
+        PaperTradingPipelineRequest {
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            correlation_id: Some(correlation_id),
+        },
+    )
+    .await
+    .expect("pipeline should succeed");
+    assert_eq!(
+        result.pipeline_decision,
+        PipelineDecision::PaperOrderCreated
+    );
+
+    let account = get_default_paper_account(pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    let positions = list_open_paper_positions(pool, account.id)
+        .await
+        .expect("paper positions should list");
+    assert_eq!(positions.len(), 1);
+
+    (
+        account,
+        positions.into_iter().next().expect("position should exist"),
+    )
+}
+
+async fn count_position_fills(pool: &db::PgPool, position_id: Uuid) -> i64 {
+    sqlx::query("SELECT COUNT(*) AS count FROM paper_fills WHERE position_id = $1")
+        .bind(position_id)
+        .fetch_one(pool)
+        .await
+        .expect("paper fill count query should succeed")
+        .get::<i64, _>("count")
+}
+
+async fn count_position_journal_events(
+    pool: &db::PgPool,
+    position_id: Uuid,
+    event_type: &str,
+) -> i64 {
+    sqlx::query(
+        "SELECT COUNT(*) AS count FROM paper_trade_journal WHERE position_id = $1 AND event_type = $2",
+    )
+    .bind(position_id)
+    .bind(event_type)
+    .fetch_one(pool)
+    .await
+    .expect("paper journal count query should succeed")
+    .get::<i64, _>("count")
 }
 
 #[tokio::test]
@@ -286,4 +367,452 @@ async fn kill_switch_rejects_pipeline_without_creating_order() {
     assert!(event_types.contains(&"signal.generated"));
     assert!(event_types.contains(&"risk.rejected"));
     assert!(event_types.contains(&"paper_pipeline.risk_rejected"));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn paper_close_persists_transactional_side_effects() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let (account, open_position) = seed_open_position(&test_db.pool, Uuid::from_u128(0xc01)).await;
+    let mark_price = Decimal::new(104_500, 0);
+    insert_market_tick(&test_db.pool, &sample_market_tick(mark_price, Utc::now()))
+        .await
+        .expect("market tick should persist");
+
+    let baseline_snapshot_count = list_paper_equity_snapshots(&test_db.pool, account.id, 20)
+        .await
+        .expect("paper equity snapshots should list")
+        .len();
+    let baseline_journal_count = list_paper_trade_journal(&test_db.pool, account.id, 50)
+        .await
+        .expect("paper journal should list")
+        .len();
+
+    let summary = close_paper_position(
+        &test_db.pool,
+        &app_state(test_db.pool.clone()).market_config,
+        &StateActor::system("integration-test"),
+        PaperClosePositionRequest {
+            position_id: open_position.id,
+            confirmation_text: "CLOSE BTCUSDT".to_string(),
+            reason: None,
+            close_mode: PaperCloseMode::MarketSimulated,
+            correlation_id: Some(Uuid::from_u128(0xc02)),
+            allow_stale_price: false,
+        },
+    )
+    .await
+    .expect("paper close should succeed");
+
+    assert_eq!(summary.status, PaperCloseStatus::Closed);
+    assert_eq!(summary.exit_price, mark_price);
+
+    let closed_position = get_paper_position(&test_db.pool, account.id, open_position.id)
+        .await
+        .expect("paper position query should succeed")
+        .expect("closed position should exist");
+    let expected_realized_pnl = (mark_price - open_position.entry_price) * open_position.quantity;
+    assert_eq!(closed_position.status, "closed");
+    assert_eq!(closed_position.closed_at, Some(summary.closed_at));
+    assert_eq!(closed_position.realized_pnl, expected_realized_pnl);
+    assert_eq!(closed_position.mark_price, Some(mark_price));
+
+    let updated_account = get_default_paper_account(&test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    assert_eq!(updated_account.realized_pnl, expected_realized_pnl);
+    assert_eq!(
+        updated_account.current_equity,
+        updated_account.initial_equity + expected_realized_pnl
+    );
+    assert_eq!(updated_account.unrealized_pnl, Decimal::ZERO);
+
+    let equity_snapshots = list_paper_equity_snapshots(&test_db.pool, account.id, 20)
+        .await
+        .expect("paper equity snapshots should list");
+    assert_eq!(equity_snapshots.len(), baseline_snapshot_count + 1);
+    assert_eq!(equity_snapshots[0].equity, updated_account.current_equity);
+    assert_eq!(equity_snapshots[0].realized_pnl, expected_realized_pnl);
+
+    assert_eq!(
+        count_position_fills(&test_db.pool, open_position.id).await,
+        2
+    );
+
+    let journal = list_paper_trade_journal(&test_db.pool, account.id, 50)
+        .await
+        .expect("paper journal should list");
+    assert!(journal.len() >= baseline_journal_count + 2);
+    assert_eq!(
+        count_position_journal_events(&test_db.pool, open_position.id, "paper.position.closed")
+            .await,
+        1
+    );
+    assert!(journal
+        .iter()
+        .any(|entry| entry.id == summary.journal_entry_id
+            && entry.event_type == "paper.position.closed"));
+
+    let close_events = list_recent_system_events(&test_db.pool, 50)
+        .await
+        .expect("system events should list")
+        .into_iter()
+        .filter(|event| event.correlation_id == summary.correlation_id)
+        .map(|event| event.event_type)
+        .collect::<Vec<_>>();
+    assert!(close_events.contains(&"paper.position.closed".to_string()));
+    assert!(close_events.contains(&"paper.equity.updated".to_string()));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn paper_close_wrong_confirmation_rejects_before_mutation() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let (account, open_position) = seed_open_position(&test_db.pool, Uuid::from_u128(0xc11)).await;
+
+    let baseline_account = get_default_paper_account(&test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    let baseline_snapshot_count = list_paper_equity_snapshots(&test_db.pool, account.id, 20)
+        .await
+        .expect("paper equity snapshots should list")
+        .len();
+    let baseline_fill_count = count_position_fills(&test_db.pool, open_position.id).await;
+    let baseline_close_journal_count =
+        count_position_journal_events(&test_db.pool, open_position.id, "paper.position.closed")
+            .await;
+
+    let result = close_paper_position(
+        &test_db.pool,
+        &app_state(test_db.pool.clone()).market_config,
+        &StateActor::system("integration-test"),
+        PaperClosePositionRequest {
+            position_id: open_position.id,
+            confirmation_text: "close BTCUSDT".to_string(),
+            reason: None,
+            close_mode: PaperCloseMode::MarketSimulated,
+            correlation_id: Some(Uuid::from_u128(0xc12)),
+            allow_stale_price: false,
+        },
+    )
+    .await;
+
+    match result {
+        Err(api::ClosePaperPositionError::Validation(
+            PaperCloseValidationIssue::WrongConfirmationText,
+        )) => {}
+        other => panic!("expected wrong confirmation validation error, got {other:?}"),
+    }
+
+    let unchanged_position = get_paper_position(&test_db.pool, account.id, open_position.id)
+        .await
+        .expect("paper position query should succeed")
+        .expect("paper position should exist");
+    assert_eq!(unchanged_position.status, "open");
+    assert_eq!(
+        count_position_fills(&test_db.pool, open_position.id).await,
+        baseline_fill_count
+    );
+    assert_eq!(
+        count_position_journal_events(&test_db.pool, open_position.id, "paper.position.closed")
+            .await,
+        baseline_close_journal_count
+    );
+    assert_eq!(
+        list_paper_equity_snapshots(&test_db.pool, account.id, 20)
+            .await
+            .expect("paper equity snapshots should list")
+            .len(),
+        baseline_snapshot_count
+    );
+
+    let unchanged_account = get_default_paper_account(&test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    assert_eq!(
+        unchanged_account.realized_pnl,
+        baseline_account.realized_pnl
+    );
+    assert_eq!(
+        unchanged_account.current_equity,
+        baseline_account.current_equity
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn paper_close_missing_or_stale_mark_price_rejects_before_mutation() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+
+    let (missing_account, missing_position) =
+        seed_open_position(&test_db.pool, Uuid::from_u128(0xc21)).await;
+    let missing_baseline_account = get_default_paper_account(&test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    let missing_result = close_paper_position(
+        &test_db.pool,
+        &app_state(test_db.pool.clone()).market_config,
+        &StateActor::system("integration-test"),
+        PaperClosePositionRequest {
+            position_id: missing_position.id,
+            confirmation_text: "CLOSE BTCUSDT".to_string(),
+            reason: None,
+            close_mode: PaperCloseMode::MarketSimulated,
+            correlation_id: Some(Uuid::from_u128(0xc22)),
+            allow_stale_price: false,
+        },
+    )
+    .await;
+    match missing_result {
+        Err(api::ClosePaperPositionError::Validation(
+            PaperCloseValidationIssue::MissingMarketPrice,
+        )) => {}
+        other => panic!("expected missing market price validation error, got {other:?}"),
+    }
+    assert_eq!(
+        count_position_fills(&test_db.pool, missing_position.id).await,
+        1
+    );
+    let missing_account_after = get_default_paper_account(&test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    assert_eq!(
+        missing_account_after.current_equity,
+        missing_baseline_account.current_equity
+    );
+    assert_eq!(
+        missing_account_after.realized_pnl,
+        missing_baseline_account.realized_pnl
+    );
+
+    let stale_test_db = TestDatabase::setup()
+        .await
+        .expect("test db should reinitialize");
+    let (stale_account, stale_position) =
+        seed_open_position(&stale_test_db.pool, Uuid::from_u128(0xc23)).await;
+    insert_market_tick(
+        &stale_test_db.pool,
+        &sample_market_tick(
+            Decimal::new(104_500, 0),
+            Utc::now() - ChronoDuration::seconds(30),
+        ),
+    )
+    .await
+    .expect("stale market tick should persist");
+    let stale_baseline_account = get_default_paper_account(&stale_test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+
+    let stale_result = close_paper_position(
+        &stale_test_db.pool,
+        &app_state(stale_test_db.pool.clone()).market_config,
+        &StateActor::system("integration-test"),
+        PaperClosePositionRequest {
+            position_id: stale_position.id,
+            confirmation_text: "CLOSE BTCUSDT".to_string(),
+            reason: None,
+            close_mode: PaperCloseMode::MarketSimulated,
+            correlation_id: Some(Uuid::from_u128(0xc24)),
+            allow_stale_price: false,
+        },
+    )
+    .await;
+    match stale_result {
+        Err(api::ClosePaperPositionError::Validation(
+            PaperCloseValidationIssue::StaleMarketPrice,
+        )) => {}
+        other => panic!("expected stale market price validation error, got {other:?}"),
+    }
+    assert_eq!(
+        count_position_fills(&stale_test_db.pool, stale_position.id).await,
+        1
+    );
+    let stale_account_after = get_default_paper_account(&stale_test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    assert_eq!(
+        stale_account_after.current_equity,
+        stale_baseline_account.current_equity
+    );
+    assert_eq!(
+        stale_account_after.realized_pnl,
+        stale_baseline_account.realized_pnl
+    );
+    assert_eq!(
+        get_paper_position(&stale_test_db.pool, stale_account.id, stale_position.id)
+            .await
+            .expect("paper position query should succeed")
+            .expect("paper position should exist")
+            .status,
+        "open"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn paper_close_is_idempotent_after_first_success() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let (account, open_position) = seed_open_position(&test_db.pool, Uuid::from_u128(0xc31)).await;
+    insert_market_tick(
+        &test_db.pool,
+        &sample_market_tick(Decimal::new(104_500, 0), Utc::now()),
+    )
+    .await
+    .expect("market tick should persist");
+
+    let first = close_paper_position(
+        &test_db.pool,
+        &app_state(test_db.pool.clone()).market_config,
+        &StateActor::system("integration-test"),
+        PaperClosePositionRequest {
+            position_id: open_position.id,
+            confirmation_text: "CLOSE BTCUSDT".to_string(),
+            reason: None,
+            close_mode: PaperCloseMode::MarketSimulated,
+            correlation_id: Some(Uuid::from_u128(0xc32)),
+            allow_stale_price: false,
+        },
+    )
+    .await
+    .expect("first close should succeed");
+    let account_after_first = get_default_paper_account(&test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    let fill_count_after_first = count_position_fills(&test_db.pool, open_position.id).await;
+    let close_journal_count_after_first =
+        count_position_journal_events(&test_db.pool, open_position.id, "paper.position.closed")
+            .await;
+
+    let second = close_paper_position(
+        &test_db.pool,
+        &app_state(test_db.pool.clone()).market_config,
+        &StateActor::system("integration-test"),
+        PaperClosePositionRequest {
+            position_id: open_position.id,
+            confirmation_text: "CLOSE BTCUSDT".to_string(),
+            reason: None,
+            close_mode: PaperCloseMode::MarketSimulated,
+            correlation_id: Some(Uuid::from_u128(0xc33)),
+            allow_stale_price: false,
+        },
+    )
+    .await
+    .expect("repeated close should return persisted summary");
+
+    assert_eq!(second.status, PaperCloseStatus::AlreadyClosed);
+    assert_eq!(second.position_id, first.position_id);
+    assert_eq!(second.close_fill_id, first.close_fill_id);
+    assert_eq!(second.journal_entry_id, first.journal_entry_id);
+    assert_eq!(
+        count_position_fills(&test_db.pool, open_position.id).await,
+        fill_count_after_first
+    );
+    assert_eq!(
+        count_position_journal_events(&test_db.pool, open_position.id, "paper.position.closed")
+            .await,
+        close_journal_count_after_first
+    );
+
+    let account_after_second = get_default_paper_account(&test_db.pool)
+        .await
+        .expect("paper account query should succeed")
+        .expect("default paper account should exist");
+    assert_eq!(
+        account_after_second.realized_pnl,
+        account_after_first.realized_pnl
+    );
+    assert_eq!(
+        account_after_second.current_equity,
+        account_after_first.current_equity
+    );
+    assert_eq!(
+        get_paper_position(&test_db.pool, account.id, open_position.id)
+            .await
+            .expect("paper position query should succeed")
+            .expect("paper position should exist")
+            .status,
+        "closed"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn paper_position_filters_reflect_closed_positions() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let (account, open_position) = seed_open_position(&test_db.pool, Uuid::from_u128(0xc41)).await;
+    insert_market_tick(
+        &test_db.pool,
+        &sample_market_tick(Decimal::new(104_500, 0), Utc::now()),
+    )
+    .await
+    .expect("market tick should persist");
+
+    close_paper_position(
+        &test_db.pool,
+        &app_state(test_db.pool.clone()).market_config,
+        &StateActor::system("integration-test"),
+        PaperClosePositionRequest {
+            position_id: open_position.id,
+            confirmation_text: "CLOSE BTCUSDT".to_string(),
+            reason: None,
+            close_mode: PaperCloseMode::MarketSimulated,
+            correlation_id: Some(Uuid::from_u128(0xc42)),
+            allow_stale_price: false,
+        },
+    )
+    .await
+    .expect("paper close should succeed");
+
+    let open_positions = list_paper_positions(
+        &test_db.pool,
+        account.id,
+        PaperPositionStatusFilter::Open,
+        50,
+    )
+    .await
+    .expect("open paper positions should list");
+    let closed_positions = list_paper_positions(
+        &test_db.pool,
+        account.id,
+        PaperPositionStatusFilter::Closed,
+        50,
+    )
+    .await
+    .expect("closed paper positions should list");
+    let all_positions = list_paper_positions(
+        &test_db.pool,
+        account.id,
+        PaperPositionStatusFilter::All,
+        50,
+    )
+    .await
+    .expect("all paper positions should list");
+
+    assert!(open_positions
+        .iter()
+        .all(|position| position.id != open_position.id));
+    assert!(closed_positions
+        .iter()
+        .any(|position| position.id == open_position.id));
+    assert!(all_positions
+        .iter()
+        .any(|position| position.id == open_position.id));
 }
