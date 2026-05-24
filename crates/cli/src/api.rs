@@ -2,17 +2,18 @@ use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest, OperatorReport,
-    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult, RiskConfig,
-    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyPerformanceSummary, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
+    OperatorReport, OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyPerformanceSummary,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -40,6 +41,8 @@ pub enum ApiClientError {
         message: String,
         body: Option<String>,
     },
+    #[error("failed to decode response from {endpoint}: {message}")]
+    Decode { endpoint: String, message: String },
     #[error("{message}")]
     LoginRequired { message: String },
 }
@@ -1202,6 +1205,49 @@ impl ApiClient {
         self.get(&format!("/reports/operator/{report_id}"), &[])
             .await
     }
+
+    pub async fn execution_readiness_check(
+        &self,
+        request: &ExecutionReadinessRequest,
+    ) -> Result<ExecutionReadinessResponse, ApiClientError> {
+        self.post("/readiness/check", request).await
+    }
+
+    pub async fn execution_readiness_snapshots(
+        &self,
+        limit: i64,
+    ) -> Result<ExecutionReadinessSnapshotsResponse, ApiClientError> {
+        self.get("/readiness/snapshots", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn execution_readiness_get(
+        &self,
+        readiness_id: Uuid,
+    ) -> Result<ExecutionReadinessResponse, ApiClientError> {
+        let response = self
+            .get::<ExecutionReadinessSnapshotsResponse>(
+                &format!("/readiness/snapshots/{readiness_id}"),
+                &[],
+            )
+            .await?;
+        let readiness =
+            response
+                .snapshots
+                .into_iter()
+                .next()
+                .ok_or_else(|| ApiClientError::Decode {
+                    endpoint: format!("/readiness/snapshots/{readiness_id}"),
+                    message: "snapshot response did not include a readiness item".to_string(),
+                })?;
+
+        Ok(ExecutionReadinessResponse {
+            readiness: snapshot_to_result(readiness),
+            request_id: response.request_id,
+            correlation_id: response.correlation_id,
+            timestamp: response.timestamp,
+        })
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -2279,6 +2325,37 @@ pub struct OperatorReportsListResponse {
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionReadinessResponse {
+    pub readiness: ExecutionReadinessResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionReadinessSnapshotsResponse {
+    pub snapshots: Vec<ExecutionReadinessSnapshot>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+fn snapshot_to_result(snapshot: ExecutionReadinessSnapshot) -> ExecutionReadinessResult {
+    ExecutionReadinessResult {
+        readiness_id: snapshot.id,
+        target: snapshot.target,
+        status: snapshot.status,
+        score: snapshot.score,
+        blocking_reasons: snapshot.blocking_reasons,
+        warnings: snapshot.warnings,
+        checks: snapshot.checks,
+        recommendations: snapshot.recommendations,
+        computed_at: snapshot.created_at,
+        correlation_id: snapshot.correlation_id.unwrap_or_default(),
+    }
 }
 
 pub fn build_backtest_request(

@@ -221,6 +221,7 @@ Notes:
 - Strategy analytics is read-only: it compares persisted backtest, paper, and shadow behavior and never submits or mutates orders, positions, PnL, reconciliation rows, or exchange state.
 - Promotion funnel analytics is read-only: it joins `testnet_shadow_runs`, `testnet_shadow_promotions`, `exchange_testnet_orders`, and isolated lifecycle history strictly for inspection.
 - Operator reports are read-only: they aggregate persisted health, market, risk, paper, shadow, promotion, and isolated testnet tables into deterministic findings and recommendations. The only optional write is a persisted `operator_reports` export row.
+- Execution readiness is read-only: it computes deterministic readiness scores for `PAPER_PIPELINE`, `TESTNET_SHADOW`, `TESTNET_PROMOTION`, and `TESTNET_SUBMIT`, and may optionally persist only `execution_readiness_snapshots`.
 
 ## Binance Spot Testnet adapter
 
@@ -258,6 +259,8 @@ Operator examples:
 cargo run -p cli -- exchange testnet status
 cargo run -p cli -- exchange testnet symbols
 cargo run -p cli -- exchange testnet balances
+cargo run -p cli -- readiness check --target TESTNET_SUBMIT --symbol BTCUSDT --strategy momentum_v1 --timeframe 1m
+cargo run -p cli -- readiness snapshots --limit 20
 cargo run -p cli -- exchange testnet pipeline-preview \
   --risk-decision-id 00000000-0000-0000-0000-000000000000
 cargo run -p cli -- exchange testnet pipeline-submit \

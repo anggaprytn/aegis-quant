@@ -4,7 +4,9 @@ use aegis_core::{
     combine_strategy_performance_summaries, BacktestConfig, BacktestEquityPoint, BacktestResult,
     BacktestTrade, Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult,
     CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
-    ExchangeReconciliationStatus, ExecutionState, FeedStatus, MarketDataSource, MarketTick,
+    ExchangeReconciliationStatus, ExecutionReadinessBlockingReason, ExecutionReadinessCheck,
+    ExecutionReadinessRecommendation, ExecutionReadinessSnapshot, ExecutionReadinessStatus,
+    ExecutionReadinessTarget, ExecutionState, FeedStatus, MarketDataSource, MarketTick,
     OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus, PaperClosePositionResult,
     PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition,
     PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus, PaperTradeJournalEntry,
@@ -264,6 +266,21 @@ pub struct ExchangeReconciliationMismatchRecord {
     pub action: String,
     pub payload: Value,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionReadinessSnapshotRecord {
+    pub id: Uuid,
+    pub target: String,
+    pub status: String,
+    pub score: i32,
+    pub blocking_reasons: Value,
+    pub warnings: Value,
+    pub checks: Value,
+    pub recommendations: Value,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2904,6 +2921,23 @@ pub async fn list_exchange_testnet_repair_actions(
         .collect())
 }
 
+pub async fn count_recent_exchange_testnet_repair_failures(
+    pool: &PgPool,
+    since: DateTime<Utc>,
+) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM exchange_testnet_repair_actions
+        WHERE created_at >= $1
+          AND lower(status) = 'failed'
+        "#,
+    )
+    .bind(since)
+    .fetch_one(pool)
+    .await?)
+}
+
 pub async fn append_exchange_testnet_lifecycle_event_and_update_order(
     pool: &PgPool,
     event: &ExchangeTestnetOrderLifecycleEventRecord,
@@ -3463,6 +3497,116 @@ pub async fn list_exchange_reconciliation_mismatches(
         .iter()
         .map(map_exchange_reconciliation_mismatch)
         .collect())
+}
+
+pub async fn insert_execution_readiness_snapshot(
+    pool: &PgPool,
+    snapshot: &ExecutionReadinessSnapshot,
+) -> Result<ExecutionReadinessSnapshotRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO execution_readiness_snapshots (
+            id,
+            target,
+            status,
+            score,
+            blocking_reasons,
+            warnings,
+            checks,
+            recommendations,
+            created_by,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING
+            id,
+            target,
+            status,
+            score,
+            blocking_reasons,
+            warnings,
+            checks,
+            recommendations,
+            created_by,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(snapshot.id)
+    .bind(snapshot.target.as_str())
+    .bind(snapshot.status.as_str())
+    .bind(snapshot.score)
+    .bind(serde_json::to_value(&snapshot.blocking_reasons)?)
+    .bind(serde_json::to_value(&snapshot.warnings)?)
+    .bind(serde_json::to_value(&snapshot.checks)?)
+    .bind(serde_json::to_value(&snapshot.recommendations)?)
+    .bind(snapshot.created_by)
+    .bind(snapshot.created_at)
+    .bind(snapshot.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_execution_readiness_snapshot(&row))
+}
+
+pub async fn get_execution_readiness_snapshot(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ExecutionReadinessSnapshotRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            target,
+            status,
+            score,
+            blocking_reasons,
+            warnings,
+            checks,
+            recommendations,
+            created_by,
+            created_at,
+            correlation_id
+        FROM execution_readiness_snapshots
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_execution_readiness_snapshot))
+}
+
+pub async fn list_execution_readiness_snapshots(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ExecutionReadinessSnapshotRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            target,
+            status,
+            score,
+            blocking_reasons,
+            warnings,
+            checks,
+            recommendations,
+            created_by,
+            created_at,
+            correlation_id
+        FROM execution_readiness_snapshots
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_execution_readiness_snapshot).collect())
 }
 
 pub async fn get_default_paper_account(pool: &PgPool) -> Result<Option<PaperAccountRecord>> {
@@ -5391,6 +5535,34 @@ pub async fn list_backtest_runs(pool: &PgPool, limit: i64) -> Result<Vec<Backtes
     .await?;
 
     Ok(rows.iter().map(map_backtest_run).collect())
+}
+
+pub async fn count_backtest_runs_in_window(
+    pool: &PgPool,
+    strategy_id: Option<&str>,
+    symbol: Option<&str>,
+    timeframe: Option<&str>,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) -> Result<i64> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM backtest_runs
+        WHERE created_at >= $1
+          AND created_at <= $2
+          AND ($3::TEXT IS NULL OR strategy_id = $3)
+          AND ($4::TEXT IS NULL OR symbol = $4)
+          AND ($5::TEXT IS NULL OR timeframe = $5)
+        "#,
+    )
+    .bind(start_time)
+    .bind(end_time)
+    .bind(strategy_id)
+    .bind(symbol)
+    .bind(timeframe)
+    .fetch_one(pool)
+    .await?)
 }
 
 pub async fn get_backtest_trades(pool: &PgPool, run_id: Uuid) -> Result<Vec<BacktestTradeRecord>> {
@@ -9141,6 +9313,54 @@ fn map_exchange_reconciliation_mismatch(
         payload: row.get("payload"),
         created_at: row.get("created_at"),
     }
+}
+
+fn map_execution_readiness_snapshot(
+    row: &sqlx::postgres::PgRow,
+) -> ExecutionReadinessSnapshotRecord {
+    ExecutionReadinessSnapshotRecord {
+        id: row.get("id"),
+        target: row.get("target"),
+        status: row.get("status"),
+        score: row.get("score"),
+        blocking_reasons: row.get("blocking_reasons"),
+        warnings: row.get("warnings"),
+        checks: row.get("checks"),
+        recommendations: row.get("recommendations"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+pub fn execution_readiness_snapshot_from_record(
+    record: &ExecutionReadinessSnapshotRecord,
+) -> Result<ExecutionReadinessSnapshot> {
+    Ok(ExecutionReadinessSnapshot {
+        id: record.id,
+        target: record.target.parse::<ExecutionReadinessTarget>()?,
+        status: match record.status.as_str() {
+            "READY" => ExecutionReadinessStatus::Ready,
+            "NOT_READY" => ExecutionReadinessStatus::NotReady,
+            "DEGRADED" => ExecutionReadinessStatus::Degraded,
+            "UNKNOWN" => ExecutionReadinessStatus::Unknown,
+            other => {
+                return Err(anyhow::anyhow!("unsupported readiness status: {other}").into());
+            }
+        },
+        score: record.score,
+        blocking_reasons: serde_json::from_value::<Vec<ExecutionReadinessBlockingReason>>(
+            record.blocking_reasons.clone(),
+        )?,
+        warnings: serde_json::from_value::<Vec<ExecutionReadinessCheck>>(record.warnings.clone())?,
+        checks: serde_json::from_value::<Vec<ExecutionReadinessCheck>>(record.checks.clone())?,
+        recommendations: serde_json::from_value::<Vec<ExecutionReadinessRecommendation>>(
+            record.recommendations.clone(),
+        )?,
+        created_by: record.created_by,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
+    })
 }
 
 pub fn paper_account_from_record(record: &PaperAccountRecord) -> Result<PaperAccount> {

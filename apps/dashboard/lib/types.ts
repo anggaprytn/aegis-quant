@@ -148,6 +148,88 @@ export type StrategyPerformanceSummaryResponse = {
   timestamp: string;
 };
 
+export type ExecutionReadinessTarget =
+  | "PAPER_PIPELINE"
+  | "TESTNET_SHADOW"
+  | "TESTNET_PROMOTION"
+  | "TESTNET_SUBMIT";
+
+export type ExecutionReadinessStatus =
+  | "READY"
+  | "NOT_READY"
+  | "DEGRADED"
+  | "UNKNOWN";
+
+export type ExecutionReadinessCheckSeverity =
+  | "LOW"
+  | "MEDIUM"
+  | "HIGH"
+  | "CRITICAL";
+
+export type ExecutionReadinessCheck = {
+  code: string;
+  name: string;
+  passed: boolean;
+  blocking: boolean;
+  severity: ExecutionReadinessCheckSeverity;
+  summary: string;
+  details?: Record<string, unknown> | null;
+};
+
+export type ExecutionReadinessRequest = {
+  target: ExecutionReadinessTarget;
+  symbol?: string | null;
+  strategy_id?: string | null;
+  timeframe?: string | null;
+  promotion_id?: string | null;
+  risk_decision_id?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  persist?: boolean;
+  correlation_id?: string | null;
+};
+
+export type ExecutionReadinessResult = {
+  readiness_id: string;
+  target: ExecutionReadinessTarget;
+  status: ExecutionReadinessStatus;
+  score: number;
+  blocking_reasons: string[];
+  warnings: ExecutionReadinessCheck[];
+  checks: ExecutionReadinessCheck[];
+  recommendations: string[];
+  computed_at: string;
+  correlation_id: string;
+};
+
+export type ExecutionReadinessSnapshot = {
+  id: string;
+  target: ExecutionReadinessTarget;
+  status: ExecutionReadinessStatus;
+  score: number;
+  blocking_reasons: string[];
+  warnings: ExecutionReadinessCheck[];
+  checks: ExecutionReadinessCheck[];
+  recommendations: string[];
+  created_by: string | null;
+  created_at: string;
+  correlation_id: string | null;
+};
+
+export type ExecutionReadinessResponse = {
+  readiness: ExecutionReadinessResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ExecutionReadinessSnapshotsResponse = {
+  snapshots: ExecutionReadinessSnapshot[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type StrategyPerformanceRankingsResponse = {
   rankings: StrategyComparisonSummary[];
   request_id: string;

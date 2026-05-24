@@ -37,7 +37,8 @@
 - Completed: read-only strategy performance analytics across backtest, paper, and shadow data with API, CLI, dashboard, and bounded telemetry support
 - Completed: read-only promotion funnel analytics across shadow would-submit, promotion preview/submit, isolated testnet order lifecycle outcomes, API/CLI/dashboard surfaces, and bounded low-cardinality telemetry
 - Completed: read-only operator daily reports across health, feed freshness, strategy/risk behavior, paper PnL, shadow outcomes, promotion funnel, and isolated testnet execution with optional persisted exports
-- Current focus: tighten reconciliation visibility, operator reporting depth, and promotion-readiness workflows across paper/testnet shadow boundaries before any live execution surface area
+- Completed: deterministic execution readiness gate with API/CLI/dashboard inspection, optional readiness snapshots, and bounded telemetry across paper/testnet shadow promotion boundaries
+- Current focus: deepen readiness heuristics, reconciliation visibility, and promotion-readiness workflows across paper/testnet shadow boundaries before any live execution surface area
 
 ## Next implementation steps
 

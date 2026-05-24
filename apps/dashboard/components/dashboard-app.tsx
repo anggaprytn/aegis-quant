@@ -16,6 +16,10 @@ import type {
   BacktestRunAcceptedResponse,
   CandleBackfillRequest,
   CandleBackfillResult,
+  ExecutionReadinessRequest,
+  ExecutionReadinessResult,
+  ExecutionReadinessSnapshot,
+  ExecutionReadinessTarget,
   MarketFeedStatusRecord,
   OrderRecord,
   OperatorReport,
@@ -99,6 +103,14 @@ const DEFAULT_REPORT_FORM: OperatorReportRequest = {
   symbol: "BTCUSDT",
   strategy_id: "momentum_v1",
   format: "MARKDOWN",
+  persist: false,
+};
+
+const DEFAULT_READINESS_FORM: ExecutionReadinessRequest = {
+  target: "TESTNET_SUBMIT",
+  symbol: "BTCUSDT",
+  strategy_id: "momentum_v1",
+  timeframe: "1m",
   persist: false,
 };
 
@@ -377,6 +389,10 @@ function AuthenticatedDashboard({
     null,
   );
   const [reportForm, setReportForm] = useState<OperatorReportRequest>(DEFAULT_REPORT_FORM);
+  const [readinessForm, setReadinessForm] =
+    useState<ExecutionReadinessRequest>(DEFAULT_READINESS_FORM);
+  const [lastReadinessResult, setLastReadinessResult] =
+    useState<ExecutionReadinessResult | null>(null);
   const [generatedReport, setGeneratedReport] = useState<OperatorReport | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [backtestForm, setBacktestForm] =
@@ -788,6 +804,13 @@ function AuthenticatedDashboard({
       (user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER") &&
       Boolean(selectedReportId),
   });
+  const readinessSnapshotsQuery = useQuery({
+    queryKey: ["execution-readiness-snapshots"],
+    queryFn: () => api.getExecutionReadinessSnapshots(20),
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
 
   const selectedExchangeReconciliationRunQuery = useQuery({
     queryKey: ["exchange-reconciliation-run", selectedReconciliationRunId],
@@ -1088,6 +1111,15 @@ function AuthenticatedDashboard({
         setSelectedReportId(response.report.report_id);
       }
       await queryClient.invalidateQueries({ queryKey: ["operator-reports"] });
+    },
+  });
+  const readinessCheckMutation = useMutation({
+    mutationFn: () => api.checkExecutionReadiness(readinessForm),
+    onSuccess: async (response) => {
+      setLastReadinessResult(response.readiness);
+      await queryClient.invalidateQueries({
+        queryKey: ["execution-readiness-snapshots"],
+      });
     },
   });
 
@@ -1498,6 +1530,120 @@ function AuthenticatedDashboard({
                 <pre className="mt-3 max-h-64 overflow-auto rounded-xl border border-border bg-surface/80 p-3 text-xs text-copy/80">
                   {telemetrySnapshot.raw || "# metrics unavailable"}
                 </pre>
+              </Panel>
+
+              <Panel className="xl:col-span-12" title="Execution Readiness">
+                <div className="grid gap-3 md:grid-cols-5">
+                  <select
+                    className="rounded-xl border border-border bg-surface/70 px-3 py-2 text-sm text-white"
+                    value={readinessForm.target}
+                    onChange={(event) =>
+                      setReadinessForm((current) => ({
+                        ...current,
+                        target: event.target.value as ExecutionReadinessTarget,
+                      }))
+                    }
+                  >
+                    {[
+                      "PAPER_PIPELINE",
+                      "TESTNET_SHADOW",
+                      "TESTNET_PROMOTION",
+                      "TESTNET_SUBMIT",
+                    ].map((target) => (
+                      <option key={target} value={target}>
+                        {target}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="rounded-xl border border-border bg-surface/70 px-3 py-2 text-sm text-white"
+                    value={readinessForm.symbol ?? ""}
+                    onChange={(event) =>
+                      setReadinessForm((current) => ({
+                        ...current,
+                        symbol: event.target.value,
+                      }))
+                    }
+                    placeholder="Symbol"
+                  />
+                  <input
+                    className="rounded-xl border border-border bg-surface/70 px-3 py-2 text-sm text-white"
+                    value={readinessForm.strategy_id ?? ""}
+                    onChange={(event) =>
+                      setReadinessForm((current) => ({
+                        ...current,
+                        strategy_id: event.target.value,
+                      }))
+                    }
+                    placeholder="Strategy"
+                  />
+                  <input
+                    className="rounded-xl border border-border bg-surface/70 px-3 py-2 text-sm text-white"
+                    value={readinessForm.timeframe ?? ""}
+                    onChange={(event) =>
+                      setReadinessForm((current) => ({
+                        ...current,
+                        timeframe: event.target.value,
+                      }))
+                    }
+                    placeholder="Timeframe"
+                  />
+                  <ActionButton
+                    label="Check Readiness"
+                    onClick={() => readinessCheckMutation.mutate()}
+                    busy={readinessCheckMutation.isPending}
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
+                  <HeaderStat
+                    label="Status"
+                    value={lastReadinessResult?.status ?? "UNKNOWN"}
+                    tone={
+                      lastReadinessResult?.status === "READY"
+                        ? "ok"
+                        : lastReadinessResult?.status === "DEGRADED"
+                          ? "warning"
+                          : "danger"
+                    }
+                  />
+                  <HeaderStat
+                    label="Score"
+                    value={String(lastReadinessResult?.score ?? "N/A")}
+                    tone="neutral"
+                  />
+                  <HeaderStat
+                    label="Snapshots"
+                    value={String(readinessSnapshotsQuery.data?.snapshots.length ?? 0)}
+                    tone="neutral"
+                  />
+                </div>
+                <InlineStatus
+                  error={getErrorMessage(readinessCheckMutation.error)}
+                  success={
+                    lastReadinessResult
+                      ? `Computed ${lastReadinessResult.target} readiness`
+                      : undefined
+                  }
+                />
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <SimpleStringTable
+                    title="Blockers"
+                    values={lastReadinessResult?.blocking_reasons ?? []}
+                  />
+                  <SimpleStringTable
+                    title="Recommendations"
+                    values={lastReadinessResult?.recommendations ?? []}
+                  />
+                  <SimpleStringTable
+                    title="Snapshots"
+                    values={
+                      readinessSnapshotsQuery.data?.snapshots.map(
+                        (snapshot) =>
+                          `${snapshot.target} ${snapshot.status} ${snapshot.score}`,
+                      ) ?? []
+                    }
+                  />
+                </div>
               </Panel>
 
               {latestTicks.map((tickCard) => (
@@ -4321,6 +4467,33 @@ function AnalyticsRankingsTable({ rankings }: { rankings: StrategyComparisonSumm
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function SimpleStringTable({
+  title,
+  values,
+}: {
+  title: string;
+  values: string[];
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-surface/50 p-3">
+      <div className="text-xs uppercase tracking-[0.2em] text-muted">{title}</div>
+      <div className="mt-3 space-y-2 text-sm text-copy">
+        {values.length ? (
+          values.map((value) => (
+            <div key={value} className="rounded-xl border border-border/70 px-3 py-2">
+              {value}
+            </div>
+          ))
+        ) : (
+          <div className="rounded-xl border border-border/70 px-3 py-2 text-copy/60">
+            None
+          </div>
+        )}
+      </div>
     </div>
   );
 }

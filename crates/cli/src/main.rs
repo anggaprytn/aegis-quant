@@ -14,8 +14,8 @@ use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
     BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, MarketCommands,
-    OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands, ReportsCommands,
-    RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
+    OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands, ReadinessCommands,
+    ReportsCommands, RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
     RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
@@ -1018,6 +1018,33 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             },
+        },
+        Commands::Readiness(command) => match command {
+            ReadinessCommands::Check(args) => {
+                let request = (&args).try_into()?;
+                let response = client.execution_readiness_check(&request).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_execution_readiness(&response);
+                }
+            }
+            ReadinessCommands::Snapshots(args) => {
+                let response = client.execution_readiness_snapshots(args.limit).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_execution_readiness_snapshots(&response);
+                }
+            }
+            ReadinessCommands::Get { readiness_id } => {
+                let response = client.execution_readiness_get(readiness_id).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_execution_readiness(&response);
+                }
+            }
         },
     }
 

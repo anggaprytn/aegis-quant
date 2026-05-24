@@ -2,6 +2,7 @@ mod auth;
 mod exchange_reconcile;
 mod operator_reports;
 mod pipeline;
+mod readiness;
 
 use std::{
     env,
@@ -25,14 +26,15 @@ use aegis_core::{
     ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
     ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
     ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, MarketMode, OperatorReport, OperatorReportRequest,
-    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
-    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyComparisonSummary, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
+    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
+    ExecutionReadinessSnapshot, MarketMode, OperatorReport, OperatorReportRequest, OrderIntent,
+    PaperCloseMode, PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyEvaluationContext, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
     StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
     TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
@@ -391,6 +393,11 @@ struct TestnetPromotionFunnelQuery {
 
 #[derive(Deserialize)]
 struct OperatorReportsListQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ExecutionReadinessSnapshotsQuery {
     limit: Option<i64>,
 }
 
@@ -939,6 +946,22 @@ struct OperatorReportResponse {
 #[derive(Serialize, Deserialize)]
 struct OperatorReportsListResponse {
     reports: Vec<OperatorReportListItem>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExecutionReadinessResponse {
+    readiness: ExecutionReadinessResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExecutionReadinessSnapshotsResponse {
+    snapshots: Vec<ExecutionReadinessSnapshot>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1792,6 +1815,15 @@ async fn main() {
         )
         .route("/reports/operator", get(list_operator_reports_handler))
         .route("/reports/operator/:id", get(get_operator_report_handler))
+        .route("/readiness/check", post(check_execution_readiness_handler))
+        .route(
+            "/readiness/snapshots",
+            get(list_execution_readiness_snapshots_handler),
+        )
+        .route(
+            "/readiness/snapshots/:id",
+            get(get_execution_readiness_snapshot_handler),
+        )
         .route("/orders", get(get_orders))
         .route("/orders/:id", get(get_order))
         .route("/market/symbols", get(get_market_symbols))
@@ -10467,6 +10499,131 @@ async fn get_operator_report_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_load_operator_report",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn check_execution_readiness_handler(
+    State(state): State<AppState>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<ExecutionReadinessRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+
+    if payload.persist && !readiness::persist_allowed(actor.as_ref()) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "readiness_snapshot_persist_forbidden",
+                message: "Persisting readiness snapshots requires OPERATOR or OWNER.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match readiness::compute_execution_readiness(&state, &payload, actor.as_ref()).await {
+        Ok(readiness) => (
+            StatusCode::OK,
+            Json(ExecutionReadinessResponse {
+                readiness,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "failed_to_compute_execution_readiness",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_execution_readiness_snapshots_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ExecutionReadinessSnapshotsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match readiness::list_snapshots(&state, readiness::bounded_snapshot_list_limit(query.limit))
+        .await
+    {
+        Ok(snapshots) => (
+            StatusCode::OK,
+            Json(ExecutionReadinessSnapshotsResponse {
+                snapshots,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_execution_readiness_snapshots",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_execution_readiness_snapshot_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match readiness::get_snapshot(&state, id).await {
+        Ok(Some(snapshot)) => (
+            StatusCode::OK,
+            Json(ExecutionReadinessSnapshotsResponse {
+                snapshots: vec![snapshot],
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "execution_readiness_snapshot_not_found",
+                message: "Execution readiness snapshot was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_execution_readiness_snapshot",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

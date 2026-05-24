@@ -14,6 +14,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Replay/backtest must stay isolated from live and paper execution tables
 - Strategy analytics is read-only, VIEWER-readable inspection only and must never trigger execution, reconciliation, repair, or any paper/testnet mutation
 - Operator daily reports are read-only, VIEWER-readable inspection/export only; they may expose operational state but must never trigger execution, reconciliation, repair, promotion submit, paper mutation, or live/testnet order submission
+- Execution readiness is read-only, VIEWER-readable inspection only; it may compute and optionally persist bounded readiness snapshots, but it must never trigger execution, promotion submit, reconciliation, repair, paper mutation, or live/testnet order submission
 - Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
 - Paper accounting is simulated only and never submits exchange orders
 - Binance Spot Testnet credentials, when configured, are backend-only and never exposed to the dashboard or CLI

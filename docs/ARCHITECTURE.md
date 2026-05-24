@@ -211,6 +211,33 @@ Notes:
 - Findings and recommendations are deterministic rule evaluations over persisted state. No LLM reasoning is involved.
 - The report reuses the same isolated paper/shadow/testnet boundaries as the analytics layer and must never trigger pipeline runs, exchange submits, repair actions, reconciliation, or backtests.
 
+## Execution readiness gate
+
+Execution readiness is a separate read-only decision-support layer over persisted operational state:
+
+```txt
+system_state + db health + auth mode
++ market_feed_status + market_ticks + candles
++ strategy_configs + risk_configs + risk_decisions
++ paper_accounts
++ testnet_shadow_runs + testnet_shadow_runner_state
++ testnet_shadow_promotions
++ exchange_private_stream_state
++ exchange_testnet_orders
++ exchange_reconciliation_runs + exchange_reconciliation_mismatches
++ exchange_testnet_repair_actions
+-> deterministic checks + score 0..100 + READY/DEGRADED/NOT_READY/UNKNOWN
+-> /readiness/check
+-> optional execution_readiness_snapshots persistence
+-> CLI + dashboard inspection only
+```
+
+Notes:
+
+- The readiness gate is read-only with respect to execution state. It must never preview, submit, reconcile, repair, or trigger paper/testnet actions.
+- Hard blockers cap score to `<= 40`; warnings subtract deterministic fixed penalties.
+- Readiness targets are bounded to `PAPER_PIPELINE`, `TESTNET_SHADOW`, `TESTNET_PROMOTION`, and `TESTNET_SUBMIT`.
+
 ## Deployment shape
 
 For MVP local development:

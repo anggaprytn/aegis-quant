@@ -2,9 +2,9 @@ use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
 use aegis_core::{
-    expected_testnet_pipeline_confirmation, OperatorReportFormat, OperatorReportRequest,
-    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerStaleFeedPolicy,
+    expected_testnet_pipeline_confirmation, ExecutionReadinessRequest, ExecutionReadinessTarget,
+    OperatorReportFormat, OperatorReportRequest, TestnetShadowPromotionRequest,
+    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -115,7 +115,65 @@ pub enum Commands {
     #[command(subcommand)]
     Reports(ReportsCommands),
     #[command(subcommand)]
+    Readiness(ReadinessCommands),
+    #[command(subcommand)]
     Exchange(ExchangeCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReadinessCommands {
+    Check(ReadinessCheckArgs),
+    Snapshots(ReadinessSnapshotsArgs),
+    Get { readiness_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ReadinessCheckArgs {
+    #[arg(long)]
+    pub target: String,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long = "strategy")]
+    pub strategy_id: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long = "promotion-id")]
+    pub promotion_id: Option<Uuid>,
+    #[arg(long = "risk-decision-id")]
+    pub risk_decision_id: Option<Uuid>,
+    #[arg(long = "start")]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long = "end")]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long, default_value_t = false)]
+    pub persist: bool,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+impl TryFrom<&ReadinessCheckArgs> for ExecutionReadinessRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &ReadinessCheckArgs) -> Result<Self, Self::Error> {
+        Ok(Self {
+            target: value.target.parse::<ExecutionReadinessTarget>()?,
+            symbol: value.symbol.clone(),
+            strategy_id: value.strategy_id.clone(),
+            timeframe: value.timeframe.clone(),
+            promotion_id: value.promotion_id,
+            risk_decision_id: value.risk_decision_id,
+            start_time: value.start_time,
+            end_time: value.end_time,
+            persist: value.persist,
+            correlation_id: value.correlation_id,
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ReadinessSnapshotsArgs {
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Subcommand)]

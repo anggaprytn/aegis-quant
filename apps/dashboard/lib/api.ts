@@ -35,6 +35,9 @@ import type {
   ExchangeTestnetRepairsResponse,
   ExchangeTestnetStatusResponse,
   ExchangeTestnetSymbolsResponse,
+  ExecutionReadinessRequest,
+  ExecutionReadinessResponse,
+  ExecutionReadinessSnapshotsResponse,
   FeedStatusResponse,
   HealthResponse,
   MarketSymbolsResponse,
@@ -662,6 +665,17 @@ export const api = {
     request<OperatorReportsListResponse>("/reports/operator", undefined, { limit }),
   getOperatorReport: (reportId: string) =>
     request<OperatorReportResponse>(`/reports/operator/${reportId}`),
+  checkExecutionReadiness: (payload: ExecutionReadinessRequest) =>
+    request<ExecutionReadinessResponse>("/readiness/check", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getExecutionReadinessSnapshots: (limit = 20) =>
+    request<ExecutionReadinessSnapshotsResponse>(
+      "/readiness/snapshots",
+      undefined,
+      { limit },
+    ),
   getRecentEvents: (params?: {
     limit?: number;
     event_type?: string;

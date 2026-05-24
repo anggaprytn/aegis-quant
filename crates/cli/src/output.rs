@@ -14,13 +14,13 @@ use crate::api::{
     ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
     ExchangeTestnetPipelineSubmitResponse, ExchangeTestnetRepairActionRecord,
     ExchangeTestnetRepairResponse, ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse,
-    FeedStatusResponse, HealthResponse, OperatorReportResponse, OperatorReportsListResponse,
-    OrderRecord, PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse,
-    PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse,
-    RecentEventsResponse, RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse,
-    RiskConfigValidationResponse, RiskConfigVersionsResponse, RiskDecisionsResponse,
-    RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
-    StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
+    ExecutionReadinessResponse, ExecutionReadinessSnapshotsResponse, FeedStatusResponse,
+    HealthResponse, OperatorReportResponse, OperatorReportsListResponse, OrderRecord,
+    PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse,
+    PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse,
+    RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
+    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
+    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDryRunResponse, StrategyListResponse,
     StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
     StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
@@ -150,6 +150,76 @@ pub fn print_operator_report_list(response: &OperatorReportsListResponse) {
             report.window_start,
             report.window_end,
             report.created_at
+        );
+    }
+}
+
+pub fn print_execution_readiness(response: &ExecutionReadinessResponse) {
+    let readiness = &response.readiness;
+    println!(
+        "Readiness: {}  Target: {}  Score: {}",
+        readiness.status.as_str(),
+        readiness.target.as_str(),
+        readiness.score
+    );
+    println!("Computed: {}", readiness.computed_at);
+    println!("ID: {}", readiness.readiness_id);
+
+    if readiness.blocking_reasons.is_empty() {
+        println!("Blockers: none");
+    } else {
+        println!(
+            "Blockers: {}",
+            readiness
+                .blocking_reasons
+                .iter()
+                .map(|reason| format!("{reason:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    if readiness.warnings.is_empty() {
+        println!("Warnings: none");
+    } else {
+        println!("Warnings:");
+        for warning in &readiness.warnings {
+            println!(
+                "  - [{}] {}",
+                format!("{:?}", warning.severity),
+                warning.summary
+            );
+        }
+    }
+
+    if readiness.recommendations.is_empty() {
+        println!("Recommendations: none");
+    } else {
+        println!(
+            "Recommendations: {}",
+            readiness
+                .recommendations
+                .iter()
+                .map(|item| format!("{item:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+}
+
+pub fn print_execution_readiness_snapshots(response: &ExecutionReadinessSnapshotsResponse) {
+    if response.snapshots.is_empty() {
+        println!("No readiness snapshots found.");
+        return;
+    }
+
+    for snapshot in &response.snapshots {
+        println!(
+            "{}  {}  score={}  {}",
+            snapshot.id,
+            snapshot.target.as_str(),
+            snapshot.score,
+            snapshot.status.as_str()
         );
     }
 }

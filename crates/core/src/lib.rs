@@ -1476,6 +1476,242 @@ pub struct OperatorReportSummary {
     pub reconciliation_required_count: i64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExecutionReadinessTarget {
+    PaperPipeline,
+    TestnetShadow,
+    TestnetPromotion,
+    TestnetSubmit,
+}
+
+impl ExecutionReadinessTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PaperPipeline => "PAPER_PIPELINE",
+            Self::TestnetShadow => "TESTNET_SHADOW",
+            Self::TestnetPromotion => "TESTNET_PROMOTION",
+            Self::TestnetSubmit => "TESTNET_SUBMIT",
+        }
+    }
+}
+
+impl std::str::FromStr for ExecutionReadinessTarget {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PAPER_PIPELINE" => Ok(Self::PaperPipeline),
+            "TESTNET_SHADOW" => Ok(Self::TestnetShadow),
+            "TESTNET_PROMOTION" => Ok(Self::TestnetPromotion),
+            "TESTNET_SUBMIT" => Ok(Self::TestnetSubmit),
+            other => Err(CoreError::UnsupportedExecutionReadinessTarget(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for ExecutionReadinessTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExecutionReadinessStatus {
+    Ready,
+    NotReady,
+    Degraded,
+    Unknown,
+}
+
+impl ExecutionReadinessStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "READY",
+            Self::NotReady => "NOT_READY",
+            Self::Degraded => "DEGRADED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExecutionReadinessCheckSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl ExecutionReadinessCheckSeverity {
+    pub fn score_penalty(self) -> i32 {
+        match self {
+            Self::Low => 3,
+            Self::Medium => 8,
+            Self::High => 15,
+            Self::Critical => 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExecutionReadinessBlockingReason {
+    DbUnhealthy,
+    KillSwitchActive,
+    MissingValidatedRiskConfig,
+    StaleMarketFeed,
+    AuthDisabled,
+    MissingRecentMarketPrice,
+    StrategyDisabled,
+    StrategyConfigInvalid,
+    MissingRecentClosedCandles,
+    RiskConfigInvalid,
+    PaperAccountMissing,
+    PaperAccountUnhealthy,
+    ShadowRunnerError,
+    ZeroShadowWouldSubmitCount,
+    PromotionFunnelHighRejectionRate,
+    StaleLocalPrice,
+    HighRiskRejectionRate,
+    TestnetAdapterNotConfigured,
+    PrivateStreamStale,
+    PrivateStreamDisconnected,
+    UnresolvedReconciliationMismatches,
+    ReconciliationRequiredOrdersPresent,
+    UnknownExchangeStateOrdersPresent,
+    RecentRepairFailures,
+    PromotionExpired,
+    PromotionNotPreviewed,
+    MissingApprovedRiskDecision,
+    NonOwnerActor,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExecutionReadinessRecommendation {
+    RestoreDatabaseHealth,
+    ResumeFromKillSwitch,
+    ValidateRiskConfig,
+    RefreshMarketFeed,
+    EnableAuth,
+    SeedRecentMarketPrice,
+    EnableStrategy,
+    FixStrategyConfig,
+    BackfillClosedCandles,
+    CreateOrRepairPaperAccount,
+    ReviewPaperPnl,
+    RestartShadowRunner,
+    IncreaseShadowCoverage,
+    ReducePromotionRejections,
+    ReduceRiskRejections,
+    ConfigureTestnetAdapter,
+    ReconnectPrivateStream,
+    ReconcileTestnetOrders,
+    ResolveRepairFailures,
+    PreviewOrRenewPromotion,
+    ApproveRiskDecision,
+    UseOwnerActor,
+    RunRecentBacktest,
+    VerifyRunnerState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionReadinessCheck {
+    pub code: String,
+    pub name: String,
+    pub passed: bool,
+    pub blocking: bool,
+    pub severity: ExecutionReadinessCheckSeverity,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionReadinessRequest {
+    pub target: ExecutionReadinessTarget,
+    pub symbol: Option<String>,
+    pub strategy_id: Option<String>,
+    pub timeframe: Option<String>,
+    pub promotion_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub persist: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionReadinessResult {
+    pub readiness_id: Uuid,
+    pub target: ExecutionReadinessTarget,
+    pub status: ExecutionReadinessStatus,
+    pub score: i32,
+    pub blocking_reasons: Vec<ExecutionReadinessBlockingReason>,
+    pub warnings: Vec<ExecutionReadinessCheck>,
+    pub checks: Vec<ExecutionReadinessCheck>,
+    pub recommendations: Vec<ExecutionReadinessRecommendation>,
+    pub computed_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionReadinessSnapshot {
+    pub id: Uuid,
+    pub target: ExecutionReadinessTarget,
+    pub status: ExecutionReadinessStatus,
+    pub score: i32,
+    pub blocking_reasons: Vec<ExecutionReadinessBlockingReason>,
+    pub warnings: Vec<ExecutionReadinessCheck>,
+    pub checks: Vec<ExecutionReadinessCheck>,
+    pub recommendations: Vec<ExecutionReadinessRecommendation>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+pub fn score_execution_readiness(checks: &[ExecutionReadinessCheck]) -> i32 {
+    let mut score = 100_i32;
+
+    for check in checks
+        .iter()
+        .filter(|check| !check.passed && !check.blocking)
+    {
+        score -= check.severity.score_penalty();
+    }
+
+    score.clamp(0, 100)
+}
+
+pub fn execution_readiness_status_from_checks(
+    checks: &[ExecutionReadinessCheck],
+    score: i32,
+) -> ExecutionReadinessStatus {
+    if checks.iter().any(|check| {
+        !check.passed
+            && check.blocking
+            && check.severity == ExecutionReadinessCheckSeverity::Critical
+    }) {
+        return ExecutionReadinessStatus::Unknown;
+    }
+
+    if checks.iter().any(|check| !check.passed && check.blocking) || score < 60 {
+        return ExecutionReadinessStatus::NotReady;
+    }
+
+    if score >= 85 {
+        return ExecutionReadinessStatus::Ready;
+    }
+
+    ExecutionReadinessStatus::Degraded
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OperatorReportSystemSnapshot {
     pub api_healthy: bool,
@@ -4774,6 +5010,8 @@ pub enum CoreError {
     UnsupportedStrategyMode(String),
     #[error("unsupported strategy performance mode: {0}")]
     UnsupportedStrategyPerformanceMode(String),
+    #[error("unsupported execution readiness target: {0}")]
+    UnsupportedExecutionReadinessTarget(String),
     #[error("unsupported operator report format: {0}")]
     UnsupportedOperatorReportFormat(String),
     #[error("unsupported signal side: {0}")]
@@ -4955,11 +5193,13 @@ mod tests {
         calculate_average_duration_seconds, calculate_strategy_average_pnl,
         calculate_strategy_rejection_rate, calculate_strategy_win_rate,
         calculate_testnet_promotion_rate, combine_strategy_performance_summaries,
+        execution_readiness_status_from_checks, score_execution_readiness,
         validate_password_length, validate_testnet_repair_transition, ExchangeEnvironment,
         ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
         ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
         ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
-        ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionState, OperatorReport,
+        ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionReadinessCheck,
+        ExecutionReadinessCheckSeverity, ExecutionReadinessStatus, ExecutionState, OperatorReport,
         OperatorReportFinding, OperatorReportFormat, OperatorReportRecommendation,
         OperatorReportRequest, OperatorReportSection, OperatorReportSeverity, OperatorReportStatus,
         OperatorReportSummary, OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
@@ -5483,5 +5723,93 @@ mod tests {
         assert!(markdown.contains("## Findings"));
         assert!(markdown.contains("## Recommendations"));
         assert!(markdown.contains("## System Health"));
+    }
+
+    #[test]
+    fn readiness_score_clamps_to_zero() {
+        let checks = vec![
+            ExecutionReadinessCheck {
+                code: "warn_a".to_string(),
+                name: "Warn A".to_string(),
+                passed: false,
+                blocking: false,
+                severity: ExecutionReadinessCheckSeverity::High,
+                summary: "warn".to_string(),
+                details: None,
+            };
+            8
+        ];
+
+        assert_eq!(score_execution_readiness(&checks), 0);
+    }
+
+    #[test]
+    fn readiness_ready_threshold_applies_without_blockers() {
+        let checks = vec![ExecutionReadinessCheck {
+            code: "feed_near_threshold".to_string(),
+            name: "Feed near threshold".to_string(),
+            passed: false,
+            blocking: false,
+            severity: ExecutionReadinessCheckSeverity::Low,
+            summary: "warn".to_string(),
+            details: None,
+        }];
+
+        let score = score_execution_readiness(&checks);
+        assert_eq!(score, 97);
+        assert_eq!(
+            execution_readiness_status_from_checks(&checks, score),
+            ExecutionReadinessStatus::Ready
+        );
+    }
+
+    #[test]
+    fn readiness_degraded_threshold_applies_without_blockers() {
+        let checks = vec![
+            ExecutionReadinessCheck {
+                code: "warn_a".to_string(),
+                name: "Warn A".to_string(),
+                passed: false,
+                blocking: false,
+                severity: ExecutionReadinessCheckSeverity::High,
+                summary: "warn".to_string(),
+                details: None,
+            },
+            ExecutionReadinessCheck {
+                code: "warn_b".to_string(),
+                name: "Warn B".to_string(),
+                passed: false,
+                blocking: false,
+                severity: ExecutionReadinessCheckSeverity::Medium,
+                summary: "warn".to_string(),
+                details: None,
+            },
+        ];
+
+        let score = score_execution_readiness(&checks);
+        assert_eq!(score, 77);
+        assert_eq!(
+            execution_readiness_status_from_checks(&checks, score),
+            ExecutionReadinessStatus::Degraded
+        );
+    }
+
+    #[test]
+    fn readiness_blocker_forces_not_ready() {
+        let checks = vec![ExecutionReadinessCheck {
+            code: "kill_switch_active".to_string(),
+            name: "Kill switch active".to_string(),
+            passed: false,
+            blocking: true,
+            severity: ExecutionReadinessCheckSeverity::High,
+            summary: "blocked".to_string(),
+            details: None,
+        }];
+
+        let score = score_execution_readiness(&checks).min(40);
+        assert_eq!(
+            execution_readiness_status_from_checks(&checks, score),
+            ExecutionReadinessStatus::NotReady
+        );
     }
 }
