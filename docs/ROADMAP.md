@@ -36,7 +36,8 @@
 - Completed: shadow-to-testnet promotion gate with persisted `WOULD_SUBMIT` promotion previews, owner-confirmed `PROMOTE TESTNET <SYMBOL>` submits, isolated audit trail from shadow run to testnet order, and no paper/backtest/live mutation
 - Completed: read-only strategy performance analytics across backtest, paper, and shadow data with API, CLI, dashboard, and bounded telemetry support
 - Completed: read-only promotion funnel analytics across shadow would-submit, promotion preview/submit, isolated testnet order lifecycle outcomes, API/CLI/dashboard surfaces, and bounded low-cardinality telemetry
-- Current focus: tighten analytics depth, reconciliation visibility, and operator workflows across paper/testnet shadow promotion boundaries before any live execution surface area
+- Completed: read-only operator daily reports across health, feed freshness, strategy/risk behavior, paper PnL, shadow outcomes, promotion funnel, and isolated testnet execution with optional persisted exports
+- Current focus: tighten reconciliation visibility, operator reporting depth, and promotion-readiness workflows across paper/testnet shadow boundaries before any live execution surface area
 
 ## Next implementation steps
 

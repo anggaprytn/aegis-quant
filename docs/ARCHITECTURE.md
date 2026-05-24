@@ -185,6 +185,32 @@ Notes:
 - Combined summaries are assembled in memory from bounded per-mode reads; they are not a new execution source of truth.
 - The analytics API is inspection-only and must never trigger exchange submission, paper pipeline execution, backtests, repair actions, or reconciliation.
 
+## Operator report read model
+
+The operator daily report is another read-only aggregation layer over existing persisted state:
+
+```txt
+system_state + health checks + /metrics encode check
++ market_feed_status + candle_backfill_runs + candles
++ signals + risk_decisions + strategy_configs
++ paper_accounts + paper_positions + paper_trade_journal
++ testnet_shadow_runs + testnet_shadow_runner_state
++ testnet_shadow_promotions + exchange_testnet_orders
++ exchange_testnet_order_lifecycle_events
++ exchange_reconciliation_runs + exchange_reconciliation_mismatches
++ exchange_testnet_repair_actions + exchange_private_stream_state
+-> deterministic findings + deterministic recommendations
+-> /reports/operator/daily
+-> optional operator_reports persistence
+-> CLI markdown/JSON export + dashboard Reports section
+```
+
+Notes:
+
+- Report generation is read-only with respect to execution tables; only the optional `operator_reports` export table may be written.
+- Findings and recommendations are deterministic rule evaluations over persisted state. No LLM reasoning is involved.
+- The report reuses the same isolated paper/shadow/testnet boundaries as the analytics layer and must never trigger pipeline runs, exchange submits, repair actions, reconciliation, or backtests.
+
 ## Deployment shape
 
 For MVP local development:

@@ -1,6 +1,6 @@
 use aegis_core::{
-    PaperTradingPipelineRequest, TestnetShadowRunnerControlAction,
-    TestnetShadowRunnerControlRequest,
+    OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
+    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -14,9 +14,9 @@ use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
     BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, MarketCommands,
-    OrderCommands, PaperCommands, PipelineCommands, RiskCommands, RiskConfigCommands,
-    StrategyCommands, StrategyConfigCommands, RESUME_CONFIRMATION_TEXT,
-    TESTNET_ORDER_CONFIRMATION_TEXT,
+    OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands, ReportsCommands,
+    RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -980,6 +980,41 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_testnet_promotion_rows(&response);
+                    }
+                }
+            },
+        },
+        Commands::Reports(command) => match command {
+            ReportsCommands::Operator(command) => match command {
+                OperatorReportsCommands::Daily(args) => {
+                    let request = OperatorReportRequest::try_from(&args)?;
+                    let response = client.generate_operator_report(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else if request.format == OperatorReportFormat::Markdown {
+                        if let Some(markdown) = response.report.markdown.as_deref() {
+                            println!("{markdown}");
+                        } else {
+                            output::print_operator_report(&response);
+                        }
+                    } else {
+                        output::print_operator_report(&response);
+                    }
+                }
+                OperatorReportsCommands::List(args) => {
+                    let response = client.list_operator_reports(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_operator_report_list(&response);
+                    }
+                }
+                OperatorReportsCommands::Get { report_id } => {
+                    let response = client.get_operator_report(report_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_operator_report(&response);
                     }
                 }
             },

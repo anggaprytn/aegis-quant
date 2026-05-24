@@ -14,12 +14,13 @@ use crate::api::{
     ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
     ExchangeTestnetPipelineSubmitResponse, ExchangeTestnetRepairActionRecord,
     ExchangeTestnetRepairResponse, ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse,
-    FeedStatusResponse, HealthResponse, OrderRecord, PaperAccountResponse,
-    PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse, PaperPositionRecord,
-    PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse,
-    RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
-    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
-    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
+    FeedStatusResponse, HealthResponse, OperatorReportResponse, OperatorReportsListResponse,
+    OrderRecord, PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse,
+    PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse,
+    RecentEventsResponse, RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse,
+    RiskConfigValidationResponse, RiskConfigVersionsResponse, RiskDecisionsResponse,
+    RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
+    StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDryRunResponse, StrategyListResponse,
     StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
     StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
@@ -114,6 +115,43 @@ pub fn print_auth_me(user: &User) {
 
 pub fn print_auth_logout() {
     println!("Logged out.");
+}
+
+pub fn print_operator_report(response: &OperatorReportResponse) {
+    if let Some(markdown) = response.report.markdown.as_deref() {
+        println!("{markdown}");
+        return;
+    }
+
+    println!("Report ID: {}", response.report.report_id);
+    println!("Status: {}", response.report.status.as_str());
+    println!(
+        "Window: {} -> {}",
+        response.report.window_start, response.report.window_end
+    );
+    println!("Generated At: {}", response.report.generated_at);
+    println!("Findings: {}", response.report.findings.len());
+    for finding in &response.report.findings {
+        println!(
+            "- {} {}: {}",
+            finding.severity.as_str(),
+            finding.section,
+            finding.title
+        );
+    }
+}
+
+pub fn print_operator_report_list(response: &OperatorReportsListResponse) {
+    for report in &response.reports {
+        println!(
+            "{}  {}  {} -> {}  created_at={}",
+            report.report_id,
+            report.status,
+            report.window_start,
+            report.window_end,
+            report.created_at
+        );
+    }
 }
 
 pub fn print_exchange_testnet_status(response: &ExchangeTestnetStatusResponse) {

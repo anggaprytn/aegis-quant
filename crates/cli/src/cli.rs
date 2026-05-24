@@ -2,8 +2,9 @@ use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
 use aegis_core::{
-    expected_testnet_pipeline_confirmation, TestnetShadowPromotionRequest, TestnetShadowRunRequest,
-    TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
+    expected_testnet_pipeline_confirmation, OperatorReportFormat, OperatorReportRequest,
+    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerStaleFeedPolicy,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -112,7 +113,62 @@ pub enum Commands {
     #[command(subcommand)]
     Analytics(AnalyticsCommands),
     #[command(subcommand)]
+    Reports(ReportsCommands),
+    #[command(subcommand)]
     Exchange(ExchangeCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReportsCommands {
+    #[command(subcommand)]
+    Operator(OperatorReportsCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OperatorReportsCommands {
+    Daily(OperatorReportDailyArgs),
+    List(OperatorReportListArgs),
+    Get { report_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct OperatorReportDailyArgs {
+    #[arg(long = "start")]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long = "end")]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long = "strategy")]
+    pub strategy_id: Option<String>,
+    #[arg(long, default_value = "json")]
+    pub format: String,
+    #[arg(long, default_value_t = false)]
+    pub persist: bool,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+impl TryFrom<&OperatorReportDailyArgs> for OperatorReportRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &OperatorReportDailyArgs) -> Result<Self, Self::Error> {
+        Ok(OperatorReportRequest {
+            start_time: value.start_time,
+            end_time: value.end_time,
+            symbol: value.symbol.clone(),
+            strategy_id: value.strategy_id.clone(),
+            format: value.format.parse::<OperatorReportFormat>()?,
+            persist: value.persist,
+            correlation_id: value.correlation_id,
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct OperatorReportListArgs {
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Subcommand)]

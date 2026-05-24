@@ -1,5 +1,6 @@
 mod auth;
 mod exchange_reconcile;
+mod operator_reports;
 mod pipeline;
 
 use std::{
@@ -24,14 +25,14 @@ use aegis_core::{
     ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
     ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
     ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, MarketMode, OrderIntent, PaperCloseMode,
-    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
+    ExchangeTestnetPipelineSubmitRequest, MarketMode, OperatorReport, OperatorReportRequest,
+    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
+    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyComparisonSummary, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyEvaluationContext, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
     StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
     TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
@@ -143,6 +144,7 @@ use crate::exchange_reconcile::{
     local_testnet_status_from_exchange_state, mismatch_from_record, reconcile_testnet_orders,
     run_from_record, run_result_from_run, ReconcileTestnetOrdersError,
 };
+use crate::operator_reports::OperatorReportListItem;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const CORRELATION_ID_HEADER: HeaderName = HeaderName::from_static("x-correlation-id");
@@ -384,6 +386,11 @@ struct TestnetPromotionFunnelQuery {
     timeframe: Option<String>,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct OperatorReportsListQuery {
     limit: Option<i64>,
 }
 
@@ -916,6 +923,22 @@ struct TestnetPromotionFunnelOutcomesResponse {
 #[derive(Serialize, Deserialize)]
 struct TestnetPromotionFunnelRowsResponse {
     rows: Vec<TestnetPromotionFunnelRow>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OperatorReportResponse {
+    report: OperatorReport,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OperatorReportsListResponse {
+    reports: Vec<OperatorReportListItem>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1763,6 +1786,12 @@ async fn main() {
             "/analytics/testnet/promotion-funnel/rows",
             get(list_testnet_promotion_funnel_rows_handler),
         )
+        .route(
+            "/reports/operator/daily",
+            post(generate_operator_report_handler),
+        )
+        .route("/reports/operator", get(list_operator_reports_handler))
+        .route("/reports/operator/:id", get(get_operator_report_handler))
         .route("/orders", get(get_orders))
         .route("/orders/:id", get(get_order))
         .route("/market/symbols", get(get_market_symbols))
@@ -2092,6 +2121,14 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     }
     if method == axum::http::Method::GET && path == "/metrics" && !protect_metrics {
         return RouteAccess::Public;
+    }
+    if method == axum::http::Method::POST && path == "/reports/operator/daily" {
+        return RouteAccess::Authenticated;
+    }
+    if method == axum::http::Method::GET
+        && (path == "/reports/operator" || path.starts_with("/reports/operator/"))
+    {
+        return RouteAccess::Authenticated;
     }
     if method == axum::http::Method::GET && path == "/exchange/testnet/balances" {
         return RouteAccess::Operator;
@@ -10288,6 +10325,148 @@ async fn list_testnet_promotion_funnel_rows_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_load_testnet_promotion_rows",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn generate_operator_report_handler(
+    State(state): State<AppState>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<OperatorReportRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+
+    if payload.persist && !operator_reports::persist_allowed(actor.as_ref()) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "operator_report_persist_forbidden",
+                message: "Persisting operator reports requires OPERATOR or OWNER.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_operator_report_request",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match operator_reports::generate_operator_report(&state, &payload, actor.as_ref()).await {
+        Ok(report) => (
+            StatusCode::OK,
+            Json(OperatorReportResponse {
+                report,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_generate_operator_report",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_operator_reports_handler(
+    State(state): State<AppState>,
+    Query(query): Query<OperatorReportsListQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match operator_reports::list_operator_reports(
+        &state.db_pool,
+        operator_reports::bounded_report_list_limit(query.limit),
+    )
+    .await
+    {
+        Ok(reports) => (
+            StatusCode::OK,
+            Json(OperatorReportsListResponse {
+                reports,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_operator_reports",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_operator_report_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+
+    match operator_reports::get_operator_report(&state.db_pool, id).await {
+        Ok(Some(report)) => (
+            StatusCode::OK,
+            Json(OperatorReportResponse {
+                report,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "operator_report_not_found",
+                message: "Operator report was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_operator_report",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

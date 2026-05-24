@@ -18,6 +18,9 @@ import type {
   CandleBackfillResult,
   MarketFeedStatusRecord,
   OrderRecord,
+  OperatorReport,
+  OperatorReportRequest,
+  OperatorReportListItem,
   PaperPositionRecord,
   RiskConfig,
   RiskDecisionRecord,
@@ -49,6 +52,7 @@ type SectionId =
   | "risk"
   | "orders"
   | "analytics"
+  | "reports"
   | "backtests"
   | "events"
   | "settings";
@@ -60,6 +64,7 @@ const SECTIONS: Array<{ id: SectionId; label: string }> = [
   { id: "risk", label: "Risk" },
   { id: "orders", label: "Orders" },
   { id: "analytics", label: "Analytics" },
+  { id: "reports", label: "Reports" },
   { id: "backtests", label: "Backtests" },
   { id: "events", label: "Logs / Events" },
   { id: "settings", label: "Settings" },
@@ -86,6 +91,15 @@ const DEFAULT_BACKFILL_FORM: CandleBackfillRequest = {
   start_time: "2026-05-01T00:00:00Z",
   end_time: "2026-05-02T00:00:00Z",
   limit_per_request: 1000,
+};
+
+const DEFAULT_REPORT_FORM: OperatorReportRequest = {
+  start_time: "2026-05-24T00:00:00Z",
+  end_time: "2026-05-24T23:59:59Z",
+  symbol: "BTCUSDT",
+  strategy_id: "momentum_v1",
+  format: "MARKDOWN",
+  persist: false,
 };
 
 function strategyConfigFormFromStatus(
@@ -362,6 +376,9 @@ function AuthenticatedDashboard({
   const [selectedReconciliationRunId, setSelectedReconciliationRunId] = useState<string | null>(
     null,
   );
+  const [reportForm, setReportForm] = useState<OperatorReportRequest>(DEFAULT_REPORT_FORM);
+  const [generatedReport, setGeneratedReport] = useState<OperatorReport | null>(null);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [backtestForm, setBacktestForm] =
     useState<BacktestRequest>(DEFAULT_BACKTEST_FORM);
   const [lastBacktestResult, setLastBacktestResult] =
@@ -757,6 +774,20 @@ function AuthenticatedDashboard({
     queryFn: () => api.getOrder(selectedOrderId ?? ""),
     enabled: Boolean(selectedOrderId),
   });
+  const operatorReportsQuery = useQuery({
+    queryKey: ["operator-reports"],
+    queryFn: () => api.getOperatorReports(20),
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedOperatorReportQuery = useQuery({
+    queryKey: ["operator-report", selectedReportId],
+    queryFn: () => api.getOperatorReport(selectedReportId ?? ""),
+    enabled:
+      (user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER") &&
+      Boolean(selectedReportId),
+  });
 
   const selectedExchangeReconciliationRunQuery = useQuery({
     queryKey: ["exchange-reconciliation-run", selectedReconciliationRunId],
@@ -1049,6 +1080,16 @@ function AuthenticatedDashboard({
       await refreshOperationalData();
     },
   });
+  const operatorReportMutation = useMutation({
+    mutationFn: () => api.generateOperatorReport(reportForm),
+    onSuccess: async (response) => {
+      setGeneratedReport(response.report);
+      if (response.report.persisted) {
+        setSelectedReportId(response.report.report_id);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["operator-reports"] });
+    },
+  });
 
   const backfillMutation = useMutation({
     mutationFn: () => api.backfillMarketCandles(backfillForm),
@@ -1281,6 +1322,8 @@ function AuthenticatedDashboard({
       latestRiskDecisions.find((decision) => decision.decision === "REJECTED") ?? null,
     [latestRiskDecisions],
   );
+  const activeOperatorReport =
+    selectedOperatorReportQuery.data?.report ?? generatedReport;
 
   return (
     <div className="min-h-screen bg-transparent text-slate-100">
@@ -2662,6 +2705,164 @@ function AuthenticatedDashboard({
             </section>
           )}
 
+          {section === "reports" && (
+            <section className="grid gap-4 xl:grid-cols-12">
+              <Panel className="xl:col-span-5" title="Daily Report Form">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field
+                    label="Start Time"
+                    value={reportForm.start_time ?? ""}
+                    onChange={(value) =>
+                      setReportForm((current) => ({ ...current, start_time: value }))
+                    }
+                  />
+                  <Field
+                    label="End Time"
+                    value={reportForm.end_time ?? ""}
+                    onChange={(value) =>
+                      setReportForm((current) => ({ ...current, end_time: value }))
+                    }
+                  />
+                  <Field
+                    label="Symbol"
+                    value={reportForm.symbol ?? ""}
+                    onChange={(value) =>
+                      setReportForm((current) => ({ ...current, symbol: value || undefined }))
+                    }
+                  />
+                  <Field
+                    label="Strategy"
+                    value={reportForm.strategy_id ?? ""}
+                    onChange={(value) =>
+                      setReportForm((current) => ({
+                        ...current,
+                        strategy_id: value || undefined,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Format"
+                    value={reportForm.format ?? "MARKDOWN"}
+                    onChange={(value) =>
+                      setReportForm((current) => ({
+                        ...current,
+                        format: value as OperatorReportRequest["format"],
+                      }))
+                    }
+                    as="select"
+                    options={["MARKDOWN", "JSON"]}
+                  />
+                  <label className="block text-sm">
+                    <span className="text-xs uppercase tracking-[0.18em] text-muted">
+                      Persist Report
+                    </span>
+                    <div className="mt-3 flex items-center gap-2">
+                      <input
+                        checked={Boolean(reportForm.persist)}
+                        className="h-4 w-4"
+                        type="checkbox"
+                        onChange={(event) =>
+                          setReportForm((current) => ({
+                            ...current,
+                            persist: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span className="text-sm text-slate-200">
+                        Store in `operator_reports`
+                      </span>
+                    </div>
+                  </label>
+                </div>
+                <div className="mt-4 flex items-center gap-3">
+                  <ActionButton
+                    label="Generate Report"
+                    onClick={() => operatorReportMutation.mutate()}
+                    busy={operatorReportMutation.isPending}
+                  />
+                  <InlineStatus error={getErrorMessage(operatorReportMutation.error)} />
+                </div>
+              </Panel>
+
+              <Panel className="xl:col-span-7" title="Generated Summary">
+                <KeyValue
+                  items={[
+                    ["Report ID", activeOperatorReport?.report_id ?? "N/A"],
+                    ["Status", activeOperatorReport?.status ?? "N/A"],
+                    [
+                      "Window",
+                      activeOperatorReport
+                        ? `${formatDateTime(activeOperatorReport.window_start)} -> ${formatDateTime(activeOperatorReport.window_end)}`
+                        : "N/A",
+                    ],
+                    [
+                      "Findings",
+                      String(activeOperatorReport?.summary.total_findings ?? 0),
+                    ],
+                    [
+                      "Highest Severity",
+                      activeOperatorReport?.summary.highest_severity ?? "N/A",
+                    ],
+                    [
+                      "Risk Rejection Rate %",
+                      formatNumber(activeOperatorReport?.summary.risk_rejection_rate_pct),
+                    ],
+                    [
+                      "Paper Daily PnL",
+                      formatNumber(activeOperatorReport?.summary.paper_daily_pnl),
+                    ],
+                    [
+                      "Reconciliation Required",
+                      String(activeOperatorReport?.summary.reconciliation_required_count ?? 0),
+                    ],
+                  ]}
+                  loading={operatorReportMutation.isPending || selectedOperatorReportQuery.isLoading}
+                  error={
+                    getErrorMessage(operatorReportMutation.error) ??
+                    getErrorMessage(selectedOperatorReportQuery.error)
+                  }
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-6" title="Findings">
+                <OperatorReportFindingsTable findings={activeOperatorReport?.findings ?? []} />
+              </Panel>
+
+              <Panel className="xl:col-span-6" title="Recommendations">
+                <SimpleList
+                  items={(activeOperatorReport?.recommendations ?? []).map(
+                    (recommendation) =>
+                      `${recommendation.priority}: ${recommendation.detail}`,
+                  )}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-7" title="Section Snapshots">
+                <OperatorReportSections sections={activeOperatorReport?.sections ?? []} />
+              </Panel>
+
+              <Panel className="xl:col-span-5" title="Persisted Reports">
+                <OperatorReportList
+                  reports={operatorReportsQuery.data?.reports ?? []}
+                  loading={operatorReportsQuery.isLoading}
+                  error={getErrorMessage(operatorReportsQuery.error)}
+                  selectedReportId={selectedReportId}
+                  onSelect={setSelectedReportId}
+                />
+              </Panel>
+
+              <Panel className="xl:col-span-12" title="Markdown Preview">
+                {activeOperatorReport?.markdown ? (
+                  <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl border border-border bg-surface/60 p-4 text-sm text-slate-100">
+                    {activeOperatorReport.markdown}
+                  </pre>
+                ) : (
+                  <EmptyState label="Generate a report to preview markdown." />
+                )}
+              </Panel>
+            </section>
+          )}
+
           {section === "backtests" && (
             <section className="grid gap-4 xl:grid-cols-12">
               <Panel className="xl:col-span-7" title="Backtest Run Form">
@@ -3802,6 +4003,148 @@ function InlineStatus({
   }
 
   return null;
+}
+
+function OperatorReportFindingsTable({
+  findings,
+}: {
+  findings: Array<{
+    code: string;
+    severity: string;
+    title: string;
+    detail: string;
+    section: string;
+  }>;
+}) {
+  if (!findings.length) {
+    return <EmptyState label="No findings." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {findings.map((finding) => (
+        <div
+          key={finding.code}
+          className="rounded-xl border border-border bg-surface/60 px-3 py-3"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-slate-100">{finding.title}</div>
+            <div className="text-xs uppercase tracking-[0.18em] text-amber-200">
+              {finding.severity}
+            </div>
+          </div>
+          <div className="mt-1 text-xs uppercase tracking-[0.16em] text-muted">
+            {finding.section}
+          </div>
+          <div className="mt-2 text-sm text-slate-300">{finding.detail}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OperatorReportSections({
+  sections,
+}: {
+  sections: Array<{
+    key: string;
+    title: string;
+    status: string;
+    summary: string;
+    highlights: Array<{ label: string; value: string }>;
+  }>;
+}) {
+  if (!sections.length) {
+    return <EmptyState label="No report sections." />;
+  }
+
+  return (
+    <div className="space-y-3">
+      {sections.map((section) => (
+        <div
+          key={section.key}
+          className="rounded-xl border border-border bg-surface/60 px-3 py-3"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-slate-100">{section.title}</div>
+            <div className="text-xs uppercase tracking-[0.18em] text-muted">
+              {section.status}
+            </div>
+          </div>
+          <div className="mt-2 text-sm text-slate-300">{section.summary}</div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {section.highlights.map((highlight) => (
+              <div
+                key={`${section.key}-${highlight.label}`}
+                className="rounded-lg border border-border/70 bg-panel/70 px-3 py-2"
+              >
+                <div className="text-[11px] uppercase tracking-[0.16em] text-muted">
+                  {highlight.label}
+                </div>
+                <div className="mt-1 text-sm text-slate-100">{highlight.value}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OperatorReportList({
+  reports,
+  loading,
+  error,
+  selectedReportId,
+  onSelect,
+}: {
+  reports: OperatorReportListItem[];
+  loading?: boolean;
+  error?: string;
+  selectedReportId: string | null;
+  onSelect: (reportId: string) => void;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading persisted reports..." />;
+  }
+
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+
+  if (!reports.length) {
+    return <EmptyState label="No persisted reports yet." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {reports.map((report) => (
+        <button
+          key={report.report_id}
+          className={cn(
+            "w-full rounded-xl border px-3 py-3 text-left transition",
+            selectedReportId === report.report_id
+              ? "border-accent/50 bg-accent/10"
+              : "border-border bg-surface/60",
+          )}
+          type="button"
+          onClick={() => onSelect(report.report_id)}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold text-slate-100">
+              {shortenId(report.report_id)}
+            </div>
+            <div className="text-xs uppercase tracking-[0.18em] text-muted">
+              {report.status}
+            </div>
+          </div>
+          <div className="mt-1 text-xs text-slate-300">
+            {formatDateTime(report.window_start)} {"->"} {formatDateTime(report.window_end)}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function EmptyState({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "danger" }) {

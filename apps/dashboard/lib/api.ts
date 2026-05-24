@@ -40,6 +40,9 @@ import type {
   MarketSymbolsResponse,
   MarketTickResponse,
   OrderResponse,
+  OperatorReportRequest,
+  OperatorReportResponse,
+  OperatorReportsListResponse,
   OrdersResponse,
   PaperAccountResponse,
   PaperClosePositionRequest,
@@ -650,6 +653,15 @@ export const api = {
         limit,
       },
     ),
+  generateOperatorReport: (payload: OperatorReportRequest) =>
+    request<OperatorReportResponse>("/reports/operator/daily", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getOperatorReports: (limit = 20) =>
+    request<OperatorReportsListResponse>("/reports/operator", undefined, { limit }),
+  getOperatorReport: (reportId: string) =>
+    request<OperatorReportResponse>(`/reports/operator/${reportId}`),
   getRecentEvents: (params?: {
     limit?: number;
     event_type?: string;

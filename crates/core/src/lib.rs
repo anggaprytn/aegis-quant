@@ -1307,6 +1307,402 @@ pub struct TestnetPromotionFunnelRequest {
     pub limit: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OperatorReportFormat {
+    #[default]
+    Json,
+    Markdown,
+}
+
+impl OperatorReportFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "JSON",
+            Self::Markdown => "MARKDOWN",
+        }
+    }
+}
+
+impl std::str::FromStr for OperatorReportFormat {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "JSON" => Ok(Self::Json),
+            "MARKDOWN" => Ok(Self::Markdown),
+            other => Err(CoreError::UnsupportedOperatorReportFormat(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OperatorReportStatus {
+    Ok,
+    Warning,
+    Critical,
+}
+
+impl OperatorReportStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::Warning => "WARNING",
+            Self::Critical => "CRITICAL",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OperatorReportSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl OperatorReportSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Low => "LOW",
+            Self::Medium => "MEDIUM",
+            Self::High => "HIGH",
+            Self::Critical => "CRITICAL",
+        }
+    }
+
+    pub fn sort_weight(self) -> u8 {
+        match self {
+            Self::Critical => 5,
+            Self::High => 4,
+            Self::Medium => 3,
+            Self::Low => 2,
+            Self::Info => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportRequest {
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub symbol: Option<String>,
+    pub strategy_id: Option<String>,
+    #[serde(default)]
+    pub format: OperatorReportFormat,
+    #[serde(default)]
+    pub persist: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl Default for OperatorReportRequest {
+    fn default() -> Self {
+        Self {
+            start_time: None,
+            end_time: None,
+            symbol: None,
+            strategy_id: None,
+            format: OperatorReportFormat::Json,
+            persist: false,
+            correlation_id: None,
+        }
+    }
+}
+
+impl OperatorReportRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if let (Some(start_time), Some(end_time)) = (self.start_time, self.end_time) {
+            if end_time < start_time {
+                return Err(CoreError::InvalidOperatorReportTimeRange);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportHighlight {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportFinding {
+    pub code: String,
+    pub severity: OperatorReportSeverity,
+    pub title: String,
+    pub detail: String,
+    pub section: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportRecommendation {
+    pub code: String,
+    pub priority: OperatorReportSeverity,
+    pub detail: String,
+    pub related_finding_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportSection {
+    pub key: String,
+    pub title: String,
+    pub status: OperatorReportStatus,
+    pub summary: String,
+    pub highlights: Vec<OperatorReportHighlight>,
+    pub snapshot: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorReportSummary {
+    pub total_findings: usize,
+    pub critical_findings: usize,
+    pub high_findings: usize,
+    pub medium_findings: usize,
+    pub low_findings: usize,
+    pub info_findings: usize,
+    pub highest_severity: Option<OperatorReportSeverity>,
+    pub kill_switch_active: bool,
+    pub stale_feed_count: i64,
+    pub risk_rejection_rate_pct: Decimal,
+    pub paper_daily_pnl: Decimal,
+    pub shadow_would_submit_count: i64,
+    pub reconciliation_required_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportSystemSnapshot {
+    pub api_healthy: bool,
+    pub db_healthy: bool,
+    pub kill_switch_active: bool,
+    pub auth_enabled: bool,
+    pub metrics_available: bool,
+    pub uptime_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportMarketFeedSnapshot {
+    pub symbol: String,
+    pub status: String,
+    pub freshness_status: String,
+    pub last_event_age_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorReportMarketSnapshot {
+    pub feeds: Vec<OperatorReportMarketFeedSnapshot>,
+    pub stale_feed_count: i64,
+    pub degraded_feed_count: i64,
+    pub backfill_completed_count: i64,
+    pub backfill_failed_count: i64,
+    pub candle_count_in_window: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportTopPairCount {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorReportStrategySnapshot {
+    pub total_strategy_evaluations: i64,
+    pub total_signals: i64,
+    pub risk_rejection_rate_pct: Decimal,
+    pub strategy_analytics_summary: Option<StrategyPerformanceSummary>,
+    pub top_rejected_pairs: Vec<OperatorReportTopPairCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportReasonCount {
+    pub reason: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportRiskSnapshot {
+    pub approved_decisions: i64,
+    pub rejected_decisions: i64,
+    pub top_rejection_reasons: Vec<OperatorReportReasonCount>,
+    pub kill_switch_change_count: i64,
+    pub risk_config_version: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorReportPaperSnapshot {
+    pub paper_equity: Decimal,
+    pub realized_pnl: Decimal,
+    pub unrealized_pnl: Decimal,
+    pub daily_pnl: Decimal,
+    pub open_position_count: i64,
+    pub closed_position_count: i64,
+    pub manual_close_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportShadowSnapshot {
+    pub shadow_run_count: i64,
+    pub would_submit_count: i64,
+    pub no_signal_count: i64,
+    pub risk_rejected_count: i64,
+    pub skipped_count: i64,
+    pub runner_status: String,
+    pub runner_last_tick_age_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorReportPromotionSnapshot {
+    pub shadow_would_submit_count: i64,
+    pub previewed_count: i64,
+    pub submitted_count: i64,
+    pub acked_count: i64,
+    pub filled_count: i64,
+    pub reconciliation_required_count: i64,
+    pub preview_rate_pct: Decimal,
+    pub submit_rate_pct: Decimal,
+    pub ack_rate_pct: Decimal,
+    pub fill_rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportTestnetSnapshot {
+    pub testnet_orders_created: i64,
+    pub active_order_count: i64,
+    pub terminal_order_count: i64,
+    pub unknown_order_count: i64,
+    pub reconciliation_run_count: i64,
+    pub mismatch_count: i64,
+    pub repair_action_count: i64,
+    pub private_stream_status: String,
+    pub private_stream_last_event_age_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorReport {
+    pub report_id: Uuid,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub generated_at: DateTime<Utc>,
+    pub status: OperatorReportStatus,
+    pub summary: OperatorReportSummary,
+    pub findings: Vec<OperatorReportFinding>,
+    pub recommendations: Vec<OperatorReportRecommendation>,
+    pub sections: Vec<OperatorReportSection>,
+    pub format: OperatorReportFormat,
+    pub persisted: bool,
+    pub correlation_id: Uuid,
+    pub markdown: Option<String>,
+}
+
+impl OperatorReport {
+    pub fn with_markdown(mut self) -> Self {
+        self.markdown = Some(self.render_markdown());
+        self
+    }
+
+    pub fn render_markdown(&self) -> String {
+        let mut lines = vec![
+            "# Operator Daily Report".to_string(),
+            String::new(),
+            format!("- Report ID: `{}`", self.report_id),
+            format!("- Status: `{}`", self.status.as_str()),
+            format!(
+                "- Window: `{}` to `{}`",
+                self.window_start.to_rfc3339(),
+                self.window_end.to_rfc3339()
+            ),
+            format!("- Generated At: `{}`", self.generated_at.to_rfc3339()),
+            String::new(),
+            "## Summary".to_string(),
+            String::new(),
+            format!("- Total findings: {}", self.summary.total_findings),
+            format!(
+                "- Highest severity: {}",
+                self.summary
+                    .highest_severity
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_else(|| "NONE".to_string())
+            ),
+            format!(
+                "- Kill switch active: {}",
+                if self.summary.kill_switch_active {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ),
+            format!("- Stale feeds: {}", self.summary.stale_feed_count),
+            format!(
+                "- Risk rejection rate: {}%",
+                self.summary.risk_rejection_rate_pct.round_dp(2)
+            ),
+            format!(
+                "- Paper daily PnL: {}",
+                self.summary.paper_daily_pnl.round_dp(2)
+            ),
+            format!(
+                "- Shadow WOULD_SUBMIT: {}",
+                self.summary.shadow_would_submit_count
+            ),
+            format!(
+                "- Reconciliation required: {}",
+                self.summary.reconciliation_required_count
+            ),
+            String::new(),
+            "## Findings".to_string(),
+            String::new(),
+        ];
+
+        if self.findings.is_empty() {
+            lines.push("- INFO: No findings.".to_string());
+        } else {
+            for finding in &self.findings {
+                lines.push(format!(
+                    "- {}: {}. {}",
+                    finding.severity.as_str(),
+                    finding.title,
+                    finding.detail
+                ));
+            }
+        }
+
+        lines.push(String::new());
+        lines.push("## Recommendations".to_string());
+        lines.push(String::new());
+        if self.recommendations.is_empty() {
+            lines.push("- No operator actions recommended.".to_string());
+        } else {
+            for recommendation in &self.recommendations {
+                lines.push(format!(
+                    "- {}: {}",
+                    recommendation.priority.as_str(),
+                    recommendation.detail
+                ));
+            }
+        }
+
+        for section in &self.sections {
+            lines.push(String::new());
+            lines.push(format!("## {}", section.title));
+            lines.push(String::new());
+            lines.push(format!("- Status: `{}`", section.status.as_str()));
+            lines.push(format!("- Summary: {}", section.summary));
+            for highlight in &section.highlights {
+                lines.push(format!("- {}: {}", highlight.label, highlight.value));
+            }
+        }
+
+        lines.join("\n")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TestnetPromotionFunnelStage {
     pub stage: String,
@@ -4378,6 +4774,8 @@ pub enum CoreError {
     UnsupportedStrategyMode(String),
     #[error("unsupported strategy performance mode: {0}")]
     UnsupportedStrategyPerformanceMode(String),
+    #[error("unsupported operator report format: {0}")]
+    UnsupportedOperatorReportFormat(String),
     #[error("unsupported signal side: {0}")]
     UnsupportedSignalSide(String),
     #[error("unsupported signal reason: {0}")]
@@ -4468,6 +4866,8 @@ pub enum CoreError {
     InvalidBacktestTimeRange,
     #[error("candle backfill end_time must be after start_time")]
     InvalidCandleBackfillTimeRange,
+    #[error("operator report end_time must be after start_time")]
+    InvalidOperatorReportTimeRange,
     #[error("backtest initial_capital must be greater than zero")]
     InvalidBacktestInitialCapital,
     #[error("candle backfill request limit must be greater than zero")]
@@ -4559,9 +4959,12 @@ mod tests {
         ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
         ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
         ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
-        ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionState, OrderIntent,
-        PaperOrder, Permission, Side, StrategyPerformanceMode, StrategyPerformanceSummary, Symbol,
-        TestnetExecutionState, TestnetRepairAction, TestnetRepairRequest, UserRole,
+        ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionState, OperatorReport,
+        OperatorReportFinding, OperatorReportFormat, OperatorReportRecommendation,
+        OperatorReportRequest, OperatorReportSection, OperatorReportSeverity, OperatorReportStatus,
+        OperatorReportSummary, OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
+        StrategyPerformanceSummary, Symbol, TestnetExecutionState, TestnetRepairAction,
+        TestnetRepairRequest, UserRole,
     };
     use chrono::Utc;
     use rust_decimal::Decimal;
@@ -5010,5 +5413,75 @@ mod tests {
         assert_eq!(combined.unrealized_pnl, Decimal::from(4));
         assert_eq!(combined.win_rate, Some(Decimal::ONE));
         assert_eq!(combined.avg_backtest_pnl_pct, None);
+    }
+
+    #[test]
+    fn operator_report_request_rejects_end_before_start() {
+        let request = OperatorReportRequest {
+            start_time: Some(Utc::now()),
+            end_time: Some(Utc::now() - chrono::Duration::hours(1)),
+            ..OperatorReportRequest::default()
+        };
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn operator_report_markdown_contains_key_sections() {
+        let now = Utc::now();
+        let report = OperatorReport {
+            report_id: Uuid::new_v4(),
+            window_start: now,
+            window_end: now,
+            generated_at: now,
+            status: OperatorReportStatus::Warning,
+            summary: OperatorReportSummary {
+                total_findings: 1,
+                critical_findings: 0,
+                high_findings: 1,
+                medium_findings: 0,
+                low_findings: 0,
+                info_findings: 0,
+                highest_severity: Some(OperatorReportSeverity::High),
+                kill_switch_active: false,
+                stale_feed_count: 1,
+                risk_rejection_rate_pct: Decimal::from(55),
+                paper_daily_pnl: Decimal::from(-12),
+                shadow_would_submit_count: 0,
+                reconciliation_required_count: 1,
+            },
+            findings: vec![OperatorReportFinding {
+                code: "private_stream_stale".to_string(),
+                severity: OperatorReportSeverity::High,
+                title: "Private stream stale".to_string(),
+                detail: "No recent private-stream activity was observed.".to_string(),
+                section: "testnet_execution".to_string(),
+            }],
+            recommendations: vec![OperatorReportRecommendation {
+                code: "keep_shadow_mode".to_string(),
+                priority: OperatorReportSeverity::High,
+                detail: "Keep system in shadow mode until private stream is stable.".to_string(),
+                related_finding_codes: vec!["private_stream_stale".to_string()],
+            }],
+            sections: vec![OperatorReportSection {
+                key: "system_health".to_string(),
+                title: "System Health".to_string(),
+                status: OperatorReportStatus::Ok,
+                summary: "Core services are reachable.".to_string(),
+                highlights: vec![],
+                snapshot: json!({ "api_healthy": true }),
+            }],
+            format: OperatorReportFormat::Markdown,
+            persisted: false,
+            correlation_id: Uuid::new_v4(),
+            markdown: None,
+        };
+
+        let markdown = report.render_markdown();
+        assert!(markdown.contains("# Operator Daily Report"));
+        assert!(markdown.contains("## Summary"));
+        assert!(markdown.contains("## Findings"));
+        assert!(markdown.contains("## Recommendations"));
+        assert!(markdown.contains("## System Health"));
     }
 }

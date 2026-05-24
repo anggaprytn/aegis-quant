@@ -278,6 +278,106 @@ export type TestnetPromotionFunnelRowsResponse = {
   timestamp: string;
 };
 
+export type OperatorReportFormat = "JSON" | "MARKDOWN";
+export type OperatorReportStatus = "OK" | "WARNING" | "CRITICAL";
+export type OperatorReportSeverity = "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+
+export type OperatorReportRequest = {
+  start_time?: string;
+  end_time?: string;
+  symbol?: string;
+  strategy_id?: string;
+  format?: OperatorReportFormat;
+  persist?: boolean;
+  correlation_id?: string;
+};
+
+export type OperatorReportHighlight = {
+  label: string;
+  value: string;
+};
+
+export type OperatorReportFinding = {
+  code: string;
+  severity: OperatorReportSeverity;
+  title: string;
+  detail: string;
+  section: string;
+};
+
+export type OperatorReportRecommendation = {
+  code: string;
+  priority: OperatorReportSeverity;
+  detail: string;
+  related_finding_codes: string[];
+};
+
+export type OperatorReportSection = {
+  key: string;
+  title: string;
+  status: OperatorReportStatus;
+  summary: string;
+  highlights: OperatorReportHighlight[];
+  snapshot: Record<string, unknown> | null;
+};
+
+export type OperatorReportSummary = {
+  total_findings: number;
+  critical_findings: number;
+  high_findings: number;
+  medium_findings: number;
+  low_findings: number;
+  info_findings: number;
+  highest_severity: OperatorReportSeverity | null;
+  kill_switch_active: boolean;
+  stale_feed_count: number;
+  risk_rejection_rate_pct: string;
+  paper_daily_pnl: string;
+  shadow_would_submit_count: number;
+  reconciliation_required_count: number;
+};
+
+export type OperatorReport = {
+  report_id: string;
+  window_start: string;
+  window_end: string;
+  generated_at: string;
+  status: OperatorReportStatus;
+  summary: OperatorReportSummary;
+  findings: OperatorReportFinding[];
+  recommendations: OperatorReportRecommendation[];
+  sections: OperatorReportSection[];
+  format: OperatorReportFormat;
+  persisted: boolean;
+  correlation_id: string;
+  markdown: string | null;
+};
+
+export type OperatorReportListItem = {
+  report_id: string;
+  window_start: string;
+  window_end: string;
+  format: string;
+  status: string;
+  created_at: string;
+  created_by: string | null;
+  correlation_id: string | null;
+};
+
+export type OperatorReportResponse = {
+  report: OperatorReport;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type OperatorReportsListResponse = {
+  reports: OperatorReportListItem[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type StatusResponse = {
   service: string;
   environment: string;

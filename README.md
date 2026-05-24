@@ -19,6 +19,7 @@ This repository foundation includes:
 - Strategy config validation, versioning, audit logging, and dry-run evaluation before pipeline/backtest use
 - Read-only strategy performance analytics across backtest, paper, and shadow data
 - Read-only testnet promotion funnel analytics from shadow would-submit through isolated testnet lifecycle outcome
+- Read-only operator daily reports across health, market, risk, paper, shadow, promotion, and testnet execution state
 - Minimal Next.js operational dashboard shell for paper-only inspection and control
 - Binance Spot Testnet adapter skeleton with protected inspection and owner-gated testnet submit/cancel
 - Event model and publisher trait skeleton
@@ -78,6 +79,7 @@ This repository foundation includes:
    `curl 'http://127.0.0.1:3000/paper/equity?limit=50'`
    `curl 'http://127.0.0.1:3000/paper/trade-journal?limit=50'`
    `curl -X POST http://127.0.0.1:3000/paper/account/mark-to-market`
+   `curl -X POST http://127.0.0.1:3000/reports/operator/daily -H 'content-type: application/json' -d '{"start_time":"2026-05-24T00:00:00Z","end_time":"2026-05-24T23:59:59Z","symbol":"BTCUSDT","strategy_id":"momentum_v1","format":"MARKDOWN","persist":false}'`
    `curl 'http://127.0.0.1:3000/events/recent?limit=100&event_type=risk.rejected&source=aegis-quant-api'`
    `curl 'http://127.0.0.1:3000/backtest/runs?limit=10'`
 Required environment variables:
@@ -185,6 +187,14 @@ cargo run -p cli -- analytics testnet promotion-funnel \
 cargo run -p cli -- analytics testnet promotion-outcomes \
   --symbol BTCUSDT
 cargo run -p cli -- analytics testnet promotion-rows --limit 50
+cargo run -p cli -- reports operator daily \
+  --start 2026-05-24T00:00:00Z \
+  --end 2026-05-24T23:59:59Z \
+  --symbol BTCUSDT \
+  --strategy momentum_v1 \
+  --format markdown
+cargo run -p cli -- reports operator list --limit 20
+cargo run -p cli -- reports operator get <report_id>
 cargo run -p cli -- market backfill \
   --symbol BTCUSDT \
   --timeframe 1m \
@@ -210,6 +220,7 @@ Notes:
 - Testnet exchange commands talk only to the Aegis HTTP API; the CLI never reads Binance secrets directly.
 - Strategy analytics is read-only: it compares persisted backtest, paper, and shadow behavior and never submits or mutates orders, positions, PnL, reconciliation rows, or exchange state.
 - Promotion funnel analytics is read-only: it joins `testnet_shadow_runs`, `testnet_shadow_promotions`, `exchange_testnet_orders`, and isolated lifecycle history strictly for inspection.
+- Operator reports are read-only: they aggregate persisted health, market, risk, paper, shadow, promotion, and isolated testnet tables into deterministic findings and recommendations. The only optional write is a persisted `operator_reports` export row.
 
 ## Binance Spot Testnet adapter
 

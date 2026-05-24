@@ -13,6 +13,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Keep risk controls and kill switch persistent when implemented
 - Replay/backtest must stay isolated from live and paper execution tables
 - Strategy analytics is read-only, VIEWER-readable inspection only and must never trigger execution, reconciliation, repair, or any paper/testnet mutation
+- Operator daily reports are read-only, VIEWER-readable inspection/export only; they may expose operational state but must never trigger execution, reconciliation, repair, promotion submit, paper mutation, or live/testnet order submission
 - Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
 - Paper accounting is simulated only and never submits exchange orders
 - Binance Spot Testnet credentials, when configured, are backend-only and never exposed to the dashboard or CLI
@@ -61,5 +62,6 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Production/private exchange execution remains deferred; only Binance Spot Testnet skeleton endpoints are present
 - Replay/backtest reads stored candles only and must not mutate production `signals`, `risk_decisions`, or `orders`
 - Strategy analytics reads persisted backtest, paper, signal/risk, and shadow rows only; it must not mutate paper orders, paper positions, paper PnL, backtest tables, isolated testnet execution tables, or lifecycle history
+- Operator reports may optionally persist into `operator_reports`, but generation must never mutate `orders`, `paper_*`, `backtest_*`, `testnet_shadow_*`, `exchange_testnet_*`, or reconciliation tables
 - Paper accounting reads only stored paper orders and stored public market data; it does not call exchange private endpoints or handle API keys
 - `/metrics` is public by default for local/internal MVP use unless `AEGIS_PROTECT_METRICS=true`; production deployment should place it behind private networking, reverse-proxy policy, or equivalent access controls

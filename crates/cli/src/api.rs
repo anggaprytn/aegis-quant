@@ -2,9 +2,9 @@ use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     BacktestRequest, CandleBackfillRequest, CandleBackfillResult, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
-    PaperTradingPipelineRequest, PaperTradingPipelineResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest, OperatorReport,
+    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
     StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
     StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyPerformanceSummary, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
@@ -1179,6 +1179,29 @@ impl ApiClient {
         self.get("/analytics/testnet/promotion-funnel/rows", &query)
             .await
     }
+
+    pub async fn generate_operator_report(
+        &self,
+        request: &OperatorReportRequest,
+    ) -> Result<OperatorReportResponse, ApiClientError> {
+        self.post("/reports/operator/daily", request).await
+    }
+
+    pub async fn list_operator_reports(
+        &self,
+        limit: i64,
+    ) -> Result<OperatorReportsListResponse, ApiClientError> {
+        self.get("/reports/operator", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_operator_report(
+        &self,
+        report_id: Uuid,
+    ) -> Result<OperatorReportResponse, ApiClientError> {
+        self.get(&format!("/reports/operator/{report_id}"), &[])
+            .await
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -2225,6 +2248,34 @@ pub struct TestnetPromotionFunnelOutcomesResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TestnetPromotionFunnelRowsResponse {
     pub rows: Vec<TestnetPromotionFunnelRow>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorReportResponse {
+    pub report: OperatorReport,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorReportListItem {
+    pub report_id: Uuid,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub format: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperatorReportsListResponse {
+    pub reports: Vec<OperatorReportListItem>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
