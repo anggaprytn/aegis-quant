@@ -1173,6 +1173,89 @@ pub fn print_backtest_run(run: &BacktestResult) {
     println!("Slippage cost: {}", run.slippage_cost);
 }
 
+pub fn print_strategy_experiments(experiments: &[aegis_core::StrategyExperimentResult]) {
+    for experiment in experiments {
+        println!(
+            "{}  {} {} {} status={} runs={} best={} worst={}",
+            experiment.experiment_id,
+            experiment.strategy_id,
+            experiment.symbol,
+            experiment.timeframe,
+            experiment.status.as_str(),
+            experiment.run_count,
+            experiment
+                .best_run
+                .as_ref()
+                .map(|run| run.score.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            experiment
+                .worst_run
+                .as_ref()
+                .map(|run| run.score.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+}
+
+pub fn print_strategy_experiment(experiment: &aegis_core::StrategyExperimentResult) {
+    println!("Experiment ID: {}", experiment.experiment_id);
+    println!("Status: {}", experiment.status.as_str());
+    println!("Strategy: {}", experiment.strategy_id);
+    println!("Symbol: {}", experiment.symbol);
+    println!("Timeframe: {}", experiment.timeframe);
+    println!(
+        "Window: {} -> {}",
+        experiment.start_time.to_rfc3339(),
+        experiment.end_time.to_rfc3339()
+    );
+    println!("Initial capital: {}", experiment.initial_capital);
+    println!("Fee bps: {}", experiment.fee_bps);
+    println!("Slippage bps: {}", experiment.slippage_bps);
+    println!("Run count: {}", experiment.run_count);
+    println!(
+        "Best run: {}",
+        experiment
+            .best_run
+            .as_ref()
+            .map(|run| run.id.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Worst run: {}",
+        experiment
+            .worst_run
+            .as_ref()
+            .map(|run| run.id.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+}
+
+pub fn print_strategy_experiment_runs(runs: &[aegis_core::StrategyExperimentRun]) {
+    for run in runs {
+        println!(
+            "{}  rank={} lookback={} holding={} pnl_pct={} drawdown={} trades={} win_rate={} drag={} score={} warnings={}",
+            run.id,
+            run.rank,
+            run.candidate.lookback_candles,
+            run.candidate
+                .holding_candles
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            run.pnl_pct,
+            run.max_drawdown_pct,
+            run.trade_count,
+            run.win_rate,
+            run.fee_slippage_drag_pct,
+            run.score,
+            if run.warnings.is_empty() {
+                "-".to_string()
+            } else {
+                run.warnings.join(",")
+            }
+        );
+    }
+}
+
 pub fn print_backfill_result(result: &aegis_core::CandleBackfillResult) {
     println!("Run ID: {}", result.run_id);
     println!("Status: {}", result.status.as_str());

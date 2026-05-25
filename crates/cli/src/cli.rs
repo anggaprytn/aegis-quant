@@ -109,6 +109,8 @@ pub enum Commands {
     #[command(subcommand)]
     Backtest(BacktestCommands),
     #[command(subcommand)]
+    Experiments(ExperimentCommands),
+    #[command(subcommand)]
     Paper(PaperCommands),
     #[command(subcommand)]
     Analytics(AnalyticsCommands),
@@ -717,6 +719,20 @@ pub enum BacktestCommands {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ExperimentCommands {
+    #[command(subcommand)]
+    Strategy(StrategyExperimentCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StrategyExperimentCommands {
+    Run(StrategyExperimentRunArgs),
+    List(BacktestListArgs),
+    Get { experiment_id: Uuid },
+    Runs { experiment_id: Uuid },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum PaperCommands {
     Account,
     Positions(PaperListArgs),
@@ -883,6 +899,40 @@ pub struct BacktestRunArgs {
 pub struct BacktestListArgs {
     #[arg(long, default_value_t = 20)]
     pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct StrategyExperimentRunArgs {
+    #[arg(long = "strategy")]
+    pub strategy: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "initial-capital")]
+    pub initial_capital: rust_decimal::Decimal,
+    #[arg(long = "fee-bps")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "lookbacks", value_delimiter = ',')]
+    pub lookbacks: Vec<u32>,
+    #[arg(long = "holding-candles", value_delimiter = ',')]
+    pub holding_candles: Option<Vec<u32>>,
+    #[arg(long = "stop-loss-pct", value_delimiter = ',')]
+    pub stop_loss_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "take-profit-pct", value_delimiter = ',')]
+    pub take_profit_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "max-signal-age-ms")]
+    pub max_signal_age_ms: Option<i64>,
+    #[arg(long = "max-runs")]
+    pub max_runs: Option<u32>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
 }
 
 #[cfg(test)]

@@ -69,6 +69,11 @@ import type {
   StatusResponse,
   StrategyDecisionBreakdownResponse,
   StrategyDiagnosticsResponse,
+  StrategyExperimentRequest,
+  StrategyExperimentResponse,
+  StrategyExperimentRunAcceptedResponse,
+  StrategyExperimentRunsResponse,
+  StrategyExperimentsResponse,
   StrategyListResponse,
   StrategyPerformanceMode,
   StrategyPerformanceRankingsResponse,
@@ -537,6 +542,17 @@ export const api = {
     request<BacktestTradesResponse>(`/backtest/runs/${id}/trades`),
   getBacktestEquity: (id: string) =>
     request<BacktestEquityCurveResponse>(`/backtest/runs/${id}/equity`),
+  runStrategyExperiment: (payload: StrategyExperimentRequest) =>
+    request<StrategyExperimentRunAcceptedResponse>("/experiments/strategy/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getStrategyExperiments: (limit = 20) =>
+    request<StrategyExperimentsResponse>("/experiments/strategy", undefined, { limit }),
+  getStrategyExperiment: (id: string) =>
+    request<StrategyExperimentResponse>(`/experiments/strategy/${id}`),
+  getStrategyExperimentRuns: (id: string) =>
+    request<StrategyExperimentRunsResponse>(`/experiments/strategy/${id}/runs`),
   getStrategyPerformance: (
     mode: StrategyPerformanceMode,
     strategyId?: string,

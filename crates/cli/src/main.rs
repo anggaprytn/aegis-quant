@@ -7,16 +7,17 @@ use chrono::Utc;
 use clap::Parser;
 use cli::api::{
     build_backtest_request, build_candle_backfill_request, build_pipeline_request,
-    build_risk_config_request, build_strategy_config_request, ApiClient, RecentEventsQuery,
-    RiskDecisionsQuery,
+    build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
+    ApiClient, RecentEventsQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
     BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
-    ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, MarketCommands,
-    OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands, ReadinessCommands,
-    ReportsCommands, RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
-    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
+    MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
+    ReadinessCommands, ReportsCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
+    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
+    TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -425,6 +426,44 @@ async fn main() -> anyhow::Result<()> {
                     output::print_backtest_run(&response.run);
                 }
             }
+        },
+        Commands::Experiments(command) => match command {
+            ExperimentCommands::Strategy(command) => match command {
+                StrategyExperimentCommands::Run(args) => {
+                    let request = build_strategy_experiment_request(&args)?;
+                    let response = client.run_strategy_experiment(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_experiment(&response.experiment);
+                        output::print_strategy_experiment_runs(&response.runs);
+                    }
+                }
+                StrategyExperimentCommands::List(args) => {
+                    let response = client.strategy_experiments(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_experiments(&response.experiments);
+                    }
+                }
+                StrategyExperimentCommands::Get { experiment_id } => {
+                    let response = client.strategy_experiment(experiment_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_experiment(&response.experiment);
+                    }
+                }
+                StrategyExperimentCommands::Runs { experiment_id } => {
+                    let response = client.strategy_experiment_runs(experiment_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_experiment_runs(&response.runs);
+                    }
+                }
+            },
         },
         Commands::Exchange(command) => match command {
             ExchangeCommands::Testnet(command) => match command {

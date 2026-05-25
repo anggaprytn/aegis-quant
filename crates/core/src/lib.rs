@@ -1301,6 +1301,252 @@ pub struct BacktestResult {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyExperimentStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+impl StrategyExperimentStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyExperimentStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedStrategyExperimentStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyExperimentMetric {
+    NetPnlPct,
+    MaxDrawdownPct,
+    TradeCount,
+    WinRate,
+    FeeSlippageDragPct,
+    RiskAdjustedScore,
+}
+
+impl StrategyExperimentMetric {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NetPnlPct => "net_pnl_pct",
+            Self::MaxDrawdownPct => "max_drawdown_pct",
+            Self::TradeCount => "trade_count",
+            Self::WinRate => "win_rate",
+            Self::FeeSlippageDragPct => "fee_slippage_drag_pct",
+            Self::RiskAdjustedScore => "risk_adjusted_score",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExperimentCandidate {
+    pub lookback_candles: u32,
+    pub holding_candles: Option<u32>,
+    pub stop_loss_pct: Option<Decimal>,
+    pub take_profit_pct: Option<Decimal>,
+    pub max_signal_age_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExperimentRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub lookback_candidates: Vec<u32>,
+    pub holding_candles_candidates: Option<Vec<u32>>,
+    pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
+    pub take_profit_pct_candidates: Option<Vec<Decimal>>,
+    pub max_signal_age_ms: Option<i64>,
+    pub max_runs: Option<u32>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl StrategyExperimentRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategy_id.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentStrategyId);
+        }
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentSymbol);
+        }
+        if self.timeframe.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentTimeframe);
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidStrategyExperimentTimeRange);
+        }
+        if self.initial_capital <= Decimal::ZERO {
+            return Err(CoreError::InvalidStrategyExperimentInitialCapital);
+        }
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        if self.lookback_candidates.is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentCandidates);
+        }
+        if let Some(max_runs) = self.max_runs {
+            if max_runs == 0 {
+                return Err(CoreError::InvalidStrategyExperimentMaxRuns);
+            }
+        }
+
+        for holding in self
+            .holding_candles_candidates
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .copied()
+        {
+            if holding == 0 {
+                return Err(CoreError::InvalidHoldingCandles);
+            }
+        }
+
+        if let Some(max_signal_age_ms) = self.max_signal_age_ms {
+            if max_signal_age_ms <= 0 {
+                return Err(CoreError::InvalidStrategyMaxSignalAgeMs(max_signal_age_ms));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn candidates(&self) -> Vec<StrategyExperimentCandidate> {
+        let holdings = self
+            .holding_candles_candidates
+            .clone()
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| vec![0]);
+        let stop_losses = self
+            .stop_loss_pct_candidates
+            .clone()
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| vec![Decimal::ZERO]);
+        let take_profits = self
+            .take_profit_pct_candidates
+            .clone()
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| vec![Decimal::ZERO]);
+
+        let mut candidates = Vec::new();
+        for lookback_candles in &self.lookback_candidates {
+            for holding_candles in &holdings {
+                for stop_loss_pct in &stop_losses {
+                    for take_profit_pct in &take_profits {
+                        candidates.push(StrategyExperimentCandidate {
+                            lookback_candles: *lookback_candles,
+                            holding_candles: if *holding_candles == 0 {
+                                None
+                            } else {
+                                Some(*holding_candles)
+                            },
+                            stop_loss_pct: if *stop_loss_pct == Decimal::ZERO {
+                                None
+                            } else {
+                                Some(*stop_loss_pct)
+                            },
+                            take_profit_pct: if *take_profit_pct == Decimal::ZERO {
+                                None
+                            } else {
+                                Some(*take_profit_pct)
+                            },
+                            max_signal_age_ms: self.max_signal_age_ms,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(max_runs) = self.max_runs {
+            candidates.truncate(max_runs as usize);
+        }
+
+        candidates
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExperimentRun {
+    pub id: Uuid,
+    pub experiment_id: Uuid,
+    pub rank: i32,
+    pub candidate: StrategyExperimentCandidate,
+    pub final_equity: Decimal,
+    pub pnl: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub win_rate: Decimal,
+    pub trade_count: i32,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub fee_slippage_drag_pct: Decimal,
+    pub score: Decimal,
+    pub status: StrategyExperimentStatus,
+    pub warnings: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExperimentComparison {
+    pub ranking_metric: StrategyExperimentMetric,
+    pub best_run_id: Option<Uuid>,
+    pub worst_run_id: Option<Uuid>,
+    pub ranked_run_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExperimentResult {
+    pub experiment_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub max_signal_age_ms: Option<i64>,
+    pub max_runs: Option<u32>,
+    pub status: StrategyExperimentStatus,
+    pub run_count: i32,
+    pub comparison: StrategyExperimentComparison,
+    pub best_run: Option<StrategyExperimentRun>,
+    pub worst_run: Option<StrategyExperimentRun>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MarketMode {
     Paper,
@@ -5223,6 +5469,8 @@ pub enum CoreError {
     UnsupportedShadowRunnerTickStatus(String),
     #[error("unsupported replay run status: {0}")]
     UnsupportedReplayRunStatus(String),
+    #[error("unsupported strategy experiment status: {0}")]
+    UnsupportedStrategyExperimentStatus(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
     #[error("unsupported exchange environment: {0}")]
@@ -5281,6 +5529,14 @@ pub enum CoreError {
     EmptyBacktestSymbol,
     #[error("backtest timeframe cannot be empty")]
     EmptyBacktestTimeframe,
+    #[error("strategy experiment strategy_id cannot be empty")]
+    EmptyStrategyExperimentStrategyId,
+    #[error("strategy experiment symbol cannot be empty")]
+    EmptyStrategyExperimentSymbol,
+    #[error("strategy experiment timeframe cannot be empty")]
+    EmptyStrategyExperimentTimeframe,
+    #[error("strategy experiment requires at least one candidate")]
+    EmptyStrategyExperimentCandidates,
     #[error("candle backfill symbol cannot be empty")]
     EmptyCandleBackfillSymbol,
     #[error("candle backfill interval cannot be empty")]
@@ -5291,8 +5547,14 @@ pub enum CoreError {
     InvalidCandleBackfillTimeRange,
     #[error("operator report end_time must be after start_time")]
     InvalidOperatorReportTimeRange,
+    #[error("strategy experiment end_time must be after start_time")]
+    InvalidStrategyExperimentTimeRange,
     #[error("backtest initial_capital must be greater than zero")]
     InvalidBacktestInitialCapital,
+    #[error("strategy experiment initial_capital must be greater than zero")]
+    InvalidStrategyExperimentInitialCapital,
+    #[error("strategy experiment max_runs must be greater than zero")]
+    InvalidStrategyExperimentMaxRuns,
     #[error("candle backfill request limit must be greater than zero")]
     InvalidCandleBackfillLimit,
     #[error("candle backfill request limit exceeds Binance maximum: {0}")]

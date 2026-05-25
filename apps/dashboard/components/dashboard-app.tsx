@@ -30,6 +30,10 @@ import type {
   RiskDecisionRecord,
   StrategyComparisonSummary,
   StrategyDiagnosticsResult,
+  StrategyExperimentRequest,
+  StrategyExperimentResult,
+  StrategyExperimentRun,
+  StrategyExperimentRunAcceptedResponse,
   StrategyConfigUpdateRequest,
   StrategyDecisionBreakdown,
   StrategyPerformanceSummary,
@@ -59,6 +63,7 @@ type SectionId =
   | "analytics"
   | "reports"
   | "backtests"
+  | "experiments"
   | "events"
   | "settings";
 
@@ -71,6 +76,7 @@ const SECTIONS: Array<{ id: SectionId; label: string }> = [
   { id: "analytics", label: "Analytics" },
   { id: "reports", label: "Reports" },
   { id: "backtests", label: "Backtests" },
+  { id: "experiments", label: "Experiments" },
   { id: "events", label: "Logs / Events" },
   { id: "settings", label: "Settings" },
 ];
@@ -87,6 +93,40 @@ const DEFAULT_BACKTEST_FORM: BacktestRequest = {
   fee_bps: "10",
   slippage_bps: "5",
   holding_candles: 3,
+};
+
+type StrategyExperimentFormState = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  lookbacks: string;
+  holding_candles: string;
+  stop_loss_pct: string;
+  take_profit_pct: string;
+  max_signal_age_ms: string;
+  max_runs: string;
+};
+
+const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
+  strategy_id: "momentum_v1",
+  symbol: "BTCUSDT",
+  timeframe: "1m",
+  start_time: "2026-05-01T00:00:00Z",
+  end_time: "2026-05-02T00:00:00Z",
+  initial_capital: "1000000",
+  fee_bps: "10",
+  slippage_bps: "5",
+  lookbacks: "3,5,10,20",
+  holding_candles: "3,5,10",
+  stop_loss_pct: "",
+  take_profit_pct: "",
+  max_signal_age_ms: "180000",
+  max_runs: "12",
 };
 
 const DEFAULT_BACKFILL_FORM: CandleBackfillRequest = {
@@ -142,6 +182,46 @@ function strategyDiagnosticsFormFromStatus(strategy?: StrategyStatusView) {
     timeframe: strategy?.timeframe ?? "1m",
     limit: 20,
   };
+}
+
+function parseIntegerList(value: string) {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => Number(entry))
+    .filter((entry) => Number.isFinite(entry) && entry > 0);
+}
+
+function parseDecimalList(value: string) {
+  const values = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return values.length ? values : null;
+}
+
+function buildStrategyExperimentRequest(
+  form: StrategyExperimentFormState,
+): StrategyExperimentRequest {
+  const holding = parseIntegerList(form.holding_candles);
+  const request: StrategyExperimentRequest = {
+    strategy_id: form.strategy_id,
+    symbol: form.symbol,
+    timeframe: form.timeframe,
+    start_time: form.start_time,
+    end_time: form.end_time,
+    initial_capital: form.initial_capital,
+    fee_bps: form.fee_bps,
+    slippage_bps: form.slippage_bps,
+    lookback_candidates: parseIntegerList(form.lookbacks),
+    holding_candles_candidates: holding.length ? holding : null,
+    stop_loss_pct_candidates: parseDecimalList(form.stop_loss_pct),
+    take_profit_pct_candidates: parseDecimalList(form.take_profit_pct),
+    max_signal_age_ms: form.max_signal_age_ms ? Number(form.max_signal_age_ms) : null,
+    max_runs: form.max_runs ? Number(form.max_runs) : null,
+  };
+  return request;
 }
 
 function riskConfigFormFromView(config?: RiskConfig): RiskConfig {
@@ -408,6 +488,11 @@ function AuthenticatedDashboard({
     useState<BacktestRequest>(DEFAULT_BACKTEST_FORM);
   const [lastBacktestResult, setLastBacktestResult] =
     useState<BacktestRunAcceptedResponse | null>(null);
+  const [strategyExperimentForm, setStrategyExperimentForm] =
+    useState<StrategyExperimentFormState>(DEFAULT_STRATEGY_EXPERIMENT_FORM);
+  const [lastStrategyExperimentResult, setLastStrategyExperimentResult] =
+    useState<StrategyExperimentRunAcceptedResponse | null>(null);
+  const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(null);
   const [backfillForm, setBackfillForm] =
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
   const [selectedBackfillRunId, setSelectedBackfillRunId] = useState<string | null>(null);
@@ -621,6 +706,12 @@ function AuthenticatedDashboard({
   const backtestRunsQuery = useQuery({
     queryKey: ["backtest-runs"],
     queryFn: () => api.getBacktestRuns(20),
+    refetchInterval: 15_000,
+  });
+  const strategyExperimentsQuery = useQuery({
+    queryKey: ["strategy-experiments"],
+    queryFn: () => api.getStrategyExperiments(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
   });
   const eventsQuery = useQuery({
@@ -850,6 +941,16 @@ function AuthenticatedDashboard({
     queryFn: () => api.getBacktestRun(selectedRunId ?? ""),
     enabled: Boolean(selectedRunId),
   });
+  const selectedExperimentQuery = useQuery({
+    queryKey: ["strategy-experiment", selectedExperimentId],
+    queryFn: () => api.getStrategyExperiment(selectedExperimentId ?? ""),
+    enabled: Boolean(selectedExperimentId),
+  });
+  const selectedExperimentRunsQuery = useQuery({
+    queryKey: ["strategy-experiment-runs", selectedExperimentId],
+    queryFn: () => api.getStrategyExperimentRuns(selectedExperimentId ?? ""),
+    enabled: Boolean(selectedExperimentId),
+  });
 
   const selectedRunTradesQuery = useQuery({
     queryKey: ["backtest-trades", selectedRunId],
@@ -943,6 +1044,12 @@ function AuthenticatedDashboard({
       setSelectedRunId(backtestRunsQuery.data.runs[0].run_id);
     }
   }, [backtestRunsQuery.data?.runs, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedExperimentId && strategyExperimentsQuery.data?.experiments[0]) {
+      setSelectedExperimentId(strategyExperimentsQuery.data.experiments[0].experiment_id);
+    }
+  }, [selectedExperimentId, strategyExperimentsQuery.data?.experiments]);
 
   useEffect(() => {
     if (!selectedBackfillRunId && backfillRunsQuery.data?.runs[0]) {
@@ -1131,6 +1238,20 @@ function AuthenticatedDashboard({
       setLastBacktestResult(result);
       setSelectedRunId(result.run_id);
       await refreshOperationalData();
+    },
+  });
+  const runStrategyExperimentMutation = useMutation({
+    mutationFn: () => api.runStrategyExperiment(buildStrategyExperimentRequest(strategyExperimentForm)),
+    onSuccess: async (response) => {
+      setLastStrategyExperimentResult(response);
+      setSelectedExperimentId(response.experiment.experiment_id);
+      await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["strategy-experiment", response.experiment.experiment_id],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["strategy-experiment-runs", response.experiment.experiment_id],
+      });
     },
   });
   const operatorReportMutation = useMutation({
@@ -1339,6 +1460,11 @@ function AuthenticatedDashboard({
   const events = eventsQuery.data?.events ?? [];
   const recentSignals = signalsQuery.data?.signals ?? [];
   const backtestRuns = backtestRunsQuery.data?.runs ?? [];
+  const strategyExperiments = strategyExperimentsQuery.data?.experiments ?? [];
+  const selectedExperiment =
+    selectedExperimentQuery.data?.experiment ?? lastStrategyExperimentResult?.experiment ?? null;
+  const strategyExperimentRuns =
+    selectedExperimentRunsQuery.data?.runs ?? lastStrategyExperimentResult?.runs ?? [];
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
@@ -3233,6 +3359,84 @@ function AuthenticatedDashboard({
             </section>
           )}
 
+          {section === "experiments" && (
+            <section className="grid gap-4 xl:grid-cols-12">
+              <Panel className="xl:col-span-7" title="Strategy Experiment Form">
+                <div className="grid gap-3 md:grid-cols-3">
+                  {(
+                    [
+                      ["strategy_id", "Strategy ID"],
+                      ["symbol", "Symbol"],
+                      ["timeframe", "Timeframe"],
+                      ["start_time", "Start Time"],
+                      ["end_time", "End Time"],
+                      ["initial_capital", "Initial Capital"],
+                      ["fee_bps", "Fee Bps"],
+                      ["slippage_bps", "Slippage Bps"],
+                      ["lookbacks", "Lookbacks"],
+                      ["holding_candles", "Holding Candles"],
+                      ["stop_loss_pct", "Stop Loss %"],
+                      ["take_profit_pct", "Take Profit %"],
+                      ["max_signal_age_ms", "Max Signal Age Ms"],
+                      ["max_runs", "Max Runs"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <Field
+                      key={key}
+                      label={label}
+                      value={strategyExperimentForm[key]}
+                      onChange={(value) =>
+                        setStrategyExperimentForm((current) => ({ ...current, [key]: value }))
+                      }
+                    />
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center gap-3">
+                  <ActionButton
+                    label="Run Experiment"
+                    onClick={() => runStrategyExperimentMutation.mutate()}
+                    busy={runStrategyExperimentMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(runStrategyExperimentMutation.error)}
+                    success={
+                      lastStrategyExperimentResult
+                        ? `Experiment ${shortenId(lastStrategyExperimentResult.experiment.experiment_id)} ranked ${lastStrategyExperimentResult.experiment.run_count} candidates`
+                        : undefined
+                    }
+                  />
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-5" title="Experiment Summary">
+                <KeyValue
+                  items={[
+                    ["Experiment ID", selectedExperiment?.experiment_id ?? "N/A"],
+                    ["Status", selectedExperiment?.status ?? "N/A"],
+                    ["Run Count", String(selectedExperiment?.run_count ?? 0)],
+                    ["Best Candidate", selectedExperiment?.best_run ? shortenId(selectedExperiment.best_run.id) : "N/A"],
+                    ["Worst Candidate", selectedExperiment?.worst_run ? shortenId(selectedExperiment.worst_run.id) : "N/A"],
+                    ["Ranking Metric", selectedExperiment?.comparison.ranking_metric ?? "N/A"],
+                  ]}
+                  loading={selectedExperimentQuery.isLoading}
+                  error={getErrorMessage(selectedExperimentQuery.error)}
+                />
+              </Panel>
+              <Panel className="xl:col-span-4" title="Recent Experiments">
+                <StrategyExperimentsTable
+                  experiments={strategyExperiments}
+                  onSelect={setSelectedExperimentId}
+                  selectedId={selectedExperimentId}
+                />
+                <InlineStatus error={getErrorMessage(strategyExperimentsQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-8" title="Ranked Candidate Results">
+                <StrategyExperimentRunsTable runs={strategyExperimentRuns} />
+                <InlineStatus error={getErrorMessage(selectedExperimentRunsQuery.error)} />
+              </Panel>
+            </section>
+          )}
+
           {section === "events" && (
             <section className="grid gap-4">
               <Panel title="System Events">
@@ -5093,6 +5297,79 @@ function BacktestEquityTable({
         formatDateTime(point.timestamp),
         point.equity,
         point.drawdown_pct,
+      ])}
+    />
+  );
+}
+
+function StrategyExperimentsTable({
+  experiments,
+  onSelect,
+  selectedId,
+}: {
+  experiments: StrategyExperimentResult[];
+  onSelect: (experimentId: string) => void;
+  selectedId?: string | null;
+}) {
+  if (!experiments.length) {
+    return <EmptyState label="No strategy experiments." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {experiments.map((experiment) => (
+        <button
+          key={experiment.experiment_id}
+          className={cn(
+            "w-full rounded-xl border p-3 text-left transition",
+            selectedId === experiment.experiment_id
+              ? "border-accent bg-accent/5"
+              : "border-border bg-surface/60 hover:border-slate-500",
+          )}
+          onClick={() => onSelect(experiment.experiment_id)}
+        >
+          <div className="grid gap-2 md:grid-cols-4">
+            <div className="font-mono text-xs">{shortenId(experiment.experiment_id)}</div>
+            <div>{experiment.strategy_id}</div>
+            <div>{experiment.symbol}</div>
+            <div>best {formatNumber(experiment.best_run?.score ?? "0")}</div>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function StrategyExperimentRunsTable({ runs }: { runs: StrategyExperimentRun[] }) {
+  if (!runs.length) {
+    return <EmptyState label="No strategy experiment runs." />;
+  }
+
+  return (
+    <Table
+      headers={[
+        "Rank",
+        "Lookback",
+        "Holding",
+        "PnL %",
+        "Drawdown %",
+        "Trades",
+        "Win Rate",
+        "Drag %",
+        "Score",
+        "Warnings",
+      ]}
+      rows={runs.map((run) => [
+        mono(String(run.rank)),
+        String(run.candidate.lookback_candles),
+        run.candidate.holding_candles ? String(run.candidate.holding_candles) : "-",
+        run.pnl_pct,
+        run.max_drawdown_pct,
+        String(run.trade_count),
+        run.win_rate,
+        run.fee_slippage_drag_pct,
+        run.score,
+        run.warnings.length ? run.warnings.join(", ") : "-",
       ])}
     />
   );

@@ -154,11 +154,13 @@ Notes:
 
 - Replay reads only stored closed candles from Postgres for the requested symbol, timeframe, and time range.
 - Replay/backtest uses the persisted validated strategy config by default, with an optional validated per-run override isolated to the backtest request payload.
+- Strategy experiments reuse the same deterministic replay simulation with validated per-candidate overrides and ranking on persisted candle history.
 - Strategy evaluation sees only candles available up to the replay point; no lookahead into future candles is allowed.
 - Entries execute at the next candle open with fixed deterministic slippage and fee assumptions.
 - Exits use deterministic TP/SL threshold checks or a fixed holding-candle fallback.
 - Replay emits `replay.backtest.started`, `replay.backtest.completed`, and `replay.backtest.failed` into `system_events`.
 - Replay persists only into `backtest_runs`, `backtest_trades`, and `backtest_equity_curve`.
+- Strategy experiments persist only into `strategy_experiments` and `strategy_experiment_runs`, and must not create signals, risk decisions, orders, paper rows, shadow rows, promotion rows, or testnet execution rows.
 - Replay must not mutate production `signals`, `risk_decisions`, or `orders`.
 
 ## Strategy analytics read model

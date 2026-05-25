@@ -13,13 +13,15 @@ use aegis_core::{
     PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig,
     RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session,
     Side, SignalReason, StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyId, StrategyPerformanceMode,
-    StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
-    StrategyRiskBreakdown, StrategySignal, StrategyStatus, Symbol, TestnetExecutionState,
-    TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetPromotionQualitySignal, TestnetShadowDecision,
-    TestnetShadowIntent, TestnetShadowPromotionPreview, TestnetShadowPromotionRejectionReason,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyExperimentCandidate,
+    StrategyExperimentComparison, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
+    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyPerformanceSummary,
+    StrategyPnlBreakdown, StrategyRiskBreakdown, StrategySignal, StrategyStatus, Symbol,
+    TestnetExecutionState, TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetPromotionQualitySignal, TestnetShadowDecision, TestnetShadowIntent,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRejectionReason,
     TestnetShadowPromotionStatus, TestnetShadowRejectionReason, TestnetShadowRunResult,
     TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState,
     TestnetShadowRunnerStatus, TestnetShadowStatus, User, UserRole, UserStatus,
@@ -692,6 +694,46 @@ pub struct BacktestEquityPointRecord {
     pub timestamp: DateTime<Utc>,
     pub equity: Decimal,
     pub drawdown_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyExperimentRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub max_signal_age_ms: Option<i64>,
+    pub max_runs: Option<i32>,
+    pub status: String,
+    pub comparison: Value,
+    pub correlation_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyExperimentRunRecord {
+    pub id: Uuid,
+    pub experiment_id: Uuid,
+    pub rank: i32,
+    pub candidate_config: Value,
+    pub final_equity: Decimal,
+    pub pnl: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub win_rate: Decimal,
+    pub trade_count: i32,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub fee_slippage_drag_pct: Decimal,
+    pub score: Decimal,
+    pub status: String,
+    pub warnings: Value,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -5565,6 +5607,248 @@ pub async fn count_backtest_runs_in_window(
     .await?)
 }
 
+pub async fn insert_strategy_experiment(
+    pool: &PgPool,
+    result: &StrategyExperimentResult,
+) -> Result<StrategyExperimentRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_experiments (
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
+            max_signal_age_ms,
+            max_runs,
+            status,
+            comparison,
+            correlation_id,
+            created_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+        )
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
+            max_signal_age_ms,
+            max_runs,
+            status,
+            comparison,
+            correlation_id,
+            created_at
+        "#,
+    )
+    .bind(result.experiment_id)
+    .bind(&result.strategy_id)
+    .bind(&result.symbol)
+    .bind(&result.timeframe)
+    .bind(result.start_time)
+    .bind(result.end_time)
+    .bind(result.initial_capital)
+    .bind(result.fee_bps)
+    .bind(result.slippage_bps)
+    .bind(result.max_signal_age_ms)
+    .bind(result.max_runs.map(|value| value as i32))
+    .bind(result.status.as_str())
+    .bind(serde_json::to_value(&result.comparison)?)
+    .bind(result.correlation_id)
+    .bind(result.created_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_experiment(&row))
+}
+
+pub async fn insert_strategy_experiment_runs(
+    pool: &PgPool,
+    runs: &[StrategyExperimentRun],
+) -> Result<Vec<StrategyExperimentRunRecord>> {
+    let mut records = Vec::with_capacity(runs.len());
+    for run in runs {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO strategy_experiment_runs (
+                id,
+                experiment_id,
+                rank,
+                candidate_config,
+                final_equity,
+                pnl,
+                pnl_pct,
+                max_drawdown_pct,
+                win_rate,
+                trade_count,
+                fee_paid,
+                slippage_cost,
+                fee_slippage_drag_pct,
+                score,
+                status,
+                warnings,
+                created_at
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+            )
+            RETURNING
+                id,
+                experiment_id,
+                rank,
+                candidate_config,
+                final_equity,
+                pnl,
+                pnl_pct,
+                max_drawdown_pct,
+                win_rate,
+                trade_count,
+                fee_paid,
+                slippage_cost,
+                fee_slippage_drag_pct,
+                score,
+                status,
+                warnings,
+                created_at
+            "#,
+        )
+        .bind(run.id)
+        .bind(run.experiment_id)
+        .bind(run.rank)
+        .bind(serde_json::to_value(&run.candidate)?)
+        .bind(run.final_equity)
+        .bind(run.pnl)
+        .bind(run.pnl_pct)
+        .bind(run.max_drawdown_pct)
+        .bind(run.win_rate)
+        .bind(run.trade_count)
+        .bind(run.fee_paid)
+        .bind(run.slippage_cost)
+        .bind(run.fee_slippage_drag_pct)
+        .bind(run.score)
+        .bind(run.status.as_str())
+        .bind(serde_json::to_value(&run.warnings)?)
+        .bind(run.created_at)
+        .fetch_one(pool)
+        .await?;
+        records.push(map_strategy_experiment_run(&row));
+    }
+    Ok(records)
+}
+
+pub async fn get_strategy_experiment(
+    pool: &PgPool,
+    experiment_id: Uuid,
+) -> Result<Option<StrategyExperimentRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
+            max_signal_age_ms,
+            max_runs,
+            status,
+            comparison,
+            correlation_id,
+            created_at
+        FROM strategy_experiments
+        WHERE id = $1
+        "#,
+    )
+    .bind(experiment_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_strategy_experiment))
+}
+
+pub async fn list_strategy_experiments(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<StrategyExperimentRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
+            max_signal_age_ms,
+            max_runs,
+            status,
+            comparison,
+            correlation_id,
+            created_at
+        FROM strategy_experiments
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_strategy_experiment).collect())
+}
+
+pub async fn list_strategy_experiment_runs(
+    pool: &PgPool,
+    experiment_id: Uuid,
+) -> Result<Vec<StrategyExperimentRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            experiment_id,
+            rank,
+            candidate_config,
+            final_equity,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            trade_count,
+            fee_paid,
+            slippage_cost,
+            fee_slippage_drag_pct,
+            score,
+            status,
+            warnings,
+            created_at
+        FROM strategy_experiment_runs
+        WHERE experiment_id = $1
+        ORDER BY rank ASC, created_at ASC
+        "#,
+    )
+    .bind(experiment_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_strategy_experiment_run).collect())
+}
+
 pub async fn get_backtest_trades(pool: &PgPool, run_id: Uuid) -> Result<Vec<BacktestTradeRecord>> {
     let rows = sqlx::query(
         r#"
@@ -8716,6 +9000,48 @@ fn map_backtest_equity_point(row: &sqlx::postgres::PgRow) -> BacktestEquityPoint
     }
 }
 
+fn map_strategy_experiment(row: &sqlx::postgres::PgRow) -> StrategyExperimentRecord {
+    StrategyExperimentRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        initial_capital: row.get("initial_capital"),
+        fee_bps: row.get("fee_bps"),
+        slippage_bps: row.get("slippage_bps"),
+        max_signal_age_ms: row.get("max_signal_age_ms"),
+        max_runs: row.get("max_runs"),
+        status: row.get("status"),
+        comparison: row.get("comparison"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_strategy_experiment_run(row: &sqlx::postgres::PgRow) -> StrategyExperimentRunRecord {
+    StrategyExperimentRunRecord {
+        id: row.get("id"),
+        experiment_id: row.get("experiment_id"),
+        rank: row.get("rank"),
+        candidate_config: row.get("candidate_config"),
+        final_equity: row.get("final_equity"),
+        pnl: row.get("pnl"),
+        pnl_pct: row.get("pnl_pct"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        win_rate: row.get("win_rate"),
+        trade_count: row.get("trade_count"),
+        fee_paid: row.get("fee_paid"),
+        slippage_cost: row.get("slippage_cost"),
+        fee_slippage_drag_pct: row.get("fee_slippage_drag_pct"),
+        score: row.get("score"),
+        status: row.get("status"),
+        warnings: row.get("warnings"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
     SignalRecord {
         id: row.get("id"),
@@ -8884,6 +9210,71 @@ pub fn backtest_result_from_record(record: &BacktestRunRecord) -> Result<Backtes
         fee_paid: record.fee_paid,
         slippage_cost: record.slippage_cost,
         status: record.status.parse()?,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub fn strategy_experiment_run_from_record(
+    record: &StrategyExperimentRunRecord,
+) -> Result<StrategyExperimentRun> {
+    Ok(StrategyExperimentRun {
+        id: record.id,
+        experiment_id: record.experiment_id,
+        rank: record.rank,
+        candidate: serde_json::from_value::<StrategyExperimentCandidate>(
+            record.candidate_config.clone(),
+        )?,
+        final_equity: record.final_equity,
+        pnl: record.pnl,
+        pnl_pct: record.pnl_pct,
+        max_drawdown_pct: record.max_drawdown_pct,
+        win_rate: record.win_rate,
+        trade_count: record.trade_count,
+        fee_paid: record.fee_paid,
+        slippage_cost: record.slippage_cost,
+        fee_slippage_drag_pct: record.fee_slippage_drag_pct,
+        score: record.score,
+        status: record.status.parse()?,
+        warnings: serde_json::from_value(record.warnings.clone())?,
+        created_at: record.created_at,
+    })
+}
+
+pub fn strategy_experiment_result_from_records(
+    record: &StrategyExperimentRecord,
+    run_records: &[StrategyExperimentRunRecord],
+) -> Result<StrategyExperimentResult> {
+    let runs = run_records
+        .iter()
+        .map(strategy_experiment_run_from_record)
+        .collect::<Result<Vec<_>>>()?;
+    let comparison =
+        serde_json::from_value::<StrategyExperimentComparison>(record.comparison.clone())?;
+    let best_run = comparison
+        .best_run_id
+        .and_then(|id| runs.iter().find(|run| run.id == id).cloned());
+    let worst_run = comparison
+        .worst_run_id
+        .and_then(|id| runs.iter().find(|run| run.id == id).cloned());
+
+    Ok(StrategyExperimentResult {
+        experiment_id: record.id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        start_time: record.start_time,
+        end_time: record.end_time,
+        initial_capital: record.initial_capital,
+        fee_bps: record.fee_bps,
+        slippage_bps: record.slippage_bps,
+        max_signal_age_ms: record.max_signal_age_ms,
+        max_runs: record.max_runs.map(|value| value as u32),
+        status: record.status.parse()?,
+        run_count: runs.len() as i32,
+        comparison,
+        best_run,
+        worst_run,
         created_at: record.created_at,
         correlation_id: record.correlation_id,
     })

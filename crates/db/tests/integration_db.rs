@@ -7,7 +7,9 @@ use aegis_core::{
     ExchangeReconciliationSummary, FeeModel, MarketDataSource, OrderIntent, PaperAccount,
     PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide, PositionStatus, ReplayMode,
     ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide, StrategyId,
+    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
+    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
     StrategyPerformanceMode, StrategyPerformanceRequest, StrategySignal, Symbol,
     TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
     TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
@@ -25,15 +27,16 @@ use db::{
     insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
-    insert_paper_account, insert_risk_decision, insert_signal_deduped,
-    insert_testnet_shadow_promotion, insert_testnet_shadow_run,
+    insert_paper_account, insert_risk_decision, insert_signal_deduped, insert_strategy_experiment,
+    insert_strategy_experiment_runs, insert_testnet_shadow_promotion, insert_testnet_shadow_run,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
-    list_strategy_performance_rankings, list_testnet_promotion_funnel_rows, set_kill_switch_state,
-    test_support::TestDatabase, testnet_shadow_runner_config_from_record,
-    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
-    update_exchange_testnet_order_status, upsert_candle, upsert_candles_batch,
-    upsert_exchange_private_stream_state, upsert_paper_position,
+    list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
+    list_testnet_promotion_funnel_rows, set_kill_switch_state,
+    strategy_experiment_result_from_records, test_support::TestDatabase,
+    testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
+    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_candle,
+    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
     upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
@@ -159,6 +162,69 @@ fn sample_paper_account() -> PaperAccount {
         status: PaperAccountStatus::Active,
         created_at: fixed_time(),
         updated_at: fixed_time(),
+    }
+}
+
+fn sample_strategy_experiment_run(
+    experiment_id: Uuid,
+    rank: i32,
+    score: i64,
+) -> StrategyExperimentRun {
+    StrategyExperimentRun {
+        id: Uuid::new_v4(),
+        experiment_id,
+        rank,
+        candidate: StrategyExperimentCandidate {
+            lookback_candles: 3 + rank as u32,
+            holding_candles: Some(3),
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            max_signal_age_ms: Some(180_000),
+        },
+        final_equity: Decimal::new(1_000_000 + score * 10_000, 0),
+        pnl: Decimal::new(score * 10_000, 0),
+        pnl_pct: Decimal::new(score, 0),
+        max_drawdown_pct: Decimal::new(2 * rank as i64, 0),
+        win_rate: Decimal::new(50 + rank as i64, 0),
+        trade_count: 5 * rank,
+        fee_paid: Decimal::new(100, 0),
+        slippage_cost: Decimal::new(50, 0),
+        fee_slippage_drag_pct: Decimal::new(15, 2),
+        score: Decimal::new(score, 0),
+        status: StrategyExperimentStatus::Completed,
+        warnings: Vec::new(),
+        created_at: fixed_time(),
+    }
+}
+
+fn sample_strategy_experiment_result(
+    experiment_id: Uuid,
+    runs: &[StrategyExperimentRun],
+) -> StrategyExperimentResult {
+    StrategyExperimentResult {
+        experiment_id,
+        strategy_id: "momentum_v1".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "1m".to_string(),
+        start_time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        end_time: Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+        initial_capital: Decimal::new(1_000_000, 0),
+        fee_bps: Decimal::new(10, 0),
+        slippage_bps: Decimal::new(5, 0),
+        max_signal_age_ms: Some(180_000),
+        max_runs: Some(runs.len() as u32),
+        status: StrategyExperimentStatus::Completed,
+        run_count: runs.len() as i32,
+        comparison: StrategyExperimentComparison {
+            ranking_metric: StrategyExperimentMetric::RiskAdjustedScore,
+            best_run_id: runs.first().map(|run| run.id),
+            worst_run_id: runs.last().map(|run| run.id),
+            ranked_run_ids: runs.iter().map(|run| run.id).collect(),
+        },
+        best_run: runs.first().cloned(),
+        worst_run: runs.last().cloned(),
+        created_at: fixed_time(),
+        correlation_id: Some(Uuid::from_u128(0xefe)),
     }
 }
 
@@ -2035,6 +2101,117 @@ async fn strategy_rankings_orders_strategies_correctly() {
     assert_eq!(
         rankings.first().map(|item| item.strategy_id.as_str()),
         Some("momentum_v1")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_experiment_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let experiment_id = Uuid::new_v4();
+    let runs = vec![
+        sample_strategy_experiment_run(experiment_id, 1, 8),
+        sample_strategy_experiment_run(experiment_id, 2, 4),
+    ];
+    let experiment = sample_strategy_experiment_result(experiment_id, &runs);
+
+    insert_strategy_experiment(&test_db.pool, &experiment)
+        .await
+        .expect("experiment should persist");
+
+    let listed = list_strategy_experiments(&test_db.pool, 10)
+        .await
+        .expect("experiments should list");
+
+    assert!(listed.iter().any(|record| record.id == experiment_id));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_experiment_runs_persist() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let experiment_id = Uuid::new_v4();
+    let runs = vec![
+        sample_strategy_experiment_run(experiment_id, 1, 8),
+        sample_strategy_experiment_run(experiment_id, 2, 4),
+    ];
+    let experiment = sample_strategy_experiment_result(experiment_id, &runs);
+
+    insert_strategy_experiment(&test_db.pool, &experiment)
+        .await
+        .expect("experiment should persist");
+    insert_strategy_experiment_runs(&test_db.pool, &runs)
+        .await
+        .expect("experiment runs should persist");
+
+    let persisted = list_strategy_experiment_runs(&test_db.pool, experiment_id)
+        .await
+        .expect("experiment runs should list");
+
+    assert_eq!(persisted.len(), 2);
+    assert_eq!(persisted[0].rank, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_experiment_read_model_returns_ranked_results_without_execution_mutation() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let experiment_id = Uuid::new_v4();
+    let runs = vec![
+        sample_strategy_experiment_run(experiment_id, 1, 8),
+        sample_strategy_experiment_run(experiment_id, 2, 4),
+    ];
+    let experiment = sample_strategy_experiment_result(experiment_id, &runs);
+
+    insert_strategy_experiment(&test_db.pool, &experiment)
+        .await
+        .expect("experiment should persist");
+    insert_strategy_experiment_runs(&test_db.pool, &runs)
+        .await
+        .expect("experiment runs should persist");
+
+    let listed = list_strategy_experiment_runs(&test_db.pool, experiment_id)
+        .await
+        .expect("experiment runs should list");
+    let mapped = strategy_experiment_result_from_records(
+        &list_strategy_experiments(&test_db.pool, 1)
+            .await
+            .expect("experiments should list")[0],
+        &listed,
+    )
+    .expect("strategy experiment read model should map");
+
+    assert_eq!(mapped.best_run.as_ref().map(|run| run.rank), Some(1));
+    assert_eq!(
+        list_orders(&test_db.pool)
+            .await
+            .expect("orders should load")
+            .len(),
+        0
+    );
+    assert_eq!(
+        get_strategy_shadow_decision_breakdown(
+            &test_db.pool,
+            &StrategyPerformanceRequest {
+                strategy_id: Some("momentum_v1".to_string()),
+                symbol: Some("BTCUSDT".to_string()),
+                timeframe: Some("1m".to_string()),
+                mode: StrategyPerformanceMode::Shadow,
+                start_time: Some(fixed_time() - chrono::Duration::days(1)),
+                end_time: Some(fixed_time() + chrono::Duration::days(1)),
+                limit: None,
+            },
+        )
+        .await
+        .expect("shadow breakdown should load")
+        .total_runs,
+        0
     );
 }
 

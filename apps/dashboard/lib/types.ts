@@ -1752,3 +1752,117 @@ export type BacktestRequest = {
   risk_config?: Record<string, unknown> | null;
   correlation_id?: string;
 };
+
+export type StrategyExperimentMetric =
+  | "net_pnl_pct"
+  | "max_drawdown_pct"
+  | "trade_count"
+  | "win_rate"
+  | "fee_slippage_drag_pct"
+  | "risk_adjusted_score";
+
+export type StrategyExperimentStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED";
+
+export type StrategyExperimentCandidate = {
+  lookback_candles: number;
+  holding_candles: number | null;
+  stop_loss_pct: string | null;
+  take_profit_pct: string | null;
+  max_signal_age_ms: number | null;
+};
+
+export type StrategyExperimentRun = {
+  id: string;
+  experiment_id: string;
+  rank: number;
+  candidate: StrategyExperimentCandidate;
+  final_equity: string;
+  pnl: string;
+  pnl_pct: string;
+  max_drawdown_pct: string;
+  win_rate: string;
+  trade_count: number;
+  fee_paid: string;
+  slippage_cost: string;
+  fee_slippage_drag_pct: string;
+  score: string;
+  status: StrategyExperimentStatus;
+  warnings: string[];
+  created_at: string;
+};
+
+export type StrategyExperimentComparison = {
+  ranking_metric: StrategyExperimentMetric;
+  best_run_id: string | null;
+  worst_run_id: string | null;
+  ranked_run_ids: string[];
+};
+
+export type StrategyExperimentResult = {
+  experiment_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  max_signal_age_ms: number | null;
+  max_runs: number | null;
+  status: StrategyExperimentStatus;
+  run_count: number;
+  comparison: StrategyExperimentComparison;
+  best_run: StrategyExperimentRun | null;
+  worst_run: StrategyExperimentRun | null;
+  created_at: string;
+  correlation_id: string | null;
+};
+
+export type StrategyExperimentRequest = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  lookback_candidates: number[];
+  holding_candles_candidates?: number[] | null;
+  stop_loss_pct_candidates?: string[] | null;
+  take_profit_pct_candidates?: string[] | null;
+  max_signal_age_ms?: number | null;
+  max_runs?: number | null;
+  correlation_id?: string | null;
+};
+
+export type StrategyExperimentRunAcceptedResponse = {
+  experiment: StrategyExperimentResult;
+  runs: StrategyExperimentRun[];
+};
+
+export type StrategyExperimentsResponse = {
+  experiments: StrategyExperimentResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyExperimentResponse = {
+  experiment: StrategyExperimentResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyExperimentRunsResponse = {
+  runs: StrategyExperimentRun[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};

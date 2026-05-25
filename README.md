@@ -88,6 +88,7 @@ make verify
 - Testnet execution is isolated from paper and uses testnet-only authenticated exchange actions.
 - Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
+- Strategy experiments are research-only parameter sweeps on stored candles; they must not mutate live, paper, shadow, promotion, or testnet execution state.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
 
 ## Repository layout
@@ -252,6 +253,18 @@ Backfill example:
 Backtest example:
 `cargo run -p cli -- backtest run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --holding-candles 3`
 
+Strategy experiment sweep:
+`cargo run -p cli -- experiments strategy run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`
+
+List persisted strategy experiments:
+`cargo run -p cli -- experiments strategy list`
+
+Inspect a persisted strategy experiment:
+`cargo run -p cli -- experiments strategy get <experiment_id>`
+
+List ranked candidate runs for an experiment:
+`cargo run -p cli -- experiments strategy runs <experiment_id>`
+
 Readiness example:
 `cargo run -p cli -- readiness check --target PAPER_PIPELINE --symbol BTCUSDT --strategy momentum_v1 --timeframe 1m`
 
@@ -260,6 +273,15 @@ Operator report example:
 
 Optional shadow example:
 `cargo run -p cli -- exchange testnet shadow-run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m`
+
+## Strategy experiment interpretation
+
+- `very_high_trade_count`: turnover is high enough that fee drag and slippage assumptions may dominate the edge.
+- `negative_after_fees`: the candidate ended negative once transaction costs were included.
+- `high_drawdown`: the candidate took materially deep peak-to-trough losses during the replay window.
+- `too_few_trades`: the sample is too small to trust the ranking.
+
+Strategy experiments are for research only. They reuse the deterministic replay engine, persist into isolated `strategy_experiments` and `strategy_experiment_runs` tables, and do not update persisted strategy config or execution state.
 
 ## Notes
 

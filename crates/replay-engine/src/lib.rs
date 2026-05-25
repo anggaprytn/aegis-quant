@@ -1,13 +1,16 @@
 use aegis_core::{
     BacktestEquityPoint, BacktestPosition, BacktestRequest, BacktestResult, BacktestTrade, Candle,
     CandleInterval, EventEnvelope, ReplayRunStatus, Side, StrategyConfig,
-    StrategyEvaluationContext, StrategyId, Symbol,
+    StrategyConfigUpdateRequest, StrategyEvaluationContext, StrategyExperimentCandidate,
+    StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId, Symbol,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use db::{
     backtest_result_from_record, get_backtest_run, get_closed_candles_range, get_strategy_status,
-    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade, insert_system_event,
+    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
+    insert_strategy_experiment, insert_strategy_experiment_runs, insert_system_event,
     strategy_config_from_record, update_backtest_run_completed, PgPool,
 };
 use rust_decimal::Decimal;
@@ -31,6 +34,12 @@ pub struct BacktestExecution {
     pub result: BacktestResult,
     pub trades: Vec<BacktestTrade>,
     pub equity_curve: Vec<BacktestEquityPoint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrategyExperimentExecution {
+    pub result: StrategyExperimentResult,
+    pub runs: Vec<StrategyExperimentRun>,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +170,144 @@ impl ReplayEngine {
         );
 
         Ok(execution)
+    }
+
+    pub async fn run_strategy_experiment(
+        &self,
+        request: StrategyExperimentRequest,
+    ) -> Result<StrategyExperimentExecution> {
+        request.validate()?;
+
+        let experiment_id = Uuid::new_v4();
+        let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
+        let created_at = Utc::now();
+        let strategy_id: StrategyId = request
+            .strategy_id
+            .parse()
+            .context("invalid strategy_id for strategy experiment")?;
+        let symbol = Symbol::new(request.symbol.clone())
+            .context("invalid symbol for strategy experiment")?;
+        let timeframe: CandleInterval = request
+            .timeframe
+            .parse()
+            .context("invalid timeframe for strategy experiment")?;
+        let config_record = get_strategy_status(&self.pool, strategy_id)
+            .await?
+            .map(|status| status.config)
+            .ok_or_else(|| anyhow!("persisted strategy config not found"))?;
+        let base_config = strategy_config_from_record(&config_record)
+            .context("invalid persisted strategy config")?;
+        let candles = get_closed_candles_range(
+            &self.pool,
+            &symbol,
+            timeframe,
+            request.start_time,
+            request.end_time,
+        )
+        .await
+        .context("failed to load closed candles range")?;
+
+        let candidates = request.candidates();
+        if candidates.is_empty() {
+            return Err(anyhow!(
+                "strategy experiment requires at least one candidate"
+            ));
+        }
+
+        let mut runs = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let override_request = experiment_strategy_override(&base_config, &request, &candidate);
+            let validation = validate_strategy_config(
+                &override_request,
+                &StrategyValidationContext {
+                    supported_symbols: vec![symbol.clone()],
+                    max_position_notional: Some(
+                        aegis_core::RiskConfig::default().max_position_notional,
+                    ),
+                },
+            );
+            let strategy_config = validation
+                .normalized_config
+                .ok_or_else(|| anyhow!("invalid strategy experiment candidate override"))?;
+            let run_request = BacktestRequest {
+                strategy_id: request.strategy_id.clone(),
+                symbol: request.symbol.clone(),
+                timeframe: request.timeframe.clone(),
+                start_time: request.start_time,
+                end_time: request.end_time,
+                initial_capital: request.initial_capital,
+                risk_config_id: None,
+                risk_config: None,
+                fee_bps: request.fee_bps,
+                slippage_bps: request.slippage_bps,
+                correlation_id: Some(correlation_id),
+                holding_candles: candidate
+                    .holding_candles
+                    .or(strategy_config.holding_candles),
+                strategy_config_override: Some(override_request),
+            };
+            let execution = simulate_backtest(
+                Uuid::new_v4(),
+                created_at,
+                correlation_id,
+                &run_request,
+                &strategy_config,
+                candles.clone(),
+            )?;
+            runs.push(strategy_experiment_run_from_backtest(
+                experiment_id,
+                created_at,
+                request.initial_capital,
+                candidate,
+                execution.result,
+            ));
+        }
+
+        rank_strategy_experiment_runs(&mut runs);
+        let comparison = strategy_experiment_comparison(&runs);
+        let best_run = comparison
+            .best_run_id
+            .and_then(|id| runs.iter().find(|run| run.id == id).cloned());
+        let worst_run = comparison
+            .worst_run_id
+            .and_then(|id| runs.iter().find(|run| run.id == id).cloned());
+        let status = if runs
+            .iter()
+            .all(|run| run.status == StrategyExperimentStatus::Completed)
+        {
+            StrategyExperimentStatus::Completed
+        } else {
+            StrategyExperimentStatus::Failed
+        };
+        let result = StrategyExperimentResult {
+            experiment_id,
+            strategy_id: request.strategy_id.clone(),
+            symbol: request.symbol.clone(),
+            timeframe: request.timeframe.clone(),
+            start_time: request.start_time,
+            end_time: request.end_time,
+            initial_capital: request.initial_capital,
+            fee_bps: request.fee_bps,
+            slippage_bps: request.slippage_bps,
+            max_signal_age_ms: request.max_signal_age_ms,
+            max_runs: request.max_runs,
+            status,
+            run_count: runs.len() as i32,
+            comparison,
+            best_run,
+            worst_run,
+            created_at,
+            correlation_id: Some(correlation_id),
+        };
+
+        insert_strategy_experiment(&self.pool, &result)
+            .await
+            .context("failed to insert strategy experiment")?;
+        insert_strategy_experiment_runs(&self.pool, &runs)
+            .await
+            .context("failed to insert strategy experiment runs")?;
+
+        Ok(StrategyExperimentExecution { result, runs })
     }
 
     async fn execute(
@@ -361,6 +508,151 @@ pub fn simulate_backtest(
         trades: state.trades,
         equity_curve: state.equity_curve,
     })
+}
+
+fn experiment_strategy_override(
+    base_config: &StrategyConfig,
+    request: &StrategyExperimentRequest,
+    candidate: &StrategyExperimentCandidate,
+) -> StrategyConfigUpdateRequest {
+    StrategyConfigUpdateRequest {
+        strategy_id: request.strategy_id.clone(),
+        enabled: base_config.enabled,
+        mode: base_config.mode,
+        symbols: vec![request.symbol.clone()],
+        timeframe: request.timeframe.clone(),
+        suggested_notional: base_config.suggested_notional,
+        max_signal_age_ms: candidate
+            .max_signal_age_ms
+            .unwrap_or(base_config.max_signal_age_ms),
+        cooldown_seconds: base_config.cooldown_seconds,
+        lookback_candles: candidate.lookback_candles,
+        confidence_floor: base_config.confidence_floor,
+        stop_loss_pct: candidate.stop_loss_pct.or(base_config.stop_loss_pct),
+        take_profit_pct: candidate.take_profit_pct.or(base_config.take_profit_pct),
+        holding_candles: candidate.holding_candles.or(base_config.holding_candles),
+        notes: base_config.notes.clone(),
+    }
+}
+
+fn strategy_experiment_run_from_backtest(
+    experiment_id: Uuid,
+    created_at: DateTime<Utc>,
+    initial_capital: Decimal,
+    candidate: StrategyExperimentCandidate,
+    result: BacktestResult,
+) -> StrategyExperimentRun {
+    let fee_slippage_drag_pct =
+        calculate_fee_slippage_drag_pct(initial_capital, result.fee_paid, result.slippage_cost);
+    let warnings = experiment_warnings(
+        result.trade_count,
+        result.pnl,
+        result.max_drawdown_pct,
+        fee_slippage_drag_pct,
+    );
+    let mut run = StrategyExperimentRun {
+        id: Uuid::new_v4(),
+        experiment_id,
+        rank: 0,
+        candidate,
+        final_equity: result.final_equity,
+        pnl: result.pnl,
+        pnl_pct: result.pnl_pct,
+        max_drawdown_pct: result.max_drawdown_pct,
+        win_rate: result.win_rate,
+        trade_count: result.trade_count,
+        fee_paid: result.fee_paid,
+        slippage_cost: result.slippage_cost,
+        fee_slippage_drag_pct,
+        score: Decimal::ZERO,
+        status: match result.status {
+            ReplayRunStatus::Completed => StrategyExperimentStatus::Completed,
+            ReplayRunStatus::Failed => StrategyExperimentStatus::Failed,
+            ReplayRunStatus::Pending => StrategyExperimentStatus::Pending,
+            ReplayRunStatus::Running => StrategyExperimentStatus::Running,
+        },
+        warnings,
+        created_at,
+    };
+    run.score = calculate_strategy_experiment_score(&run);
+    run
+}
+
+pub fn calculate_fee_slippage_drag_pct(
+    initial_capital: Decimal,
+    fee_paid: Decimal,
+    slippage_cost: Decimal,
+) -> Decimal {
+    if initial_capital <= Decimal::ZERO {
+        return Decimal::ZERO;
+    }
+
+    ((fee_paid + slippage_cost) / initial_capital) * Decimal::new(100, 0)
+}
+
+pub fn calculate_strategy_experiment_score(run: &StrategyExperimentRun) -> Decimal {
+    let trade_penalty = if run.trade_count > 200 {
+        Decimal::from((run.trade_count - 200) / 10)
+    } else if run.trade_count > 0 && run.trade_count < 3 {
+        Decimal::new(5, 0)
+    } else {
+        Decimal::ZERO
+    };
+
+    run.pnl_pct - (run.max_drawdown_pct / Decimal::new(2, 0)) + (run.win_rate / Decimal::new(10, 0))
+        - run.fee_slippage_drag_pct
+        - trade_penalty
+}
+
+pub fn rank_strategy_experiment_runs(runs: &mut [StrategyExperimentRun]) {
+    runs.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.pnl_pct.cmp(&left.pnl_pct))
+            .then_with(|| left.max_drawdown_pct.cmp(&right.max_drawdown_pct))
+            .then_with(|| right.win_rate.cmp(&left.win_rate))
+            .then_with(|| left.fee_slippage_drag_pct.cmp(&right.fee_slippage_drag_pct))
+            .then_with(|| right.trade_count.cmp(&left.trade_count))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    for (index, run) in runs.iter_mut().enumerate() {
+        run.rank = index as i32 + 1;
+    }
+}
+
+fn strategy_experiment_comparison(runs: &[StrategyExperimentRun]) -> StrategyExperimentComparison {
+    StrategyExperimentComparison {
+        ranking_metric: StrategyExperimentMetric::RiskAdjustedScore,
+        best_run_id: runs.first().map(|run| run.id),
+        worst_run_id: runs.last().map(|run| run.id),
+        ranked_run_ids: runs.iter().map(|run| run.id).collect(),
+    }
+}
+
+fn experiment_warnings(
+    trade_count: i32,
+    pnl: Decimal,
+    max_drawdown_pct: Decimal,
+    fee_slippage_drag_pct: Decimal,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if trade_count >= 200 {
+        warnings.push("very_high_trade_count".to_string());
+    }
+    if pnl < Decimal::ZERO && fee_slippage_drag_pct > Decimal::ZERO {
+        warnings.push("negative_after_fees".to_string());
+    }
+    if max_drawdown_pct >= Decimal::new(15, 0) {
+        warnings.push("high_drawdown".to_string());
+    }
+    if trade_count > 0 && trade_count < 3 {
+        warnings.push("too_few_trades".to_string());
+    }
+
+    warnings
 }
 
 fn maybe_open_position(
@@ -694,9 +986,13 @@ fn deterministic_point_id(run_id: Uuid, timestamp: DateTime<Utc>) -> Uuid {
 
 #[cfg(test)]
 mod tests {
-    use super::simulate_backtest;
+    use super::{
+        calculate_fee_slippage_drag_pct, calculate_strategy_experiment_score,
+        experiment_strategy_override, rank_strategy_experiment_runs, simulate_backtest,
+    };
     use aegis_core::{
-        BacktestRequest, Candle, CandleInterval, MarketDataSource, StrategyConfig, StrategyId,
+        BacktestRequest, Candle, CandleInterval, MarketDataSource, StrategyConfig,
+        StrategyExperimentRequest, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
         StrategyMode, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
@@ -774,6 +1070,63 @@ mod tests {
             candle(6, 106, 108, 105, 107),
             candle(7, 107, 109, 106, 108),
         ]
+    }
+
+    fn sample_experiment_request() -> StrategyExperimentRequest {
+        StrategyExperimentRequest {
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            initial_capital: Decimal::new(1_000_000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            lookback_candidates: vec![3, 5, 10],
+            holding_candles_candidates: Some(vec![3, 5]),
+            stop_loss_pct_candidates: None,
+            take_profit_pct_candidates: None,
+            max_signal_age_ms: Some(180_000),
+            max_runs: Some(3),
+            correlation_id: None,
+        }
+    }
+
+    fn sample_experiment_run(
+        id: Uuid,
+        pnl_pct: i64,
+        max_drawdown_pct: i64,
+        trade_count: i32,
+        win_rate: i64,
+        fee_slippage_drag_pct: i64,
+    ) -> StrategyExperimentRun {
+        let mut run = StrategyExperimentRun {
+            id,
+            experiment_id: Uuid::from_u128(0x1000),
+            rank: 0,
+            candidate: aegis_core::StrategyExperimentCandidate {
+                lookback_candles: 3,
+                holding_candles: Some(3),
+                stop_loss_pct: None,
+                take_profit_pct: None,
+                max_signal_age_ms: Some(180_000),
+            },
+            final_equity: Decimal::new(1_000_000 + pnl_pct * 10_000, 0),
+            pnl: Decimal::new(pnl_pct * 10_000, 0),
+            pnl_pct: Decimal::new(pnl_pct, 0),
+            max_drawdown_pct: Decimal::new(max_drawdown_pct, 0),
+            win_rate: Decimal::new(win_rate, 0),
+            trade_count,
+            fee_paid: Decimal::new(500, 0),
+            slippage_cost: Decimal::new(250, 0),
+            fee_slippage_drag_pct: Decimal::new(fee_slippage_drag_pct, 0),
+            score: Decimal::ZERO,
+            status: StrategyExperimentStatus::Completed,
+            warnings: Vec::new(),
+            created_at: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        };
+        run.score = calculate_strategy_experiment_score(&run);
+        run
     }
 
     #[test]
@@ -946,5 +1299,73 @@ mod tests {
         .unwrap();
 
         assert_eq!(execution.result.win_rate, Decimal::new(100, 0));
+    }
+
+    #[test]
+    fn empty_candidate_list_is_rejected() {
+        let mut request = sample_experiment_request();
+        request.lookback_candidates.clear();
+
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn max_runs_limit_is_enforced() {
+        let candidates = sample_experiment_request().candidates();
+
+        assert_eq!(candidates.len(), 3);
+    }
+
+    #[test]
+    fn fee_slippage_drag_is_included() {
+        let drag = calculate_fee_slippage_drag_pct(
+            Decimal::new(1_000_000, 0),
+            Decimal::new(1_000, 0),
+            Decimal::new(500, 0),
+        );
+
+        assert_eq!(drag, Decimal::new(15, 2));
+    }
+
+    #[test]
+    fn score_calculation_penalizes_drawdown_and_costs() {
+        let run = sample_experiment_run(Uuid::from_u128(1), 12, 4, 10, 60, 1);
+
+        assert_eq!(run.score, Decimal::new(15, 0));
+    }
+
+    #[test]
+    fn ranking_orders_highest_score_first() {
+        let mut runs = vec![
+            sample_experiment_run(Uuid::from_u128(1), 5, 3, 10, 50, 1),
+            sample_experiment_run(Uuid::from_u128(2), 12, 4, 10, 60, 1),
+            sample_experiment_run(Uuid::from_u128(3), 4, 20, 250, 55, 5),
+        ];
+
+        rank_strategy_experiment_runs(&mut runs);
+
+        assert_eq!(runs[0].id, Uuid::from_u128(2));
+        assert_eq!(runs[0].rank, 1);
+        assert_eq!(runs[2].rank, 3);
+    }
+
+    #[test]
+    fn experiment_override_does_not_mutate_strategy_config() {
+        let base = sample_strategy_config();
+        let original = base.clone();
+        let candidate = aegis_core::StrategyExperimentCandidate {
+            lookback_candles: 10,
+            holding_candles: Some(5),
+            stop_loss_pct: Some(Decimal::new(2, 0)),
+            take_profit_pct: Some(Decimal::new(4, 0)),
+            max_signal_age_ms: Some(240_000),
+        };
+
+        let override_request =
+            experiment_strategy_override(&base, &sample_experiment_request(), &candidate);
+
+        assert_eq!(base, original);
+        assert_eq!(override_request.lookback_candles, 10);
+        assert_eq!(override_request.holding_candles, Some(5));
     }
 }

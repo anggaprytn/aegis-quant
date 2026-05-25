@@ -9,6 +9,7 @@ use aegis_core::{
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
     StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
     StrategyPerformanceSummary, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
     TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -1099,6 +1100,37 @@ impl ApiClient {
 
     pub async fn backtest_run(&self, run_id: Uuid) -> Result<BacktestRunResponse, ApiClientError> {
         self.get(&format!("/backtest/runs/{run_id}"), &[]).await
+    }
+
+    pub async fn run_strategy_experiment(
+        &self,
+        request: &StrategyExperimentRequest,
+    ) -> Result<StrategyExperimentRunAcceptedResponse, ApiClientError> {
+        self.post("/experiments/strategy/run", request).await
+    }
+
+    pub async fn strategy_experiments(
+        &self,
+        limit: i64,
+    ) -> Result<StrategyExperimentsResponse, ApiClientError> {
+        self.get("/experiments/strategy", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn strategy_experiment(
+        &self,
+        experiment_id: Uuid,
+    ) -> Result<StrategyExperimentResponse, ApiClientError> {
+        self.get(&format!("/experiments/strategy/{experiment_id}"), &[])
+            .await
+    }
+
+    pub async fn strategy_experiment_runs(
+        &self,
+        experiment_id: Uuid,
+    ) -> Result<StrategyExperimentRunsResponse, ApiClientError> {
+        self.get(&format!("/experiments/strategy/{experiment_id}/runs"), &[])
+            .await
     }
 
     pub async fn strategy_performance(
@@ -2342,6 +2374,36 @@ pub struct BacktestRunResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyExperimentRunAcceptedResponse {
+    pub experiment: StrategyExperimentResult,
+    pub runs: Vec<StrategyExperimentRun>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyExperimentsResponse {
+    pub experiments: Vec<StrategyExperimentResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyExperimentResponse {
+    pub experiment: StrategyExperimentResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyExperimentRunsResponse {
+    pub runs: Vec<StrategyExperimentRun>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyPerformanceSummaryResponse {
     pub summary: StrategyPerformanceSummary,
     pub request_id: String,
@@ -2471,6 +2533,32 @@ pub fn build_backtest_request(
     Ok(request)
 }
 
+pub fn build_strategy_experiment_request(
+    args: &crate::cli::StrategyExperimentRunArgs,
+) -> anyhow::Result<StrategyExperimentRequest> {
+    let request = StrategyExperimentRequest {
+        strategy_id: args.strategy.clone(),
+        symbol: args.symbol.clone(),
+        timeframe: args.timeframe.clone(),
+        start_time: args.start,
+        end_time: args.end,
+        initial_capital: args.initial_capital,
+        fee_bps: args.fee_bps,
+        slippage_bps: args.slippage_bps,
+        lookback_candidates: args.lookbacks.clone(),
+        holding_candles_candidates: args.holding_candles.clone(),
+        stop_loss_pct_candidates: args.stop_loss_pct.clone(),
+        take_profit_pct_candidates: args.take_profit_pct.clone(),
+        max_signal_age_ms: args.max_signal_age_ms,
+        max_runs: args.max_runs,
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate()
+        .context("invalid strategy experiment request")?;
+    Ok(request)
+}
+
 pub fn build_strategy_config_request(
     args: &crate::cli::StrategyConfigArgs,
 ) -> anyhow::Result<StrategyConfigUpdateRequest> {
@@ -2545,10 +2633,12 @@ pub fn build_auth_refresh_request(refresh_token: &str) -> AuthRefreshRequestPayl
 mod tests {
     use super::{
         build_auth_refresh_request, build_backtest_request, build_candle_backfill_request,
-        build_pipeline_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
-        CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
+        build_pipeline_request, build_strategy_experiment_request, ApiClient, RecentEventsQuery,
+        RiskDecisionsQuery, CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
     };
-    use crate::cli::{BacktestRunArgs, MarketBackfillArgs, PipelineRunArgs};
+    use crate::cli::{
+        BacktestRunArgs, MarketBackfillArgs, PipelineRunArgs, StrategyExperimentRunArgs,
+    };
     use crate::config::{clear_token_file, load_token_file, StoredAuthSession, StoredUserSummary};
     use aegis_core::{User, UserRole, UserStatus};
     use chrono::{TimeZone, Utc};
@@ -2667,6 +2757,38 @@ mod tests {
         assert_eq!(value["fee_bps"], "10");
         assert_eq!(value["slippage_bps"], "5");
         assert_eq!(value["holding_candles"], 3);
+    }
+
+    #[test]
+    fn strategy_experiment_request_serializes_expected_wire_shape() {
+        let args = StrategyExperimentRunArgs {
+            strategy: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            start: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            initial_capital: Decimal::new(1000000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            lookbacks: vec![3, 5, 10],
+            holding_candles: Some(vec![3, 5]),
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            max_signal_age_ms: Some(180_000),
+            max_runs: Some(4),
+            correlation_id: None,
+        };
+
+        let request = build_strategy_experiment_request(&args).expect("valid request");
+        let value = serde_json::to_value(request).expect("serializes");
+
+        assert_eq!(value["strategy_id"], "momentum_v1");
+        assert_eq!(value["lookback_candidates"], serde_json::json!([3, 5, 10]));
+        assert_eq!(
+            value["holding_candles_candidates"],
+            serde_json::json!([3, 5])
+        );
+        assert_eq!(value["max_runs"], 4);
     }
 
     #[test]

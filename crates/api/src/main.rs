@@ -36,7 +36,8 @@ use aegis_core::{
     StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
     StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyId, StrategyNoSignalReason,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyId, StrategyNoSignalReason,
     StrategyPerformanceMode, StrategyPerformanceRequest, StrategyPerformanceSummary,
     StrategyPnlBreakdown, StrategyStatus, Symbol, TestnetExecutionState,
     TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
@@ -81,7 +82,7 @@ use db::{
     get_exchange_testnet_order_by_client_order_id, get_latest_market_tick, get_order_by_id,
     get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
     get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_experiment, get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
     get_strategy_shadow_decision_breakdown, get_strategy_status, get_system_event,
     get_system_state, get_testnet_promotion_funnel_summary,
     get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
@@ -97,14 +98,16 @@ use db::{
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
     list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
-    list_strategy_config_audit, list_strategy_config_versions, list_strategy_performance_rankings,
-    list_strategy_status, list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions,
-    list_testnet_shadow_runs, load_risk_state_snapshot, paper_account_from_record,
-    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
-    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
-    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, update_strategy_state,
+    list_strategy_config_audit, list_strategy_config_versions, list_strategy_experiment_runs,
+    list_strategy_experiments, list_strategy_performance_rankings, list_strategy_status,
+    list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
+    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
+    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
+    revoke_session, risk_config_audit_from_record, risk_config_from_record,
+    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
+    strategy_config_audit_from_record, strategy_config_from_record,
+    strategy_config_version_from_record, strategy_experiment_result_from_records,
+    strategy_experiment_run_from_record, update_strategy_state,
     update_testnet_shadow_promotion_submission, update_user_last_login,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
     upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
@@ -414,6 +417,11 @@ struct RiskDecisionsQuery {
 
 #[derive(Deserialize)]
 struct BacktestRunsQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct StrategyExperimentsQuery {
     limit: Option<i64>,
 }
 
@@ -1323,6 +1331,36 @@ struct BacktestRunAcceptedResponse {
 }
 
 #[derive(Serialize)]
+struct StrategyExperimentRunAcceptedResponse {
+    experiment: StrategyExperimentResult,
+    runs: Vec<StrategyExperimentRun>,
+}
+
+#[derive(Serialize)]
+struct StrategyExperimentsResponse {
+    experiments: Vec<StrategyExperimentResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyExperimentResponse {
+    experiment: StrategyExperimentResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyExperimentRunsResponse {
+    runs: Vec<StrategyExperimentRun>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct FeedStatusResponse {
     feeds: Vec<MarketFeedStatusRecord>,
     request_id: String,
@@ -1609,6 +1647,7 @@ struct EvaluateStrategyResponse {
 
 type RunPaperPipelineRequest = PaperTradingPipelineRequest;
 type RunBacktestRequest = BacktestRequest;
+type RunStrategyExperimentRequest = StrategyExperimentRequest;
 
 #[tokio::main]
 async fn main() {
@@ -1847,6 +1886,22 @@ async fn main() {
         .route(
             "/backtest/runs/:id/equity",
             get(get_backtest_equity_handler),
+        )
+        .route(
+            "/experiments/strategy/run",
+            post(run_strategy_experiment_handler),
+        )
+        .route(
+            "/experiments/strategy",
+            get(list_strategy_experiments_handler),
+        )
+        .route(
+            "/experiments/strategy/:id",
+            get(get_strategy_experiment_handler),
+        )
+        .route(
+            "/experiments/strategy/:id/runs",
+            get(list_strategy_experiment_runs_handler),
         )
         .route(
             "/analytics/strategy/performance",
@@ -10163,6 +10218,321 @@ async fn get_backtest_equity_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_query_backtest_equity",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn run_strategy_experiment_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<RunStrategyExperimentRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+    let correlation_id = payload
+        .correlation_id
+        .expect("correlation_id must be set before experiment execution");
+    if let Some(actor) = actor.as_ref() {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            "strategy_experiment.run",
+            "experiments/strategy/run",
+            &json!({ "actor_id": actor.user_id }),
+        )
+        .await;
+    }
+
+    let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+    match engine.run_strategy_experiment(payload).await {
+        Ok(execution) => (
+            StatusCode::OK,
+            Json(StrategyExperimentRunAcceptedResponse {
+                experiment: execution.result,
+                runs: execution.runs,
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.contains("invalid")
+                || message.contains("unsupported")
+                || message.contains("cannot be empty")
+                || message.contains("must be")
+                || message.contains("requires at least one candidate")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to run strategy experiment"
+            );
+
+            (
+                status,
+                Json(ErrorResponse {
+                    error: "failed_to_run_strategy_experiment",
+                    message,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_strategy_experiments_handler(
+    State(state): State<AppState>,
+    Query(query): Query<StrategyExperimentsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_strategy_experiments(&state.db_pool, bounded_limit(query.limit)).await {
+        Ok(records) => {
+            let mut experiments = Vec::with_capacity(records.len());
+            for record in records {
+                let run_records = match list_strategy_experiment_runs(&state.db_pool, record.id)
+                    .await
+                {
+                    Ok(runs) => runs,
+                    Err(err) => {
+                        error!(
+                            request_id = %request.request_id,
+                            correlation_id = %request.correlation_id,
+                            error = %err,
+                            experiment_id = %record.id,
+                            "failed to query strategy experiment runs"
+                        );
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_query_strategy_experiment_runs",
+                                message: "Failed to query strategy experiment runs.".to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                };
+                match strategy_experiment_result_from_records(&record, &run_records) {
+                    Ok(experiment) => experiments.push(experiment),
+                    Err(err) => {
+                        error!(
+                            request_id = %request.request_id,
+                            correlation_id = %request.correlation_id,
+                            error = %err,
+                            experiment_id = %record.id,
+                            "failed to map strategy experiment"
+                        );
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_experiment",
+                                message: "Strategy experiment could not be decoded.".to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            (
+                StatusCode::OK,
+                Json(StrategyExperimentsResponse {
+                    experiments,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_experiments",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_experiment_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let experiment_id = match id.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_experiment_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match get_strategy_experiment(&state.db_pool, experiment_id).await {
+        Ok(Some(record)) => {
+            match list_strategy_experiment_runs(&state.db_pool, experiment_id).await {
+                Ok(run_records) => {
+                    match strategy_experiment_result_from_records(&record, &run_records) {
+                        Ok(experiment) => (
+                            StatusCode::OK,
+                            Json(StrategyExperimentResponse {
+                                experiment,
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response(),
+                        Err(err) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_experiment",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response(),
+                    }
+                }
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_strategy_experiment_runs",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "strategy_experiment_not_found",
+                message: "Strategy experiment was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_experiment",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_strategy_experiment_runs_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let experiment_id = match id.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_experiment_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match list_strategy_experiment_runs(&state.db_pool, experiment_id).await {
+        Ok(records) => {
+            let mut runs = Vec::with_capacity(records.len());
+            for record in records {
+                match strategy_experiment_run_from_record(&record) {
+                    Ok(run) => runs.push(run),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_experiment_run",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(StrategyExperimentRunsResponse {
+                    runs,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_experiment_runs",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
