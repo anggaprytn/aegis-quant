@@ -11,6 +11,7 @@ use aegis_core::{
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
     StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
+    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyPerformanceSummary, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
     TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -1128,6 +1129,14 @@ impl ApiClient {
         self.post("/experiments/strategy/run", request).await
     }
 
+    pub async fn run_multi_timeframe_strategy_experiment(
+        &self,
+        request: &StrategyMultiTimeframeExperimentRequest,
+    ) -> Result<StrategyMultiTimeframeExperimentAcceptedResponse, ApiClientError> {
+        self.post("/experiments/strategy/multi-timeframe", request)
+            .await
+    }
+
     pub async fn strategy_experiments(
         &self,
         limit: i64,
@@ -1150,6 +1159,17 @@ impl ApiClient {
     ) -> Result<StrategyExperimentRunsResponse, ApiClientError> {
         self.get(&format!("/experiments/strategy/{experiment_id}/runs"), &[])
             .await
+    }
+
+    pub async fn strategy_multi_timeframe_comparison(
+        &self,
+        experiment_group_id: Uuid,
+    ) -> Result<StrategyMultiTimeframeExperimentResponse, ApiClientError> {
+        self.get(
+            &format!("/experiments/strategy/{experiment_group_id}/comparison"),
+            &[],
+        )
+        .await
     }
 
     pub async fn strategy_performance(
@@ -2407,6 +2427,11 @@ pub struct StrategyExperimentRunAcceptedResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyMultiTimeframeExperimentAcceptedResponse {
+    pub comparison: StrategyMultiTimeframeExperimentResult,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyExperimentsResponse {
     pub experiments: Vec<StrategyExperimentResult>,
     pub request_id: String,
@@ -2425,6 +2450,14 @@ pub struct StrategyExperimentResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyExperimentRunsResponse {
     pub runs: Vec<StrategyExperimentRun>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyMultiTimeframeExperimentResponse {
+    pub comparison: StrategyMultiTimeframeExperimentResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -2583,6 +2616,32 @@ pub fn build_strategy_experiment_request(
     request
         .validate()
         .context("invalid strategy experiment request")?;
+    Ok(request)
+}
+
+pub fn build_multi_timeframe_strategy_experiment_request(
+    args: &crate::cli::StrategyMultiTimeframeExperimentRunArgs,
+) -> anyhow::Result<StrategyMultiTimeframeExperimentRequest> {
+    let request = StrategyMultiTimeframeExperimentRequest {
+        strategy_id: args.strategy.clone(),
+        symbol: args.symbol.clone(),
+        timeframes: args.timeframes.clone(),
+        start_time: args.start,
+        end_time: args.end,
+        initial_capital: args.initial_capital,
+        fee_bps: args.fee_bps,
+        slippage_bps: args.slippage_bps,
+        lookback_candidates: args.lookbacks.clone(),
+        holding_candles_candidates: args.holding_candles.clone(),
+        stop_loss_pct_candidates: args.stop_loss_pct.clone(),
+        take_profit_pct_candidates: args.take_profit_pct.clone(),
+        max_signal_age_ms: args.max_signal_age_ms,
+        max_runs: args.max_runs,
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate()
+        .context("invalid multi-timeframe strategy experiment request")?;
     Ok(request)
 }
 

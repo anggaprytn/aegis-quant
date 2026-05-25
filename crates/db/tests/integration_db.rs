@@ -205,6 +205,7 @@ fn sample_strategy_experiment_result(
 ) -> StrategyExperimentResult {
     StrategyExperimentResult {
         experiment_id,
+        experiment_group_id: None,
         strategy_id: "momentum_v1".to_string(),
         symbol: "BTCUSDT".to_string(),
         timeframe: "1m".to_string(),
@@ -225,6 +226,9 @@ fn sample_strategy_experiment_result(
         },
         best_run: runs.first().cloned(),
         worst_run: runs.last().cloned(),
+        candle_count: Some(120),
+        warnings: Vec::new(),
+        skipped_reason: None,
         created_at: fixed_time(),
         correlation_id: Some(Uuid::from_u128(0xefe)),
     }

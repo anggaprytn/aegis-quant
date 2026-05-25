@@ -1256,6 +1256,102 @@ pub fn print_strategy_experiment_runs(runs: &[aegis_core::StrategyExperimentRun]
     }
 }
 
+pub fn print_multi_timeframe_strategy_experiment(
+    comparison: &aegis_core::StrategyMultiTimeframeExperimentResult,
+) {
+    println!("Experiment Group ID: {}", comparison.experiment_group_id);
+    println!("Status: {}", comparison.status.as_str());
+    println!("Strategy: {}", comparison.strategy_id);
+    println!("Symbol: {}", comparison.symbol);
+    println!("Timeframes: {}", comparison.requested_timeframes.join(", "));
+    if let Some(best) = comparison.global_ranking.ranked_runs.first() {
+        println!(
+            "Best Global Candidate: timeframe={} run={} pnl_pct={} drawdown={} trades={} win_rate={} drag={} score={}",
+            best.timeframe,
+            best.run.id,
+            best.run.pnl_pct,
+            best.run.max_drawdown_pct,
+            best.run.trade_count,
+            best.run.win_rate,
+            best.run.fee_slippage_drag_pct,
+            best.run.score
+        );
+    } else {
+        println!("Best Global Candidate: N/A");
+    }
+
+    println!("Per-timeframe best:");
+    for timeframe in &comparison.timeframe_comparisons {
+        if let Some(best_run) = &timeframe.best_run {
+            println!(
+                "  {} experiment={} candles={} best_run={} pnl_pct={} drawdown={} trades={} warnings={}",
+                timeframe.candidate.timeframe,
+                timeframe
+                    .experiment_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                timeframe.candidate.candle_count,
+                best_run.id,
+                best_run.pnl_pct,
+                best_run.max_drawdown_pct,
+                best_run.trade_count,
+                if timeframe.warnings.is_empty() {
+                    "-".to_string()
+                } else {
+                    timeframe.warnings.join(",")
+                }
+            );
+        }
+    }
+
+    let skipped: Vec<_> = comparison
+        .timeframe_comparisons
+        .iter()
+        .filter(|item| item.skipped_reason.is_some())
+        .collect();
+    if skipped.is_empty() {
+        println!("Skipped timeframes: none");
+    } else {
+        println!("Skipped timeframes:");
+        for timeframe in skipped {
+            println!(
+                "  {} reason={}",
+                timeframe.candidate.timeframe,
+                timeframe.skipped_reason.as_deref().unwrap_or("-")
+            );
+        }
+    }
+
+    println!("Global ranking:");
+    for entry in &comparison.global_ranking.ranked_runs {
+        println!(
+            "  {} run={} pnl_pct={} drawdown={} trades={} win_rate={} drag={} score={} warnings={}",
+            entry.timeframe,
+            entry.run.id,
+            entry.run.pnl_pct,
+            entry.run.max_drawdown_pct,
+            entry.run.trade_count,
+            entry.run.win_rate,
+            entry.run.fee_slippage_drag_pct,
+            entry.run.score,
+            if entry.warnings.is_empty() {
+                "-".to_string()
+            } else {
+                entry.warnings.join(",")
+            }
+        );
+    }
+
+    println!(
+        "Warnings: {}",
+        if comparison.warnings.is_empty() {
+            "none".to_string()
+        } else {
+            comparison.warnings.join(", ")
+        }
+    );
+}
+
 pub fn print_backfill_result(result: &aegis_core::CandleBackfillResult) {
     println!("Run ID: {}", result.run_id);
     println!("Status: {}", result.status.as_str());

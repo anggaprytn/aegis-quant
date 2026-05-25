@@ -33,10 +33,11 @@ import type {
   RiskDecisionRecord,
   StrategyComparisonSummary,
   StrategyDiagnosticsResult,
-  StrategyExperimentRequest,
   StrategyExperimentResult,
   StrategyExperimentRun,
-  StrategyExperimentRunAcceptedResponse,
+  StrategyMultiTimeframeExperimentAcceptedResponse,
+  StrategyMultiTimeframeExperimentRequest,
+  StrategyMultiTimeframeExperimentResult,
   StrategyConfigUpdateRequest,
   StrategyDecisionBreakdown,
   StrategyPerformanceSummary,
@@ -103,7 +104,7 @@ const DEFAULT_BACKTEST_FORM: BacktestRequest = {
 type StrategyExperimentFormState = {
   strategy_id: string;
   symbol: string;
-  timeframe: string;
+  timeframes: string;
   start_time: string;
   end_time: string;
   initial_capital: string;
@@ -120,7 +121,7 @@ type StrategyExperimentFormState = {
 const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   strategy_id: "momentum_v1",
   symbol: "BTCUSDT",
-  timeframe: "1m",
+  timeframes: "1m,5m,15m,1h",
   start_time: "2026-05-01T00:00:00Z",
   end_time: "2026-05-02T00:00:00Z",
   initial_capital: "1000000",
@@ -217,12 +218,15 @@ function parseDecimalList(value: string) {
 
 function buildStrategyExperimentRequest(
   form: StrategyExperimentFormState,
-): StrategyExperimentRequest {
+): StrategyMultiTimeframeExperimentRequest {
   const holding = parseIntegerList(form.holding_candles);
-  const request: StrategyExperimentRequest = {
+  const request: StrategyMultiTimeframeExperimentRequest = {
     strategy_id: form.strategy_id,
     symbol: form.symbol,
-    timeframe: form.timeframe,
+    timeframes: form.timeframes
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
     start_time: form.start_time,
     end_time: form.end_time,
     initial_capital: form.initial_capital,
@@ -505,7 +509,7 @@ function AuthenticatedDashboard({
   const [strategyExperimentForm, setStrategyExperimentForm] =
     useState<StrategyExperimentFormState>(DEFAULT_STRATEGY_EXPERIMENT_FORM);
   const [lastStrategyExperimentResult, setLastStrategyExperimentResult] =
-    useState<StrategyExperimentRunAcceptedResponse | null>(null);
+    useState<StrategyMultiTimeframeExperimentAcceptedResponse | null>(null);
   const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(null);
   const [backfillForm, setBackfillForm] =
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
@@ -975,6 +979,14 @@ function AuthenticatedDashboard({
     queryFn: () => api.getStrategyExperimentRuns(selectedExperimentId ?? ""),
     enabled: Boolean(selectedExperimentId),
   });
+  const selectedExperimentComparisonQuery = useQuery({
+    queryKey: ["strategy-experiment-comparison", selectedExperimentQuery.data?.experiment?.experiment_group_id],
+    queryFn: () =>
+      api.getStrategyMultiTimeframeComparison(
+        selectedExperimentQuery.data?.experiment?.experiment_group_id ?? "",
+      ),
+    enabled: Boolean(selectedExperimentQuery.data?.experiment?.experiment_group_id),
+  });
 
   const selectedRunTradesQuery = useQuery({
     queryKey: ["backtest-trades", selectedRunId],
@@ -1274,16 +1286,19 @@ function AuthenticatedDashboard({
     },
   });
   const runStrategyExperimentMutation = useMutation({
-    mutationFn: () => api.runStrategyExperiment(buildStrategyExperimentRequest(strategyExperimentForm)),
+    mutationFn: () =>
+      api.runMultiTimeframeStrategyExperiment(
+        buildStrategyExperimentRequest(strategyExperimentForm),
+      ),
     onSuccess: async (response) => {
       setLastStrategyExperimentResult(response);
-      setSelectedExperimentId(response.experiment.experiment_id);
+      setSelectedExperimentId(
+        response.comparison.timeframe_comparisons.find((item) => item.experiment_id)?.experiment_id ??
+          null,
+      );
       await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
       await queryClient.invalidateQueries({
-        queryKey: ["strategy-experiment", response.experiment.experiment_id],
-      });
-      await queryClient.invalidateQueries({
-        queryKey: ["strategy-experiment-runs", response.experiment.experiment_id],
+        queryKey: ["strategy-experiment-comparison", response.comparison.experiment_group_id],
       });
     },
   });
@@ -1503,9 +1518,13 @@ function AuthenticatedDashboard({
   const backtestRuns = backtestRunsQuery.data?.runs ?? [];
   const strategyExperiments = strategyExperimentsQuery.data?.experiments ?? [];
   const selectedExperiment =
-    selectedExperimentQuery.data?.experiment ?? lastStrategyExperimentResult?.experiment ?? null;
+    selectedExperimentQuery.data?.experiment ?? null;
   const strategyExperimentRuns =
-    selectedExperimentRunsQuery.data?.runs ?? lastStrategyExperimentResult?.runs ?? [];
+    selectedExperimentRunsQuery.data?.runs ?? [];
+  const selectedExperimentComparison: StrategyMultiTimeframeExperimentResult | null =
+    selectedExperimentComparisonQuery.data?.comparison ??
+    lastStrategyExperimentResult?.comparison ??
+    null;
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
@@ -3502,7 +3521,7 @@ function AuthenticatedDashboard({
                     [
                       ["strategy_id", "Strategy ID"],
                       ["symbol", "Symbol"],
-                      ["timeframe", "Timeframe"],
+                      ["timeframes", "Timeframes"],
                       ["start_time", "Start Time"],
                       ["end_time", "End Time"],
                       ["initial_capital", "Initial Capital"],
@@ -3537,24 +3556,34 @@ function AuthenticatedDashboard({
                     error={getErrorMessage(runStrategyExperimentMutation.error)}
                     success={
                       lastStrategyExperimentResult
-                        ? `Experiment ${shortenId(lastStrategyExperimentResult.experiment.experiment_id)} ranked ${lastStrategyExperimentResult.experiment.run_count} candidates`
+                        ? `Group ${shortenId(lastStrategyExperimentResult.comparison.experiment_group_id)} ranked ${lastStrategyExperimentResult.comparison.global_ranking.ranked_runs.length} candidates`
                         : undefined
                     }
                   />
                 </div>
               </Panel>
-              <Panel className="xl:col-span-5" title="Experiment Summary">
+              <Panel className="xl:col-span-5" title="Comparison Summary">
                 <KeyValue
                   items={[
-                    ["Experiment ID", selectedExperiment?.experiment_id ?? "N/A"],
-                    ["Status", selectedExperiment?.status ?? "N/A"],
-                    ["Run Count", String(selectedExperiment?.run_count ?? 0)],
-                    ["Best Candidate", selectedExperiment?.best_run ? shortenId(selectedExperiment.best_run.id) : "N/A"],
-                    ["Worst Candidate", selectedExperiment?.worst_run ? shortenId(selectedExperiment.worst_run.id) : "N/A"],
-                    ["Ranking Metric", selectedExperiment?.comparison.ranking_metric ?? "N/A"],
+                    ["Experiment Group", selectedExperimentComparison?.experiment_group_id ?? "N/A"],
+                    ["Status", selectedExperimentComparison?.status ?? "N/A"],
+                    ["Timeframes", selectedExperimentComparison?.requested_timeframes.join(", ") ?? "N/A"],
+                    [
+                      "Best Global Candidate",
+                      selectedExperimentComparison?.global_ranking.ranked_runs[0]
+                        ? shortenId(selectedExperimentComparison.global_ranking.ranked_runs[0].run.id)
+                        : "N/A",
+                    ],
+                    [
+                      "Skipped Timeframes",
+                      String(
+                        selectedExperimentComparison?.timeframe_comparisons.filter((item) => item.skipped_reason).length ?? 0,
+                      ),
+                    ],
+                    ["Ranking Metric", selectedExperimentComparison?.global_ranking.ranking_metric ?? "N/A"],
                   ]}
-                  loading={selectedExperimentQuery.isLoading}
-                  error={getErrorMessage(selectedExperimentQuery.error)}
+                  loading={selectedExperimentComparisonQuery.isLoading}
+                  error={getErrorMessage(selectedExperimentComparisonQuery.error)}
                 />
               </Panel>
               <Panel className="xl:col-span-4" title="Recent Experiments">
@@ -3565,7 +3594,58 @@ function AuthenticatedDashboard({
                 />
                 <InlineStatus error={getErrorMessage(strategyExperimentsQuery.error)} />
               </Panel>
-              <Panel className="xl:col-span-8" title="Ranked Candidate Results">
+              <Panel className="xl:col-span-8" title="Global Ranking">
+                <div className="overflow-auto rounded-2xl border border-border">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-surface/60 text-left text-slate-300">
+                      <tr>
+                        {["Timeframe", "Run", "PnL %", "Drawdown %", "Trades", "Win Rate", "Drag %", "Score", "Warnings"].map((label) => (
+                          <th key={label} className="px-3 py-2 font-medium">{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(selectedExperimentComparison?.global_ranking.ranked_runs ?? []).map((entry) => (
+                        <tr key={entry.run.id} className="border-t border-border">
+                          <td className="px-3 py-2">{entry.timeframe}</td>
+                          <td className="px-3 py-2">{shortenId(entry.run.id)}</td>
+                          <td className="px-3 py-2">{entry.run.pnl_pct}</td>
+                          <td className="px-3 py-2">{entry.run.max_drawdown_pct}</td>
+                          <td className="px-3 py-2">{entry.run.trade_count}</td>
+                          <td className="px-3 py-2">{entry.run.win_rate}</td>
+                          <td className="px-3 py-2">{entry.run.fee_slippage_drag_pct}</td>
+                          <td className="px-3 py-2">{entry.run.score}</td>
+                          <td className="px-3 py-2">{entry.warnings.join(", ") || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <InlineStatus error={getErrorMessage(selectedExperimentComparisonQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-4" title="Per-timeframe Best">
+                <div className="space-y-3">
+                  {(selectedExperimentComparison?.timeframe_comparisons ?? []).map((item) => (
+                    <div key={item.candidate.timeframe} className="rounded-2xl border border-border bg-surface/40 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium text-white">{item.candidate.timeframe}</div>
+                        <div className="text-xs uppercase tracking-[0.18em] text-muted">{item.status}</div>
+                      </div>
+                      <div className="mt-2 text-xs text-slate-300">
+                        candles={item.candidate.candle_count} required={item.candidate.required_candles}
+                      </div>
+                      <div className="mt-2 text-sm text-slate-200">
+                        {item.skipped_reason
+                          ? `Skipped: ${item.skipped_reason}`
+                          : item.best_run
+                            ? `Best ${shortenId(item.best_run.id)} pnl=${item.best_run.pnl_pct}% drawdown=${item.best_run.max_drawdown_pct}% trades=${item.best_run.trade_count}`
+                            : "No ranked run"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-8" title="Selected Experiment Runs">
                 <StrategyExperimentRunsTable runs={strategyExperimentRuns} />
                 <InlineStatus error={getErrorMessage(selectedExperimentRunsQuery.error)} />
               </Panel>

@@ -1711,6 +1711,63 @@ impl StrategyExperimentRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyMultiTimeframeExperimentRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframes: Vec<String>,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub lookback_candidates: Vec<u32>,
+    pub holding_candles_candidates: Option<Vec<u32>>,
+    pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
+    pub take_profit_pct_candidates: Option<Vec<Decimal>>,
+    pub max_signal_age_ms: Option<i64>,
+    pub max_runs: Option<u32>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl StrategyMultiTimeframeExperimentRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.timeframes.is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentTimeframes);
+        }
+
+        for timeframe in &self.timeframes {
+            if timeframe.trim().is_empty() {
+                return Err(CoreError::EmptyStrategyExperimentTimeframe);
+            }
+            timeframe.parse::<CandleInterval>()?;
+        }
+
+        self.single_timeframe_request(self.timeframes[0].clone())
+            .validate()
+    }
+
+    pub fn single_timeframe_request(&self, timeframe: String) -> StrategyExperimentRequest {
+        StrategyExperimentRequest {
+            strategy_id: self.strategy_id.clone(),
+            symbol: self.symbol.clone(),
+            timeframe,
+            start_time: self.start_time,
+            end_time: self.end_time,
+            initial_capital: self.initial_capital,
+            fee_bps: self.fee_bps,
+            slippage_bps: self.slippage_bps,
+            lookback_candidates: self.lookback_candidates.clone(),
+            holding_candles_candidates: self.holding_candles_candidates.clone(),
+            stop_loss_pct_candidates: self.stop_loss_pct_candidates.clone(),
+            take_profit_pct_candidates: self.take_profit_pct_candidates.clone(),
+            max_signal_age_ms: self.max_signal_age_ms,
+            max_runs: self.max_runs,
+            correlation_id: self.correlation_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyExperimentRun {
     pub id: Uuid,
     pub experiment_id: Uuid,
@@ -1742,6 +1799,7 @@ pub struct StrategyExperimentComparison {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyExperimentResult {
     pub experiment_id: Uuid,
+    pub experiment_group_id: Option<Uuid>,
     pub strategy_id: String,
     pub symbol: String,
     pub timeframe: String,
@@ -1757,6 +1815,67 @@ pub struct StrategyExperimentResult {
     pub comparison: StrategyExperimentComparison,
     pub best_run: Option<StrategyExperimentRun>,
     pub worst_run: Option<StrategyExperimentRun>,
+    pub candle_count: Option<i32>,
+    pub warnings: Vec<String>,
+    pub skipped_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyTimeframeCandidate {
+    pub timeframe: String,
+    pub candle_count: i32,
+    pub required_candles: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyTimeframeComparison {
+    pub candidate: StrategyTimeframeCandidate,
+    pub experiment_id: Option<Uuid>,
+    pub status: StrategyExperimentStatus,
+    pub run_count: i32,
+    pub best_run: Option<StrategyExperimentRun>,
+    pub skipped_reason: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExperimentGlobalRankingEntry {
+    pub timeframe: String,
+    pub experiment_id: Uuid,
+    pub candle_count: i32,
+    pub required_candles: i32,
+    pub insufficient_data_penalty: Decimal,
+    pub overtrading_penalty: Decimal,
+    pub run: StrategyExperimentRun,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExperimentGlobalRanking {
+    pub ranking_metric: StrategyExperimentMetric,
+    pub best_run_id: Option<Uuid>,
+    pub ranked_runs: Vec<StrategyExperimentGlobalRankingEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyMultiTimeframeExperimentResult {
+    pub experiment_group_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub requested_timeframes: Vec<String>,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub max_signal_age_ms: Option<i64>,
+    pub max_runs: Option<u32>,
+    pub status: StrategyExperimentStatus,
+    pub timeframe_comparisons: Vec<StrategyTimeframeComparison>,
+    pub global_ranking: StrategyExperimentGlobalRanking,
+    pub warnings: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
 }
@@ -5750,6 +5869,8 @@ pub enum CoreError {
     EmptyStrategyExperimentSymbol,
     #[error("strategy experiment timeframe cannot be empty")]
     EmptyStrategyExperimentTimeframe,
+    #[error("strategy experiment requires at least one timeframe")]
+    EmptyStrategyExperimentTimeframes,
     #[error("strategy experiment requires at least one candidate")]
     EmptyStrategyExperimentCandidates,
     #[error("candle backfill symbol cannot be empty")]

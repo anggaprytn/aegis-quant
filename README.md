@@ -265,6 +265,9 @@ Higher timeframe backtest example:
 Strategy experiment sweep:
 `cargo run -p cli -- experiments strategy run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`
 
+Multi-timeframe strategy comparison:
+`cargo run -p cli -- experiments strategy multi-timeframe --strategy momentum_v1 --symbol BTCUSDT --timeframes 1m,5m,15m,1h --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`
+
 List persisted strategy experiments:
 `cargo run -p cli -- experiments strategy list`
 
@@ -286,11 +289,12 @@ Optional shadow example:
 ## Strategy experiment interpretation
 
 - `very_high_trade_count`: turnover is high enough that fee drag and slippage assumptions may dominate the edge.
+- `overtrading_warning`: turnover versus candle count is high enough that the candidate is likely overfit or friction-dominated.
 - `negative_after_fees`: the candidate ended negative once transaction costs were included.
 - `high_drawdown`: the candidate took materially deep peak-to-trough losses during the replay window.
 - `too_few_trades`: the sample is too small to trust the ranking.
 
-Strategy experiments are for research only. They reuse the deterministic replay engine, persist into isolated `strategy_experiments` and `strategy_experiment_runs` tables, and do not update persisted strategy config or execution state.
+Strategy experiments are for research only. They reuse the deterministic replay engine, persist into isolated `strategy_experiments` and `strategy_experiment_runs` tables, optionally group timeframe sweeps with `experiment_group_id`, and do not update persisted strategy config or execution state.
 
 ## Notes
 

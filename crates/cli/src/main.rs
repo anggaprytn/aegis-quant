@@ -7,8 +7,9 @@ use chrono::Utc;
 use clap::Parser;
 use cli::api::{
     build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
-    build_pipeline_request, build_risk_config_request, build_strategy_config_request,
-    build_strategy_experiment_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
+    build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
+    build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
+    ApiClient, RecentEventsQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
@@ -454,6 +455,17 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         output::print_strategy_experiment(&response.experiment);
                         output::print_strategy_experiment_runs(&response.runs);
+                    }
+                }
+                StrategyExperimentCommands::MultiTimeframe(args) => {
+                    let request = build_multi_timeframe_strategy_experiment_request(&args)?;
+                    let response = client
+                        .run_multi_timeframe_strategy_experiment(&request)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_multi_timeframe_strategy_experiment(&response.comparison);
                     }
                 }
                 StrategyExperimentCommands::List(args) => {

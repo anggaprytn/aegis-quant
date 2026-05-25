@@ -699,6 +699,7 @@ pub struct BacktestEquityPointRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyExperimentRecord {
     pub id: Uuid,
+    pub experiment_group_id: Option<Uuid>,
     pub strategy_id: String,
     pub symbol: String,
     pub timeframe: String,
@@ -711,6 +712,9 @@ pub struct StrategyExperimentRecord {
     pub max_runs: Option<i32>,
     pub status: String,
     pub comparison: Value,
+    pub candle_count: Option<i32>,
+    pub warnings: Value,
+    pub skipped_reason: Option<String>,
     pub correlation_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
@@ -2211,6 +2215,7 @@ pub async fn list_testnet_shadow_runs(
         r#"
         SELECT
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -5721,6 +5726,7 @@ pub async fn insert_strategy_experiment(
         r#"
         INSERT INTO strategy_experiments (
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -5733,14 +5739,18 @@ pub async fn insert_strategy_experiment(
             max_runs,
             status,
             comparison,
+            candle_count,
+            warnings,
+            skipped_reason,
             correlation_id,
             created_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
         )
         RETURNING
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -5753,11 +5763,15 @@ pub async fn insert_strategy_experiment(
             max_runs,
             status,
             comparison,
+            candle_count,
+            warnings,
+            skipped_reason,
             correlation_id,
             created_at
         "#,
     )
     .bind(result.experiment_id)
+    .bind(result.experiment_group_id)
     .bind(&result.strategy_id)
     .bind(&result.symbol)
     .bind(&result.timeframe)
@@ -5770,6 +5784,9 @@ pub async fn insert_strategy_experiment(
     .bind(result.max_runs.map(|value| value as i32))
     .bind(result.status.as_str())
     .bind(serde_json::to_value(&result.comparison)?)
+    .bind(result.candle_count)
+    .bind(serde_json::to_value(&result.warnings)?)
+    .bind(&result.skipped_reason)
     .bind(result.correlation_id)
     .bind(result.created_at)
     .fetch_one(pool)
@@ -5872,6 +5889,9 @@ pub async fn get_strategy_experiment(
             max_runs,
             status,
             comparison,
+            candle_count,
+            warnings,
+            skipped_reason,
             correlation_id,
             created_at
         FROM strategy_experiments
@@ -5893,6 +5913,7 @@ pub async fn list_strategy_experiments(
         r#"
         SELECT
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -5905,6 +5926,9 @@ pub async fn list_strategy_experiments(
             max_runs,
             status,
             comparison,
+            candle_count,
+            warnings,
+            skipped_reason,
             correlation_id,
             created_at
         FROM strategy_experiments
@@ -5913,6 +5937,44 @@ pub async fn list_strategy_experiments(
         "#,
     )
     .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_strategy_experiment).collect())
+}
+
+pub async fn list_strategy_experiments_by_group(
+    pool: &PgPool,
+    experiment_group_id: Uuid,
+) -> Result<Vec<StrategyExperimentRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            experiment_group_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
+            max_signal_age_ms,
+            max_runs,
+            status,
+            comparison,
+            candle_count,
+            warnings,
+            skipped_reason,
+            correlation_id,
+            created_at
+        FROM strategy_experiments
+        WHERE experiment_group_id = $1
+        ORDER BY created_at ASC, timeframe ASC
+        "#,
+    )
+    .bind(experiment_group_id)
     .fetch_all(pool)
     .await?;
 
@@ -9109,6 +9171,7 @@ fn map_backtest_equity_point(row: &sqlx::postgres::PgRow) -> BacktestEquityPoint
 fn map_strategy_experiment(row: &sqlx::postgres::PgRow) -> StrategyExperimentRecord {
     StrategyExperimentRecord {
         id: row.get("id"),
+        experiment_group_id: row.get("experiment_group_id"),
         strategy_id: row.get("strategy_id"),
         symbol: row.get("symbol"),
         timeframe: row.get("timeframe"),
@@ -9121,6 +9184,9 @@ fn map_strategy_experiment(row: &sqlx::postgres::PgRow) -> StrategyExperimentRec
         max_runs: row.get("max_runs"),
         status: row.get("status"),
         comparison: row.get("comparison"),
+        candle_count: row.get("candle_count"),
+        warnings: row.get("warnings"),
+        skipped_reason: row.get("skipped_reason"),
         correlation_id: row.get("correlation_id"),
         created_at: row.get("created_at"),
     }
@@ -9366,6 +9432,7 @@ pub fn strategy_experiment_result_from_records(
 
     Ok(StrategyExperimentResult {
         experiment_id: record.id,
+        experiment_group_id: record.experiment_group_id,
         strategy_id: record.strategy_id.clone(),
         symbol: record.symbol.clone(),
         timeframe: record.timeframe.clone(),
@@ -9381,6 +9448,9 @@ pub fn strategy_experiment_result_from_records(
         comparison,
         best_run,
         worst_run,
+        candle_count: record.candle_count,
+        warnings: serde_json::from_value(record.warnings.clone())?,
+        skipped_reason: record.skipped_reason.clone(),
         created_at: record.created_at,
         correlation_id: record.correlation_id,
     })

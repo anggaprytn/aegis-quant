@@ -1847,6 +1847,7 @@ export type StrategyExperimentComparison = {
 
 export type StrategyExperimentResult = {
   experiment_id: string;
+  experiment_group_id: string | null;
   strategy_id: string;
   symbol: string;
   timeframe: string;
@@ -1862,6 +1863,9 @@ export type StrategyExperimentResult = {
   comparison: StrategyExperimentComparison;
   best_run: StrategyExperimentRun | null;
   worst_run: StrategyExperimentRun | null;
+  candle_count: number | null;
+  warnings: string[];
+  skipped_reason: string | null;
   created_at: string;
   correlation_id: string | null;
 };
@@ -1884,9 +1888,84 @@ export type StrategyExperimentRequest = {
   correlation_id?: string | null;
 };
 
+export type StrategyMultiTimeframeExperimentRequest = {
+  strategy_id: string;
+  symbol: string;
+  timeframes: string[];
+  start_time: string;
+  end_time: string;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  lookback_candidates: number[];
+  holding_candles_candidates?: number[] | null;
+  stop_loss_pct_candidates?: string[] | null;
+  take_profit_pct_candidates?: string[] | null;
+  max_signal_age_ms?: number | null;
+  max_runs?: number | null;
+  correlation_id?: string | null;
+};
+
 export type StrategyExperimentRunAcceptedResponse = {
   experiment: StrategyExperimentResult;
   runs: StrategyExperimentRun[];
+};
+
+export type StrategyTimeframeCandidate = {
+  timeframe: string;
+  candle_count: number;
+  required_candles: number;
+};
+
+export type StrategyTimeframeComparison = {
+  candidate: StrategyTimeframeCandidate;
+  experiment_id: string | null;
+  status: StrategyExperimentStatus;
+  run_count: number;
+  best_run: StrategyExperimentRun | null;
+  skipped_reason: string | null;
+  warnings: string[];
+};
+
+export type StrategyExperimentGlobalRankingEntry = {
+  timeframe: string;
+  experiment_id: string;
+  candle_count: number;
+  required_candles: number;
+  insufficient_data_penalty: string;
+  overtrading_penalty: string;
+  run: StrategyExperimentRun;
+  warnings: string[];
+};
+
+export type StrategyExperimentGlobalRanking = {
+  ranking_metric: StrategyExperimentMetric;
+  best_run_id: string | null;
+  ranked_runs: StrategyExperimentGlobalRankingEntry[];
+};
+
+export type StrategyMultiTimeframeExperimentResult = {
+  experiment_group_id: string;
+  strategy_id: string;
+  symbol: string;
+  requested_timeframes: string[];
+  start_time: string;
+  end_time: string;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  max_signal_age_ms: number | null;
+  max_runs: number | null;
+  status: StrategyExperimentStatus;
+  timeframe_comparisons: StrategyTimeframeComparison[];
+  global_ranking: StrategyExperimentGlobalRanking;
+  warnings: string[];
+  created_at: string;
+  correlation_id: string | null;
+};
+
+export type StrategyMultiTimeframeExperimentAcceptedResponse = {
+  comparison: StrategyMultiTimeframeExperimentResult;
 };
 
 export type StrategyExperimentsResponse = {
@@ -1905,6 +1984,13 @@ export type StrategyExperimentResponse = {
 
 export type StrategyExperimentRunsResponse = {
   runs: StrategyExperimentRun[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyMultiTimeframeExperimentResponse = {
+  comparison: StrategyMultiTimeframeExperimentResult;
   request_id: string;
   correlation_id: string;
   timestamp: string;

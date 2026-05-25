@@ -77,6 +77,9 @@ import type {
   StrategyExperimentRunAcceptedResponse,
   StrategyExperimentRunsResponse,
   StrategyExperimentsResponse,
+  StrategyMultiTimeframeExperimentAcceptedResponse,
+  StrategyMultiTimeframeExperimentRequest,
+  StrategyMultiTimeframeExperimentResponse,
   StrategyListResponse,
   StrategyPerformanceMode,
   StrategyPerformanceRankingsResponse,
@@ -557,12 +560,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  runMultiTimeframeStrategyExperiment: (payload: StrategyMultiTimeframeExperimentRequest) =>
+    request<StrategyMultiTimeframeExperimentAcceptedResponse>(
+      "/experiments/strategy/multi-timeframe",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
   getStrategyExperiments: (limit = 20) =>
     request<StrategyExperimentsResponse>("/experiments/strategy", undefined, { limit }),
   getStrategyExperiment: (id: string) =>
     request<StrategyExperimentResponse>(`/experiments/strategy/${id}`),
   getStrategyExperimentRuns: (id: string) =>
     request<StrategyExperimentRunsResponse>(`/experiments/strategy/${id}/runs`),
+  getStrategyMultiTimeframeComparison: (id: string) =>
+    request<StrategyMultiTimeframeExperimentResponse>(`/experiments/strategy/${id}/comparison`),
   getStrategyPerformance: (
     mode: StrategyPerformanceMode,
     strategyId?: string,

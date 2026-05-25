@@ -753,6 +753,7 @@ pub enum ExperimentCommands {
 #[derive(Debug, Subcommand)]
 pub enum StrategyExperimentCommands {
     Run(StrategyExperimentRunArgs),
+    MultiTimeframe(StrategyMultiTimeframeExperimentRunArgs),
     List(BacktestListArgs),
     Get { experiment_id: Uuid },
     Runs { experiment_id: Uuid },
@@ -935,6 +936,40 @@ pub struct StrategyExperimentRunArgs {
     pub symbol: String,
     #[arg(long)]
     pub timeframe: String,
+    #[arg(long = "start")]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "initial-capital")]
+    pub initial_capital: rust_decimal::Decimal,
+    #[arg(long = "fee-bps")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "lookbacks", value_delimiter = ',')]
+    pub lookbacks: Vec<u32>,
+    #[arg(long = "holding-candles", value_delimiter = ',')]
+    pub holding_candles: Option<Vec<u32>>,
+    #[arg(long = "stop-loss-pct", value_delimiter = ',')]
+    pub stop_loss_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "take-profit-pct", value_delimiter = ',')]
+    pub take_profit_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "max-signal-age-ms")]
+    pub max_signal_age_ms: Option<i64>,
+    #[arg(long = "max-runs")]
+    pub max_runs: Option<u32>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Args)]
+pub struct StrategyMultiTimeframeExperimentRunArgs {
+    #[arg(long = "strategy")]
+    pub strategy: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long = "timeframes", value_delimiter = ',')]
+    pub timeframes: Vec<String>,
     #[arg(long = "start")]
     pub start: chrono::DateTime<chrono::Utc>,
     #[arg(long = "end")]

@@ -38,12 +38,13 @@ use aegis_core::{
     StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
     StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyId, StrategyNoSignalReason,
-    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyPerformanceSummary,
-    StrategyPnlBreakdown, StrategyStatus, Symbol, TestnetExecutionState,
-    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentGlobalRanking,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
+    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategyNoSignalReason, StrategyPerformanceMode, StrategyPerformanceRequest,
+    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetRepairAction, TestnetRepairActionStatus,
     TestnetRepairRequest, TestnetRepairResult, TestnetRepairValidationIssue,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -102,19 +103,19 @@ use db::{
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
     list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
     list_strategy_config_audit, list_strategy_config_versions, list_strategy_experiment_runs,
-    list_strategy_experiments, list_strategy_performance_rankings, list_strategy_status,
-    list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
-    load_risk_state_snapshot, paper_account_from_record, paper_equity_snapshot_from_record,
-    paper_position_from_record, persist_risk_config_version, persist_strategy_config_version,
-    revoke_session, risk_config_audit_from_record, risk_config_from_record,
-    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
-    strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, strategy_experiment_result_from_records,
-    strategy_experiment_run_from_record, update_strategy_state,
-    update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
-    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
-    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
-    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    list_strategy_experiments, list_strategy_experiments_by_group,
+    list_strategy_performance_rankings, list_strategy_status, list_testnet_promotion_funnel_rows,
+    list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
+    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
+    persist_risk_config_version, persist_strategy_config_version, revoke_session,
+    risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
+    rotate_session_refresh_token, set_kill_switch_state, strategy_config_audit_from_record,
+    strategy_config_from_record, strategy_config_version_from_record,
+    strategy_experiment_result_from_records, strategy_experiment_run_from_record,
+    update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
+    upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
+    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
@@ -1353,6 +1354,11 @@ struct StrategyExperimentRunAcceptedResponse {
 }
 
 #[derive(Serialize)]
+struct StrategyMultiTimeframeExperimentAcceptedResponse {
+    comparison: StrategyMultiTimeframeExperimentResult,
+}
+
+#[derive(Serialize)]
 struct StrategyExperimentsResponse {
     experiments: Vec<StrategyExperimentResult>,
     request_id: String,
@@ -1371,6 +1377,14 @@ struct StrategyExperimentResponse {
 #[derive(Serialize)]
 struct StrategyExperimentRunsResponse {
     runs: Vec<StrategyExperimentRun>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyMultiTimeframeExperimentResponse {
+    comparison: StrategyMultiTimeframeExperimentResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1664,6 +1678,7 @@ struct EvaluateStrategyResponse {
 type RunPaperPipelineRequest = PaperTradingPipelineRequest;
 type RunBacktestRequest = BacktestRequest;
 type RunStrategyExperimentRequest = StrategyExperimentRequest;
+type RunStrategyMultiTimeframeExperimentRequest = StrategyMultiTimeframeExperimentRequest;
 
 #[tokio::main]
 async fn main() {
@@ -1908,12 +1923,20 @@ async fn main() {
             post(run_strategy_experiment_handler),
         )
         .route(
+            "/experiments/strategy/multi-timeframe",
+            post(run_multi_timeframe_strategy_experiment_handler),
+        )
+        .route(
             "/experiments/strategy",
             get(list_strategy_experiments_handler),
         )
         .route(
             "/experiments/strategy/:id",
             get(get_strategy_experiment_handler),
+        )
+        .route(
+            "/experiments/strategy/:id/comparison",
+            get(get_strategy_multi_timeframe_comparison_handler),
         )
         .route(
             "/experiments/strategy/:id/runs",
@@ -10324,6 +10347,80 @@ async fn run_strategy_experiment_handler(
     }
 }
 
+async fn run_multi_timeframe_strategy_experiment_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<RunStrategyMultiTimeframeExperimentRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+    let correlation_id = payload
+        .correlation_id
+        .expect("correlation_id must be set before experiment execution");
+    if let Some(actor) = actor.as_ref() {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            "strategy_experiment.multi_timeframe.run",
+            "experiments/strategy/multi-timeframe",
+            &json!({ "actor_id": actor.user_id }),
+        )
+        .await;
+    }
+
+    let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+    match engine
+        .run_multi_timeframe_strategy_experiment(payload)
+        .await
+    {
+        Ok(execution) => (
+            StatusCode::OK,
+            Json(StrategyMultiTimeframeExperimentAcceptedResponse {
+                comparison: execution.result,
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.contains("invalid")
+                || message.contains("unsupported")
+                || message.contains("cannot be empty")
+                || message.contains("must be")
+                || message.contains("requires at least one")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to run multi timeframe strategy experiment"
+            );
+
+            (
+                status,
+                Json(ErrorResponse {
+                    error: "failed_to_run_multi_timeframe_strategy_experiment",
+                    message,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn list_strategy_experiments_handler(
     State(state): State<AppState>,
     Query(query): Query<StrategyExperimentsQuery>,
@@ -10498,6 +10595,139 @@ async fn get_strategy_experiment_handler(
     }
 }
 
+async fn get_strategy_multi_timeframe_comparison_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let experiment_group_id = match id.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_experiment_group_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match list_strategy_experiments_by_group(&state.db_pool, experiment_group_id).await {
+        Ok(records) if records.is_empty() => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "strategy_experiment_group_not_found",
+                message: "Strategy experiment comparison was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(records) => {
+            let mut experiments = Vec::with_capacity(records.len());
+            for record in records {
+                let run_records =
+                    match list_strategy_experiment_runs(&state.db_pool, record.id).await {
+                        Ok(runs) => runs,
+                        Err(err) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(ErrorResponse {
+                                    error: "failed_to_query_strategy_experiment_runs",
+                                    message: err.to_string(),
+                                    request_id: request.request_id,
+                                    correlation_id: request.correlation_id,
+                                    timestamp: Utc::now(),
+                                }),
+                            )
+                                .into_response();
+                        }
+                    };
+
+                match strategy_experiment_result_from_records(&record, &run_records) {
+                    Ok(experiment) => {
+                        let runs = run_records
+                            .iter()
+                            .map(strategy_experiment_run_from_record)
+                            .collect::<Result<Vec<_>, _>>();
+                        match runs {
+                            Ok(runs) => experiments.push((experiment, runs)),
+                            Err(err) => {
+                                return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(ErrorResponse {
+                                        error: "failed_to_map_strategy_experiment_run",
+                                        message: err.to_string(),
+                                        request_id: request.request_id,
+                                        correlation_id: request.correlation_id,
+                                        timestamp: Utc::now(),
+                                    }),
+                                )
+                                    .into_response();
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_experiment",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            match build_multi_timeframe_result_from_experiments(experiment_group_id, experiments) {
+                Ok(comparison) => (
+                    StatusCode::OK,
+                    Json(StrategyMultiTimeframeExperimentResponse {
+                        comparison,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_build_strategy_experiment_comparison",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_experiment_group",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn list_strategy_experiment_runs_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -10565,6 +10795,149 @@ async fn list_strategy_experiment_runs_handler(
         )
             .into_response(),
     }
+}
+
+fn build_multi_timeframe_result_from_experiments(
+    experiment_group_id: Uuid,
+    experiments: Vec<(StrategyExperimentResult, Vec<StrategyExperimentRun>)>,
+) -> anyhow::Result<StrategyMultiTimeframeExperimentResult> {
+    let first = experiments
+        .first()
+        .map(|(experiment, _)| experiment.clone())
+        .ok_or_else(|| anyhow::anyhow!("strategy experiment group is empty"))?;
+    let mut timeframe_comparisons = Vec::with_capacity(experiments.len());
+    let mut ranked_runs = Vec::new();
+
+    for (experiment, runs) in &experiments {
+        let required_candles = experiment
+            .best_run
+            .as_ref()
+            .map(|run| {
+                run.candidate.lookback_candles as i32
+                    + run.candidate.holding_candles.unwrap_or(0) as i32
+                    + 2
+            })
+            .unwrap_or_default();
+        timeframe_comparisons.push(aegis_core::StrategyTimeframeComparison {
+            candidate: aegis_core::StrategyTimeframeCandidate {
+                timeframe: experiment.timeframe.clone(),
+                candle_count: experiment.candle_count.unwrap_or_default(),
+                required_candles,
+            },
+            experiment_id: Some(experiment.experiment_id),
+            status: experiment.status,
+            run_count: experiment.run_count,
+            best_run: experiment.best_run.clone(),
+            skipped_reason: experiment.skipped_reason.clone(),
+            warnings: experiment.warnings.clone(),
+        });
+
+        for run in runs {
+            let candle_count = experiment.candle_count.unwrap_or_default();
+            let required = run.candidate.lookback_candles as i32
+                + run.candidate.holding_candles.unwrap_or(0) as i32
+                + 2;
+            let insufficient_data_penalty = if candle_count <= required {
+                Decimal::new(25, 0)
+            } else if candle_count - required < required {
+                Decimal::new(3, 0)
+            } else if candle_count - required < required.saturating_mul(2) {
+                Decimal::new(1, 0)
+            } else {
+                Decimal::ZERO
+            };
+            let overtrading_penalty = if candle_count > 0
+                && run.trade_count > 0
+                && ((Decimal::from(run.trade_count) / Decimal::from(candle_count))
+                    * Decimal::new(100, 0))
+                    >= Decimal::new(25, 0)
+            {
+                Decimal::new(3, 0)
+            } else {
+                Decimal::ZERO
+            };
+            ranked_runs.push(aegis_core::StrategyExperimentGlobalRankingEntry {
+                timeframe: experiment.timeframe.clone(),
+                experiment_id: experiment.experiment_id,
+                candle_count,
+                required_candles: required,
+                insufficient_data_penalty,
+                overtrading_penalty,
+                run: run.clone(),
+                warnings: experiment.warnings.clone(),
+            });
+        }
+    }
+
+    ranked_runs.sort_by(|left, right| {
+        right
+            .run
+            .score
+            .cmp(&left.run.score)
+            .then_with(|| right.run.pnl_pct.cmp(&left.run.pnl_pct))
+            .then_with(|| left.run.max_drawdown_pct.cmp(&right.run.max_drawdown_pct))
+            .then_with(|| right.run.win_rate.cmp(&left.run.win_rate))
+            .then_with(|| {
+                left.run
+                    .fee_slippage_drag_pct
+                    .cmp(&right.run.fee_slippage_drag_pct)
+            })
+            .then_with(|| right.run.trade_count.cmp(&left.run.trade_count))
+            .then_with(|| left.timeframe.cmp(&right.timeframe))
+            .then_with(|| left.run.id.cmp(&right.run.id))
+    });
+
+    let global_ranking = StrategyExperimentGlobalRanking {
+        ranking_metric: aegis_core::StrategyExperimentMetric::RiskAdjustedScore,
+        best_run_id: ranked_runs.first().map(|entry| entry.run.id),
+        ranked_runs,
+    };
+    let warnings = {
+        let mut warnings = Vec::new();
+        if timeframe_comparisons
+            .iter()
+            .any(|comparison| comparison.skipped_reason.is_some())
+        {
+            warnings.push("skipped_timeframes_present".to_string());
+        }
+        if global_ranking.ranked_runs.iter().any(|entry| {
+            entry
+                .run
+                .warnings
+                .iter()
+                .any(|warning| warning == "overtrading_warning")
+        }) {
+            warnings.push("overtrading_candidates_present".to_string());
+        }
+        warnings
+    };
+
+    Ok(StrategyMultiTimeframeExperimentResult {
+        experiment_group_id,
+        strategy_id: first.strategy_id,
+        symbol: first.symbol,
+        requested_timeframes: experiments
+            .iter()
+            .map(|(experiment, _)| experiment.timeframe.clone())
+            .collect(),
+        start_time: first.start_time,
+        end_time: first.end_time,
+        initial_capital: first.initial_capital,
+        fee_bps: first.fee_bps,
+        slippage_bps: first.slippage_bps,
+        max_signal_age_ms: first.max_signal_age_ms,
+        max_runs: first.max_runs,
+        status: if global_ranking.ranked_runs.is_empty() {
+            aegis_core::StrategyExperimentStatus::Failed
+        } else {
+            aegis_core::StrategyExperimentStatus::Completed
+        },
+        timeframe_comparisons,
+        global_ranking,
+        warnings,
+        created_at: first.created_at,
+        correlation_id: first.correlation_id,
+    })
 }
 
 async fn get_strategy_performance_handler(
