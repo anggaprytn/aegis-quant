@@ -107,6 +107,8 @@ pub enum Commands {
     #[command(subcommand)]
     Market(MarketCommands),
     #[command(subcommand)]
+    Research(ResearchCommands),
+    #[command(subcommand)]
     Backtest(BacktestCommands),
     #[command(subcommand)]
     Experiments(ExperimentCommands),
@@ -679,6 +681,60 @@ pub enum MarketCommands {
     BackfillGet { run_id: Uuid },
     AggregateCandles(MarketAggregateCandlesArgs),
     CandleCoverage(MarketCandleCoverageArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchCommands {
+    #[command(subcommand)]
+    Data(ResearchDataCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchDataCommands {
+    Coverage(ResearchDataCoverageArgs),
+    Build(ResearchDataBuildArgs),
+    Builds(ResearchDataBuildsArgs),
+    BuildGet { build_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchDataCoverageArgs {
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub intervals: String,
+    #[arg(long)]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long)]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "required-coverage-pct")]
+    pub required_coverage_pct: Option<rust_decimal::Decimal>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchDataBuildArgs {
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub intervals: String,
+    #[arg(long)]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long)]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "required-coverage-pct")]
+    pub required_coverage_pct: Option<rust_decimal::Decimal>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchDataBuildsArgs {
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Args)]

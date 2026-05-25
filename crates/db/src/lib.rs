@@ -3,22 +3,23 @@ use aegis_core::{
     calculate_strategy_win_rate, calculate_testnet_promotion_rate,
     combine_strategy_performance_summaries, BacktestConfig, BacktestEquityPoint, BacktestResult,
     BacktestTrade, Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult,
-    CandleBackfillStatus, CandleCoverageSummary, CandleInterval, CandleIntervalCoverage,
-    DataFreshnessStatus, EventEnvelope, ExchangeReconciliationStatus,
-    ExecutionReadinessBlockingReason, ExecutionReadinessCheck, ExecutionReadinessRecommendation,
-    ExecutionReadinessSnapshot, ExecutionReadinessStatus, ExecutionReadinessTarget, ExecutionState,
-    FeedStatus, MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperAccount,
-    PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill,
-    PaperOrder, PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter,
-    PaperPriceStatus, PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus,
-    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
-    RiskEvaluationResult, Session, Side, SignalReason, StrategyComparisonSummary, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyRiskBreakdown, StrategySignal,
-    StrategyStatus, StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary,
-    StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
+    CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
+    ExchangeReconciliationStatus, ExecutionReadinessBlockingReason, ExecutionReadinessCheck,
+    ExecutionReadinessRecommendation, ExecutionReadinessSnapshot, ExecutionReadinessStatus,
+    ExecutionReadinessTarget, ExecutionState, FeedStatus, MarketCandleCoverageSummary,
+    MarketCandleIntervalCoverage, MarketDataSource, MarketTick, OrderIntent, OrderStatus,
+    PaperAccount, PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus,
+    PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradeJournalEntry, PositionSide,
+    PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session, Side, SignalReason,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyExperimentCandidate, StrategyExperimentComparison,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyId, StrategyPerformanceMode,
+    StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
+    StrategyRiskBreakdown, StrategySignal, StrategyStatus, StrategyWalkForwardResult,
+    StrategyWalkForwardRobustnessSummary, StrategyWalkForwardWindow,
+    StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
     TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
     TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetPromotionQualitySignal, TestnetShadowDecision,
@@ -45,6 +46,8 @@ pub const TESTNET_SHADOW_RUNNER_CONFIG_ID: Uuid =
 pub const TESTNET_SHADOW_RUNNER_STATE_ID: Uuid =
     Uuid::from_u128(0x0180_0000_0000_0000_0000_0000_0000_0002);
 pub use sqlx::PgPool;
+mod research;
+pub use research::*;
 pub mod test_support;
 
 #[derive(Debug, Clone)]
@@ -5105,7 +5108,7 @@ pub async fn get_aggregated_candle_coverage(
     pool: &PgPool,
     exchange: MarketDataSource,
     symbol: &Symbol,
-) -> Result<CandleCoverageSummary> {
+) -> Result<MarketCandleCoverageSummary> {
     let intervals = [
         CandleInterval::OneMinute,
         CandleInterval::FiveMinutes,
@@ -5115,13 +5118,13 @@ pub async fn get_aggregated_candle_coverage(
     let mut coverage = Vec::with_capacity(intervals.len());
 
     for interval in intervals {
-        coverage.push(CandleIntervalCoverage {
+        coverage.push(MarketCandleIntervalCoverage {
             interval: interval.as_str().to_string(),
             candle_count: count_candles_by_interval(pool, exchange, symbol, interval).await?,
         });
     }
 
-    Ok(CandleCoverageSummary {
+    Ok(MarketCandleCoverageSummary {
         exchange,
         symbol: symbol.as_str().to_string(),
         intervals: coverage,

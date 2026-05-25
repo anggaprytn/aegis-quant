@@ -60,6 +60,10 @@ import type {
   PaperPositionsResponse,
   PaperTradeJournalResponse,
   RecentSignalsResponse,
+  ResearchDataCoverageResponse,
+  ResearchDatasetBuildRequest,
+  ResearchDatasetBuildResponse,
+  ResearchDatasetBuildsResponse,
   RiskActionResponse,
   RiskConfig,
   RiskConfigAuditResponse,
@@ -322,6 +326,23 @@ export const api = {
     }),
   getMarketCandleCoverage: (symbol: string) =>
     request<CandleCoverageResponse>("/market/candles/coverage", undefined, { symbol }),
+  getResearchDataCoverage: (query: {
+    exchange?: string;
+    symbol: string;
+    intervals: string;
+    start_time: string;
+    end_time: string;
+    required_coverage_pct?: string;
+  }) => request<ResearchDataCoverageResponse>("/research/data/coverage", undefined, query),
+  buildResearchDataset: (payload: ResearchDatasetBuildRequest) =>
+    request<ResearchDatasetBuildResponse>("/research/data/build", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchDatasetBuilds: (limit = 20) =>
+    request<ResearchDatasetBuildsResponse>("/research/data/builds", undefined, { limit }),
+  getResearchDatasetBuild: (id: string) =>
+    request<ResearchDatasetBuildResponse>(`/research/data/builds/${id}`),
   getExchangeTestnetStatus: () =>
     request<ExchangeTestnetStatusResponse>("/exchange/testnet/status"),
   getExchangeTestnetPrivateStreamStatus: () =>

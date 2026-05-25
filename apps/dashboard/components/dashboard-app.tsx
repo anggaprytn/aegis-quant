@@ -29,6 +29,9 @@ import type {
   OperatorReportRequest,
   OperatorReportListItem,
   PaperPositionRecord,
+  ResearchDataCoverageResult,
+  ResearchDatasetBuildRequest,
+  ResearchDatasetBuildResult,
   RiskConfig,
   RiskDecisionRecord,
   StrategyComparisonSummary,
@@ -195,6 +198,15 @@ const DEFAULT_AGGREGATION_FORM: CandleAggregationRequest = {
   target_interval: "5m",
   start_time: "2026-05-23T00:00:00Z",
   end_time: "2026-05-24T00:00:00Z",
+};
+
+const DEFAULT_RESEARCH_DATA_FORM: ResearchDatasetBuildRequest = {
+  exchange: "binance",
+  symbol: "BTCUSDT",
+  intervals: ["1m", "5m", "15m", "1h"],
+  start_time: "2026-05-17T00:00:00Z",
+  end_time: "2026-05-24T00:00:00Z",
+  required_coverage_pct: "95",
 };
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
@@ -597,6 +609,13 @@ function AuthenticatedDashboard({
     useState<CandleBackfillResult | null>(null);
   const [lastAggregationResult, setLastAggregationResult] =
     useState<CandleAggregationResult | null>(null);
+  const [researchDataForm, setResearchDataForm] =
+    useState<ResearchDatasetBuildRequest>(DEFAULT_RESEARCH_DATA_FORM);
+  const [selectedResearchBuildId, setSelectedResearchBuildId] = useState<string | null>(null);
+  const [lastResearchCoverage, setLastResearchCoverage] =
+    useState<ResearchDataCoverageResult | null>(null);
+  const [lastResearchBuild, setLastResearchBuild] =
+    useState<ResearchDatasetBuildResult | null>(null);
   const [strategyConfigForm, setStrategyConfigForm] =
     useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
   const [strategyDiagnosticsForm, setStrategyDiagnosticsForm] = useState(
@@ -849,6 +868,17 @@ function AuthenticatedDashboard({
     queryFn: () => api.getMarketCandleCoverage(selectedSymbol),
     enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
+  });
+  const researchBuildsQuery = useQuery({
+    queryKey: ["research-builds"],
+    queryFn: () => api.listResearchDatasetBuilds(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchBuildQuery = useQuery({
+    queryKey: ["research-build", selectedResearchBuildId],
+    queryFn: () => api.getResearchDatasetBuild(selectedResearchBuildId ?? ""),
+    enabled: Boolean(selectedResearchBuildId),
   });
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
@@ -1203,6 +1233,12 @@ function AuthenticatedDashboard({
     }
   }, [backfillRunsQuery.data?.runs, selectedBackfillRunId]);
 
+  useEffect(() => {
+    if (!selectedResearchBuildId && researchBuildsQuery.data?.builds[0]) {
+      setSelectedResearchBuildId(researchBuildsQuery.data.builds[0].build_id);
+    }
+  }, [researchBuildsQuery.data?.builds, selectedResearchBuildId]);
+
   const refreshOperationalData = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["risk-status"] }),
@@ -1454,6 +1490,31 @@ function AuthenticatedDashboard({
     onSuccess: async (result) => {
       setLastAggregationResult(result);
       await queryClient.invalidateQueries({ queryKey: ["candles"] });
+      await queryClient.invalidateQueries({ queryKey: ["candle-coverage"] });
+    },
+  });
+  const researchCoverageMutation = useMutation({
+    mutationFn: () =>
+      api.getResearchDataCoverage({
+        exchange: researchDataForm.exchange,
+        symbol: researchDataForm.symbol,
+        intervals: researchDataForm.intervals.join(","),
+        start_time: researchDataForm.start_time,
+        end_time: researchDataForm.end_time,
+        required_coverage_pct: researchDataForm.required_coverage_pct,
+      }),
+    onSuccess: (response) => {
+      setLastResearchCoverage(response.coverage);
+    },
+  });
+  const researchBuildMutation = useMutation({
+    mutationFn: () => api.buildResearchDataset(researchDataForm),
+    onSuccess: async (response) => {
+      setLastResearchBuild(response.build);
+      setLastResearchCoverage(response.build.coverage_after);
+      setSelectedResearchBuildId(response.build.build_id);
+      await queryClient.invalidateQueries({ queryKey: ["research-builds"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-build"] });
       await queryClient.invalidateQueries({ queryKey: ["candle-coverage"] });
     },
   });
@@ -2227,6 +2288,110 @@ function AuthenticatedDashboard({
                   coverage={candleCoverageQuery.data?.coverage ?? null}
                   loading={candleCoverageQuery.isLoading}
                   error={getErrorMessage(candleCoverageQuery.error)}
+                />
+              </Panel>
+              <Panel className="xl:col-span-7" title="Research Data">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field
+                    label="Exchange"
+                    value={researchDataForm.exchange ?? "binance"}
+                    onChange={(value) =>
+                      setResearchDataForm((current) => ({ ...current, exchange: value }))
+                    }
+                    disabled
+                  />
+                  <Field
+                    label="Symbol"
+                    as="select"
+                    value={researchDataForm.symbol}
+                    onChange={(value) =>
+                      setResearchDataForm((current) => ({ ...current, symbol: value }))
+                    }
+                    options={dataSymbols}
+                  />
+                  <Field
+                    label="Intervals"
+                    value={researchDataForm.intervals.join(",")}
+                    onChange={(value) =>
+                      setResearchDataForm((current) => ({
+                        ...current,
+                        intervals: value
+                          .split(",")
+                          .map((entry) => entry.trim())
+                          .filter(Boolean),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Required %"
+                    value={researchDataForm.required_coverage_pct ?? "95"}
+                    onChange={(value) =>
+                      setResearchDataForm((current) => ({
+                        ...current,
+                        required_coverage_pct: value,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Start"
+                    value={researchDataForm.start_time}
+                    onChange={(value) =>
+                      setResearchDataForm((current) => ({ ...current, start_time: value }))
+                    }
+                  />
+                  <Field
+                    label="End"
+                    value={researchDataForm.end_time}
+                    onChange={(value) =>
+                      setResearchDataForm((current) => ({ ...current, end_time: value }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <ActionButton
+                    label="Inspect Coverage"
+                    onClick={() => researchCoverageMutation.mutate()}
+                    busy={researchCoverageMutation.isPending}
+                  />
+                  <ActionButton
+                    label="Build Dataset"
+                    onClick={() => researchBuildMutation.mutate()}
+                    busy={researchBuildMutation.isPending}
+                    disabled={user.role !== "OWNER" && user.role !== "OPERATOR"}
+                  />
+                  <InlineStatus
+                    error={
+                      getErrorMessage(researchCoverageMutation.error) ||
+                      getErrorMessage(researchBuildMutation.error)
+                    }
+                    success={
+                      lastResearchBuild
+                        ? `Build ${lastResearchBuild.status} with ${lastResearchBuild.coverage_after.status} readiness`
+                        : lastResearchCoverage
+                          ? `Coverage ${lastResearchCoverage.status}`
+                          : undefined
+                    }
+                  />
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-8" title="Research Coverage Result">
+                <ResearchCoverageTable coverage={lastResearchCoverage} />
+              </Panel>
+              <Panel className="xl:col-span-4" title="Recent Dataset Builds">
+                <ResearchDatasetBuildsTable
+                  builds={researchBuildsQuery.data?.builds ?? []}
+                  selectedBuildId={selectedResearchBuildId}
+                  onSelect={setSelectedResearchBuildId}
+                />
+                <InlineStatus error={getErrorMessage(researchBuildsQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-12" title="Selected Dataset Build">
+                <ResearchDatasetBuildDetail
+                  build={
+                    selectedResearchBuildQuery.data?.build ?? lastResearchBuild ?? null
+                  }
+                  loading={selectedResearchBuildQuery.isLoading}
+                  error={getErrorMessage(selectedResearchBuildQuery.error)}
                 />
               </Panel>
               <Panel className="xl:col-span-7" title="Aggregate Candles">
@@ -5413,6 +5578,132 @@ function CandleCoverageTable({
       headers={["Interval", "Closed Candles"]}
       rows={coverage.intervals.map((entry) => [entry.interval, formatNumber(entry.candle_count)])}
     />
+  );
+}
+
+function ResearchCoverageTable({
+  coverage,
+}: {
+  coverage: ResearchDataCoverageResult | null;
+}) {
+  if (!coverage) {
+    return <EmptyState label="No research coverage result yet." />;
+  }
+
+  return (
+    <div className="space-y-3">
+      <KeyValue
+        items={[
+          ["Window", `${formatDateTime(coverage.window_start)} -> ${formatDateTime(coverage.window_end)}`],
+          ["Readiness", coverage.status],
+          ["Required %", coverage.required_coverage_pct],
+        ]}
+      />
+      <Table
+        headers={["Interval", "Status", "Coverage %", "Expected", "Actual", "Missing Ranges"]}
+        rows={coverage.per_interval.map((interval) => [
+          interval.interval,
+          interval.status,
+          interval.coverage_pct,
+          formatNumber(interval.expected_candles),
+          formatNumber(interval.actual_candles),
+          formatNumber(interval.missing_ranges.length),
+        ])}
+      />
+    </div>
+  );
+}
+
+function ResearchDatasetBuildsTable({
+  builds,
+  selectedBuildId,
+  onSelect,
+}: {
+  builds: ResearchDatasetBuildResult[];
+  selectedBuildId: string | null;
+  onSelect: (buildId: string) => void;
+}) {
+  if (!builds.length) {
+    return <EmptyState label="No dataset builds found." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {builds.map((build) => (
+        <button
+          key={build.build_id}
+          className={cn(
+            "w-full rounded-xl border p-3 text-left",
+            build.build_id === selectedBuildId
+              ? "border-accent bg-accent/5"
+              : "border-border bg-surface/60",
+          )}
+          onClick={() => onSelect(build.build_id)}
+        >
+          <div className="font-medium">
+            {build.symbol} {build.requested_intervals.join(", ")}
+          </div>
+          <div className="mt-1 text-xs text-muted">
+            {formatDateTime(build.created_at)} | {build.status} | {build.coverage_after.status}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ResearchDatasetBuildDetail({
+  build,
+  loading,
+  error,
+}: {
+  build: ResearchDatasetBuildResult | null;
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading dataset build..." />;
+  }
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+  if (!build) {
+    return <EmptyState label="No dataset build selected." />;
+  }
+
+  return (
+    <div className="space-y-3">
+      <KeyValue
+        items={[
+          ["Build ID", build.build_id],
+          ["Status", build.status],
+          ["Window", `${formatDateTime(build.start_time)} -> ${formatDateTime(build.end_time)}`],
+          ["Intervals", build.requested_intervals.join(", ")],
+          ["Readiness", build.coverage_after.status],
+          ["Failure", build.failed_reason ?? "N/A"],
+        ]}
+      />
+      <Table
+        headers={["Step", "Status", "Started", "Completed"]}
+        rows={build.steps.map((step) => [
+          step.step,
+          step.status,
+          formatDateTime(step.started_at),
+          step.completed_at ? formatDateTime(step.completed_at) : "-",
+        ])}
+      />
+      <Table
+        headers={["Interval", "Status", "Coverage %", "Expected", "Actual", "Missing Ranges"]}
+        rows={build.coverage_after.per_interval.map((interval) => [
+          interval.interval,
+          interval.status,
+          interval.coverage_pct,
+          formatNumber(interval.expected_candles),
+          formatNumber(interval.actual_candles),
+          formatNumber(interval.missing_ranges.length),
+        ])}
+      />
+    </div>
   );
 }
 

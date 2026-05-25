@@ -8,6 +8,7 @@ use clap::Parser;
 use cli::api::{
     build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
+    build_research_data_build_request, build_research_data_coverage_query,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
     build_strategy_walk_forward_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
 };
@@ -16,9 +17,9 @@ use cli::cli::{
     BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
-    ReadinessCommands, ReportsCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
-    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
-    TESTNET_ORDER_CONFIRMATION_TEXT,
+    ReadinessCommands, ReportsCommands, ResearchCommands, ResearchDataCommands, RiskCommands,
+    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -417,6 +418,44 @@ async fn main() -> anyhow::Result<()> {
                     output::print_candle_coverage(&response.coverage);
                 }
             }
+        },
+        Commands::Research(command) => match command {
+            ResearchCommands::Data(command) => match command {
+                ResearchDataCommands::Coverage(args) => {
+                    let query = build_research_data_coverage_query(&args);
+                    let response = client.get_research_data_coverage(&query).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_data_coverage(&response.coverage);
+                    }
+                }
+                ResearchDataCommands::Build(args) => {
+                    let request = build_research_data_build_request(&args);
+                    let response = client.build_research_dataset(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_dataset_build(&response.build);
+                    }
+                }
+                ResearchDataCommands::Builds(args) => {
+                    let response = client.list_research_dataset_builds(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_dataset_builds(&response.builds);
+                    }
+                }
+                ResearchDataCommands::BuildGet { build_id } => {
+                    let response = client.get_research_dataset_build(build_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_dataset_build(&response.build);
+                    }
+                }
+            },
         },
         Commands::Backtest(command) => match command {
             BacktestCommands::Run(args) => {

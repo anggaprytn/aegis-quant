@@ -21,6 +21,11 @@ pub enum SystemEventType {
     MarketBackfillPageFetched,
     MarketBackfillCompleted,
     MarketBackfillFailed,
+    ResearchDatasetBuildStarted,
+    ResearchDatasetBackfillCompleted,
+    ResearchDatasetAggregateCompleted,
+    ResearchDatasetBuildCompleted,
+    ResearchDatasetBuildFailed,
     SignalGenerated,
     RiskApproved,
     RiskRejected,
@@ -44,6 +49,11 @@ impl SystemEventType {
             Self::MarketBackfillPageFetched => "market.backfill.page_fetched",
             Self::MarketBackfillCompleted => "market.backfill.completed",
             Self::MarketBackfillFailed => "market.backfill.failed",
+            Self::ResearchDatasetBuildStarted => "research.dataset.build.started",
+            Self::ResearchDatasetBackfillCompleted => "research.dataset.backfill.completed",
+            Self::ResearchDatasetAggregateCompleted => "research.dataset.aggregate.completed",
+            Self::ResearchDatasetBuildCompleted => "research.dataset.build.completed",
+            Self::ResearchDatasetBuildFailed => "research.dataset.build.failed",
             Self::SignalGenerated => "signal.generated",
             Self::RiskApproved => "risk.approved",
             Self::RiskRejected => "risk.rejected",
@@ -116,6 +126,10 @@ mod tests {
         assert_eq!(
             SystemEventType::MarketBackfillCompleted.as_str(),
             "market.backfill.completed"
+        );
+        assert_eq!(
+            SystemEventType::ResearchDatasetBuildCompleted.as_str(),
+            "research.dataset.build.completed"
         );
         assert_eq!(SystemEventType::RiskRejected.as_str(), "risk.rejected");
         assert_eq!(

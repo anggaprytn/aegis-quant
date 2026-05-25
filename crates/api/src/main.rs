@@ -20,26 +20,27 @@ use aegis_core::{
     is_valid_testnet_shadow_promotion_confirmation, validate_testnet_repair_transition,
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
-    CandleBackfillRequest, CandleBackfillResult, CandleCoverageSummary, CandleInterval,
-    EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment,
-    ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
-    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
-    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
-    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
-    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo,
-    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
+    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
+    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
+    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
+    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
+    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketMode, OperatorReport, OperatorReportRequest, OrderIntent,
-    PaperCloseMode, PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
-    StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentGlobalRanking,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
+    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketMode, OperatorReport,
+    OperatorReportRequest, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
+    PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, ResearchDataCoverageRequest, ResearchDataCoverageResult,
+    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskCheckContext, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision,
+    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason, StrategyComparisonSummary,
+    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDataHealth,
+    StrategyDecisionBreakdown, StrategyDiagnosticCheck, StrategyDiagnosticsDecision,
+    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyEvaluationContext, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyNoSignalReason, StrategyPerformanceMode, StrategyPerformanceRequest,
     StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, StrategyWalkForwardRequest,
@@ -133,7 +134,7 @@ use exchange::{
     map_exchange_ack_to_transition, map_rest_reconciliation_status_to_transition, mask_listen_key,
     BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig, BinanceTestnetStatus, ExchangeAdapter,
 };
-use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig};
+use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig, ResearchDatasetService};
 use replay_engine::ReplayEngine;
 use risk_engine::{validate_risk_config, RiskEvaluator};
 use rust_decimal::prelude::ToPrimitive;
@@ -1270,6 +1271,21 @@ struct CandleCoverageQuery {
     symbol: String,
 }
 
+#[derive(Deserialize)]
+struct ResearchDataCoverageQuery {
+    symbol: String,
+    intervals: String,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    required_coverage_pct: Option<Decimal>,
+    exchange: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ResearchDatasetBuildsQuery {
+    limit: Option<i64>,
+}
+
 #[derive(Serialize)]
 struct CandlesResponse {
     candles: Vec<CandleRecord>,
@@ -1296,7 +1312,31 @@ struct CandleBackfillRunResponse {
 
 #[derive(Serialize)]
 struct CandleCoverageResponse {
-    coverage: CandleCoverageSummary,
+    coverage: MarketCandleCoverageSummary,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchDataCoverageResponse {
+    coverage: ResearchDataCoverageResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchDatasetBuildsResponse {
+    builds: Vec<ResearchDatasetBuildResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchDatasetBuildResponse {
+    build: ResearchDatasetBuildResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2052,6 +2092,10 @@ async fn main() {
         .route("/market/backfill/runs", get(get_market_backfill_runs))
         .route("/market/backfill/runs/:id", get(get_market_backfill_run))
         .route("/market/feed-status", get(get_market_feed_status))
+        .route("/research/data/coverage", get(get_research_data_coverage))
+        .route("/research/data/build", post(post_research_data_build))
+        .route("/research/data/builds", get(list_research_data_builds))
+        .route("/research/data/builds/:id", get(get_research_data_build))
         .route("/strategy/list", get(get_strategy_list))
         .route("/strategy/:id/status", get(get_strategy_by_id))
         .route("/strategy/:id/config", get(get_strategy_config_handler))
@@ -13294,6 +13338,284 @@ async fn get_market_feed_status(
                 Json(ErrorResponse {
                     error: "failed_to_query_market_feed_status",
                     message: "Failed to query market feed status.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_research_data_coverage(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchDataCoverageQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let exchange = match query
+        .exchange
+        .as_deref()
+        .unwrap_or("binance")
+        .parse::<aegis_core::MarketDataSource>()
+    {
+        Ok(exchange) => exchange,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_exchange",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let payload = ResearchDataCoverageRequest {
+        exchange,
+        symbol: query.symbol,
+        intervals: query
+            .intervals
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect(),
+        start_time: query.start_time,
+        end_time: query.end_time,
+        required_coverage_pct: query.required_coverage_pct.unwrap_or(Decimal::new(95, 0)),
+        correlation_id: Uuid::parse_str(&request.correlation_id).ok(),
+    };
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_research_data_coverage_request",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let service = ResearchDatasetService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        state.market_config.binance_rest_base_url.clone(),
+    );
+    match service.inspect_coverage(payload).await {
+        Ok(coverage) => (
+            StatusCode::OK,
+            Json(ResearchDataCoverageResponse {
+                coverage,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to inspect research data coverage"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_inspect_research_data_coverage",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn post_research_data_build(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<ResearchDatasetBuildRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Uuid::parse_str(&request.correlation_id).ok();
+    }
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_research_dataset_build_request",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let service = ResearchDatasetService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        state.market_config.binance_rest_base_url.clone(),
+    );
+    match service.build_dataset(payload).await {
+        Ok(build) => {
+            if let Some(actor) = actor.as_ref() {
+                let state_actor = state_actor_from_authenticated(actor);
+                let _ = insert_audit_log(
+                    &state.db_pool,
+                    build.correlation_id,
+                    &state_actor,
+                    "research.dataset.build.run",
+                    "research/data/build",
+                    &json!({
+                        "actor_id": actor.user_id,
+                        "build_id": build.build_id,
+                        "symbol": build.symbol,
+                        "status": build.status.as_str(),
+                    }),
+                )
+                .await;
+            }
+            (
+                StatusCode::OK,
+                Json(ResearchDatasetBuildResponse {
+                    build,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to build research dataset"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_build_research_dataset",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_research_data_builds(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchDatasetBuildsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let service = ResearchDatasetService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        state.market_config.binance_rest_base_url.clone(),
+    );
+    match service
+        .list_builds(bounded_backfill_runs_limit(query.limit))
+        .await
+    {
+        Ok(builds) => (
+            StatusCode::OK,
+            Json(ResearchDatasetBuildsResponse {
+                builds,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                "failed to list research dataset builds"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_research_dataset_builds",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_research_data_build(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let service = ResearchDatasetService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        state.market_config.binance_rest_base_url.clone(),
+    );
+    match service.get_build(id).await {
+        Ok(Some(build)) => (
+            StatusCode::OK,
+            Json(ResearchDatasetBuildResponse {
+                build,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_dataset_build_not_found",
+                message: "Research dataset build was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                build_id = %id,
+                "failed to query research dataset build"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_dataset_build",
+                    message: err.to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),

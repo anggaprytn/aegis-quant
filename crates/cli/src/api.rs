@@ -2,23 +2,23 @@ use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest,
-    CandleBackfillResult, CandleCoverageSummary, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
-    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
-    OperatorReport, OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    CandleBackfillResult, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
+    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, OperatorReport, OperatorReportRequest,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchDataCoverageResult,
+    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -587,6 +587,51 @@ impl ApiClient {
             &[("symbol", symbol.to_string())],
         )
         .await
+    }
+
+    pub async fn get_research_data_coverage(
+        &self,
+        query: &ResearchDataCoverageQuery,
+    ) -> Result<ResearchDataCoverageResponse, ApiClientError> {
+        let mut params = vec![
+            ("symbol", query.symbol.clone()),
+            ("intervals", query.intervals.clone()),
+            ("start_time", query.start_time.to_rfc3339()),
+            ("end_time", query.end_time.to_rfc3339()),
+        ];
+        if let Some(exchange) = &query.exchange {
+            params.push(("exchange", exchange.clone()));
+        }
+        if let Some(required_coverage_pct) = query.required_coverage_pct {
+            params.push((
+                "required_coverage_pct",
+                required_coverage_pct.normalize().to_string(),
+            ));
+        }
+        self.get("/research/data/coverage", &params).await
+    }
+
+    pub async fn build_research_dataset(
+        &self,
+        request: &ResearchDatasetBuildRequest,
+    ) -> Result<ResearchDatasetBuildResponse, ApiClientError> {
+        self.post("/research/data/build", request).await
+    }
+
+    pub async fn list_research_dataset_builds(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchDatasetBuildsResponse, ApiClientError> {
+        self.get("/research/data/builds", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_research_dataset_build(
+        &self,
+        build_id: Uuid,
+    ) -> Result<ResearchDatasetBuildResponse, ApiClientError> {
+        self.get(&format!("/research/data/builds/{build_id}"), &[])
+            .await
     }
 
     pub async fn activate_kill_switch(
@@ -1486,6 +1531,16 @@ impl RiskDecisionsQuery {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResearchDataCoverageQuery {
+    pub exchange: Option<String>,
+    pub symbol: String,
+    pub intervals: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub required_coverage_pct: Option<Decimal>,
+}
+
 #[derive(Debug, Serialize)]
 struct KillSwitchRequest {
     reason: Option<String>,
@@ -1709,7 +1764,31 @@ pub struct CandleBackfillRunResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandleCoverageResponse {
-    pub coverage: CandleCoverageSummary,
+    pub coverage: MarketCandleCoverageSummary,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ResearchDataCoverageResponse {
+    pub coverage: ResearchDataCoverageResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ResearchDatasetBuildsResponse {
+    pub builds: Vec<ResearchDatasetBuildResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ResearchDatasetBuildResponse {
+    pub build: ResearchDatasetBuildResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -2828,6 +2907,38 @@ pub fn build_candle_aggregation_request(
         .validate()
         .context("invalid candle aggregation request")?;
     Ok(request)
+}
+
+pub fn build_research_data_coverage_query(
+    args: &crate::cli::ResearchDataCoverageArgs,
+) -> ResearchDataCoverageQuery {
+    ResearchDataCoverageQuery {
+        exchange: Some(args.exchange.clone()),
+        symbol: args.symbol.clone(),
+        intervals: args.intervals.clone(),
+        start_time: args.start,
+        end_time: args.end,
+        required_coverage_pct: args.required_coverage_pct,
+    }
+}
+
+pub fn build_research_data_build_request(
+    args: &crate::cli::ResearchDataBuildArgs,
+) -> ResearchDatasetBuildRequest {
+    ResearchDatasetBuildRequest {
+        exchange: args.exchange.parse().expect("validated by clap input"),
+        symbol: args.symbol.clone(),
+        intervals: args
+            .intervals
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect(),
+        start_time: args.start,
+        end_time: args.end,
+        required_coverage_pct: args.required_coverage_pct.unwrap_or(Decimal::new(95, 0)),
+        correlation_id: args.correlation_id,
+    }
 }
 
 pub fn build_auth_refresh_request(refresh_token: &str) -> AuthRefreshRequestPayload {

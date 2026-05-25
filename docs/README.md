@@ -10,3 +10,9 @@
 
 Research note:
 - Walk-forward validation is available through the strategy experiments surface as research-only out-of-sample testing. It persists into isolated walk-forward tables and must not mutate paper, shadow, testnet, or live execution state.
+
+Research workflow:
+1. Build the research dataset so 1m coverage gaps are backfilled and 5m/15m/1h candles are re-aggregated.
+2. Run the multi-timeframe strategy experiment on the prepared dataset.
+3. Run walk-forward validation on the same prepared window.
+4. Only then consider strategy config promotion or further operator review.

@@ -23,6 +23,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+mod research;
+
+pub use research::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketIngestConfig {
     pub exchange: MarketDataSource,

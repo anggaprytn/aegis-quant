@@ -5,6 +5,10 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
+mod research;
+
+pub use research::*;
+
 pub type Quantity = Decimal;
 pub type Price = Decimal;
 pub type Volume = Decimal;
@@ -465,16 +469,16 @@ pub struct CandleAggregationResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CandleIntervalCoverage {
+pub struct MarketCandleIntervalCoverage {
     pub interval: String,
     pub candle_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CandleCoverageSummary {
+pub struct MarketCandleCoverageSummary {
     pub exchange: MarketDataSource,
     pub symbol: String,
-    pub intervals: Vec<CandleIntervalCoverage>,
+    pub intervals: Vec<MarketCandleIntervalCoverage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -6073,10 +6077,18 @@ pub enum CoreError {
     EmptyCandleBackfillSymbol,
     #[error("candle backfill interval cannot be empty")]
     EmptyCandleBackfillInterval,
+    #[error("research data interval cannot be empty")]
+    EmptyResearchDataInterval,
+    #[error("research data requires at least one interval")]
+    EmptyResearchDataIntervals,
     #[error("backtest end_time must be after start_time")]
     InvalidBacktestTimeRange,
     #[error("candle backfill end_time must be after start_time")]
     InvalidCandleBackfillTimeRange,
+    #[error("research data end_time must be after start_time")]
+    InvalidResearchDataTimeRange,
+    #[error("research coverage percentage must be greater than zero and at most 100")]
+    InvalidResearchCoveragePct,
     #[error("operator report end_time must be after start_time")]
     InvalidOperatorReportTimeRange,
     #[error("strategy experiment end_time must be after start_time")]

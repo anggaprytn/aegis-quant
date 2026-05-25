@@ -8,6 +8,8 @@ use aegis_core::{
     OrderIntent, PaperAccount, PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide,
     PositionStatus, ReplayMode, ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision,
     RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildStatus,
+    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, ResearchDataReadinessStatus,
     SignalSide, StrategyExperimentCandidate, StrategyExperimentComparison,
     StrategyExperimentMetric, StrategyExperimentResult, StrategyExperimentRun,
     StrategyExperimentStatus, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
@@ -25,6 +27,9 @@ use db::{
     get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
     get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key, get_risk_decision,
+    get_research_dataset_build, insert_research_dataset_build, list_closed_candle_open_times_in_range,
+    list_research_dataset_build_steps, replace_research_dataset_build_steps,
+    research_dataset_build_result_from_records,
     get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
     get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
     get_testnet_promotion_lifecycle_breakdown, insert_backtest_equity_points, insert_backtest_run,
@@ -61,6 +66,19 @@ use uuid::Uuid;
 
 fn fixed_time() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 1, 1, 0, 3, 0).unwrap()
+}
+
+fn sample_research_coverage_result() -> ResearchDataCoverageResult {
+    ResearchDataCoverageResult {
+        exchange: MarketDataSource::Binance,
+        symbol: "BTCUSDT".to_string(),
+        window_start: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        window_end: Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+        required_coverage_pct: Decimal::new(95, 0),
+        status: ResearchDataReadinessStatus::Ready,
+        per_interval: Vec::new(),
+        correlation_id: Some(Uuid::from_u128(0x777)),
+    }
 }
 
 fn sample_signal() -> StrategySignal {
@@ -1286,6 +1304,95 @@ async fn candle_coverage_counts_multiple_intervals() {
             .map(|entry| entry.candle_count),
         Some(1)
     );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_coverage_reads_persisted_candles() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+
+    for minute in 0..3 {
+        let candle = sample_backtest_candle(minute, 100 + minute);
+        upsert_candle(&test_db.pool, &candle)
+            .await
+            .expect("candle should persist");
+    }
+
+    let open_times = list_closed_candle_open_times_in_range(
+        &test_db.pool,
+        MarketDataSource::Binance,
+        &Symbol::new("BTCUSDT").unwrap(),
+        CandleInterval::OneMinute,
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 10, 0).unwrap(),
+    )
+    .await
+    .expect("research coverage open_times should load");
+
+    assert_eq!(open_times.len(), 3);
+    assert_eq!(open_times[0], Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_dataset_build_records_round_trip() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let build_id = Uuid::from_u128(0x778);
+    let correlation_id = Uuid::from_u128(0x779);
+    let coverage = sample_research_coverage_result();
+    let request = ResearchDatasetBuildRequest {
+        exchange: MarketDataSource::Binance,
+        symbol: "BTCUSDT".to_string(),
+        intervals: vec!["1m".to_string(), "5m".to_string()],
+        start_time: coverage.window_start,
+        end_time: coverage.window_end,
+        required_coverage_pct: Decimal::new(95, 0),
+        correlation_id: Some(correlation_id),
+    };
+
+    insert_research_dataset_build(
+        &test_db.pool,
+        build_id,
+        &request,
+        &coverage,
+        correlation_id,
+        fixed_time(),
+    )
+    .await
+    .expect("research dataset build should persist");
+
+    replace_research_dataset_build_steps(
+        &test_db.pool,
+        build_id,
+        &[ResearchDatasetBuildStep {
+            step: "check_and_backfill_1m".to_string(),
+            status: ResearchDatasetBuildStepStatus::Completed,
+            details: Some(json!({ "inserted_candles": 10 })),
+            started_at: fixed_time(),
+            completed_at: Some(fixed_time()),
+        }],
+    )
+    .await
+    .expect("research dataset build steps should persist");
+
+    let record = get_research_dataset_build(&test_db.pool, build_id)
+        .await
+        .expect("build lookup should succeed")
+        .expect("build should exist");
+    let steps = list_research_dataset_build_steps(&test_db.pool, build_id)
+        .await
+        .expect("step lookup should succeed");
+    let build = research_dataset_build_result_from_records(&record, &steps)
+        .expect("build result should map");
+
+    assert_eq!(build.status, ResearchDatasetBuildStatus::Started);
+    assert_eq!(build.coverage_before.status, ResearchDataReadinessStatus::Ready);
+    assert_eq!(build.steps.len(), 1);
+    assert_eq!(build.steps[0].status, ResearchDatasetBuildStepStatus::Completed);
 }
 
 #[tokio::test]

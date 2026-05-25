@@ -20,6 +20,7 @@
 - Completed: persistent kill switch, deterministic risk evaluation, Binance public ingest, deterministic candle building, strategy signal generation, paper-only order lifecycle, replay/backtest MVP, DB-backed integration harness, and minimal dashboard shell
 - Completed: Binance public REST historical candle backfill with persisted run tracking, CLI/API entrypoints, and dashboard inspection
 - Completed: deterministic higher-timeframe candle aggregation (5m/15m/1h) from stored 1m candles with shared persistence, coverage inspection, and replay/diagnostics/experiment support
+- Completed: research data coverage planning and dataset build orchestration with explicit missing-range detection, persisted build history, 1m-only source backfill, higher-timeframe re-aggregation, API/CLI/dashboard surfaces, and no execution-side mutation
 - Completed: cockpit inspection APIs for persisted risk decisions, enriched order inspection, and filtered recent events
 - Completed: local/operator CLI fallback over the existing HTTP API for status, kill switch control, paper pipeline runs, strategies, orders, events, risk decisions, and backtests
 - Completed: paper account, position, fill, journal, mark-to-market, manual close flow, and equity snapshot accounting for operational paper trading
@@ -39,7 +40,7 @@
 - Completed: read-only promotion funnel analytics across shadow would-submit, promotion preview/submit, isolated testnet order lifecycle outcomes, API/CLI/dashboard surfaces, and bounded low-cardinality telemetry
 - Completed: read-only operator daily reports across health, feed freshness, strategy/risk behavior, paper PnL, shadow outcomes, promotion funnel, and isolated testnet execution with optional persisted exports
 - Completed: deterministic execution readiness gate with API/CLI/dashboard inspection, optional readiness snapshots, and bounded telemetry across paper/testnet shadow promotion boundaries
-- Current focus: improve strategy research quality with deterministic multi-timeframe experiment comparison, global ranking across parameter sweeps, and skipped-window visibility while continuing readiness heuristics, reconciliation visibility, and promotion-readiness workflows before any live execution surface area
+- Current focus: use research-ready dataset preparation to raise experiment and walk-forward reliability while continuing deterministic multi-timeframe comparison, global ranking across parameter sweeps, skipped-window visibility, readiness heuristics, and promotion-readiness workflows before any live execution surface area
 
 ## Next implementation steps
 

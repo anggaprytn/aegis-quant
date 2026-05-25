@@ -740,14 +740,115 @@ export type CandleIntervalCoverage = {
   candle_count: number;
 };
 
-export type CandleCoverageSummary = {
+export type MarketCandleCoverageSummary = {
   exchange: string;
   symbol: string;
   intervals: CandleIntervalCoverage[];
 };
 
+export type CandleCoverageSummary = MarketCandleCoverageSummary;
+
 export type CandleCoverageResponse = {
-  coverage: CandleCoverageSummary;
+  coverage: MarketCandleCoverageSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchDataReadinessStatus = "READY" | "DEGRADED" | "INSUFFICIENT";
+
+export type ResearchDataGap = {
+  start_time: string;
+  end_time: string;
+  missing_candles: number;
+};
+
+export type ResearchIntervalCoverageSummary = {
+  interval: string;
+  expected_candles: number;
+  actual_candles: number;
+  coverage_pct: string;
+  first_candle_at: string | null;
+  last_candle_at: string | null;
+  missing_ranges: ResearchDataGap[];
+  status: ResearchDataReadinessStatus;
+};
+
+export type ResearchDataCoverageRequest = {
+  exchange?: string;
+  symbol: string;
+  intervals: string[];
+  start_time: string;
+  end_time: string;
+  required_coverage_pct?: string;
+  correlation_id?: string | null;
+};
+
+export type ResearchDataCoverageResult = {
+  exchange: string;
+  symbol: string;
+  window_start: string;
+  window_end: string;
+  required_coverage_pct: string;
+  status: ResearchDataReadinessStatus;
+  per_interval: ResearchIntervalCoverageSummary[];
+  correlation_id: string | null;
+};
+
+export type ResearchDataCoverageResponse = {
+  coverage: ResearchDataCoverageResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchDatasetBuildStepStatus = "STARTED" | "COMPLETED" | "FAILED";
+export type ResearchDatasetBuildStatus = "STARTED" | "COMPLETED" | "FAILED";
+
+export type ResearchDatasetBuildStep = {
+  step: string;
+  status: ResearchDatasetBuildStepStatus;
+  details: unknown | null;
+  started_at: string;
+  completed_at: string | null;
+};
+
+export type ResearchDatasetBuildRequest = {
+  exchange?: string;
+  symbol: string;
+  intervals: string[];
+  start_time: string;
+  end_time: string;
+  required_coverage_pct?: string;
+  correlation_id?: string | null;
+};
+
+export type ResearchDatasetBuildResult = {
+  build_id: string;
+  exchange: string;
+  symbol: string;
+  requested_intervals: string[];
+  start_time: string;
+  end_time: string;
+  status: ResearchDatasetBuildStatus;
+  coverage_before: ResearchDataCoverageResult;
+  coverage_after: ResearchDataCoverageResult;
+  steps: ResearchDatasetBuildStep[];
+  failed_reason: string | null;
+  correlation_id: string;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type ResearchDatasetBuildResponse = {
+  build: ResearchDatasetBuildResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchDatasetBuildsResponse = {
+  builds: ResearchDatasetBuildResult[];
   request_id: string;
   correlation_id: string;
   timestamp: string;

@@ -87,6 +87,35 @@ Aggregation invariants:
 - Derived candles persist into the same `candles` table under `(exchange, symbol, interval, open_time)` uniqueness.
 - Aggregation must not mutate signals, risk decisions, orders, paper accounting, shadow state, or testnet execution state.
 
+Research dataset preparation is a deterministic orchestration layer over the same market-data store:
+
+```txt
+GET /research/data/coverage
+-> parse symbol + requested intervals + window
+-> load persisted closed candle open_times for each interval
+-> compute expected UTC-aligned candle grid
+-> compact missing bucket ranges
+-> return per-interval readiness and dataset readiness
+
+POST /research/data/build
+-> compute initial requested-interval coverage
+-> compute source 1m coverage
+-> backfill missing 1m ranges via Binance public REST only
+-> recompute 1m coverage
+-> aggregate requested 5m / 15m / 1h candles from stored 1m
+-> recompute final requested-interval coverage
+-> persist research_dataset_builds + research_dataset_build_steps
+-> emit research.dataset.build.* system events
+```
+
+Research dataset preparation invariants:
+
+- This flow is data preparation only. It must not mutate signals, risk decisions, orders, paper tables, shadow tables, testnet tables, or any live execution surface.
+- Missing ranges are derived from deterministic expected bucket grids, not heuristic sampling.
+- If the requested `end_time` is near `now`, the incomplete current bucket is ignored rather than treated as a gap.
+- Rerunning the build is idempotent because both candle backfill and candle aggregation reuse existing upsert paths.
+- Final readiness is reported explicitly so experiments and walk-forward runs can distinguish fully prepared datasets from degraded ones.
+
 ## Strategy evaluation flow
 
 Current deterministic paper flow follows this path:

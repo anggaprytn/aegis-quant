@@ -1,4 +1,4 @@
-use aegis_core::{CandleAggregationResult, CandleCoverageSummary, User};
+use aegis_core::{CandleAggregationResult, MarketCandleCoverageSummary, User};
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
     TestnetShadowPromotionResult, TestnetShadowRunResult,
@@ -1471,11 +1471,87 @@ pub fn print_candle_aggregation_result(result: &CandleAggregationResult) {
     }
 }
 
-pub fn print_candle_coverage(coverage: &CandleCoverageSummary) {
+pub fn print_candle_coverage(coverage: &MarketCandleCoverageSummary) {
     println!("Exchange: {}", coverage.exchange.as_str());
     println!("Symbol: {}", coverage.symbol);
     for interval in &coverage.intervals {
         println!("{}: {}", interval.interval, interval.candle_count);
+    }
+}
+
+pub fn print_research_data_coverage(coverage: &aegis_core::ResearchDataCoverageResult) {
+    println!("Exchange: {}", coverage.exchange.as_str());
+    println!("Symbol: {}", coverage.symbol);
+    println!(
+        "Window: {} -> {}",
+        coverage.window_start, coverage.window_end
+    );
+    println!("Readiness: {}", coverage.status.as_str());
+    for interval in &coverage.per_interval {
+        println!(
+            "{}: status={} coverage={} expected={} actual={} missing_ranges={}",
+            interval.interval,
+            interval.status.as_str(),
+            interval.coverage_pct,
+            interval.expected_candles,
+            interval.actual_candles,
+            interval.missing_ranges.len()
+        );
+    }
+}
+
+pub fn print_research_dataset_builds(builds: &[aegis_core::ResearchDatasetBuildResult]) {
+    for build in builds {
+        println!(
+            "{}  {} {} status={} readiness={} intervals={}",
+            build.build_id,
+            build.exchange.as_str(),
+            build.symbol,
+            build.status.as_str(),
+            build.coverage_after.status.as_str(),
+            build.requested_intervals.join(",")
+        );
+    }
+}
+
+pub fn print_research_dataset_build(build: &aegis_core::ResearchDatasetBuildResult) {
+    println!("Build ID: {}", build.build_id);
+    println!("Status: {}", build.status.as_str());
+    println!("Exchange: {}", build.exchange.as_str());
+    println!("Symbol: {}", build.symbol);
+    println!("Window: {} -> {}", build.start_time, build.end_time);
+    println!("Intervals: {}", build.requested_intervals.join(", "));
+    println!(
+        "Readiness before: {}",
+        build.coverage_before.status.as_str()
+    );
+    println!("Readiness after: {}", build.coverage_after.status.as_str());
+    println!("Build steps:");
+    for step in &build.steps {
+        println!(
+            "{} status={} started={} completed={}",
+            step.step,
+            step.status.as_str(),
+            step.started_at,
+            step.completed_at
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+    println!("Final coverage:");
+    for interval in &build.coverage_after.per_interval {
+        println!(
+            "{} status={} coverage={} expected={} actual={} missing_ranges={}",
+            interval.interval,
+            interval.status.as_str(),
+            interval.coverage_pct,
+            interval.expected_candles,
+            interval.actual_candles,
+            interval.missing_ranges.len()
+        );
+    }
+    if let Some(reason) = &build.failed_reason {
+        println!("Failure reason: {}", reason);
     }
 }
 
