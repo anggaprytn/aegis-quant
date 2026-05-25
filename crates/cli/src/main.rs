@@ -6,9 +6,9 @@ use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
 use cli::api::{
-    build_backtest_request, build_candle_backfill_request, build_pipeline_request,
-    build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
-    ApiClient, RecentEventsQuery, RiskDecisionsQuery,
+    build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
+    build_pipeline_request, build_risk_config_request, build_strategy_config_request,
+    build_strategy_experiment_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
@@ -397,6 +397,23 @@ async fn main() -> anyhow::Result<()> {
                     output::print_json(&response)?;
                 } else {
                     output::print_backfill_run(&response);
+                }
+            }
+            MarketCommands::AggregateCandles(args) => {
+                let request = build_candle_aggregation_request(&args)?;
+                let response = client.aggregate_candles(&request).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_candle_aggregation_result(&response);
+                }
+            }
+            MarketCommands::CandleCoverage(args) => {
+                let response = client.candle_coverage(&args.symbol).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_candle_coverage(&response.coverage);
                 }
             }
         },

@@ -677,6 +677,8 @@ pub enum MarketCommands {
     Backfill(MarketBackfillArgs),
     Backfills(MarketBackfillsArgs),
     BackfillGet { run_id: Uuid },
+    AggregateCandles(MarketAggregateCandlesArgs),
+    CandleCoverage(MarketCandleCoverageArgs),
 }
 
 #[derive(Debug, Args)]
@@ -701,6 +703,30 @@ pub struct MarketBackfillArgs {
 pub struct MarketBackfillsArgs {
     #[arg(long, default_value_t = 20)]
     pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct MarketAggregateCandlesArgs {
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long = "source")]
+    pub source_interval: String,
+    #[arg(long = "target")]
+    pub target_interval: String,
+    #[arg(long = "start")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Args)]
+pub struct MarketCandleCoverageArgs {
+    #[arg(long)]
+    pub symbol: String,
 }
 
 #[derive(Debug, Args)]

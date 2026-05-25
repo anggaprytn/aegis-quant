@@ -250,8 +250,17 @@ Feed status:
 Backfill example:
 `cargo run -p cli -- market backfill --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z`
 
+Aggregate higher timeframe candles from stored 1m candles:
+`cargo run -p cli -- market aggregate-candles --symbol BTCUSDT --source 1m --target 5m --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z`
+
+Inspect persisted candle coverage by interval:
+`cargo run -p cli -- market candle-coverage --symbol BTCUSDT`
+
 Backtest example:
 `cargo run -p cli -- backtest run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --holding-candles 3`
+
+Higher timeframe backtest example:
+`cargo run -p cli -- backtest run --strategy momentum_v1 --symbol BTCUSDT --timeframe 5m --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --holding-candles 3`
 
 Strategy experiment sweep:
 `cargo run -p cli -- experiments strategy run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`

@@ -1,25 +1,27 @@
 use aegis_core::{
-    BacktestConfig, BacktestEquityPoint, BacktestRequest, BacktestResult, BacktestTrade, Candle,
-    CandleBackfillRequest, CandleBackfillStatus, CandleInterval, ExchangeEnvironment,
-    ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName,
-    ExchangeOrderSide, ExchangeOrderState, ExchangeOrderStatus, ExchangeOrderTimeInForce,
-    ExchangeOrderType, ExchangeReconciliationAction, ExchangeReconciliationMismatchKind,
-    ExchangeReconciliationSummary, FeeModel, MarketDataSource, OrderIntent, PaperAccount,
-    PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide, PositionStatus, ReplayMode,
-    ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
-    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
-    StrategyPerformanceMode, StrategyPerformanceRequest, StrategySignal, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
+    aggregate_closed_1m_candles, BacktestConfig, BacktestEquityPoint, BacktestRequest,
+    BacktestResult, BacktestTrade, Candle, CandleBackfillRequest, CandleBackfillStatus,
+    CandleInterval, ExchangeEnvironment, ExchangeExecutionReport, ExchangeExecutionReportType,
+    ExchangeExecutionStatus, ExchangeName, ExchangeOrderSide, ExchangeOrderState,
+    ExchangeOrderStatus, ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeReconciliationAction,
+    ExchangeReconciliationMismatchKind, ExchangeReconciliationSummary, FeeModel, MarketDataSource,
+    OrderIntent, PaperAccount, PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide,
+    PositionStatus, ReplayMode, ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision,
+    RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason,
+    SignalSide, StrategyExperimentCandidate, StrategyExperimentComparison,
+    StrategyExperimentMetric, StrategyExperimentResult, StrategyExperimentRun,
+    StrategyExperimentStatus, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
+    StrategySignal, Symbol, TestnetExecutionState, TestnetExecutionTransitionSource,
+    TestnetPromotionFunnelRequest, TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy,
+    TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
 use db::{
-    append_exchange_testnet_lifecycle_event_and_update_order, count_candles_range,
-    create_paper_order, fail_exchange_reconciliation_run, get_backtest_equity_curve,
-    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_closed_candles_range,
-    get_exchange_private_stream_state, get_exchange_reconciliation_run,
+    append_exchange_testnet_lifecycle_event_and_update_order, count_candles_by_interval,
+    count_candles_range, create_paper_order, fail_exchange_reconciliation_run,
+    get_aggregated_candle_coverage, get_backtest_equity_curve, get_backtest_run,
+    get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
+    get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key, get_risk_decision,
     get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
     get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
@@ -35,10 +37,10 @@ use db::{
     list_testnet_promotion_funnel_rows, set_kill_switch_state,
     strategy_experiment_result_from_records, test_support::TestDatabase,
     testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
-    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_candle,
-    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
-    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
+    upsert_candle, upsert_candles_batch, upsert_exchange_private_stream_state,
+    upsert_paper_position, upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state,
+    CreateOrderError, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, StateActor,
     TestnetShadowPromotionRecord, TestnetShadowRunRecord, TESTNET_SHADOW_RUNNER_CONFIG_ID,
@@ -1044,6 +1046,106 @@ async fn candle_count_range_returns_closed_candle_count() {
     .expect("count should work");
 
     assert_eq!(count, 2);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn aggregates_persisted_1m_candles_into_5m_idempotently() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+
+    for minute in 0..5 {
+        let candle = sample_backtest_candle(minute, 100 + minute);
+        upsert_candle(&test_db.pool, &candle)
+            .await
+            .expect("1m candle should persist");
+    }
+
+    let source = get_closed_1m_candles_range(
+        &test_db.pool,
+        MarketDataSource::Binance,
+        &Symbol::new("BTCUSDT").unwrap(),
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap(),
+    )
+    .await
+    .expect("1m range should load");
+    let aggregated = aggregate_closed_1m_candles(&source, CandleInterval::FiveMinutes);
+
+    let first = upsert_aggregated_candles(&test_db.pool, &aggregated.candles)
+        .await
+        .expect("first aggregated upsert should work");
+    let second = upsert_aggregated_candles(&test_db.pool, &aggregated.candles)
+        .await
+        .expect("second aggregated upsert should work");
+
+    assert_eq!(aggregated.candles.len(), 1);
+    assert_eq!(first.inserted_candles, 1);
+    assert_eq!(second.skipped_candles, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candle_coverage_counts_multiple_intervals() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+
+    for minute in 0..5 {
+        let candle = sample_backtest_candle(minute, 100 + minute);
+        upsert_candle(&test_db.pool, &candle)
+            .await
+            .expect("1m candle should persist");
+    }
+
+    let source = get_closed_1m_candles_range(
+        &test_db.pool,
+        MarketDataSource::Binance,
+        &Symbol::new("BTCUSDT").unwrap(),
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap(),
+    )
+    .await
+    .expect("1m range should load");
+    let aggregated = aggregate_closed_1m_candles(&source, CandleInterval::FiveMinutes);
+    upsert_aggregated_candles(&test_db.pool, &aggregated.candles)
+        .await
+        .expect("aggregated candles should persist");
+
+    let one_minute_count = count_candles_by_interval(
+        &test_db.pool,
+        MarketDataSource::Binance,
+        &Symbol::new("BTCUSDT").unwrap(),
+        CandleInterval::OneMinute,
+    )
+    .await
+    .expect("1m count should work");
+    let coverage = get_aggregated_candle_coverage(
+        &test_db.pool,
+        MarketDataSource::Binance,
+        &Symbol::new("BTCUSDT").unwrap(),
+    )
+    .await
+    .expect("coverage should load");
+
+    assert_eq!(one_minute_count, 5);
+    assert_eq!(
+        coverage
+            .intervals
+            .iter()
+            .find(|entry| entry.interval == "1m")
+            .map(|entry| entry.candle_count),
+        Some(5)
+    );
+    assert_eq!(
+        coverage
+            .intervals
+            .iter()
+            .find(|entry| entry.interval == "5m")
+            .map(|entry| entry.candle_count),
+        Some(1)
+    );
 }
 
 #[tokio::test]

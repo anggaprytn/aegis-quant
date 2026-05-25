@@ -1,7 +1,8 @@
 use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-    BacktestRequest, CandleBackfillRequest, CandleBackfillResult, ExchangeTestnetPipelinePreview,
+    BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest,
+    CandleBackfillResult, CandleCoverageSummary, ExchangeTestnetPipelinePreview,
     ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
     ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
     OperatorReport, OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
@@ -566,6 +567,24 @@ impl ApiClient {
     ) -> Result<CandleBackfillRunResponse, ApiClientError> {
         self.get(&format!("/market/backfill/runs/{run_id}"), &[])
             .await
+    }
+
+    pub async fn aggregate_candles(
+        &self,
+        request: &CandleAggregationRequest,
+    ) -> Result<CandleAggregationResult, ApiClientError> {
+        self.post("/market/candles/aggregate", request).await
+    }
+
+    pub async fn candle_coverage(
+        &self,
+        symbol: &str,
+    ) -> Result<CandleCoverageResponse, ApiClientError> {
+        self.get(
+            "/market/candles/coverage",
+            &[("symbol", symbol.to_string())],
+        )
+        .await
     }
 
     pub async fn activate_kill_switch(
@@ -1627,6 +1646,14 @@ pub struct CandleBackfillRunResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct CandleCoverageResponse {
+    pub coverage: CandleCoverageSummary,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyStatusView {
     pub strategy_id: String,
     pub enabled: bool,
@@ -2623,6 +2650,24 @@ pub fn build_candle_backfill_request(
     Ok(request)
 }
 
+pub fn build_candle_aggregation_request(
+    args: &crate::cli::MarketAggregateCandlesArgs,
+) -> anyhow::Result<CandleAggregationRequest> {
+    let request = CandleAggregationRequest {
+        exchange: args.exchange.parse()?,
+        symbol: args.symbol.clone(),
+        source_interval: args.source_interval.clone(),
+        target_interval: args.target_interval.clone(),
+        start_time: args.start_time,
+        end_time: args.end_time,
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate()
+        .context("invalid candle aggregation request")?;
+    Ok(request)
+}
+
 pub fn build_auth_refresh_request(refresh_token: &str) -> AuthRefreshRequestPayload {
     AuthRefreshRequestPayload {
         refresh_token: refresh_token.to_string(),
@@ -2632,12 +2677,14 @@ pub fn build_auth_refresh_request(refresh_token: &str) -> AuthRefreshRequestPayl
 #[cfg(test)]
 mod tests {
     use super::{
-        build_auth_refresh_request, build_backtest_request, build_candle_backfill_request,
-        build_pipeline_request, build_strategy_experiment_request, ApiClient, RecentEventsQuery,
-        RiskDecisionsQuery, CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE,
+        build_auth_refresh_request, build_backtest_request, build_candle_aggregation_request,
+        build_candle_backfill_request, build_pipeline_request, build_strategy_experiment_request,
+        ApiClient, RecentEventsQuery, RiskDecisionsQuery, CLI_AUTH_MODE_HEADER,
+        CLI_AUTH_MODE_VALUE,
     };
     use crate::cli::{
-        BacktestRunArgs, MarketBackfillArgs, PipelineRunArgs, StrategyExperimentRunArgs,
+        BacktestRunArgs, MarketAggregateCandlesArgs, MarketBackfillArgs, PipelineRunArgs,
+        StrategyExperimentRunArgs,
     };
     use crate::config::{clear_token_file, load_token_file, StoredAuthSession, StoredUserSummary};
     use aegis_core::{User, UserRole, UserStatus};
@@ -2830,6 +2877,27 @@ mod tests {
         assert_eq!(value["symbol"], "BTCUSDT");
         assert_eq!(value["interval"], "1m");
         assert_eq!(value["limit_per_request"], 1000);
+    }
+
+    #[test]
+    fn candle_aggregation_request_serializes_expected_wire_shape() {
+        let args = MarketAggregateCandlesArgs {
+            exchange: "binance".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            source_interval: "1m".to_string(),
+            target_interval: "5m".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 23, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 24, 0, 0, 0).unwrap(),
+            correlation_id: None,
+        };
+
+        let request = build_candle_aggregation_request(&args).expect("valid request");
+        let value = serde_json::to_value(request).expect("serializes");
+
+        assert_eq!(value["exchange"], "binance");
+        assert_eq!(value["symbol"], "BTCUSDT");
+        assert_eq!(value["source_interval"], "1m");
+        assert_eq!(value["target_interval"], "5m");
     }
 
     #[test]

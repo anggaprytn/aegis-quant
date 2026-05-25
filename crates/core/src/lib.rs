@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -322,18 +322,62 @@ pub enum DataFreshnessStatus {
 #[serde(rename_all = "snake_case")]
 pub enum CandleInterval {
     OneMinute,
+    FiveMinutes,
+    FifteenMinutes,
+    OneHour,
 }
 
 impl CandleInterval {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OneMinute => "1m",
+            Self::FiveMinutes => "5m",
+            Self::FifteenMinutes => "15m",
+            Self::OneHour => "1h",
         }
     }
 
-    pub fn duration(self) -> chrono::Duration {
+    pub fn duration(self) -> Duration {
         match self {
-            Self::OneMinute => chrono::Duration::minutes(1),
+            Self::OneMinute => Duration::minutes(1),
+            Self::FiveMinutes => Duration::minutes(5),
+            Self::FifteenMinutes => Duration::minutes(15),
+            Self::OneHour => Duration::hours(1),
+        }
+    }
+
+    pub fn source_candle_count(self) -> i64 {
+        match self {
+            Self::OneMinute => 1,
+            Self::FiveMinutes => 5,
+            Self::FifteenMinutes => 15,
+            Self::OneHour => 60,
+        }
+    }
+
+    pub fn bucket_start(self, timestamp: DateTime<Utc>) -> DateTime<Utc> {
+        let step_seconds = self.duration().num_seconds();
+        let aligned_seconds =
+            timestamp.timestamp() - timestamp.timestamp().rem_euclid(step_seconds);
+        Utc.timestamp_opt(aligned_seconds, 0)
+            .single()
+            .expect("aligned candle bucket timestamp must be valid")
+    }
+
+    pub fn bucket_close_time(self, bucket_start: DateTime<Utc>) -> DateTime<Utc> {
+        bucket_start + self.duration() - Duration::milliseconds(1)
+    }
+
+    pub fn is_aggregated_from_one_minute(self) -> bool {
+        !matches!(self, Self::OneMinute)
+    }
+
+    pub fn recommended_max_signal_age_ms(self) -> (i64, i64) {
+        match self {
+            Self::OneMinute => (120_000, 300_000),
+            Self::FiveMinutes => (600_000, 900_000),
+            Self::FifteenMinutes => (1_800_000, 2_700_000),
+            Self::OneHour => (7_200_000, 10_800_000),
         }
     }
 
@@ -361,8 +405,177 @@ impl std::str::FromStr for CandleInterval {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "1m" => Ok(Self::OneMinute),
+            "5m" => Ok(Self::FiveMinutes),
+            "15m" => Ok(Self::FifteenMinutes),
+            "1h" => Ok(Self::OneHour),
             other => Err(CoreError::UnsupportedCandleInterval(other.to_string())),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleAggregationRequest {
+    #[serde(default)]
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub source_interval: String,
+    pub target_interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl CandleAggregationRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyCandleBackfillSymbol);
+        }
+        let source_interval = self.source_interval.parse::<CandleInterval>()?;
+        let target_interval = self.target_interval.parse::<CandleInterval>()?;
+        if source_interval != CandleInterval::OneMinute
+            || !target_interval.is_aggregated_from_one_minute()
+        {
+            return Err(CoreError::UnsupportedCandleInterval(
+                self.target_interval.clone(),
+            ));
+        }
+        target_interval.candles_between(self.start_time, self.end_time)?;
+        Ok(())
+    }
+
+    pub fn normalized_symbol(&self) -> Result<Symbol, CoreError> {
+        Symbol::new(self.symbol.clone())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleAggregationResult {
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub source_interval: String,
+    pub target_interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub source_candles: i32,
+    pub aggregated_candles: i32,
+    pub inserted: i32,
+    pub updated: i32,
+    pub skipped_incomplete: i32,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CandleIntervalCoverage {
+    pub interval: String,
+    pub candle_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CandleCoverageSummary {
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub intervals: Vec<CandleIntervalCoverage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleAggregationOutcome {
+    pub candles: Vec<Candle>,
+    pub skipped_incomplete_buckets: i32,
+}
+
+pub fn aggregate_closed_1m_candles(
+    candles: &[Candle],
+    target_interval: CandleInterval,
+) -> CandleAggregationOutcome {
+    if candles.is_empty() {
+        return CandleAggregationOutcome {
+            candles: Vec::new(),
+            skipped_incomplete_buckets: 0,
+        };
+    }
+
+    let expected_per_bucket = target_interval.source_candle_count();
+    let mut buckets = std::collections::BTreeMap::<DateTime<Utc>, Vec<Candle>>::new();
+
+    for candle in candles
+        .iter()
+        .filter(|candle| candle.is_closed && candle.interval == CandleInterval::OneMinute)
+    {
+        buckets
+            .entry(target_interval.bucket_start(candle.open_time))
+            .or_default()
+            .push(candle.clone());
+    }
+
+    let mut aggregated = Vec::new();
+    let mut skipped_incomplete_buckets = 0;
+
+    for (bucket_start, mut bucket) in buckets {
+        bucket.sort_by_key(|candle| candle.open_time);
+        let is_complete = i64::try_from(bucket.len()).ok() == Some(expected_per_bucket)
+            && bucket.iter().enumerate().all(|(index, candle)| {
+                candle.open_time
+                    == bucket_start + Duration::minutes(i64::try_from(index).unwrap_or_default())
+            });
+        if !is_complete {
+            skipped_incomplete_buckets += 1;
+            continue;
+        }
+
+        let first = bucket
+            .first()
+            .expect("complete aggregation bucket must contain at least one candle");
+        let last = bucket
+            .last()
+            .expect("complete aggregation bucket must contain at least one candle");
+        let high = bucket
+            .iter()
+            .map(|candle| candle.high)
+            .max()
+            .expect("complete aggregation bucket must contain a high");
+        let low = bucket
+            .iter()
+            .map(|candle| candle.low)
+            .min()
+            .expect("complete aggregation bucket must contain a low");
+        let volume = bucket
+            .iter()
+            .fold(Decimal::ZERO, |sum, candle| sum + candle.volume);
+        let quote_volume = bucket.iter().try_fold(Decimal::ZERO, |sum, candle| {
+            candle.quote_volume.map(|value| sum + value)
+        });
+        let trade_count = bucket.iter().map(|candle| candle.trade_count).sum();
+        let id_seed = format!(
+            "{}:{}:{}:{}",
+            first.exchange.as_str(),
+            first.symbol.as_str(),
+            target_interval.as_str(),
+            bucket_start.to_rfc3339()
+        );
+
+        aggregated.push(Candle {
+            id: Uuid::new_v5(&Uuid::NAMESPACE_OID, id_seed.as_bytes()),
+            exchange: first.exchange,
+            symbol: first.symbol.clone(),
+            interval: target_interval,
+            open_time: bucket_start,
+            close_time: target_interval.bucket_close_time(bucket_start),
+            open: first.open,
+            high,
+            low,
+            close: last.close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed: true,
+            created_at: last.updated_at,
+            updated_at: last.updated_at,
+        });
+    }
+
+    CandleAggregationOutcome {
+        candles: aggregated,
+        skipped_incomplete_buckets,
     }
 }
 
@@ -1196,6 +1409,7 @@ impl BacktestRequest {
         if self.initial_capital <= Decimal::ZERO {
             return Err(CoreError::InvalidBacktestInitialCapital);
         }
+        self.timeframe.parse::<CandleInterval>()?;
 
         self.config().validate()?;
         Ok(())
@@ -1405,6 +1619,7 @@ impl StrategyExperimentRequest {
         if self.initial_capital <= Decimal::ZERO {
             return Err(CoreError::InvalidStrategyExperimentInitialCapital);
         }
+        self.timeframe.parse::<CandleInterval>()?;
         if self.fee_bps < Decimal::ZERO {
             return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
         }
@@ -5637,24 +5852,24 @@ pub enum CoreError {
 #[cfg(test)]
 mod tests {
     use super::{
-        calculate_average_duration_seconds, calculate_strategy_average_pnl,
-        calculate_strategy_rejection_rate, calculate_strategy_win_rate,
-        calculate_testnet_promotion_rate, combine_strategy_performance_summaries,
-        execution_readiness_status_from_checks, score_execution_readiness,
-        validate_password_length, validate_testnet_repair_transition, ExchangeEnvironment,
-        ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
-        ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
-        ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
-        ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionReadinessCheck,
-        ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
-        ExecutionReadinessStatus, ExecutionState, OperatorReport, OperatorReportFinding,
-        OperatorReportFormat, OperatorReportRecommendation, OperatorReportRequest,
-        OperatorReportSection, OperatorReportSeverity, OperatorReportStatus, OperatorReportSummary,
-        OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
+        aggregate_closed_1m_candles, calculate_average_duration_seconds,
+        calculate_strategy_average_pnl, calculate_strategy_rejection_rate,
+        calculate_strategy_win_rate, calculate_testnet_promotion_rate,
+        combine_strategy_performance_summaries, execution_readiness_status_from_checks,
+        score_execution_readiness, validate_password_length, validate_testnet_repair_transition,
+        Candle, CandleInterval, ExchangeEnvironment, ExchangeExecutionReport,
+        ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName, ExchangeOrderRequest,
+        ExchangeOrderSide, ExchangeOrderState, ExchangeOrderType, ExchangePrivateStreamEvent,
+        ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+        ExecutionReadinessCheck, ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
+        ExecutionReadinessStatus, ExecutionState, MarketDataSource, OperatorReport,
+        OperatorReportFinding, OperatorReportFormat, OperatorReportRecommendation,
+        OperatorReportRequest, OperatorReportSection, OperatorReportSeverity, OperatorReportStatus,
+        OperatorReportSummary, OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
         StrategyPerformanceSummary, Symbol, TestnetExecutionState, TestnetRepairAction,
         TestnetRepairRequest, UserRole,
     };
-    use chrono::Utc;
+    use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
     use serde_json::json;
     use uuid::Uuid;
@@ -6283,5 +6498,161 @@ mod tests {
             ExecutionReadinessRecommendation::IncreaseShadowCoverage.message(),
             "Continue shadow mode before promotion."
         );
+    }
+
+    fn sample_1m_candle(open_minute: i64, open: i64, high: i64, low: i64, close: i64) -> Candle {
+        let open_time =
+            Utc.with_ymd_and_hms(2026, 5, 23, 0, 0, 0).unwrap() + Duration::minutes(open_minute);
+        Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new("BTCUSDT").unwrap(),
+            interval: CandleInterval::OneMinute,
+            open_time,
+            close_time: CandleInterval::OneMinute.bucket_close_time(open_time),
+            open: Decimal::from(open),
+            high: Decimal::from(high),
+            low: Decimal::from(low),
+            close: Decimal::from(close),
+            volume: Decimal::from(10 + open_minute),
+            quote_volume: Some(Decimal::from(100 + open_minute)),
+            trade_count: 1 + i32::try_from(open_minute).unwrap_or_default(),
+            is_closed: true,
+            created_at: open_time,
+            updated_at: open_time + Duration::seconds(59),
+        }
+    }
+
+    #[test]
+    fn candle_interval_supports_higher_timeframes() {
+        assert_eq!(
+            "5m".parse::<CandleInterval>().unwrap(),
+            CandleInterval::FiveMinutes
+        );
+        assert_eq!(
+            "15m".parse::<CandleInterval>().unwrap(),
+            CandleInterval::FifteenMinutes
+        );
+        assert_eq!(
+            "1h".parse::<CandleInterval>().unwrap(),
+            CandleInterval::OneHour
+        );
+    }
+
+    #[test]
+    fn aggregates_five_1m_candles_into_one_5m_candle() {
+        let candles = (0..5)
+            .map(|minute| {
+                sample_1m_candle(
+                    minute,
+                    100 + minute,
+                    110 + minute,
+                    90 + minute,
+                    105 + minute,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let outcome = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
+
+        assert_eq!(outcome.skipped_incomplete_buckets, 0);
+        assert_eq!(outcome.candles.len(), 1);
+        let candle = &outcome.candles[0];
+        assert_eq!(candle.open, Decimal::from(100));
+        assert_eq!(candle.high, Decimal::from(114));
+        assert_eq!(candle.low, Decimal::from(90));
+        assert_eq!(candle.close, Decimal::from(109));
+        assert_eq!(
+            candle.volume,
+            candles
+                .iter()
+                .fold(Decimal::ZERO, |sum, item| sum + item.volume)
+        );
+        assert_eq!(
+            candle.quote_volume,
+            Some(candles.iter().fold(Decimal::ZERO, |sum, item| {
+                sum + item.quote_volume.unwrap()
+            }))
+        );
+        assert_eq!(
+            candle.trade_count,
+            candles.iter().map(|item| item.trade_count).sum::<i32>()
+        );
+    }
+
+    #[test]
+    fn incomplete_bucket_is_skipped() {
+        let candles = (0..4)
+            .map(|minute| sample_1m_candle(minute, 100, 101, 99, 100))
+            .collect::<Vec<_>>();
+
+        let outcome = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
+
+        assert_eq!(outcome.candles.len(), 0);
+        assert_eq!(outcome.skipped_incomplete_buckets, 1);
+    }
+
+    #[test]
+    fn bucket_alignment_uses_target_boundaries() {
+        let candles = (5..10)
+            .map(|minute| sample_1m_candle(minute, 100, 101, 99, 100))
+            .collect::<Vec<_>>();
+
+        let outcome = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
+        let candle = &outcome.candles[0];
+
+        assert_eq!(
+            candle.open_time,
+            Utc.with_ymd_and_hms(2026, 5, 23, 0, 5, 0).unwrap()
+        );
+        assert_eq!(
+            candle.close_time,
+            Utc.with_ymd_and_hms(2026, 5, 23, 0, 9, 59).unwrap() + Duration::milliseconds(999)
+        );
+    }
+
+    #[test]
+    fn fifteen_minute_aggregation_works() {
+        let candles = (0..15)
+            .map(|minute| sample_1m_candle(minute, 100, 101 + minute, 99 - minute, 100 + minute))
+            .collect::<Vec<_>>();
+
+        let outcome = aggregate_closed_1m_candles(&candles, CandleInterval::FifteenMinutes);
+
+        assert_eq!(outcome.candles.len(), 1);
+        assert_eq!(outcome.candles[0].high, Decimal::from(115));
+        assert_eq!(outcome.candles[0].low, Decimal::from(85));
+        assert_eq!(outcome.candles[0].close, Decimal::from(114));
+    }
+
+    #[test]
+    fn one_hour_aggregation_works() {
+        let candles = (0..60)
+            .map(|minute| sample_1m_candle(minute, 100, 100 + minute, 80, 100 + minute))
+            .collect::<Vec<_>>();
+
+        let outcome = aggregate_closed_1m_candles(&candles, CandleInterval::OneHour);
+
+        assert_eq!(outcome.candles.len(), 1);
+        assert_eq!(
+            outcome.candles[0].open_time,
+            Utc.with_ymd_and_hms(2026, 5, 23, 0, 0, 0).unwrap()
+        );
+        assert_eq!(
+            outcome.candles[0].close_time,
+            Utc.with_ymd_and_hms(2026, 5, 23, 0, 59, 59).unwrap() + Duration::milliseconds(999)
+        );
+    }
+
+    #[test]
+    fn aggregation_is_deterministic_for_same_input() {
+        let candles = (0..5)
+            .map(|minute| sample_1m_candle(minute, 100 + minute, 101 + minute, 99, 100 + minute))
+            .collect::<Vec<_>>();
+
+        let first = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
+        let second = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
+
+        assert_eq!(first, second);
     }
 }

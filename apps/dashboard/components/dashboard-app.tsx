@@ -14,8 +14,11 @@ import type {
   BacktestRequest,
   BacktestResult,
   BacktestRunAcceptedResponse,
+  CandleAggregationRequest,
+  CandleAggregationResult,
   CandleBackfillRequest,
   CandleBackfillResult,
+  CandleCoverageSummary,
   ExecutionReadinessRequest,
   ExecutionReadinessResult,
   ExecutionReadinessSnapshot,
@@ -82,6 +85,8 @@ const SECTIONS: Array<{ id: SectionId; label: string }> = [
 ];
 
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"];
+const TIMEFRAME_OPTIONS = ["1m", "5m", "15m", "1h"];
+const AGGREGATION_TARGET_OPTIONS = ["5m", "15m", "1h"];
 
 const DEFAULT_BACKTEST_FORM: BacktestRequest = {
   strategy_id: "momentum_v1",
@@ -136,6 +141,15 @@ const DEFAULT_BACKFILL_FORM: CandleBackfillRequest = {
   start_time: "2026-05-01T00:00:00Z",
   end_time: "2026-05-02T00:00:00Z",
   limit_per_request: 1000,
+};
+
+const DEFAULT_AGGREGATION_FORM: CandleAggregationRequest = {
+  exchange: "binance",
+  symbol: "BTCUSDT",
+  source_interval: "1m",
+  target_interval: "5m",
+  start_time: "2026-05-23T00:00:00Z",
+  end_time: "2026-05-24T00:00:00Z",
 };
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
@@ -495,9 +509,13 @@ function AuthenticatedDashboard({
   const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(null);
   const [backfillForm, setBackfillForm] =
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
+  const [aggregationForm, setAggregationForm] =
+    useState<CandleAggregationRequest>(DEFAULT_AGGREGATION_FORM);
   const [selectedBackfillRunId, setSelectedBackfillRunId] = useState<string | null>(null);
   const [lastBackfillResult, setLastBackfillResult] =
     useState<CandleBackfillResult | null>(null);
+  const [lastAggregationResult, setLastAggregationResult] =
+    useState<CandleAggregationResult | null>(null);
   const [strategyConfigForm, setStrategyConfigForm] =
     useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
   const [strategyDiagnosticsForm, setStrategyDiagnosticsForm] = useState(
@@ -739,6 +757,12 @@ function AuthenticatedDashboard({
     queryFn: () => api.getMarketCandles(selectedSymbol, "1m", 25),
     refetchInterval: 10_000,
   });
+  const candleCoverageQuery = useQuery({
+    queryKey: ["candle-coverage", selectedSymbol],
+    queryFn: () => api.getMarketCandleCoverage(selectedSymbol),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
     queryFn: () => api.getMarketBackfillRuns(20),
@@ -976,8 +1000,17 @@ function AuthenticatedDashboard({
       if (!symbols.includes(backfillForm.symbol)) {
         setBackfillForm((current) => ({ ...current, symbol: symbols[0] }));
       }
+      if (!symbols.includes(aggregationForm.symbol)) {
+        setAggregationForm((current) => ({ ...current, symbol: symbols[0] }));
+      }
     }
-  }, [backfillForm.symbol, pipelineSymbol, selectedSymbol, symbolsQuery.data?.symbols]);
+  }, [
+    aggregationForm.symbol,
+    backfillForm.symbol,
+    pipelineSymbol,
+    selectedSymbol,
+    symbolsQuery.data?.symbols,
+  ]);
 
   useEffect(() => {
     const strategies = strategiesQuery.data?.strategies;
@@ -1281,6 +1314,14 @@ function AuthenticatedDashboard({
       setSelectedBackfillRunId(result.run_id);
       await refreshOperationalData();
       await queryClient.invalidateQueries({ queryKey: ["candles"] });
+    },
+  });
+  const aggregateCandlesMutation = useMutation({
+    mutationFn: () => api.aggregateMarketCandles(aggregationForm),
+    onSuccess: async (result) => {
+      setLastAggregationResult(result);
+      await queryClient.invalidateQueries({ queryKey: ["candles"] });
+      await queryClient.invalidateQueries({ queryKey: ["candle-coverage"] });
     },
   });
   const paperMarkMutation = useMutation({
@@ -2026,6 +2067,100 @@ function AuthenticatedDashboard({
                 <CandlesTable candles={candlesQuery.data?.candles ?? []} />
                 <InlineStatus error={getErrorMessage(candlesQuery.error)} />
               </Panel>
+              <Panel className="xl:col-span-5" title="Candle Coverage">
+                <div className="mb-3 flex max-w-xs">
+                  <Field
+                    label="Symbol"
+                    as="select"
+                    value={selectedSymbol}
+                    onChange={setSelectedSymbol}
+                    options={dataSymbols}
+                  />
+                </div>
+                <CandleCoverageTable
+                  coverage={candleCoverageQuery.data?.coverage ?? null}
+                  loading={candleCoverageQuery.isLoading}
+                  error={getErrorMessage(candleCoverageQuery.error)}
+                />
+              </Panel>
+              <Panel className="xl:col-span-7" title="Aggregate Candles">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field
+                    label="Exchange"
+                    value={aggregationForm.exchange ?? "binance"}
+                    onChange={(value) =>
+                      setAggregationForm((current) => ({ ...current, exchange: value }))
+                    }
+                    disabled
+                  />
+                  <Field
+                    label="Symbol"
+                    as="select"
+                    value={aggregationForm.symbol}
+                    onChange={(value) =>
+                      setAggregationForm((current) => ({ ...current, symbol: value }))
+                    }
+                    options={dataSymbols}
+                  />
+                  <Field
+                    label="Source"
+                    value={aggregationForm.source_interval}
+                    onChange={(value) =>
+                      setAggregationForm((current) => ({ ...current, source_interval: value }))
+                    }
+                    options={["1m"]}
+                  />
+                  <Field
+                    label="Target"
+                    value={aggregationForm.target_interval}
+                    onChange={(value) =>
+                      setAggregationForm((current) => ({ ...current, target_interval: value }))
+                    }
+                    options={AGGREGATION_TARGET_OPTIONS}
+                  />
+                  <Field
+                    label="Start"
+                    value={aggregationForm.start_time}
+                    onChange={(value) =>
+                      setAggregationForm((current) => ({ ...current, start_time: value }))
+                    }
+                  />
+                  <Field
+                    label="End"
+                    value={aggregationForm.end_time}
+                    onChange={(value) =>
+                      setAggregationForm((current) => ({ ...current, end_time: value }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex items-center gap-3">
+                  <ActionButton
+                    label="Aggregate Candles"
+                    onClick={() => aggregateCandlesMutation.mutate()}
+                    busy={aggregateCandlesMutation.isPending}
+                    disabled={user.role !== "OWNER" && user.role !== "OPERATOR"}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(aggregateCandlesMutation.error)}
+                    success={
+                      lastAggregationResult
+                        ? `Persisted ${lastAggregationResult.inserted} inserts / ${lastAggregationResult.updated} updates`
+                        : undefined
+                    }
+                  />
+                </div>
+                {lastAggregationResult ? (
+                  <div className="mt-3">
+                    <KeyValue
+                      items={[
+                        ["Source Candles", String(lastAggregationResult.source_candles)],
+                        ["Aggregated", String(lastAggregationResult.aggregated_candles)],
+                        ["Skipped Incomplete", String(lastAggregationResult.skipped_incomplete)],
+                      ]}
+                    />
+                  </div>
+                ) : null}
+              </Panel>
               <Panel className="xl:col-span-5" title="Historical Backfill">
                 <div className="grid gap-3 md:grid-cols-2">
                   <Field
@@ -2222,7 +2357,7 @@ function AuthenticatedDashboard({
                       label="Timeframe"
                       value={strategyConfigForm.timeframe}
                       as="select"
-                      options={["1m"]}
+                      options={TIMEFRAME_OPTIONS}
                       onChange={(value) =>
                         setStrategyConfigForm((current) => ({ ...current, timeframe: value }))
                       }
@@ -2404,7 +2539,7 @@ function AuthenticatedDashboard({
                       label="Timeframe"
                       value={strategyDiagnosticsForm.timeframe}
                       as="select"
-                      options={["1m"]}
+                      options={TIMEFRAME_OPTIONS}
                       onChange={(value) =>
                         setStrategyDiagnosticsForm((current) => ({
                           ...current,
@@ -4959,6 +5094,33 @@ function CandlesTable({
         String(candle.trade_count),
         candle.is_closed ? "closed" : "open",
       ])}
+    />
+  );
+}
+
+function CandleCoverageTable({
+  coverage,
+  loading,
+  error,
+}: {
+  coverage: CandleCoverageSummary | null;
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading candle coverage..." />;
+  }
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+  if (!coverage) {
+    return <EmptyState label="No coverage data." />;
+  }
+
+  return (
+    <Table
+      headers={["Interval", "Closed Candles"]}
+      rows={coverage.intervals.map((entry) => [entry.interval, formatNumber(entry.candle_count)])}
     />
   );
 }

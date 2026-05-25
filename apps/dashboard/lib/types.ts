@@ -710,6 +710,49 @@ export type CandleBackfillResult = {
   completed_at: string | null;
 };
 
+export type CandleAggregationRequest = {
+  exchange?: string;
+  symbol: string;
+  source_interval: string;
+  target_interval: string;
+  start_time: string;
+  end_time: string;
+  correlation_id?: string | null;
+};
+
+export type CandleAggregationResult = {
+  exchange: string;
+  symbol: string;
+  source_interval: string;
+  target_interval: string;
+  start_time: string;
+  end_time: string;
+  source_candles: number;
+  aggregated_candles: number;
+  inserted: number;
+  updated: number;
+  skipped_incomplete: number;
+  correlation_id: string | null;
+};
+
+export type CandleIntervalCoverage = {
+  interval: string;
+  candle_count: number;
+};
+
+export type CandleCoverageSummary = {
+  exchange: string;
+  symbol: string;
+  intervals: CandleIntervalCoverage[];
+};
+
+export type CandleCoverageResponse = {
+  coverage: CandleCoverageSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type CandleBackfillRunsResponse = {
   runs: CandleBackfillResult[];
   request_id: string;

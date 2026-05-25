@@ -19,6 +19,7 @@
 
 - Completed: persistent kill switch, deterministic risk evaluation, Binance public ingest, deterministic candle building, strategy signal generation, paper-only order lifecycle, replay/backtest MVP, DB-backed integration harness, and minimal dashboard shell
 - Completed: Binance public REST historical candle backfill with persisted run tracking, CLI/API entrypoints, and dashboard inspection
+- Completed: deterministic higher-timeframe candle aggregation (5m/15m/1h) from stored 1m candles with shared persistence, coverage inspection, and replay/diagnostics/experiment support
 - Completed: cockpit inspection APIs for persisted risk decisions, enriched order inspection, and filtered recent events
 - Completed: local/operator CLI fallback over the existing HTTP API for status, kill switch control, paper pipeline runs, strategies, orders, events, risk decisions, and backtests
 - Completed: paper account, position, fill, journal, mark-to-market, manual close flow, and equity snapshot accounting for operational paper trading
@@ -38,7 +39,7 @@
 - Completed: read-only promotion funnel analytics across shadow would-submit, promotion preview/submit, isolated testnet order lifecycle outcomes, API/CLI/dashboard surfaces, and bounded low-cardinality telemetry
 - Completed: read-only operator daily reports across health, feed freshness, strategy/risk behavior, paper PnL, shadow outcomes, promotion funnel, and isolated testnet execution with optional persisted exports
 - Completed: deterministic execution readiness gate with API/CLI/dashboard inspection, optional readiness snapshots, and bounded telemetry across paper/testnet shadow promotion boundaries
-- Current focus: deepen readiness heuristics, reconciliation visibility, and promotion-readiness workflows across paper/testnet shadow boundaries before any live execution surface area
+- Current focus: improve strategy research quality with higher-timeframe replay coverage while continuing readiness heuristics, reconciliation visibility, and promotion-readiness workflows before any live execution surface area
 
 ## Next implementation steps
 

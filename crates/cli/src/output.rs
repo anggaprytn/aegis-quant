@@ -1,4 +1,4 @@
-use aegis_core::User;
+use aegis_core::{CandleAggregationResult, CandleCoverageSummary, User};
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
     TestnetShadowPromotionResult, TestnetShadowRunResult,
@@ -1291,6 +1291,32 @@ pub fn print_backfill_runs(response: &CandleBackfillRunsResponse) {
 
 pub fn print_backfill_run(response: &CandleBackfillRunResponse) {
     print_backfill_result(&response.run);
+}
+
+pub fn print_candle_aggregation_result(result: &CandleAggregationResult) {
+    println!("Exchange: {}", result.exchange.as_str());
+    println!("Symbol: {}", result.symbol);
+    println!(
+        "Intervals: {} -> {}",
+        result.source_interval, result.target_interval
+    );
+    println!("Window: {} -> {}", result.start_time, result.end_time);
+    println!("Source candles: {}", result.source_candles);
+    println!("Aggregated candles: {}", result.aggregated_candles);
+    println!("Inserted: {}", result.inserted);
+    println!("Updated: {}", result.updated);
+    println!("Skipped incomplete: {}", result.skipped_incomplete);
+    if let Some(correlation_id) = result.correlation_id {
+        println!("Correlation ID: {}", correlation_id);
+    }
+}
+
+pub fn print_candle_coverage(coverage: &CandleCoverageSummary) {
+    println!("Exchange: {}", coverage.exchange.as_str());
+    println!("Symbol: {}", coverage.symbol);
+    for interval in &coverage.intervals {
+        println!("{}: {}", interval.interval, interval.candle_count);
+    }
 }
 
 pub fn print_strategy_performance_summary(response: &StrategyPerformanceSummaryResponse) {

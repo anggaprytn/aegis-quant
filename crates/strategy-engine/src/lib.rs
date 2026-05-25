@@ -119,7 +119,7 @@ pub fn validate_strategy_config(
                 StrategyConfigValidationSeverity::Error,
                 "unsupported_timeframe",
                 "timeframe",
-                "timeframe must currently be 1m",
+                "timeframe must be one of 1m, 5m, 15m, or 1h",
             ));
             CandleInterval::OneMinute
         }
@@ -147,20 +147,41 @@ pub fn validate_strategy_config(
         }
     }
 
-    if !(1_000..=300_000).contains(&request.max_signal_age_ms) {
+    if request.max_signal_age_ms < 1_000 {
         issues.push(issue(
             StrategyConfigValidationSeverity::Error,
             "invalid_max_signal_age_ms",
             "max_signal_age_ms",
-            "max_signal_age_ms must be between 1_000 and 300_000",
+            "max_signal_age_ms must be greater than or equal to 1_000",
         ));
     }
-    if timeframe == CandleInterval::OneMinute && request.max_signal_age_ms < 60_000 {
+    let (recommended_min, recommended_max) = timeframe.recommended_max_signal_age_ms();
+    if request.max_signal_age_ms < recommended_min {
         issues.push(issue(
             StrategyConfigValidationSeverity::Warn,
-            "max_signal_age_ms_too_low_for_1m",
+            &format!("max_signal_age_ms_too_low_for_{}", timeframe.as_str()),
             "max_signal_age_ms",
-            "1m candle strategies should use at least 60_000ms; recommended range is 120_000-300_000ms",
+            &format!(
+                "{} candle strategies should use at least {}ms; recommended range is {}-{}ms",
+                timeframe.as_str(),
+                recommended_min,
+                recommended_min,
+                recommended_max
+            ),
+        ));
+    }
+    if request.max_signal_age_ms > recommended_max {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Warn,
+            &format!("max_signal_age_ms_high_for_{}", timeframe.as_str()),
+            "max_signal_age_ms",
+            &format!(
+                "{} candle strategies typically use at most {}ms; recommended range is {}-{}ms",
+                timeframe.as_str(),
+                recommended_max,
+                recommended_min,
+                recommended_max
+            ),
         ));
     }
 
@@ -843,6 +864,7 @@ pub fn build_default_strategy_configs(
     momentum_lookback_candles: u32,
     breakout_lookback_candles: u32,
 ) -> Vec<StrategyConfig> {
+    let (recommended_signal_age_ms, _) = timeframe.recommended_max_signal_age_ms();
     vec![
         StrategyConfig {
             strategy_id: StrategyId::MomentumV1,
@@ -851,7 +873,7 @@ pub fn build_default_strategy_configs(
             symbols: symbols.clone(),
             timeframe,
             suggested_notional,
-            max_signal_age_ms: 180_000,
+            max_signal_age_ms: recommended_signal_age_ms,
             cooldown_seconds: 900,
             lookback_candles: momentum_lookback_candles,
             confidence_floor: None,
@@ -867,7 +889,7 @@ pub fn build_default_strategy_configs(
             symbols,
             timeframe,
             suggested_notional,
-            max_signal_age_ms: 180_000,
+            max_signal_age_ms: recommended_signal_age_ms,
             cooldown_seconds: 900,
             lookback_candles: breakout_lookback_candles,
             confidence_floor: None,
@@ -1218,7 +1240,7 @@ mod tests {
         );
         assert!(configs
             .iter()
-            .all(|config| config.max_signal_age_ms == 180_000));
+            .all(|config| config.max_signal_age_ms == 120_000));
     }
 
     #[test]
@@ -1252,9 +1274,9 @@ mod tests {
     }
 
     #[test]
-    fn invalid_timeframe_rejected() {
+    fn unsupported_timeframe_rejected() {
         let mut request = sample_request("momentum_v1");
-        request.timeframe = "5m".to_string();
+        request.timeframe = "2m".to_string();
         let result = validate_strategy_config(&request, &validation_context());
         assert!(!result.valid);
     }
@@ -1313,6 +1335,19 @@ mod tests {
     }
 
     #[test]
+    fn higher_timeframe_is_accepted_with_scaled_signal_age() {
+        let mut request = sample_request("momentum_v1");
+        request.timeframe = "5m".to_string();
+        request.max_signal_age_ms = 600_000;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(result.valid);
+        assert!(result
+            .issues
+            .iter()
+            .all(|issue| issue.code != "unsupported_timeframe"));
+    }
+
+    #[test]
     fn one_minute_strategy_with_180000_signal_age_has_no_warning() {
         let request = sample_request("momentum_v1");
         let result = validate_strategy_config(&request, &validation_context());
@@ -1332,6 +1367,19 @@ mod tests {
         assert!(result.issues.iter().any(|issue| {
             issue.severity == StrategyConfigValidationSeverity::Error
                 && issue.code == "invalid_max_signal_age_ms"
+        }));
+    }
+
+    #[test]
+    fn high_signal_age_for_higher_timeframe_emits_warning() {
+        let mut request = sample_request("momentum_v1");
+        request.timeframe = "1h".to_string();
+        request.max_signal_age_ms = 10_800_001;
+        let result = validate_strategy_config(&request, &validation_context());
+        assert!(result.valid);
+        assert!(result.issues.iter().any(|issue| {
+            issue.severity == StrategyConfigValidationSeverity::Warn
+                && issue.code == "max_signal_age_ms_high_for_1h"
         }));
     }
 }

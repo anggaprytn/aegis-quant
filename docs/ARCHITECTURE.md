@@ -66,6 +66,27 @@ Notes:
 - Replay/backtest reads the same `candles` table populated by both live WebSocket accumulation and historical REST backfill.
 - The ingest boundary is public market data only. No API keys, private streams, or exchange execution are introduced here.
 
+Higher timeframe candle derivation is a separate deterministic read/write path over the same store:
+
+```txt
+stored closed 1m candles in Postgres
+-> POST /market/candles/aggregate
+-> deterministic UTC bucket alignment for 5m / 15m / 1h
+-> first open + max high + min low + last close
+-> summed volume / quote_volume / trade_count
+-> skip incomplete buckets by default
+-> idempotent upsert back into candles
+-> GET /market/candles/coverage
+-> replay / diagnostics / experiments consume the requested timeframe if rows exist
+```
+
+Aggregation invariants:
+
+- Only stored closed `1m` candles are valid source input for derived higher-timeframe candles.
+- Bucket boundaries are UTC-aligned at `00,05,10...`, `00,15,30,45`, and `HH:00`.
+- Derived candles persist into the same `candles` table under `(exchange, symbol, interval, open_time)` uniqueness.
+- Aggregation must not mutate signals, risk decisions, orders, paper accounting, shadow state, or testnet execution state.
+
 ## Strategy evaluation flow
 
 Current deterministic paper flow follows this path:

@@ -15,17 +15,19 @@ use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
 };
 use aegis_core::{
-    expected_testnet_pipeline_confirmation, expected_testnet_shadow_promotion_confirmation,
-    is_valid_testnet_pipeline_confirmation, is_valid_testnet_shadow_promotion_confirmation,
-    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
-    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
-    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
-    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
-    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
-    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
-    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
-    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
-    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    aggregate_closed_1m_candles, expected_testnet_pipeline_confirmation,
+    expected_testnet_shadow_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
+    is_valid_testnet_shadow_promotion_confirmation, validate_testnet_repair_transition,
+    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
+    AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
+    CandleBackfillRequest, CandleBackfillResult, CandleCoverageSummary, CandleInterval,
+    EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment,
+    ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
+    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
+    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
+    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
+    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo,
+    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, MarketMode, OperatorReport, OperatorReportRequest, OrderIntent,
     PaperCloseMode, PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
@@ -77,7 +79,8 @@ use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, connect_pool, count_users,
     create_paper_order, ensure_system_state, get_active_testnet_shadow_promotion_for_shadow_run,
-    get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
+    get_aggregated_candle_coverage, get_backtest_equity_curve, get_backtest_run,
+    get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
     get_default_paper_account, get_exchange_private_stream_state,
     get_exchange_testnet_order_by_client_order_id, get_latest_market_tick, get_order_by_id,
     get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
@@ -108,7 +111,7 @@ use db::{
     strategy_config_audit_from_record, strategy_config_from_record,
     strategy_config_version_from_record, strategy_experiment_result_from_records,
     strategy_experiment_run_from_record, update_strategy_state,
-    update_testnet_shadow_promotion_submission, update_user_last_login,
+    update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
     upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
     CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
@@ -1258,6 +1261,11 @@ struct BackfillRunsQuery {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct CandleCoverageQuery {
+    symbol: String,
+}
+
 #[derive(Serialize)]
 struct CandlesResponse {
     candles: Vec<CandleRecord>,
@@ -1277,6 +1285,14 @@ struct CandleBackfillRunsResponse {
 #[derive(Serialize)]
 struct CandleBackfillRunResponse {
     run: CandleBackfillResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CandleCoverageResponse {
+    coverage: CandleCoverageSummary,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1955,6 +1971,11 @@ async fn main() {
         .route("/market/symbols", get(get_market_symbols))
         .route("/market/ticks/latest", get(get_latest_tick))
         .route("/market/candles", get(get_market_candles))
+        .route("/market/candles/coverage", get(get_market_candle_coverage))
+        .route(
+            "/market/candles/aggregate",
+            post(post_market_aggregate_candles),
+        )
         .route(
             "/market/backfill/candles",
             post(post_market_backfill_candles),
@@ -2340,6 +2361,9 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
         return RouteAccess::Owner;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/reconcile" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/market/candles/aggregate" {
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST
@@ -12310,6 +12334,224 @@ async fn get_market_backfill_run(
     }
 }
 
+async fn post_market_aggregate_candles(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<CandleAggregationRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Uuid::parse_str(&request.correlation_id).ok();
+    }
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_candle_aggregation_request",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let symbol = match payload.normalized_symbol() {
+        Ok(symbol) => symbol,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let target_interval = match payload.target_interval.parse::<CandleInterval>() {
+        Ok(interval) => interval,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_target_interval",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let source_candles = match get_closed_1m_candles_range(
+        &state.db_pool,
+        payload.exchange,
+        &symbol,
+        payload.start_time,
+        payload.end_time,
+    )
+    .await
+    {
+        Ok(candles) => candles,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                symbol = %symbol,
+                target_interval = %target_interval.as_str(),
+                "failed to load source candles for aggregation"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_source_candles",
+                    message: "Failed to load source candles.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let aggregated = aggregate_closed_1m_candles(&source_candles, target_interval);
+    let upsert = match upsert_aggregated_candles(&state.db_pool, &aggregated.candles).await {
+        Ok(result) => result,
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                symbol = %symbol,
+                target_interval = %target_interval.as_str(),
+                "failed to persist aggregated candles"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_persist_aggregated_candles",
+                    message: "Failed to persist aggregated candles.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let response = CandleAggregationResult {
+        exchange: payload.exchange,
+        symbol: symbol.as_str().to_string(),
+        source_interval: payload.source_interval,
+        target_interval: payload.target_interval,
+        start_time: payload.start_time,
+        end_time: payload.end_time,
+        source_candles: i32::try_from(source_candles.len()).unwrap_or(i32::MAX),
+        aggregated_candles: i32::try_from(aggregated.candles.len()).unwrap_or(i32::MAX),
+        inserted: upsert.inserted_candles,
+        updated: upsert.updated_candles,
+        skipped_incomplete: aggregated.skipped_incomplete_buckets,
+        correlation_id: payload.correlation_id,
+    };
+
+    if let Some(actor) = actor.as_ref() {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            response.correlation_id.unwrap_or_else(Uuid::new_v4),
+            &state_actor,
+            "market.candles.aggregate",
+            "market/candles/aggregate",
+            &json!({
+                "actor_id": actor.user_id,
+                "exchange": response.exchange.as_str(),
+                "symbol": &response.symbol,
+                "source_interval": &response.source_interval,
+                "target_interval": &response.target_interval,
+                "source_candles": response.source_candles,
+                "aggregated_candles": response.aggregated_candles,
+                "inserted": response.inserted,
+                "updated": response.updated,
+                "skipped_incomplete": response.skipped_incomplete
+            }),
+        )
+        .await;
+    }
+
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+async fn get_market_candle_coverage(
+    State(state): State<AppState>,
+    Query(query): Query<CandleCoverageQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let symbol = match Symbol::new(query.symbol) {
+        Ok(symbol) => symbol,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match get_aggregated_candle_coverage(&state.db_pool, state.market_config.exchange, &symbol)
+        .await
+    {
+        Ok(coverage) => (
+            StatusCode::OK,
+            Json(CandleCoverageResponse {
+                coverage,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request.request_id,
+                correlation_id = %request.correlation_id,
+                error = %err,
+                symbol = %symbol,
+                "failed to query candle coverage"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_candle_coverage",
+                    message: "Failed to query candle coverage.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn get_market_feed_status(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
@@ -14544,7 +14786,10 @@ mod tests {
             Err(err)
                 if err
                     .to_string()
-                    .contains("refusing to run integration tests against database") =>
+                    .contains("refusing to run integration tests against database")
+                    || err.to_string().contains(
+                        "set TEST_DATABASE_URL or DATABASE_URL before running DB integration tests",
+                    ) =>
             {
                 None
             }

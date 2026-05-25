@@ -15,6 +15,9 @@ import type {
   CandleBackfillResult,
   CandleBackfillRunResponse,
   CandleBackfillRunsResponse,
+  CandleAggregationRequest,
+  CandleAggregationResult,
+  CandleCoverageResponse,
   CandlesResponse,
   EvaluateStrategyResponse,
   ExchangeReconciliationMismatchesResponse,
@@ -304,6 +307,13 @@ export const api = {
     request<CandleBackfillRunsResponse>("/market/backfill/runs", undefined, { limit }),
   getMarketBackfillRun: (id: string) =>
     request<CandleBackfillRunResponse>(`/market/backfill/runs/${id}`),
+  aggregateMarketCandles: (payload: CandleAggregationRequest) =>
+    request<CandleAggregationResult>("/market/candles/aggregate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getMarketCandleCoverage: (symbol: string) =>
+    request<CandleCoverageResponse>("/market/candles/coverage", undefined, { symbol }),
   getExchangeTestnetStatus: () =>
     request<ExchangeTestnetStatusResponse>("/exchange/testnet/status"),
   getExchangeTestnetPrivateStreamStatus: () =>
