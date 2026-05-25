@@ -11,9 +11,11 @@ use aegis_core::{
     SignalSide, StrategyExperimentCandidate, StrategyExperimentComparison,
     StrategyExperimentMetric, StrategyExperimentResult, StrategyExperimentRun,
     StrategyExperimentStatus, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategySignal, Symbol, TestnetExecutionState, TestnetExecutionTransitionSource,
-    TestnetPromotionFunnelRequest, TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy,
-    TestnetShadowRunnerStatus,
+    StrategySignal, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus,
+    StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
+    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetShadowRunnerConfig,
+    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
 use db::{
@@ -30,12 +32,15 @@ use db::{
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_paper_account, insert_risk_decision, insert_signal_deduped, insert_strategy_experiment,
-    insert_strategy_experiment_runs, insert_testnet_shadow_promotion, insert_testnet_shadow_run,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
-    list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
-    list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
-    list_testnet_promotion_funnel_rows, set_kill_switch_state,
-    strategy_experiment_result_from_records, test_support::TestDatabase,
+    insert_strategy_experiment_runs, insert_strategy_walk_forward_run,
+    insert_strategy_walk_forward_windows, insert_testnet_shadow_promotion,
+    insert_testnet_shadow_run, list_exchange_private_stream_events,
+    list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
+    list_orders, list_recent_signals, list_strategy_experiment_runs, list_strategy_experiments,
+    list_strategy_performance_rankings, list_strategy_walk_forward_runs,
+    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows, set_kill_switch_state,
+    strategy_experiment_result_from_records, strategy_walk_forward_result_from_records,
+    strategy_walk_forward_window_from_record, test_support::TestDatabase,
     testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
     update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
     upsert_candle, upsert_candles_batch, upsert_exchange_private_stream_state,
@@ -232,6 +237,137 @@ fn sample_strategy_experiment_result(
         created_at: fixed_time(),
         correlation_id: Some(Uuid::from_u128(0xefe)),
     }
+}
+
+fn sample_strategy_walk_forward_request() -> StrategyWalkForwardRequest {
+    StrategyWalkForwardRequest {
+        strategy_id: "momentum_v1".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "15m".to_string(),
+        start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+        end_time: Utc.with_ymd_and_hms(2026, 5, 24, 0, 0, 0).unwrap(),
+        window_train_size_hours: 72,
+        window_test_size_hours: 24,
+        step_size_hours: 24,
+        initial_capital: Decimal::new(1_000_000, 0),
+        fee_bps: Decimal::new(10, 0),
+        slippage_bps: Decimal::new(5, 0),
+        candidate_config: StrategyWalkForwardCandidate {
+            lookback_candles: 5,
+            holding_candles: Some(3),
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            max_signal_age_ms: Some(180_000),
+        },
+        min_required_test_windows: Some(2),
+        correlation_id: Some(Uuid::from_u128(0x9901)),
+    }
+}
+
+fn sample_strategy_walk_forward_result(walk_forward_id: Uuid) -> StrategyWalkForwardResult {
+    StrategyWalkForwardResult {
+        walk_forward_id,
+        strategy_id: "momentum_v1".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "15m".to_string(),
+        total_windows: 3,
+        completed_windows: 2,
+        skipped_windows: 1,
+        profitable_test_windows: 1,
+        losing_test_windows: 1,
+        avg_test_pnl_pct: Decimal::new(15, 1),
+        median_test_pnl_pct: Decimal::new(15, 1),
+        worst_test_pnl_pct: Decimal::new(-1, 0),
+        best_test_pnl_pct: Decimal::new(4, 0),
+        avg_max_drawdown_pct: Decimal::new(25, 1),
+        robustness_score: Decimal::new(42, 1),
+        status: StrategyWalkForwardStatus::Completed,
+        robustness_summary: StrategyWalkForwardRobustnessSummary {
+            profitable_window_pct: Decimal::new(50, 0),
+            total_trade_count: 9,
+            avg_trades_per_completed_window: Decimal::new(45, 1),
+            avg_fee_slippage_drag_pct: Decimal::new(15, 2),
+            skipped_window_pct: Decimal::new(3333, 2),
+            dominant_winner_share_pct: Decimal::new(60, 0),
+        },
+        created_at: fixed_time(),
+        correlation_id: Some(Uuid::from_u128(0x9902)),
+    }
+}
+
+fn sample_strategy_walk_forward_windows(
+    walk_forward_id: Uuid,
+) -> Vec<StrategyWalkForwardWindowResult> {
+    vec![
+        StrategyWalkForwardWindowResult {
+            id: Uuid::from_u128(0x9911),
+            walk_forward_id,
+            window: StrategyWalkForwardWindow {
+                window_index: 0,
+                train_start: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+                train_end: Utc.with_ymd_and_hms(2026, 5, 4, 0, 0, 0).unwrap(),
+                test_start: Utc.with_ymd_and_hms(2026, 5, 4, 0, 0, 0).unwrap(),
+                test_end: Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap(),
+            },
+            status: StrategyWalkForwardStatus::Completed,
+            skip_reason: None,
+            trade_count: 5,
+            pnl: Decimal::new(40_000, 0),
+            pnl_pct: Decimal::new(4, 0),
+            max_drawdown_pct: Decimal::new(2, 0),
+            win_rate: Decimal::new(60, 0),
+            fee_paid: Decimal::new(1_000, 0),
+            slippage_cost: Decimal::new(500, 0),
+            result: json!({ "status": "COMPLETED" }),
+            created_at: fixed_time(),
+        },
+        StrategyWalkForwardWindowResult {
+            id: Uuid::from_u128(0x9912),
+            walk_forward_id,
+            window: StrategyWalkForwardWindow {
+                window_index: 1,
+                train_start: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+                train_end: Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap(),
+                test_start: Utc.with_ymd_and_hms(2026, 5, 5, 0, 0, 0).unwrap(),
+                test_end: Utc.with_ymd_and_hms(2026, 5, 6, 0, 0, 0).unwrap(),
+            },
+            status: StrategyWalkForwardStatus::Completed,
+            skip_reason: None,
+            trade_count: 4,
+            pnl: Decimal::new(-10_000, 0),
+            pnl_pct: Decimal::new(-1, 0),
+            max_drawdown_pct: Decimal::new(3, 0),
+            win_rate: Decimal::new(25, 0),
+            fee_paid: Decimal::new(900, 0),
+            slippage_cost: Decimal::new(400, 0),
+            result: json!({ "status": "COMPLETED" }),
+            created_at: fixed_time(),
+        },
+        StrategyWalkForwardWindowResult {
+            id: Uuid::from_u128(0x9913),
+            walk_forward_id,
+            window: StrategyWalkForwardWindow {
+                window_index: 2,
+                train_start: Utc.with_ymd_and_hms(2026, 5, 3, 0, 0, 0).unwrap(),
+                train_end: Utc.with_ymd_and_hms(2026, 5, 6, 0, 0, 0).unwrap(),
+                test_start: Utc.with_ymd_and_hms(2026, 5, 6, 0, 0, 0).unwrap(),
+                test_end: Utc.with_ymd_and_hms(2026, 5, 7, 0, 0, 0).unwrap(),
+            },
+            status: StrategyWalkForwardStatus::Skipped,
+            skip_reason: Some(
+                "insufficient_candle_coverage: expected=96 actual=80 required=10".to_string(),
+            ),
+            trade_count: 0,
+            pnl: Decimal::ZERO,
+            pnl_pct: Decimal::ZERO,
+            max_drawdown_pct: Decimal::ZERO,
+            win_rate: Decimal::ZERO,
+            fee_paid: Decimal::ZERO,
+            slippage_cost: Decimal::ZERO,
+            result: json!({ "status": "SKIPPED" }),
+            created_at: fixed_time(),
+        },
+    ]
 }
 
 fn sample_paper_position(account_id: Uuid) -> PaperPosition {
@@ -2317,6 +2453,103 @@ async fn strategy_experiment_read_model_returns_ranked_results_without_execution
         .await
         .expect("shadow breakdown should load")
         .total_runs,
+        0
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_walk_forward_run_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let walk_forward_id = Uuid::new_v4();
+    let request = sample_strategy_walk_forward_request();
+    let result = sample_strategy_walk_forward_result(walk_forward_id);
+
+    insert_strategy_walk_forward_run(&test_db.pool, &request, &result)
+        .await
+        .expect("walk-forward should persist");
+
+    let listed = list_strategy_walk_forward_runs(&test_db.pool, 10)
+        .await
+        .expect("walk-forward runs should list");
+
+    assert!(listed.iter().any(|record| record.id == walk_forward_id));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_walk_forward_windows_persist_and_order() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let walk_forward_id = Uuid::new_v4();
+    let request = sample_strategy_walk_forward_request();
+    let result = sample_strategy_walk_forward_result(walk_forward_id);
+    let windows = sample_strategy_walk_forward_windows(walk_forward_id);
+
+    insert_strategy_walk_forward_run(&test_db.pool, &request, &result)
+        .await
+        .expect("walk-forward should persist");
+    insert_strategy_walk_forward_windows(&test_db.pool, &windows)
+        .await
+        .expect("walk-forward windows should persist");
+
+    let persisted = list_strategy_walk_forward_windows(&test_db.pool, walk_forward_id)
+        .await
+        .expect("walk-forward windows should list");
+
+    assert_eq!(persisted.len(), 3);
+    assert_eq!(persisted[0].window_index, 0);
+    assert_eq!(persisted[1].window_index, 1);
+    assert_eq!(persisted[2].window_index, 2);
+    assert_eq!(
+        persisted[2].skip_reason.as_deref(),
+        Some("insufficient_candle_coverage: expected=96 actual=80 required=10")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_walk_forward_read_model_maps_ordered_windows_without_execution_mutation() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let walk_forward_id = Uuid::new_v4();
+    let request = sample_strategy_walk_forward_request();
+    let result = sample_strategy_walk_forward_result(walk_forward_id);
+    let windows = sample_strategy_walk_forward_windows(walk_forward_id);
+
+    insert_strategy_walk_forward_run(&test_db.pool, &request, &result)
+        .await
+        .expect("walk-forward should persist");
+    insert_strategy_walk_forward_windows(&test_db.pool, &windows)
+        .await
+        .expect("walk-forward windows should persist");
+
+    let run_record = list_strategy_walk_forward_runs(&test_db.pool, 1)
+        .await
+        .expect("walk-forward runs should list")
+        .remove(0);
+    let window_records = list_strategy_walk_forward_windows(&test_db.pool, walk_forward_id)
+        .await
+        .expect("walk-forward windows should list");
+    let mapped = strategy_walk_forward_result_from_records(&run_record, &window_records)
+        .expect("walk-forward read model should map");
+    let mapped_windows = window_records
+        .iter()
+        .map(strategy_walk_forward_window_from_record)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("window records should map");
+
+    assert_eq!(mapped.walk_forward_id, walk_forward_id);
+    assert_eq!(mapped_windows[0].window.window_index, 0);
+    assert_eq!(
+        list_orders(&test_db.pool)
+            .await
+            .expect("orders should load")
+            .len(),
         0
     );
 }

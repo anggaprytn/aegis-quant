@@ -7,3 +7,6 @@
 - [Security Checklist](./SECURITY_CHECKLIST.md): operator-facing hardening checklist for local and demo environments
 - [Operator Checklist](./OPERATOR_CHECKLIST.md): preflight and emergency-stop runbook
 - [Roadmap](./ROADMAP.md): milestone history and next work
+
+Research note:
+- Walk-forward validation is available through the strategy experiments surface as research-only out-of-sample testing. It persists into isolated walk-forward tables and must not mutate paper, shadow, testnet, or live execution state.

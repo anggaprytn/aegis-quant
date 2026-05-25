@@ -26,6 +26,8 @@ const TEST_TABLES: &[&str] = &[
     "backtest_equity_curve",
     "backtest_trades",
     "backtest_runs",
+    "strategy_walk_forward_windows",
+    "strategy_walk_forward_runs",
     "audit_logs",
     "system_events",
     "orders",

@@ -38,6 +38,10 @@ import type {
   StrategyMultiTimeframeExperimentAcceptedResponse,
   StrategyMultiTimeframeExperimentRequest,
   StrategyMultiTimeframeExperimentResult,
+  StrategyWalkForwardAcceptedResponse,
+  StrategyWalkForwardRequest,
+  StrategyWalkForwardResult,
+  StrategyWalkForwardWindowResult,
   StrategyConfigUpdateRequest,
   StrategyDecisionBreakdown,
   StrategyPerformanceSummary,
@@ -118,6 +122,26 @@ type StrategyExperimentFormState = {
   max_runs: string;
 };
 
+type StrategyWalkForwardFormState = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  train_hours: string;
+  test_hours: string;
+  step_hours: string;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  lookback_candles: string;
+  holding_candles: string;
+  stop_loss_pct: string;
+  take_profit_pct: string;
+  max_signal_age_ms: string;
+  min_required_test_windows: string;
+};
+
 const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   strategy_id: "momentum_v1",
   symbol: "BTCUSDT",
@@ -133,6 +157,26 @@ const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   take_profit_pct: "",
   max_signal_age_ms: "180000",
   max_runs: "12",
+};
+
+const DEFAULT_STRATEGY_WALK_FORWARD_FORM: StrategyWalkForwardFormState = {
+  strategy_id: "momentum_v1",
+  symbol: "BTCUSDT",
+  timeframe: "15m",
+  start_time: "2026-05-01T00:00:00Z",
+  end_time: "2026-05-24T00:00:00Z",
+  train_hours: "72",
+  test_hours: "24",
+  step_hours: "24",
+  initial_capital: "1000000",
+  fee_bps: "10",
+  slippage_bps: "5",
+  lookback_candles: "5",
+  holding_candles: "3",
+  stop_loss_pct: "",
+  take_profit_pct: "",
+  max_signal_age_ms: "",
+  min_required_test_windows: "3",
 };
 
 const DEFAULT_BACKFILL_FORM: CandleBackfillRequest = {
@@ -240,6 +284,34 @@ function buildStrategyExperimentRequest(
     max_runs: form.max_runs ? Number(form.max_runs) : null,
   };
   return request;
+}
+
+function buildStrategyWalkForwardRequest(
+  form: StrategyWalkForwardFormState,
+): StrategyWalkForwardRequest {
+  return {
+    strategy_id: form.strategy_id,
+    symbol: form.symbol,
+    timeframe: form.timeframe,
+    start_time: form.start_time,
+    end_time: form.end_time,
+    window_train_size_hours: Number(form.train_hours),
+    window_test_size_hours: Number(form.test_hours),
+    step_size_hours: Number(form.step_hours),
+    initial_capital: form.initial_capital,
+    fee_bps: form.fee_bps,
+    slippage_bps: form.slippage_bps,
+    candidate_config: {
+      lookback_candles: Number(form.lookback_candles),
+      holding_candles: form.holding_candles ? Number(form.holding_candles) : null,
+      stop_loss_pct: form.stop_loss_pct || null,
+      take_profit_pct: form.take_profit_pct || null,
+      max_signal_age_ms: form.max_signal_age_ms ? Number(form.max_signal_age_ms) : null,
+    },
+    min_required_test_windows: form.min_required_test_windows
+      ? Number(form.min_required_test_windows)
+      : null,
+  };
 }
 
 function riskConfigFormFromView(config?: RiskConfig): RiskConfig {
@@ -511,6 +583,11 @@ function AuthenticatedDashboard({
   const [lastStrategyExperimentResult, setLastStrategyExperimentResult] =
     useState<StrategyMultiTimeframeExperimentAcceptedResponse | null>(null);
   const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(null);
+  const [strategyWalkForwardForm, setStrategyWalkForwardForm] =
+    useState<StrategyWalkForwardFormState>(DEFAULT_STRATEGY_WALK_FORWARD_FORM);
+  const [lastStrategyWalkForwardResult, setLastStrategyWalkForwardResult] =
+    useState<StrategyWalkForwardAcceptedResponse | null>(null);
+  const [selectedWalkForwardId, setSelectedWalkForwardId] = useState<string | null>(null);
   const [backfillForm, setBackfillForm] =
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
   const [aggregationForm, setAggregationForm] =
@@ -733,6 +810,12 @@ function AuthenticatedDashboard({
   const strategyExperimentsQuery = useQuery({
     queryKey: ["strategy-experiments"],
     queryFn: () => api.getStrategyExperiments(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const strategyWalkForwardsQuery = useQuery({
+    queryKey: ["strategy-walk-forwards"],
+    queryFn: () => api.getStrategyWalkForwards(20),
     enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
   });
@@ -987,6 +1070,16 @@ function AuthenticatedDashboard({
       ),
     enabled: Boolean(selectedExperimentQuery.data?.experiment?.experiment_group_id),
   });
+  const selectedWalkForwardQuery = useQuery({
+    queryKey: ["strategy-walk-forward", selectedWalkForwardId],
+    queryFn: () => api.getStrategyWalkForward(selectedWalkForwardId ?? ""),
+    enabled: Boolean(selectedWalkForwardId),
+  });
+  const selectedWalkForwardWindowsQuery = useQuery({
+    queryKey: ["strategy-walk-forward-windows", selectedWalkForwardId],
+    queryFn: () => api.getStrategyWalkForwardWindows(selectedWalkForwardId ?? ""),
+    enabled: Boolean(selectedWalkForwardId),
+  });
 
   const selectedRunTradesQuery = useQuery({
     queryKey: ["backtest-trades", selectedRunId],
@@ -1095,6 +1188,14 @@ function AuthenticatedDashboard({
       setSelectedExperimentId(strategyExperimentsQuery.data.experiments[0].experiment_id);
     }
   }, [selectedExperimentId, strategyExperimentsQuery.data?.experiments]);
+
+  useEffect(() => {
+    if (!selectedWalkForwardId && strategyWalkForwardsQuery.data?.walk_forwards[0]) {
+      setSelectedWalkForwardId(
+        strategyWalkForwardsQuery.data.walk_forwards[0].walk_forward_id,
+      );
+    }
+  }, [selectedWalkForwardId, strategyWalkForwardsQuery.data?.walk_forwards]);
 
   useEffect(() => {
     if (!selectedBackfillRunId && backfillRunsQuery.data?.runs[0]) {
@@ -1299,6 +1400,23 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
       await queryClient.invalidateQueries({
         queryKey: ["strategy-experiment-comparison", response.comparison.experiment_group_id],
+      });
+    },
+  });
+  const runStrategyWalkForwardMutation = useMutation({
+    mutationFn: () =>
+      api.runStrategyWalkForward(
+        buildStrategyWalkForwardRequest(strategyWalkForwardForm),
+      ),
+    onSuccess: async (response) => {
+      setLastStrategyWalkForwardResult(response);
+      setSelectedWalkForwardId(response.walk_forward.walk_forward_id);
+      await queryClient.invalidateQueries({ queryKey: ["strategy-walk-forwards"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["strategy-walk-forward", response.walk_forward.walk_forward_id],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["strategy-walk-forward-windows", response.walk_forward.walk_forward_id],
       });
     },
   });
@@ -1517,6 +1635,7 @@ function AuthenticatedDashboard({
   const recentSignals = signalsQuery.data?.signals ?? [];
   const backtestRuns = backtestRunsQuery.data?.runs ?? [];
   const strategyExperiments = strategyExperimentsQuery.data?.experiments ?? [];
+  const strategyWalkForwards = strategyWalkForwardsQuery.data?.walk_forwards ?? [];
   const selectedExperiment =
     selectedExperimentQuery.data?.experiment ?? null;
   const strategyExperimentRuns =
@@ -1525,6 +1644,14 @@ function AuthenticatedDashboard({
     selectedExperimentComparisonQuery.data?.comparison ??
     lastStrategyExperimentResult?.comparison ??
     null;
+  const selectedWalkForward: StrategyWalkForwardResult | null =
+    selectedWalkForwardQuery.data?.walk_forward ??
+    lastStrategyWalkForwardResult?.walk_forward ??
+    null;
+  const selectedWalkForwardWindows: StrategyWalkForwardWindowResult[] =
+    selectedWalkForwardWindowsQuery.data?.windows ??
+    lastStrategyWalkForwardResult?.windows ??
+    [];
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
@@ -3649,6 +3776,90 @@ function AuthenticatedDashboard({
                 <StrategyExperimentRunsTable runs={strategyExperimentRuns} />
                 <InlineStatus error={getErrorMessage(selectedExperimentRunsQuery.error)} />
               </Panel>
+              <Panel className="xl:col-span-4" title="Walk-forward Form">
+                <div className="grid gap-3 md:grid-cols-2">
+                  {(
+                    [
+                      ["strategy_id", "Strategy ID"],
+                      ["symbol", "Symbol"],
+                      ["timeframe", "Timeframe"],
+                      ["start_time", "Start Time"],
+                      ["end_time", "End Time"],
+                      ["train_hours", "Train Hours"],
+                      ["test_hours", "Test Hours"],
+                      ["step_hours", "Step Hours"],
+                      ["initial_capital", "Initial Capital"],
+                      ["fee_bps", "Fee Bps"],
+                      ["slippage_bps", "Slippage Bps"],
+                      ["lookback_candles", "Lookback Candles"],
+                      ["holding_candles", "Holding Candles"],
+                      ["stop_loss_pct", "Stop Loss %"],
+                      ["take_profit_pct", "Take Profit %"],
+                      ["max_signal_age_ms", "Max Signal Age Ms"],
+                      ["min_required_test_windows", "Min Test Windows"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <Field
+                      key={key}
+                      label={label}
+                      value={strategyWalkForwardForm[key]}
+                      onChange={(value) =>
+                        setStrategyWalkForwardForm((current) => ({ ...current, [key]: value }))
+                      }
+                    />
+                  ))}
+                </div>
+                <div className="mt-3 flex items-center gap-3">
+                  <ActionButton
+                    label="Run Walk-forward"
+                    onClick={() => runStrategyWalkForwardMutation.mutate()}
+                    busy={runStrategyWalkForwardMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(runStrategyWalkForwardMutation.error)}
+                    success={
+                      lastStrategyWalkForwardResult
+                        ? `Run ${shortenId(lastStrategyWalkForwardResult.walk_forward.walk_forward_id)} scored ${lastStrategyWalkForwardResult.walk_forward.robustness_score}`
+                        : undefined
+                    }
+                  />
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-4" title="Walk-forward Summary">
+                <KeyValue
+                  items={[
+                    ["Run", selectedWalkForward?.walk_forward_id ?? "N/A"],
+                    ["Status", selectedWalkForward?.status ?? "N/A"],
+                    ["Robustness Score", selectedWalkForward?.robustness_score ?? "N/A"],
+                    [
+                      "Profitable / Losing",
+                      selectedWalkForward
+                        ? `${selectedWalkForward.profitable_test_windows} / ${selectedWalkForward.losing_test_windows}`
+                        : "N/A",
+                    ],
+                    ["Avg PnL %", selectedWalkForward?.avg_test_pnl_pct ?? "N/A"],
+                    ["Worst / Best PnL %", selectedWalkForward
+                      ? `${selectedWalkForward.worst_test_pnl_pct} / ${selectedWalkForward.best_test_pnl_pct}`
+                      : "N/A"],
+                    ["Skipped Windows", String(selectedWalkForward?.skipped_windows ?? 0)],
+                  ]}
+                  loading={selectedWalkForwardQuery.isLoading}
+                  error={getErrorMessage(selectedWalkForwardQuery.error)}
+                />
+              </Panel>
+              <Panel className="xl:col-span-4" title="Recent Walk-forward Runs">
+                <StrategyWalkForwardRunsTable
+                  runs={strategyWalkForwards}
+                  onSelect={setSelectedWalkForwardId}
+                  selectedId={selectedWalkForwardId}
+                />
+                <InlineStatus error={getErrorMessage(strategyWalkForwardsQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-12" title="Walk-forward Windows">
+                <StrategyWalkForwardWindowsTable windows={selectedWalkForwardWindows} />
+                <InlineStatus error={getErrorMessage(selectedWalkForwardWindowsQuery.error)} />
+              </Panel>
             </section>
           )}
 
@@ -5612,6 +5823,81 @@ function StrategyExperimentRunsTable({ runs }: { runs: StrategyExperimentRun[] }
         run.fee_slippage_drag_pct,
         run.score,
         run.warnings.length ? run.warnings.join(", ") : "-",
+      ])}
+    />
+  );
+}
+
+function StrategyWalkForwardRunsTable({
+  runs,
+  onSelect,
+  selectedId,
+}: {
+  runs: StrategyWalkForwardResult[];
+  onSelect: (walkForwardId: string) => void;
+  selectedId?: string | null;
+}) {
+  if (!runs.length) {
+    return <EmptyState label="No walk-forward runs." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {runs.map((run) => (
+        <button
+          key={run.walk_forward_id}
+          className={cn(
+            "w-full rounded-xl border p-3 text-left transition",
+            selectedId === run.walk_forward_id
+              ? "border-accent bg-accent/5"
+              : "border-border bg-surface/60 hover:border-slate-500",
+          )}
+          onClick={() => onSelect(run.walk_forward_id)}
+        >
+          <div className="grid gap-2 md:grid-cols-4">
+            <div className="font-mono text-xs">{shortenId(run.walk_forward_id)}</div>
+            <div>{run.timeframe}</div>
+            <div>score {formatNumber(run.robustness_score)}</div>
+            <div>
+              {run.profitable_test_windows}/{run.losing_test_windows} windows
+            </div>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function StrategyWalkForwardWindowsTable({
+  windows,
+}: {
+  windows: StrategyWalkForwardWindowResult[];
+}) {
+  if (!windows.length) {
+    return <EmptyState label="No walk-forward windows." />;
+  }
+
+  return (
+    <Table
+      headers={[
+        "Window",
+        "Train",
+        "Test",
+        "Status",
+        "PnL %",
+        "Drawdown %",
+        "Trades",
+        "Skip Reason",
+      ]}
+      rows={windows.map((window) => [
+        mono(String(window.window.window_index)),
+        `${formatDateTime(window.window.train_start)} -> ${formatDateTime(window.window.train_end)}`,
+        `${formatDateTime(window.window.test_start)} -> ${formatDateTime(window.window.test_end)}`,
+        window.status,
+        window.pnl_pct,
+        window.max_drawdown_pct,
+        String(window.trade_count),
+        window.skip_reason ?? "-",
       ])}
     />
   );

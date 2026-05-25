@@ -268,6 +268,9 @@ Strategy experiment sweep:
 Multi-timeframe strategy comparison:
 `cargo run -p cli -- experiments strategy multi-timeframe --strategy momentum_v1 --symbol BTCUSDT --timeframes 1m,5m,15m,1h --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`
 
+Walk-forward validation:
+`cargo run -p cli -- experiments strategy walk-forward --strategy momentum_v1 --symbol BTCUSDT --timeframe 15m --start 2026-05-01T00:00:00Z --end 2026-05-24T00:00:00Z --train-hours 72 --test-hours 24 --step-hours 24 --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookback-candles 5 --holding-candles 3`
+
 List persisted strategy experiments:
 `cargo run -p cli -- experiments strategy list`
 
@@ -276,6 +279,15 @@ Inspect a persisted strategy experiment:
 
 List ranked candidate runs for an experiment:
 `cargo run -p cli -- experiments strategy runs <experiment_id>`
+
+List walk-forward runs:
+`cargo run -p cli -- experiments strategy walk-forward-list`
+
+Inspect a persisted walk-forward run:
+`cargo run -p cli -- experiments strategy walk-forward-get <walk_forward_id>`
+
+List per-window walk-forward results:
+`cargo run -p cli -- experiments strategy walk-forward-windows <walk_forward_id>`
 
 Readiness example:
 `cargo run -p cli -- readiness check --target PAPER_PIPELINE --symbol BTCUSDT --strategy momentum_v1 --timeframe 1m`
@@ -295,6 +307,14 @@ Optional shadow example:
 - `too_few_trades`: the sample is too small to trust the ranking.
 
 Strategy experiments are for research only. They reuse the deterministic replay engine, persist into isolated `strategy_experiments` and `strategy_experiment_runs` tables, optionally group timeframe sweeps with `experiment_group_id`, and do not update persisted strategy config or execution state.
+
+## Walk-forward validation
+
+The best single replay window is not enough to promote a strategy config. A candidate can rank first in one window and still be a fragile overfit.
+
+Walk-forward validation splits a larger chronological range into repeated train/test windows, keeps execution research-only, and scores the candidate on out-of-sample test windows only. For the MVP the train window is metadata only: Aegis does not optimize parameters inside it.
+
+Walk-forward runs are persisted in isolated `strategy_walk_forward_runs` and `strategy_walk_forward_windows` tables. They do not mutate signals, risk decisions, paper orders, shadow runs, testnet orders, or any live execution path.
 
 ## Notes
 

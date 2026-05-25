@@ -754,6 +754,10 @@ pub enum ExperimentCommands {
 pub enum StrategyExperimentCommands {
     Run(StrategyExperimentRunArgs),
     MultiTimeframe(StrategyMultiTimeframeExperimentRunArgs),
+    WalkForward(StrategyWalkForwardRunArgs),
+    WalkForwardList(BacktestListArgs),
+    WalkForwardGet { walk_forward_id: Uuid },
+    WalkForwardWindows { walk_forward_id: Uuid },
     List(BacktestListArgs),
     Get { experiment_id: Uuid },
     Runs { experiment_id: Uuid },
@@ -992,6 +996,46 @@ pub struct StrategyMultiTimeframeExperimentRunArgs {
     pub max_signal_age_ms: Option<i64>,
     #[arg(long = "max-runs")]
     pub max_runs: Option<u32>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Args)]
+pub struct StrategyWalkForwardRunArgs {
+    #[arg(long = "strategy")]
+    pub strategy: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "train-hours")]
+    pub train_hours: i64,
+    #[arg(long = "test-hours")]
+    pub test_hours: i64,
+    #[arg(long = "step-hours")]
+    pub step_hours: i64,
+    #[arg(long = "initial-capital")]
+    pub initial_capital: rust_decimal::Decimal,
+    #[arg(long = "fee-bps")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "lookback-candles")]
+    pub lookback_candles: u32,
+    #[arg(long = "holding-candles")]
+    pub holding_candles: Option<u32>,
+    #[arg(long = "stop-loss-pct")]
+    pub stop_loss_pct: Option<rust_decimal::Decimal>,
+    #[arg(long = "take-profit-pct")]
+    pub take_profit_pct: Option<rust_decimal::Decimal>,
+    #[arg(long = "max-signal-age-ms")]
+    pub max_signal_age_ms: Option<i64>,
+    #[arg(long = "min-required-test-windows")]
+    pub min_required_test_windows: Option<u32>,
     #[arg(long = "correlation-id")]
     pub correlation_id: Option<Uuid>,
 }

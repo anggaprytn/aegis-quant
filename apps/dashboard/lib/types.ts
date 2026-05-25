@@ -1995,3 +1995,117 @@ export type StrategyMultiTimeframeExperimentResponse = {
   correlation_id: string;
   timestamp: string;
 };
+
+export type StrategyWalkForwardStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "SKIPPED";
+
+export type StrategyWalkForwardCandidate = {
+  lookback_candles: number;
+  holding_candles: number | null;
+  stop_loss_pct: string | null;
+  take_profit_pct: string | null;
+  max_signal_age_ms: number | null;
+};
+
+export type StrategyWalkForwardRequest = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  window_train_size_hours: number;
+  window_test_size_hours: number;
+  step_size_hours: number;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  candidate_config: StrategyWalkForwardCandidate;
+  min_required_test_windows?: number | null;
+  correlation_id?: string | null;
+};
+
+export type StrategyWalkForwardWindow = {
+  window_index: number;
+  train_start: string;
+  train_end: string;
+  test_start: string;
+  test_end: string;
+};
+
+export type StrategyWalkForwardRobustnessSummary = {
+  profitable_window_pct: string;
+  total_trade_count: number;
+  avg_trades_per_completed_window: string;
+  avg_fee_slippage_drag_pct: string;
+  skipped_window_pct: string;
+  dominant_winner_share_pct: string;
+};
+
+export type StrategyWalkForwardWindowResult = {
+  id: string;
+  walk_forward_id: string;
+  window: StrategyWalkForwardWindow;
+  status: StrategyWalkForwardStatus;
+  skip_reason: string | null;
+  trade_count: number;
+  pnl: string;
+  pnl_pct: string;
+  max_drawdown_pct: string;
+  win_rate: string;
+  fee_paid: string;
+  slippage_cost: string;
+  result: Record<string, unknown>;
+  created_at: string;
+};
+
+export type StrategyWalkForwardResult = {
+  walk_forward_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  total_windows: number;
+  completed_windows: number;
+  skipped_windows: number;
+  profitable_test_windows: number;
+  losing_test_windows: number;
+  avg_test_pnl_pct: string;
+  median_test_pnl_pct: string;
+  worst_test_pnl_pct: string;
+  best_test_pnl_pct: string;
+  avg_max_drawdown_pct: string;
+  robustness_score: string;
+  status: StrategyWalkForwardStatus;
+  robustness_summary: StrategyWalkForwardRobustnessSummary;
+  created_at: string;
+  correlation_id: string | null;
+};
+
+export type StrategyWalkForwardAcceptedResponse = {
+  walk_forward: StrategyWalkForwardResult;
+  windows: StrategyWalkForwardWindowResult[];
+};
+
+export type StrategyWalkForwardRunsResponse = {
+  walk_forwards: StrategyWalkForwardResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyWalkForwardResponse = {
+  walk_forward: StrategyWalkForwardResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyWalkForwardWindowsResponse = {
+  windows: StrategyWalkForwardWindowResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};

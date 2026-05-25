@@ -1602,6 +1602,192 @@ pub struct StrategyExperimentRequest {
     pub correlation_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyWalkForwardStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+impl StrategyWalkForwardStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+            Self::Skipped => "SKIPPED",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyWalkForwardStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            "SKIPPED" => Ok(Self::Skipped),
+            other => Err(CoreError::UnsupportedStrategyWalkForwardStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyWalkForwardCandidate {
+    pub lookback_candles: u32,
+    pub holding_candles: Option<u32>,
+    pub stop_loss_pct: Option<Decimal>,
+    pub take_profit_pct: Option<Decimal>,
+    pub max_signal_age_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyWalkForwardRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub window_train_size_hours: i64,
+    pub window_test_size_hours: i64,
+    pub step_size_hours: i64,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub candidate_config: StrategyWalkForwardCandidate,
+    pub min_required_test_windows: Option<u32>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl StrategyWalkForwardRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategy_id.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyWalkForwardStrategyId);
+        }
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyWalkForwardSymbol);
+        }
+        if self.timeframe.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyWalkForwardTimeframe);
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidStrategyWalkForwardTimeRange);
+        }
+        if self.window_train_size_hours <= 0 {
+            return Err(CoreError::InvalidStrategyWalkForwardWindowSize(
+                "window_train_size_hours".to_string(),
+            ));
+        }
+        if self.window_test_size_hours <= 0 {
+            return Err(CoreError::InvalidStrategyWalkForwardWindowSize(
+                "window_test_size_hours".to_string(),
+            ));
+        }
+        if self.step_size_hours <= 0 {
+            return Err(CoreError::InvalidStrategyWalkForwardStepSize);
+        }
+        if self.initial_capital <= Decimal::ZERO {
+            return Err(CoreError::InvalidStrategyWalkForwardInitialCapital);
+        }
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        if self.candidate_config.lookback_candles == 0 {
+            return Err(CoreError::EmptyStrategyWalkForwardCandidateLookback);
+        }
+        if let Some(holding_candles) = self.candidate_config.holding_candles {
+            if holding_candles == 0 {
+                return Err(CoreError::InvalidHoldingCandles);
+            }
+        }
+        if let Some(max_signal_age_ms) = self.candidate_config.max_signal_age_ms {
+            if max_signal_age_ms <= 0 {
+                return Err(CoreError::InvalidStrategyMaxSignalAgeMs(max_signal_age_ms));
+            }
+        }
+        if let Some(min_required_test_windows) = self.min_required_test_windows {
+            if min_required_test_windows == 0 {
+                return Err(CoreError::InvalidStrategyWalkForwardMinRequiredWindows);
+            }
+        }
+
+        self.timeframe.parse::<CandleInterval>()?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyWalkForwardWindow {
+    pub window_index: i32,
+    pub train_start: DateTime<Utc>,
+    pub train_end: DateTime<Utc>,
+    pub test_start: DateTime<Utc>,
+    pub test_end: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyWalkForwardRobustnessSummary {
+    pub profitable_window_pct: Decimal,
+    pub total_trade_count: i32,
+    pub avg_trades_per_completed_window: Decimal,
+    pub avg_fee_slippage_drag_pct: Decimal,
+    pub skipped_window_pct: Decimal,
+    pub dominant_winner_share_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyWalkForwardWindowResult {
+    pub id: Uuid,
+    pub walk_forward_id: Uuid,
+    pub window: StrategyWalkForwardWindow,
+    pub status: StrategyWalkForwardStatus,
+    pub skip_reason: Option<String>,
+    pub trade_count: i32,
+    pub pnl: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub win_rate: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub result: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyWalkForwardResult {
+    pub walk_forward_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub total_windows: i32,
+    pub completed_windows: i32,
+    pub skipped_windows: i32,
+    pub profitable_test_windows: i32,
+    pub losing_test_windows: i32,
+    pub avg_test_pnl_pct: Decimal,
+    pub median_test_pnl_pct: Decimal,
+    pub worst_test_pnl_pct: Decimal,
+    pub best_test_pnl_pct: Decimal,
+    pub avg_max_drawdown_pct: Decimal,
+    pub robustness_score: Decimal,
+    pub status: StrategyWalkForwardStatus,
+    pub robustness_summary: StrategyWalkForwardRobustnessSummary,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
 impl StrategyExperimentRequest {
     pub fn validate(&self) -> Result<(), CoreError> {
         if self.strategy_id.trim().is_empty() {
@@ -5805,6 +5991,8 @@ pub enum CoreError {
     UnsupportedReplayRunStatus(String),
     #[error("unsupported strategy experiment status: {0}")]
     UnsupportedStrategyExperimentStatus(String),
+    #[error("unsupported strategy walk-forward status: {0}")]
+    UnsupportedStrategyWalkForwardStatus(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
     #[error("unsupported exchange environment: {0}")]
@@ -5873,6 +6061,14 @@ pub enum CoreError {
     EmptyStrategyExperimentTimeframes,
     #[error("strategy experiment requires at least one candidate")]
     EmptyStrategyExperimentCandidates,
+    #[error("strategy walk-forward strategy_id cannot be empty")]
+    EmptyStrategyWalkForwardStrategyId,
+    #[error("strategy walk-forward symbol cannot be empty")]
+    EmptyStrategyWalkForwardSymbol,
+    #[error("strategy walk-forward timeframe cannot be empty")]
+    EmptyStrategyWalkForwardTimeframe,
+    #[error("strategy walk-forward candidate lookback_candles must be greater than zero")]
+    EmptyStrategyWalkForwardCandidateLookback,
     #[error("candle backfill symbol cannot be empty")]
     EmptyCandleBackfillSymbol,
     #[error("candle backfill interval cannot be empty")]
@@ -5885,12 +6081,22 @@ pub enum CoreError {
     InvalidOperatorReportTimeRange,
     #[error("strategy experiment end_time must be after start_time")]
     InvalidStrategyExperimentTimeRange,
+    #[error("strategy walk-forward end_time must be after start_time")]
+    InvalidStrategyWalkForwardTimeRange,
     #[error("backtest initial_capital must be greater than zero")]
     InvalidBacktestInitialCapital,
     #[error("strategy experiment initial_capital must be greater than zero")]
     InvalidStrategyExperimentInitialCapital,
+    #[error("strategy walk-forward initial_capital must be greater than zero")]
+    InvalidStrategyWalkForwardInitialCapital,
     #[error("strategy experiment max_runs must be greater than zero")]
     InvalidStrategyExperimentMaxRuns,
+    #[error("strategy walk-forward min_required_test_windows must be greater than zero")]
+    InvalidStrategyWalkForwardMinRequiredWindows,
+    #[error("strategy walk-forward {0} must be greater than zero")]
+    InvalidStrategyWalkForwardWindowSize(String),
+    #[error("strategy walk-forward step_size_hours must be greater than zero")]
+    InvalidStrategyWalkForwardStepSize,
     #[error("candle backfill request limit must be greater than zero")]
     InvalidCandleBackfillLimit,
     #[error("candle backfill request limit exceeds Binance maximum: {0}")]

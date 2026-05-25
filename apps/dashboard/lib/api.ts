@@ -80,6 +80,11 @@ import type {
   StrategyMultiTimeframeExperimentAcceptedResponse,
   StrategyMultiTimeframeExperimentRequest,
   StrategyMultiTimeframeExperimentResponse,
+  StrategyWalkForwardAcceptedResponse,
+  StrategyWalkForwardRequest,
+  StrategyWalkForwardResponse,
+  StrategyWalkForwardRunsResponse,
+  StrategyWalkForwardWindowsResponse,
   StrategyListResponse,
   StrategyPerformanceMode,
   StrategyPerformanceRankingsResponse,
@@ -568,6 +573,11 @@ export const api = {
         body: JSON.stringify(payload),
       },
     ),
+  runStrategyWalkForward: (payload: StrategyWalkForwardRequest) =>
+    request<StrategyWalkForwardAcceptedResponse>("/experiments/strategy/walk-forward", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getStrategyExperiments: (limit = 20) =>
     request<StrategyExperimentsResponse>("/experiments/strategy", undefined, { limit }),
   getStrategyExperiment: (id: string) =>
@@ -576,6 +586,16 @@ export const api = {
     request<StrategyExperimentRunsResponse>(`/experiments/strategy/${id}/runs`),
   getStrategyMultiTimeframeComparison: (id: string) =>
     request<StrategyMultiTimeframeExperimentResponse>(`/experiments/strategy/${id}/comparison`),
+  getStrategyWalkForwards: (limit = 20) =>
+    request<StrategyWalkForwardRunsResponse>("/experiments/strategy/walk-forward", undefined, {
+      limit,
+    }),
+  getStrategyWalkForward: (id: string) =>
+    request<StrategyWalkForwardResponse>(`/experiments/strategy/walk-forward/${id}`),
+  getStrategyWalkForwardWindows: (id: string) =>
+    request<StrategyWalkForwardWindowsResponse>(
+      `/experiments/strategy/walk-forward/${id}/windows`,
+    ),
   getStrategyPerformance: (
     mode: StrategyPerformanceMode,
     strategyId?: string,

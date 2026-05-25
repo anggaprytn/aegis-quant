@@ -9,7 +9,7 @@ use cli::api::{
     build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
-    ApiClient, RecentEventsQuery, RiskDecisionsQuery,
+    build_strategy_walk_forward_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
@@ -466,6 +466,42 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_multi_timeframe_strategy_experiment(&response.comparison);
+                    }
+                }
+                StrategyExperimentCommands::WalkForward(args) => {
+                    let request = build_strategy_walk_forward_request(&args)?;
+                    let response = client.run_strategy_walk_forward(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_walk_forward(&response.walk_forward);
+                        output::print_strategy_walk_forward_windows(&response.windows);
+                    }
+                }
+                StrategyExperimentCommands::WalkForwardList(args) => {
+                    let response = client.strategy_walk_forward_runs(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_walk_forward_runs(&response.walk_forwards);
+                    }
+                }
+                StrategyExperimentCommands::WalkForwardGet { walk_forward_id } => {
+                    let response = client.strategy_walk_forward_run(walk_forward_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_walk_forward(&response.walk_forward);
+                    }
+                }
+                StrategyExperimentCommands::WalkForwardWindows { walk_forward_id } => {
+                    let response = client
+                        .strategy_walk_forward_windows(walk_forward_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_walk_forward_windows(&response.windows);
                     }
                 }
                 StrategyExperimentCommands::List(args) => {

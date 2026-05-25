@@ -6,15 +6,18 @@ use aegis_core::{
     StrategyExperimentGlobalRankingEntry, StrategyExperimentMetric, StrategyExperimentRequest,
     StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyTimeframeCandidate, StrategyTimeframeComparison, Symbol,
+    StrategyTimeframeCandidate, StrategyTimeframeComparison, StrategyWalkForwardCandidate,
+    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary,
+    StrategyWalkForwardStatus, StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol,
 };
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use db::{
     backtest_result_from_record, get_backtest_run, get_closed_candles_range, get_strategy_status,
     insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_strategy_experiment, insert_strategy_experiment_runs, insert_system_event,
-    strategy_config_from_record, update_backtest_run_completed, PgPool,
+    insert_strategy_experiment, insert_strategy_experiment_runs, insert_strategy_walk_forward_run,
+    insert_strategy_walk_forward_windows, insert_system_event, strategy_config_from_record,
+    update_backtest_run_completed, PgPool,
 };
 use rust_decimal::Decimal;
 use serde_json::json;
@@ -49,6 +52,12 @@ pub struct StrategyExperimentExecution {
 pub struct StrategyMultiTimeframeExperimentExecution {
     pub result: StrategyMultiTimeframeExperimentResult,
     pub experiments: Vec<StrategyExperimentExecution>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrategyWalkForwardExecution {
+    pub result: StrategyWalkForwardResult,
+    pub windows: Vec<StrategyWalkForwardWindowResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -340,6 +349,48 @@ impl ReplayEngine {
             result,
             experiments,
         })
+    }
+
+    pub async fn run_strategy_walk_forward(
+        &self,
+        request: StrategyWalkForwardRequest,
+    ) -> Result<StrategyWalkForwardExecution> {
+        request.validate()?;
+
+        let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
+        let created_at = Utc::now();
+        let walk_forward_id = Uuid::new_v4();
+        let (base_config, symbol) = self
+            .load_strategy_experiment_context(&request.strategy_id, &request.symbol)
+            .await?;
+        let timeframe = parse_strategy_timeframe(&request.timeframe)?;
+        let candles = get_closed_candles_range(
+            &self.pool,
+            &symbol,
+            timeframe,
+            request.start_time,
+            request.end_time,
+        )
+        .await
+        .context("failed to load closed candles range")?;
+
+        let execution = build_strategy_walk_forward_execution(
+            walk_forward_id,
+            created_at,
+            correlation_id,
+            &base_config,
+            request.clone(),
+            candles,
+        )?;
+
+        insert_strategy_walk_forward_run(&self.pool, &request, &execution.result)
+            .await
+            .context("failed to insert strategy walk-forward run")?;
+        insert_strategy_walk_forward_windows(&self.pool, &execution.windows)
+            .await
+            .context("failed to insert strategy walk-forward windows")?;
+
+        Ok(execution)
     }
 
     async fn execute(
@@ -972,6 +1023,443 @@ fn aggregate_experiment_warnings(runs: &[StrategyExperimentRun]) -> Vec<String> 
     warnings
 }
 
+fn walk_forward_strategy_override(
+    base_config: &StrategyConfig,
+    request: &StrategyWalkForwardRequest,
+) -> StrategyConfigUpdateRequest {
+    StrategyConfigUpdateRequest {
+        strategy_id: request.strategy_id.clone(),
+        enabled: base_config.enabled,
+        mode: base_config.mode,
+        symbols: vec![request.symbol.clone()],
+        timeframe: request.timeframe.clone(),
+        suggested_notional: base_config.suggested_notional,
+        max_signal_age_ms: request
+            .candidate_config
+            .max_signal_age_ms
+            .unwrap_or(base_config.max_signal_age_ms),
+        cooldown_seconds: base_config.cooldown_seconds,
+        lookback_candles: request.candidate_config.lookback_candles,
+        confidence_floor: base_config.confidence_floor,
+        stop_loss_pct: request
+            .candidate_config
+            .stop_loss_pct
+            .or(base_config.stop_loss_pct),
+        take_profit_pct: request
+            .candidate_config
+            .take_profit_pct
+            .or(base_config.take_profit_pct),
+        holding_candles: request
+            .candidate_config
+            .holding_candles
+            .or(base_config.holding_candles),
+        notes: base_config.notes.clone(),
+    }
+}
+
+fn build_strategy_walk_forward_execution(
+    walk_forward_id: Uuid,
+    created_at: DateTime<Utc>,
+    correlation_id: Uuid,
+    base_config: &StrategyConfig,
+    request: StrategyWalkForwardRequest,
+    candles: Vec<Candle>,
+) -> Result<StrategyWalkForwardExecution> {
+    let windows = generate_walk_forward_windows(&request)?;
+    let override_request = walk_forward_strategy_override(base_config, &request);
+    let normalized_symbol =
+        Symbol::new(request.symbol.clone()).context("invalid symbol for strategy walk-forward")?;
+    let validation = validate_strategy_config(
+        &override_request,
+        &StrategyValidationContext {
+            supported_symbols: vec![normalized_symbol],
+            max_position_notional: Some(aegis_core::RiskConfig::default().max_position_notional),
+        },
+    );
+    let strategy_config = validation
+        .normalized_config
+        .ok_or_else(|| anyhow!("invalid strategy walk-forward candidate override"))?;
+    let timeframe = parse_strategy_timeframe(&request.timeframe)?;
+
+    let mut window_results = Vec::with_capacity(windows.len());
+    for window in windows {
+        let expected_candles = timeframe
+            .candles_between(window.test_start, window.test_end)
+            .context("invalid strategy walk-forward test window")?;
+        let test_candles = candles_for_range(&candles, window.test_start, window.test_end);
+        let required_candles =
+            required_candles_for_walk_forward_candidate(&request.candidate_config) as i32;
+
+        if test_candles.len() as i32 != expected_candles
+            || (test_candles.len() as i32) < required_candles
+        {
+            let actual = test_candles.len() as i32;
+            let skip_reason = format!(
+                "insufficient_candle_coverage: expected={expected_candles} actual={actual} required={required_candles}"
+            );
+            window_results.push(StrategyWalkForwardWindowResult {
+                id: Uuid::new_v4(),
+                walk_forward_id,
+                window,
+                status: StrategyWalkForwardStatus::Skipped,
+                skip_reason: Some(skip_reason.clone()),
+                trade_count: 0,
+                pnl: Decimal::ZERO,
+                pnl_pct: Decimal::ZERO,
+                max_drawdown_pct: Decimal::ZERO,
+                win_rate: Decimal::ZERO,
+                fee_paid: Decimal::ZERO,
+                slippage_cost: Decimal::ZERO,
+                result: json!({ "status": "SKIPPED", "skip_reason": skip_reason }),
+                created_at,
+            });
+            continue;
+        }
+
+        let run_request = BacktestRequest {
+            strategy_id: request.strategy_id.clone(),
+            symbol: request.symbol.clone(),
+            timeframe: request.timeframe.clone(),
+            start_time: window.test_start,
+            end_time: window.test_end,
+            initial_capital: request.initial_capital,
+            risk_config_id: None,
+            risk_config: None,
+            fee_bps: request.fee_bps,
+            slippage_bps: request.slippage_bps,
+            correlation_id: Some(correlation_id),
+            holding_candles: request
+                .candidate_config
+                .holding_candles
+                .or(strategy_config.holding_candles),
+            strategy_config_override: Some(override_request.clone()),
+        };
+        let execution = simulate_backtest(
+            Uuid::new_v4(),
+            created_at,
+            correlation_id,
+            &run_request,
+            &strategy_config,
+            test_candles,
+        )?;
+        let result = serde_json::to_value(&execution.result)?;
+        window_results.push(StrategyWalkForwardWindowResult {
+            id: Uuid::new_v4(),
+            walk_forward_id,
+            window,
+            status: match execution.result.status {
+                ReplayRunStatus::Completed => StrategyWalkForwardStatus::Completed,
+                ReplayRunStatus::Failed => StrategyWalkForwardStatus::Failed,
+                ReplayRunStatus::Pending => StrategyWalkForwardStatus::Pending,
+                ReplayRunStatus::Running => StrategyWalkForwardStatus::Running,
+            },
+            skip_reason: None,
+            trade_count: execution.result.trade_count,
+            pnl: execution.result.pnl,
+            pnl_pct: execution.result.pnl_pct,
+            max_drawdown_pct: execution.result.max_drawdown_pct,
+            win_rate: execution.result.win_rate,
+            fee_paid: execution.result.fee_paid,
+            slippage_cost: execution.result.slippage_cost,
+            result,
+            created_at,
+        });
+    }
+
+    let result = build_strategy_walk_forward_result(
+        walk_forward_id,
+        created_at,
+        Some(correlation_id),
+        &request,
+        &window_results,
+    );
+
+    Ok(StrategyWalkForwardExecution {
+        result,
+        windows: window_results,
+    })
+}
+
+pub fn generate_walk_forward_windows(
+    request: &StrategyWalkForwardRequest,
+) -> Result<Vec<StrategyWalkForwardWindow>> {
+    let train_size = Duration::hours(request.window_train_size_hours);
+    let test_size = Duration::hours(request.window_test_size_hours);
+    let step_size = Duration::hours(request.step_size_hours);
+    let mut windows = Vec::new();
+    let mut train_start = request.start_time;
+    let mut window_index = 0;
+
+    loop {
+        let train_end = train_start + train_size;
+        let test_start = train_end;
+        let test_end = test_start + test_size;
+        if test_end > request.end_time {
+            break;
+        }
+
+        windows.push(StrategyWalkForwardWindow {
+            window_index,
+            train_start,
+            train_end,
+            test_start,
+            test_end,
+        });
+        window_index += 1;
+        train_start += step_size;
+    }
+
+    Ok(windows)
+}
+
+fn candles_for_range(
+    candles: &[Candle],
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) -> Vec<Candle> {
+    candles
+        .iter()
+        .filter(|candle| candle.open_time >= start_time && candle.open_time < end_time)
+        .cloned()
+        .collect()
+}
+
+fn required_candles_for_walk_forward_candidate(candidate: &StrategyWalkForwardCandidate) -> usize {
+    candidate.lookback_candles as usize + candidate.holding_candles.unwrap_or(0) as usize + 2
+}
+
+fn build_strategy_walk_forward_result(
+    walk_forward_id: Uuid,
+    created_at: DateTime<Utc>,
+    correlation_id: Option<Uuid>,
+    request: &StrategyWalkForwardRequest,
+    windows: &[StrategyWalkForwardWindowResult],
+) -> StrategyWalkForwardResult {
+    let completed = windows
+        .iter()
+        .filter(|window| window.status == StrategyWalkForwardStatus::Completed)
+        .collect::<Vec<_>>();
+    let skipped_windows = windows
+        .iter()
+        .filter(|window| window.status == StrategyWalkForwardStatus::Skipped)
+        .count() as i32;
+    let profitable_test_windows = completed
+        .iter()
+        .filter(|window| window.pnl_pct > Decimal::ZERO)
+        .count() as i32;
+    let losing_test_windows = completed
+        .iter()
+        .filter(|window| window.pnl_pct < Decimal::ZERO)
+        .count() as i32;
+    let completed_windows = completed.len() as i32;
+    let total_windows = windows.len() as i32;
+    let avg_test_pnl_pct = average_decimal(completed.iter().map(|window| window.pnl_pct));
+    let median_test_pnl_pct =
+        median_decimal(completed.iter().map(|window| window.pnl_pct).collect());
+    let worst_test_pnl_pct = completed
+        .iter()
+        .map(|window| window.pnl_pct)
+        .min()
+        .unwrap_or(Decimal::ZERO);
+    let best_test_pnl_pct = completed
+        .iter()
+        .map(|window| window.pnl_pct)
+        .max()
+        .unwrap_or(Decimal::ZERO);
+    let avg_max_drawdown_pct =
+        average_decimal(completed.iter().map(|window| window.max_drawdown_pct));
+    let robustness_summary =
+        build_walk_forward_robustness_summary(windows, &completed, request.initial_capital);
+    let robustness_score = calculate_walk_forward_robustness_score(
+        completed_windows,
+        profitable_test_windows,
+        losing_test_windows,
+        avg_test_pnl_pct,
+        worst_test_pnl_pct,
+        avg_max_drawdown_pct,
+        skipped_windows,
+        total_windows,
+        &robustness_summary,
+    );
+    let min_required_test_windows = request.min_required_test_windows.unwrap_or(1) as i32;
+    let status = if completed_windows == 0 && skipped_windows > 0 {
+        StrategyWalkForwardStatus::Skipped
+    } else if completed_windows < min_required_test_windows {
+        StrategyWalkForwardStatus::Failed
+    } else {
+        StrategyWalkForwardStatus::Completed
+    };
+
+    StrategyWalkForwardResult {
+        walk_forward_id,
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        total_windows,
+        completed_windows,
+        skipped_windows,
+        profitable_test_windows,
+        losing_test_windows,
+        avg_test_pnl_pct,
+        median_test_pnl_pct,
+        worst_test_pnl_pct,
+        best_test_pnl_pct,
+        avg_max_drawdown_pct,
+        robustness_score,
+        status,
+        robustness_summary,
+        created_at,
+        correlation_id,
+    }
+}
+
+fn build_walk_forward_robustness_summary(
+    windows: &[StrategyWalkForwardWindowResult],
+    completed: &[&StrategyWalkForwardWindowResult],
+    initial_capital: Decimal,
+) -> StrategyWalkForwardRobustnessSummary {
+    let profitable_window_pct = if completed.is_empty() {
+        Decimal::ZERO
+    } else {
+        (Decimal::from(
+            completed
+                .iter()
+                .filter(|window| window.pnl_pct > Decimal::ZERO)
+                .count() as i32,
+        ) / Decimal::from(completed.len() as i32))
+            * Decimal::new(100, 0)
+    };
+    let total_trade_count = completed.iter().map(|window| window.trade_count).sum();
+    let avg_trades_per_completed_window = if completed.is_empty() {
+        Decimal::ZERO
+    } else {
+        Decimal::from(total_trade_count) / Decimal::from(completed.len() as i32)
+    };
+    let avg_fee_slippage_drag_pct = if completed.is_empty() {
+        Decimal::ZERO
+    } else {
+        average_decimal(completed.iter().map(|window| {
+            calculate_fee_slippage_drag_pct(initial_capital, window.fee_paid, window.slippage_cost)
+        }))
+    };
+    let skipped_window_pct = if windows.is_empty() {
+        Decimal::ZERO
+    } else {
+        (Decimal::from(
+            windows
+                .iter()
+                .filter(|window| window.status == StrategyWalkForwardStatus::Skipped)
+                .count() as i32,
+        ) / Decimal::from(windows.len() as i32))
+            * Decimal::new(100, 0)
+    };
+    let total_positive_pnl = completed
+        .iter()
+        .filter(|window| window.pnl_pct > Decimal::ZERO)
+        .fold(Decimal::ZERO, |acc, window| acc + window.pnl_pct);
+    let dominant_winner_share_pct = completed
+        .iter()
+        .map(|window| window.pnl_pct.max(Decimal::ZERO))
+        .max()
+        .filter(|_| total_positive_pnl > Decimal::ZERO)
+        .map(|best| (best / total_positive_pnl) * Decimal::new(100, 0))
+        .unwrap_or(Decimal::ZERO);
+
+    StrategyWalkForwardRobustnessSummary {
+        profitable_window_pct,
+        total_trade_count,
+        avg_trades_per_completed_window,
+        avg_fee_slippage_drag_pct,
+        skipped_window_pct,
+        dominant_winner_share_pct,
+    }
+}
+
+pub fn calculate_walk_forward_robustness_score(
+    completed_windows: i32,
+    profitable_test_windows: i32,
+    losing_test_windows: i32,
+    avg_test_pnl_pct: Decimal,
+    worst_test_pnl_pct: Decimal,
+    avg_max_drawdown_pct: Decimal,
+    skipped_windows: i32,
+    total_windows: i32,
+    summary: &StrategyWalkForwardRobustnessSummary,
+) -> Decimal {
+    let profitable_pct = if completed_windows <= 0 {
+        Decimal::ZERO
+    } else {
+        (Decimal::from(profitable_test_windows) / Decimal::from(completed_windows))
+            * Decimal::new(100, 0)
+    };
+    let skip_penalty = if total_windows <= 0 {
+        Decimal::ZERO
+    } else {
+        (Decimal::from(skipped_windows) / Decimal::from(total_windows)) * Decimal::new(20, 0)
+    };
+    let low_trade_penalty = if summary.total_trade_count < completed_windows.max(1) * 2 {
+        Decimal::new(12, 0)
+    } else if summary.total_trade_count < completed_windows.max(1) * 4 {
+        Decimal::new(5, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let loser_penalty = if losing_test_windows > profitable_test_windows {
+        Decimal::from(losing_test_windows - profitable_test_windows) * Decimal::new(3, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let concentration_penalty = if summary.dominant_winner_share_pct >= Decimal::new(70, 0)
+        && losing_test_windows >= profitable_test_windows
+    {
+        Decimal::new(12, 0)
+    } else if summary.dominant_winner_share_pct >= Decimal::new(55, 0) {
+        Decimal::new(5, 0)
+    } else {
+        Decimal::ZERO
+    };
+
+    profitable_pct + (avg_test_pnl_pct * Decimal::new(3, 0)) + worst_test_pnl_pct
+        - (avg_max_drawdown_pct * Decimal::new(2, 0))
+        - (summary.avg_fee_slippage_drag_pct * Decimal::new(2, 0))
+        - skip_penalty
+        - low_trade_penalty
+        - loser_penalty
+        - concentration_penalty
+}
+
+fn average_decimal<I>(values: I) -> Decimal
+where
+    I: Iterator<Item = Decimal>,
+{
+    let mut total = Decimal::ZERO;
+    let mut count = 0i32;
+    for value in values {
+        total += value;
+        count += 1;
+    }
+
+    if count == 0 {
+        Decimal::ZERO
+    } else {
+        total / Decimal::from(count)
+    }
+}
+
+pub fn median_decimal(mut values: Vec<Decimal>) -> Decimal {
+    if values.is_empty() {
+        return Decimal::ZERO;
+    }
+
+    values.sort();
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        (values[mid - 1] + values[mid]) / Decimal::new(2, 0)
+    } else {
+        values[mid]
+    }
+}
+
 fn parse_strategy_timeframe(value: &str) -> Result<CandleInterval> {
     value
         .parse()
@@ -1378,16 +1866,18 @@ fn deterministic_point_id(run_id: Uuid, timestamp: DateTime<Utc>) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_global_ranking, calculate_fee_slippage_drag_pct,
-        calculate_strategy_experiment_score, experiment_strategy_override,
-        experiment_warnings, global_ranking_entry, rank_strategy_experiment_runs,
-        simulate_backtest, skipped_strategy_experiment_result,
+        build_global_ranking, build_strategy_walk_forward_execution,
+        calculate_fee_slippage_drag_pct, calculate_strategy_experiment_score,
+        calculate_walk_forward_robustness_score, experiment_strategy_override, experiment_warnings,
+        generate_walk_forward_windows, global_ranking_entry, median_decimal,
+        rank_strategy_experiment_runs, simulate_backtest, skipped_strategy_experiment_result,
         timeframe_comparison_from_result,
     };
     use aegis_core::{
         BacktestRequest, Candle, CandleInterval, MarketDataSource, StrategyConfig,
         StrategyExperimentRequest, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
-        StrategyMode, Symbol,
+        StrategyMode, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
+        StrategyWalkForwardRobustnessSummary, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -1521,6 +2011,31 @@ mod tests {
         };
         run.score = calculate_strategy_experiment_score(&run, 40);
         run
+    }
+
+    fn sample_walk_forward_request() -> StrategyWalkForwardRequest {
+        StrategyWalkForwardRequest {
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1h".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 6, 0, 0, 0).unwrap(),
+            window_train_size_hours: 24,
+            window_test_size_hours: 12,
+            step_size_hours: 12,
+            initial_capital: Decimal::new(1_000_000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            candidate_config: StrategyWalkForwardCandidate {
+                lookback_candles: 5,
+                holding_candles: Some(3),
+                stop_loss_pct: None,
+                take_profit_pct: None,
+                max_signal_age_ms: Some(180_000),
+            },
+            min_required_test_windows: Some(2),
+            correlation_id: None,
+        }
     }
 
     #[test]
@@ -1738,9 +2253,17 @@ mod tests {
 
     #[test]
     fn experiment_warning_marks_overtrading() {
-        let warnings = experiment_warnings(12, Decimal::new(10, 0), Decimal::new(2, 0), Decimal::ZERO, 20);
+        let warnings = experiment_warnings(
+            12,
+            Decimal::new(10, 0),
+            Decimal::new(2, 0),
+            Decimal::ZERO,
+            20,
+        );
 
-        assert!(warnings.iter().any(|warning| warning == "overtrading_warning"));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning == "overtrading_warning"));
     }
 
     #[test]
@@ -1821,5 +2344,118 @@ mod tests {
         assert_eq!(base, original);
         assert_eq!(override_request.lookback_candles, 10);
         assert_eq!(override_request.holding_candles, Some(5));
+    }
+
+    #[test]
+    fn walk_forward_window_generation_is_chronological() {
+        let windows = generate_walk_forward_windows(&sample_walk_forward_request()).unwrap();
+
+        assert_eq!(windows.len(), 8);
+        assert_eq!(windows[0].window_index, 0);
+        assert_eq!(
+            windows[0].train_start,
+            Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap()
+        );
+        assert_eq!(
+            windows[0].test_start,
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap()
+        );
+        assert_eq!(
+            windows[1].train_start,
+            Utc.with_ymd_and_hms(2026, 5, 1, 12, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn walk_forward_score_penalizes_many_losing_windows() {
+        let good = calculate_walk_forward_robustness_score(
+            6,
+            5,
+            1,
+            Decimal::new(2, 0),
+            Decimal::new(-1, 0),
+            Decimal::new(3, 0),
+            0,
+            6,
+            &StrategyWalkForwardRobustnessSummary {
+                profitable_window_pct: Decimal::new(83, 0),
+                total_trade_count: 30,
+                avg_trades_per_completed_window: Decimal::new(5, 0),
+                avg_fee_slippage_drag_pct: Decimal::new(1, 0),
+                skipped_window_pct: Decimal::ZERO,
+                dominant_winner_share_pct: Decimal::new(25, 0),
+            },
+        );
+        let bad = calculate_walk_forward_robustness_score(
+            6,
+            1,
+            5,
+            Decimal::new(-1, 0),
+            Decimal::new(-8, 0),
+            Decimal::new(9, 0),
+            1,
+            6,
+            &StrategyWalkForwardRobustnessSummary {
+                profitable_window_pct: Decimal::new(16, 0),
+                total_trade_count: 8,
+                avg_trades_per_completed_window: Decimal::new(1, 0),
+                avg_fee_slippage_drag_pct: Decimal::new(3, 0),
+                skipped_window_pct: Decimal::new(16, 0),
+                dominant_winner_share_pct: Decimal::new(80, 0),
+            },
+        );
+
+        assert!(bad < good);
+    }
+
+    #[test]
+    fn walk_forward_skips_window_with_insufficient_data() {
+        let request = sample_walk_forward_request();
+        let execution = build_strategy_walk_forward_execution(
+            Uuid::from_u128(0x5001),
+            Utc.with_ymd_and_hms(2026, 5, 6, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x5002),
+            &sample_strategy_config(),
+            request,
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            execution.result.skipped_windows,
+            execution.result.total_windows
+        );
+        assert!(execution
+            .windows
+            .iter()
+            .all(|window| window.status == aegis_core::StrategyWalkForwardStatus::Skipped));
+    }
+
+    #[test]
+    fn median_pnl_is_calculated_for_even_series() {
+        let median = median_decimal(vec![
+            Decimal::new(-4, 0),
+            Decimal::new(2, 0),
+            Decimal::new(10, 0),
+            Decimal::new(14, 0),
+        ]);
+
+        assert_eq!(median, Decimal::new(6, 0));
+    }
+
+    #[test]
+    fn ranking_is_deterministic_for_equal_scores() {
+        let mut runs = vec![
+            sample_experiment_run(Uuid::from_u128(2), 10, 4, 10, 60, 1),
+            sample_experiment_run(Uuid::from_u128(1), 10, 4, 10, 60, 1),
+        ];
+
+        rank_strategy_experiment_runs(&mut runs);
+        let first = runs.iter().map(|run| run.id).collect::<Vec<_>>();
+
+        rank_strategy_experiment_runs(&mut runs);
+        let second = runs.iter().map(|run| run.id).collect::<Vec<_>>();
+
+        assert_eq!(first, second);
     }
 }

@@ -42,9 +42,10 @@ use aegis_core::{
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyNoSignalReason, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
-    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
+    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetRepairAction, TestnetRepairActionStatus,
     TestnetRepairRequest, TestnetRepairResult, TestnetRepairValidationIssue,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -87,8 +88,8 @@ use db::{
     get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
     get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
     get_strategy_experiment, get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_shadow_decision_breakdown, get_strategy_status, get_system_event,
-    get_system_state, get_testnet_promotion_funnel_summary,
+    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
+    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
     get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
     get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
     get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
@@ -104,7 +105,8 @@ use db::{
     list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
     list_strategy_config_audit, list_strategy_config_versions, list_strategy_experiment_runs,
     list_strategy_experiments, list_strategy_experiments_by_group,
-    list_strategy_performance_rankings, list_strategy_status, list_testnet_promotion_funnel_rows,
+    list_strategy_performance_rankings, list_strategy_status, list_strategy_walk_forward_runs,
+    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
     list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
     paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
     persist_risk_config_version, persist_strategy_config_version, revoke_session,
@@ -112,6 +114,7 @@ use db::{
     rotate_session_refresh_token, set_kill_switch_state, strategy_config_audit_from_record,
     strategy_config_from_record, strategy_config_version_from_record,
     strategy_experiment_result_from_records, strategy_experiment_run_from_record,
+    strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
     update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
     upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
     upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
@@ -1383,6 +1386,36 @@ struct StrategyExperimentRunsResponse {
 }
 
 #[derive(Serialize)]
+struct StrategyWalkForwardAcceptedResponse {
+    walk_forward: StrategyWalkForwardResult,
+    windows: Vec<StrategyWalkForwardWindowResult>,
+}
+
+#[derive(Serialize)]
+struct StrategyWalkForwardRunsResponse {
+    walk_forwards: Vec<StrategyWalkForwardResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyWalkForwardResponse {
+    walk_forward: StrategyWalkForwardResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyWalkForwardWindowsResponse {
+    windows: Vec<StrategyWalkForwardWindowResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct StrategyMultiTimeframeExperimentResponse {
     comparison: StrategyMultiTimeframeExperimentResult,
     request_id: String,
@@ -1678,6 +1711,7 @@ struct EvaluateStrategyResponse {
 type RunPaperPipelineRequest = PaperTradingPipelineRequest;
 type RunBacktestRequest = BacktestRequest;
 type RunStrategyExperimentRequest = StrategyExperimentRequest;
+type RunStrategyWalkForwardRequest = StrategyWalkForwardRequest;
 type RunStrategyMultiTimeframeExperimentRequest = StrategyMultiTimeframeExperimentRequest;
 
 #[tokio::main]
@@ -1927,8 +1961,20 @@ async fn main() {
             post(run_multi_timeframe_strategy_experiment_handler),
         )
         .route(
+            "/experiments/strategy/walk-forward",
+            post(run_strategy_walk_forward_handler).get(list_strategy_walk_forward_runs_handler),
+        )
+        .route(
             "/experiments/strategy",
             get(list_strategy_experiments_handler),
+        )
+        .route(
+            "/experiments/strategy/walk-forward/:id",
+            get(get_strategy_walk_forward_handler),
+        )
+        .route(
+            "/experiments/strategy/walk-forward/:id/windows",
+            get(list_strategy_walk_forward_windows_handler),
         )
         .route(
             "/experiments/strategy/:id",
@@ -10418,6 +10464,299 @@ async fn run_multi_timeframe_strategy_experiment_handler(
             )
                 .into_response()
         }
+    }
+}
+
+async fn run_strategy_walk_forward_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<RunStrategyWalkForwardRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
+    }
+    let correlation_id = payload
+        .correlation_id
+        .expect("correlation_id must be set before walk-forward execution");
+    if let Some(actor) = actor.as_ref() {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            "strategy_walk_forward.run",
+            "experiments/strategy/walk-forward",
+            &json!({ "actor_id": actor.user_id }),
+        )
+        .await;
+    }
+
+    let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+    match engine.run_strategy_walk_forward(payload).await {
+        Ok(execution) => (
+            StatusCode::OK,
+            Json(StrategyWalkForwardAcceptedResponse {
+                walk_forward: execution.result,
+                windows: execution.windows,
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.contains("invalid")
+                || message.contains("unsupported")
+                || message.contains("cannot be empty")
+                || message.contains("must be")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+
+            (
+                status,
+                Json(ErrorResponse {
+                    error: "failed_to_run_strategy_walk_forward",
+                    message,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_strategy_walk_forward_runs_handler(
+    State(state): State<AppState>,
+    Query(query): Query<StrategyExperimentsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_strategy_walk_forward_runs(&state.db_pool, bounded_limit(query.limit)).await {
+        Ok(records) => {
+            let mut walk_forwards = Vec::with_capacity(records.len());
+            for record in records {
+                let window_records =
+                    match list_strategy_walk_forward_windows(&state.db_pool, record.id).await {
+                        Ok(rows) => rows,
+                        Err(err) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(ErrorResponse {
+                                    error: "failed_to_query_strategy_walk_forward_windows",
+                                    message: err.to_string(),
+                                    request_id: request.request_id,
+                                    correlation_id: request.correlation_id,
+                                    timestamp: Utc::now(),
+                                }),
+                            )
+                                .into_response();
+                        }
+                    };
+                match strategy_walk_forward_result_from_records(&record, &window_records) {
+                    Ok(result) => walk_forwards.push(result),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_walk_forward",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            (
+                StatusCode::OK,
+                Json(StrategyWalkForwardRunsResponse {
+                    walk_forwards,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_walk_forward_runs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_walk_forward_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let walk_forward_id = match id.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_walk_forward_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match get_strategy_walk_forward_run(&state.db_pool, walk_forward_id).await {
+        Ok(Some(record)) => {
+            match list_strategy_walk_forward_windows(&state.db_pool, walk_forward_id).await {
+                Ok(window_records) => {
+                    match strategy_walk_forward_result_from_records(&record, &window_records) {
+                        Ok(walk_forward) => (
+                            StatusCode::OK,
+                            Json(StrategyWalkForwardResponse {
+                                walk_forward,
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response(),
+                        Err(err) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_walk_forward",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response(),
+                    }
+                }
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_strategy_walk_forward_windows",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "strategy_walk_forward_not_found",
+                message: "Strategy walk-forward run was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_walk_forward",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_strategy_walk_forward_windows_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let walk_forward_id = match id.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_walk_forward_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match list_strategy_walk_forward_windows(&state.db_pool, walk_forward_id).await {
+        Ok(records) => {
+            let mut windows = Vec::with_capacity(records.len());
+            for record in records {
+                match strategy_walk_forward_window_from_record(&record) {
+                    Ok(window) => windows.push(window),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_walk_forward_window",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            (
+                StatusCode::OK,
+                Json(StrategyWalkForwardWindowsResponse {
+                    windows,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_walk_forward_windows",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
     }
 }
 

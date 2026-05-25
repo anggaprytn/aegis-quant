@@ -17,9 +17,10 @@ use aegis_core::{
     StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentResult,
     StrategyExperimentRun, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
     StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyRiskBreakdown, StrategySignal,
-    StrategyStatus, Symbol, TestnetExecutionState, TestnetPromotionDropoffBreakdown,
-    TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow, TestnetPromotionFunnelStage,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyStatus, StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary,
+    StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
+    TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetPromotionQualitySignal, TestnetShadowDecision,
     TestnetShadowIntent, TestnetShadowPromotionPreview, TestnetShadowPromotionRejectionReason,
     TestnetShadowPromotionStatus, TestnetShadowRejectionReason, TestnetShadowRunResult,
@@ -737,6 +738,52 @@ pub struct StrategyExperimentRunRecord {
     pub score: Decimal,
     pub status: String,
     pub warnings: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyWalkForwardRunRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub request: Value,
+    pub status: String,
+    pub total_windows: i32,
+    pub completed_windows: i32,
+    pub skipped_windows: i32,
+    pub profitable_test_windows: i32,
+    pub losing_test_windows: i32,
+    pub avg_test_pnl_pct: Decimal,
+    pub median_test_pnl_pct: Decimal,
+    pub worst_test_pnl_pct: Decimal,
+    pub best_test_pnl_pct: Decimal,
+    pub avg_max_drawdown_pct: Decimal,
+    pub robustness_score: Decimal,
+    pub robustness_summary: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyWalkForwardWindowRecord {
+    pub id: Uuid,
+    pub walk_forward_id: Uuid,
+    pub window_index: i32,
+    pub train_start: DateTime<Utc>,
+    pub train_end: DateTime<Utc>,
+    pub test_start: DateTime<Utc>,
+    pub test_end: DateTime<Utc>,
+    pub status: String,
+    pub skip_reason: Option<String>,
+    pub trade_count: i32,
+    pub pnl: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub win_rate: Decimal,
+    pub fee_paid: Decimal,
+    pub slippage_cost: Decimal,
+    pub result: Value,
     pub created_at: DateTime<Utc>,
 }
 
@@ -5869,6 +5916,167 @@ pub async fn insert_strategy_experiment_runs(
     Ok(records)
 }
 
+pub async fn insert_strategy_walk_forward_run(
+    pool: &PgPool,
+    request: &aegis_core::StrategyWalkForwardRequest,
+    result: &StrategyWalkForwardResult,
+) -> Result<StrategyWalkForwardRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_walk_forward_runs (
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            request,
+            status,
+            total_windows,
+            completed_windows,
+            skipped_windows,
+            profitable_test_windows,
+            losing_test_windows,
+            avg_test_pnl_pct,
+            median_test_pnl_pct,
+            worst_test_pnl_pct,
+            best_test_pnl_pct,
+            avg_max_drawdown_pct,
+            robustness_score,
+            robustness_summary,
+            created_at,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+        )
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            request,
+            status,
+            total_windows,
+            completed_windows,
+            skipped_windows,
+            profitable_test_windows,
+            losing_test_windows,
+            avg_test_pnl_pct,
+            median_test_pnl_pct,
+            worst_test_pnl_pct,
+            best_test_pnl_pct,
+            avg_max_drawdown_pct,
+            robustness_score,
+            robustness_summary,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(result.walk_forward_id)
+    .bind(&result.strategy_id)
+    .bind(&result.symbol)
+    .bind(&result.timeframe)
+    .bind(serde_json::to_value(request)?)
+    .bind(result.status.as_str())
+    .bind(result.total_windows)
+    .bind(result.completed_windows)
+    .bind(result.skipped_windows)
+    .bind(result.profitable_test_windows)
+    .bind(result.losing_test_windows)
+    .bind(result.avg_test_pnl_pct)
+    .bind(result.median_test_pnl_pct)
+    .bind(result.worst_test_pnl_pct)
+    .bind(result.best_test_pnl_pct)
+    .bind(result.avg_max_drawdown_pct)
+    .bind(result.robustness_score)
+    .bind(serde_json::to_value(&result.robustness_summary)?)
+    .bind(result.created_at)
+    .bind(result.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_walk_forward_run(&row))
+}
+
+pub async fn insert_strategy_walk_forward_windows(
+    pool: &PgPool,
+    windows: &[StrategyWalkForwardWindowResult],
+) -> Result<Vec<StrategyWalkForwardWindowRecord>> {
+    let mut records = Vec::with_capacity(windows.len());
+    for window in windows {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO strategy_walk_forward_windows (
+                id,
+                walk_forward_id,
+                window_index,
+                train_start,
+                train_end,
+                test_start,
+                test_end,
+                status,
+                skip_reason,
+                trade_count,
+                pnl,
+                pnl_pct,
+                max_drawdown_pct,
+                win_rate,
+                fee_paid,
+                slippage_cost,
+                result,
+                created_at
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14, $15, $16, $17, $18
+            )
+            RETURNING
+                id,
+                walk_forward_id,
+                window_index,
+                train_start,
+                train_end,
+                test_start,
+                test_end,
+                status,
+                skip_reason,
+                trade_count,
+                pnl,
+                pnl_pct,
+                max_drawdown_pct,
+                win_rate,
+                fee_paid,
+                slippage_cost,
+                result,
+                created_at
+            "#,
+        )
+        .bind(window.id)
+        .bind(window.walk_forward_id)
+        .bind(window.window.window_index)
+        .bind(window.window.train_start)
+        .bind(window.window.train_end)
+        .bind(window.window.test_start)
+        .bind(window.window.test_end)
+        .bind(window.status.as_str())
+        .bind(&window.skip_reason)
+        .bind(window.trade_count)
+        .bind(window.pnl)
+        .bind(window.pnl_pct)
+        .bind(window.max_drawdown_pct)
+        .bind(window.win_rate)
+        .bind(window.fee_paid)
+        .bind(window.slippage_cost)
+        .bind(&window.result)
+        .bind(window.created_at)
+        .fetch_one(pool)
+        .await?;
+        records.push(map_strategy_walk_forward_window(&row));
+    }
+
+    Ok(records)
+}
+
 pub async fn get_strategy_experiment(
     pool: &PgPool,
     experiment_id: Uuid,
@@ -6015,6 +6223,120 @@ pub async fn list_strategy_experiment_runs(
     .await?;
 
     Ok(rows.iter().map(map_strategy_experiment_run).collect())
+}
+
+pub async fn get_strategy_walk_forward_run(
+    pool: &PgPool,
+    walk_forward_id: Uuid,
+) -> Result<Option<StrategyWalkForwardRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            request,
+            status,
+            total_windows,
+            completed_windows,
+            skipped_windows,
+            profitable_test_windows,
+            losing_test_windows,
+            avg_test_pnl_pct,
+            median_test_pnl_pct,
+            worst_test_pnl_pct,
+            best_test_pnl_pct,
+            avg_max_drawdown_pct,
+            robustness_score,
+            robustness_summary,
+            created_at,
+            correlation_id
+        FROM strategy_walk_forward_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(walk_forward_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_strategy_walk_forward_run))
+}
+
+pub async fn list_strategy_walk_forward_runs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<StrategyWalkForwardRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            request,
+            status,
+            total_windows,
+            completed_windows,
+            skipped_windows,
+            profitable_test_windows,
+            losing_test_windows,
+            avg_test_pnl_pct,
+            median_test_pnl_pct,
+            worst_test_pnl_pct,
+            best_test_pnl_pct,
+            avg_max_drawdown_pct,
+            robustness_score,
+            robustness_summary,
+            created_at,
+            correlation_id
+        FROM strategy_walk_forward_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_strategy_walk_forward_run).collect())
+}
+
+pub async fn list_strategy_walk_forward_windows(
+    pool: &PgPool,
+    walk_forward_id: Uuid,
+) -> Result<Vec<StrategyWalkForwardWindowRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            walk_forward_id,
+            window_index,
+            train_start,
+            train_end,
+            test_start,
+            test_end,
+            status,
+            skip_reason,
+            trade_count,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            fee_paid,
+            slippage_cost,
+            result,
+            created_at
+        FROM strategy_walk_forward_windows
+        WHERE walk_forward_id = $1
+        ORDER BY window_index ASC, created_at ASC
+        "#,
+    )
+    .bind(walk_forward_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_strategy_walk_forward_window).collect())
 }
 
 pub async fn get_backtest_trades(pool: &PgPool, run_id: Uuid) -> Result<Vec<BacktestTradeRecord>> {
@@ -9214,6 +9536,56 @@ fn map_strategy_experiment_run(row: &sqlx::postgres::PgRow) -> StrategyExperimen
     }
 }
 
+fn map_strategy_walk_forward_run(row: &sqlx::postgres::PgRow) -> StrategyWalkForwardRunRecord {
+    StrategyWalkForwardRunRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        request: row.get("request"),
+        status: row.get("status"),
+        total_windows: row.get("total_windows"),
+        completed_windows: row.get("completed_windows"),
+        skipped_windows: row.get("skipped_windows"),
+        profitable_test_windows: row.get("profitable_test_windows"),
+        losing_test_windows: row.get("losing_test_windows"),
+        avg_test_pnl_pct: row.get("avg_test_pnl_pct"),
+        median_test_pnl_pct: row.get("median_test_pnl_pct"),
+        worst_test_pnl_pct: row.get("worst_test_pnl_pct"),
+        best_test_pnl_pct: row.get("best_test_pnl_pct"),
+        avg_max_drawdown_pct: row.get("avg_max_drawdown_pct"),
+        robustness_score: row.get("robustness_score"),
+        robustness_summary: row.get("robustness_summary"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_strategy_walk_forward_window(
+    row: &sqlx::postgres::PgRow,
+) -> StrategyWalkForwardWindowRecord {
+    StrategyWalkForwardWindowRecord {
+        id: row.get("id"),
+        walk_forward_id: row.get("walk_forward_id"),
+        window_index: row.get("window_index"),
+        train_start: row.get("train_start"),
+        train_end: row.get("train_end"),
+        test_start: row.get("test_start"),
+        test_end: row.get("test_end"),
+        status: row.get("status"),
+        skip_reason: row.get("skip_reason"),
+        trade_count: row.get("trade_count"),
+        pnl: row.get("pnl"),
+        pnl_pct: row.get("pnl_pct"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        win_rate: row.get("win_rate"),
+        fee_paid: row.get("fee_paid"),
+        slippage_cost: row.get("slippage_cost"),
+        result: row.get("result"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
     SignalRecord {
         id: row.get("id"),
@@ -9451,6 +9823,62 @@ pub fn strategy_experiment_result_from_records(
         candle_count: record.candle_count,
         warnings: serde_json::from_value(record.warnings.clone())?,
         skipped_reason: record.skipped_reason.clone(),
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub fn strategy_walk_forward_window_from_record(
+    record: &StrategyWalkForwardWindowRecord,
+) -> Result<StrategyWalkForwardWindowResult> {
+    Ok(StrategyWalkForwardWindowResult {
+        id: record.id,
+        walk_forward_id: record.walk_forward_id,
+        window: StrategyWalkForwardWindow {
+            window_index: record.window_index,
+            train_start: record.train_start,
+            train_end: record.train_end,
+            test_start: record.test_start,
+            test_end: record.test_end,
+        },
+        status: record.status.parse()?,
+        skip_reason: record.skip_reason.clone(),
+        trade_count: record.trade_count,
+        pnl: record.pnl,
+        pnl_pct: record.pnl_pct,
+        max_drawdown_pct: record.max_drawdown_pct,
+        win_rate: record.win_rate,
+        fee_paid: record.fee_paid,
+        slippage_cost: record.slippage_cost,
+        result: record.result.clone(),
+        created_at: record.created_at,
+    })
+}
+
+pub fn strategy_walk_forward_result_from_records(
+    record: &StrategyWalkForwardRunRecord,
+    _window_records: &[StrategyWalkForwardWindowRecord],
+) -> Result<StrategyWalkForwardResult> {
+    Ok(StrategyWalkForwardResult {
+        walk_forward_id: record.id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        total_windows: record.total_windows,
+        completed_windows: record.completed_windows,
+        skipped_windows: record.skipped_windows,
+        profitable_test_windows: record.profitable_test_windows,
+        losing_test_windows: record.losing_test_windows,
+        avg_test_pnl_pct: record.avg_test_pnl_pct,
+        median_test_pnl_pct: record.median_test_pnl_pct,
+        worst_test_pnl_pct: record.worst_test_pnl_pct,
+        best_test_pnl_pct: record.best_test_pnl_pct,
+        avg_max_drawdown_pct: record.avg_max_drawdown_pct,
+        robustness_score: record.robustness_score,
+        status: record.status.parse()?,
+        robustness_summary: serde_json::from_value::<StrategyWalkForwardRobustnessSummary>(
+            record.robustness_summary.clone(),
+        )?,
         created_at: record.created_at,
         correlation_id: record.correlation_id,
     })

@@ -1352,6 +1352,70 @@ pub fn print_multi_timeframe_strategy_experiment(
     );
 }
 
+pub fn print_strategy_walk_forward(result: &aegis_core::StrategyWalkForwardResult) {
+    println!("Walk-forward ID: {}", result.walk_forward_id);
+    println!("Status: {}", result.status.as_str());
+    println!("Strategy: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Robustness score: {}", result.robustness_score);
+    println!(
+        "Windows: total={} completed={} skipped={}",
+        result.total_windows, result.completed_windows, result.skipped_windows
+    );
+    println!(
+        "Profitable vs losing: {} / {}",
+        result.profitable_test_windows, result.losing_test_windows
+    );
+    println!(
+        "PnL %: avg={} median={} worst={} best={}",
+        result.avg_test_pnl_pct,
+        result.median_test_pnl_pct,
+        result.worst_test_pnl_pct,
+        result.best_test_pnl_pct
+    );
+    println!("Avg drawdown %: {}", result.avg_max_drawdown_pct);
+}
+
+pub fn print_strategy_walk_forward_runs(runs: &[aegis_core::StrategyWalkForwardResult]) {
+    for run in runs {
+        println!(
+            "{}  {} {} {} status={} score={} windows={}/{} pnl_avg={} pnl_worst={} pnl_best={}",
+            run.walk_forward_id,
+            run.strategy_id,
+            run.symbol,
+            run.timeframe,
+            run.status.as_str(),
+            run.robustness_score,
+            run.completed_windows,
+            run.total_windows,
+            run.avg_test_pnl_pct,
+            run.worst_test_pnl_pct,
+            run.best_test_pnl_pct
+        );
+    }
+}
+
+pub fn print_strategy_walk_forward_windows(
+    windows: &[aegis_core::StrategyWalkForwardWindowResult],
+) {
+    for window in windows {
+        println!(
+            "window={} train={}..{} test={}..{} status={} pnl_pct={} drawdown={} trades={} reason={}",
+            window.window.window_index,
+            window.window.train_start.to_rfc3339(),
+            window.window.train_end.to_rfc3339(),
+            window.window.test_start.to_rfc3339(),
+            window.window.test_end.to_rfc3339(),
+            window.status.as_str(),
+            window.pnl_pct,
+            window.max_drawdown_pct,
+            window.trade_count,
+            window.skip_reason.as_deref().unwrap_or("-")
+        );
+    }
+}
+
 pub fn print_backfill_result(result: &aegis_core::CandleBackfillResult) {
     println!("Run ID: {}", result.run_id);
     println!("Status: {}", result.status.as_str());

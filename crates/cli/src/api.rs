@@ -12,7 +12,8 @@ use aegis_core::{
     StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
     TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
     TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
@@ -1137,6 +1138,14 @@ impl ApiClient {
             .await
     }
 
+    pub async fn run_strategy_walk_forward(
+        &self,
+        request: &StrategyWalkForwardRequest,
+    ) -> Result<StrategyWalkForwardAcceptedResponse, ApiClientError> {
+        self.post("/experiments/strategy/walk-forward", request)
+            .await
+    }
+
     pub async fn strategy_experiments(
         &self,
         limit: i64,
@@ -1167,6 +1176,39 @@ impl ApiClient {
     ) -> Result<StrategyMultiTimeframeExperimentResponse, ApiClientError> {
         self.get(
             &format!("/experiments/strategy/{experiment_group_id}/comparison"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn strategy_walk_forward_runs(
+        &self,
+        limit: i64,
+    ) -> Result<StrategyWalkForwardRunsResponse, ApiClientError> {
+        self.get(
+            "/experiments/strategy/walk-forward",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn strategy_walk_forward_run(
+        &self,
+        walk_forward_id: Uuid,
+    ) -> Result<StrategyWalkForwardResponse, ApiClientError> {
+        self.get(
+            &format!("/experiments/strategy/walk-forward/{walk_forward_id}"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn strategy_walk_forward_windows(
+        &self,
+        walk_forward_id: Uuid,
+    ) -> Result<StrategyWalkForwardWindowsResponse, ApiClientError> {
+        self.get(
+            &format!("/experiments/strategy/walk-forward/{walk_forward_id}/windows"),
             &[],
         )
         .await
@@ -2456,6 +2498,36 @@ pub struct StrategyExperimentRunsResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyWalkForwardAcceptedResponse {
+    pub walk_forward: StrategyWalkForwardResult,
+    pub windows: Vec<StrategyWalkForwardWindowResult>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyWalkForwardRunsResponse {
+    pub walk_forwards: Vec<StrategyWalkForwardResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyWalkForwardResponse {
+    pub walk_forward: StrategyWalkForwardResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyWalkForwardWindowsResponse {
+    pub windows: Vec<StrategyWalkForwardWindowResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyMultiTimeframeExperimentResponse {
     pub comparison: StrategyMultiTimeframeExperimentResult,
     pub request_id: String,
@@ -2642,6 +2714,37 @@ pub fn build_multi_timeframe_strategy_experiment_request(
     request
         .validate()
         .context("invalid multi-timeframe strategy experiment request")?;
+    Ok(request)
+}
+
+pub fn build_strategy_walk_forward_request(
+    args: &crate::cli::StrategyWalkForwardRunArgs,
+) -> anyhow::Result<StrategyWalkForwardRequest> {
+    let request = StrategyWalkForwardRequest {
+        strategy_id: args.strategy.clone(),
+        symbol: args.symbol.clone(),
+        timeframe: args.timeframe.clone(),
+        start_time: args.start,
+        end_time: args.end,
+        window_train_size_hours: args.train_hours,
+        window_test_size_hours: args.test_hours,
+        step_size_hours: args.step_hours,
+        initial_capital: args.initial_capital,
+        fee_bps: args.fee_bps,
+        slippage_bps: args.slippage_bps,
+        candidate_config: aegis_core::StrategyWalkForwardCandidate {
+            lookback_candles: args.lookback_candles,
+            holding_candles: args.holding_candles,
+            stop_loss_pct: args.stop_loss_pct,
+            take_profit_pct: args.take_profit_pct,
+            max_signal_age_ms: args.max_signal_age_ms,
+        },
+        min_required_test_windows: args.min_required_test_windows,
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate()
+        .context("invalid strategy walk-forward request")?;
     Ok(request)
 }
 
