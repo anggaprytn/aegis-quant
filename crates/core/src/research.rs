@@ -955,6 +955,135 @@ pub struct ResearchCandidateObservationSummaryView {
     pub computed_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateShadowPerformanceStatus {
+    InsufficientData,
+    Healthy,
+    UnderObservation,
+    NeedsReview,
+}
+
+impl ResearchCandidateShadowPerformanceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::Healthy => "HEALTHY",
+            Self::UnderObservation => "UNDER_OBSERVATION",
+            Self::NeedsReview => "NEEDS_REVIEW",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateShadowPerformanceStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "HEALTHY" => Ok(Self::Healthy),
+            "UNDER_OBSERVATION" => Ok(Self::UnderObservation),
+            "NEEDS_REVIEW" => Ok(Self::NeedsReview),
+            other => Err(
+                CoreError::UnsupportedResearchCandidateShadowPerformanceStatus(other.to_string()),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateShadowPerformanceRecommendation {
+    InsufficientData,
+    KeepObserving,
+    NeedsReview,
+    CandidateNotCoveredByRunner,
+    RejectCandidate,
+}
+
+impl ResearchCandidateShadowPerformanceRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::KeepObserving => "KEEP_OBSERVING",
+            Self::NeedsReview => "NEEDS_REVIEW",
+            Self::CandidateNotCoveredByRunner => "CANDIDATE_NOT_COVERED_BY_RUNNER",
+            Self::RejectCandidate => "REJECT_CANDIDATE",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateShadowPerformanceRecommendation {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "KEEP_OBSERVING" => Ok(Self::KeepObserving),
+            "NEEDS_REVIEW" => Ok(Self::NeedsReview),
+            "CANDIDATE_NOT_COVERED_BY_RUNNER" => Ok(Self::CandidateNotCoveredByRunner),
+            "REJECT_CANDIDATE" => Ok(Self::RejectCandidate),
+            other => Err(
+                CoreError::UnsupportedResearchCandidateShadowPerformanceRecommendation(
+                    other.to_string(),
+                ),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateShadowOutcomeBreakdown {
+    pub total_shadow_runs: i64,
+    pub would_submit_count: i64,
+    pub no_signal_count: i64,
+    pub risk_rejected_count: i64,
+    pub skipped_count: i64,
+    pub error_count: i64,
+    pub would_submit_rate_pct: Decimal,
+    pub risk_rejection_rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateShadowPerformance {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub total_shadow_runs: i64,
+    pub would_submit_count: i64,
+    pub no_signal_count: i64,
+    pub risk_rejected_count: i64,
+    pub skipped_count: i64,
+    pub error_count: i64,
+    pub would_submit_rate_pct: Decimal,
+    pub risk_rejection_rate_pct: Decimal,
+    pub last_shadow_run_at: Option<DateTime<Utc>>,
+    pub runner_alignment_current: bool,
+    pub recommendation: ResearchCandidateShadowPerformanceRecommendation,
+    pub status: ResearchCandidateShadowPerformanceStatus,
+    pub outcome_breakdown: ResearchCandidateShadowOutcomeBreakdown,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateShadowRunLink {
+    pub candidate_id: Uuid,
+    pub shadow_run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub decision: String,
+    pub status: String,
+    pub signal_id: Option<Uuid>,
+    pub risk_decision_id: Option<Uuid>,
+    pub linked_at: DateTime<Utc>,
+    pub shadow_created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResearchCandidateDecisionRejection {
     pub reason_code: String,
@@ -992,6 +1121,105 @@ pub fn calculate_observation_rate(count: i64, total: i64) -> Decimal {
         Decimal::ZERO
     } else {
         Decimal::from(count) / Decimal::from(total)
+    }
+}
+
+pub fn calculate_percentage_rate(count: i64, total: i64) -> Decimal {
+    (calculate_observation_rate(count, total) * Decimal::from(100)).round_dp(2)
+}
+
+pub fn evaluate_research_candidate_shadow_performance(
+    candidate_id: Uuid,
+    strategy_id: impl Into<String>,
+    symbol: impl Into<String>,
+    timeframe: impl Into<String>,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    total_shadow_runs: i64,
+    would_submit_count: i64,
+    no_signal_count: i64,
+    risk_rejected_count: i64,
+    skipped_count: i64,
+    error_count: i64,
+    last_shadow_run_at: Option<DateTime<Utc>>,
+    runner_alignment_current: bool,
+    computed_at: DateTime<Utc>,
+) -> ResearchCandidateShadowPerformance {
+    let would_submit_rate_pct = calculate_percentage_rate(would_submit_count, total_shadow_runs);
+    let risk_rejection_rate_pct = calculate_percentage_rate(risk_rejected_count, total_shadow_runs);
+    let skipped_or_error_count = skipped_count + error_count;
+    let skipped_or_error_rate_pct =
+        calculate_percentage_rate(skipped_or_error_count, total_shadow_runs);
+
+    let (status, recommendation) = if !runner_alignment_current {
+        (
+            ResearchCandidateShadowPerformanceStatus::NeedsReview,
+            ResearchCandidateShadowPerformanceRecommendation::CandidateNotCoveredByRunner,
+        )
+    } else if total_shadow_runs <= 0 {
+        (
+            ResearchCandidateShadowPerformanceStatus::InsufficientData,
+            ResearchCandidateShadowPerformanceRecommendation::InsufficientData,
+        )
+    } else if total_shadow_runs < default_min_shadow_runs() {
+        (
+            ResearchCandidateShadowPerformanceStatus::UnderObservation,
+            ResearchCandidateShadowPerformanceRecommendation::KeepObserving,
+        )
+    } else if would_submit_count == 0
+        || risk_rejection_rate_pct >= Decimal::new(75, 0)
+        || skipped_or_error_rate_pct >= Decimal::new(50, 0)
+    {
+        (
+            ResearchCandidateShadowPerformanceStatus::NeedsReview,
+            if would_submit_count == 0 {
+                ResearchCandidateShadowPerformanceRecommendation::RejectCandidate
+            } else {
+                ResearchCandidateShadowPerformanceRecommendation::NeedsReview
+            },
+        )
+    } else {
+        (
+            ResearchCandidateShadowPerformanceStatus::Healthy,
+            ResearchCandidateShadowPerformanceRecommendation::KeepObserving,
+        )
+    };
+
+    let strategy_id = strategy_id.into();
+    let symbol = symbol.into();
+    let timeframe = timeframe.into();
+    let outcome_breakdown = ResearchCandidateShadowOutcomeBreakdown {
+        total_shadow_runs,
+        would_submit_count,
+        no_signal_count,
+        risk_rejected_count,
+        skipped_count,
+        error_count,
+        would_submit_rate_pct,
+        risk_rejection_rate_pct,
+    };
+
+    ResearchCandidateShadowPerformance {
+        candidate_id,
+        strategy_id,
+        symbol,
+        timeframe,
+        window_start,
+        window_end,
+        total_shadow_runs,
+        would_submit_count,
+        no_signal_count,
+        risk_rejected_count,
+        skipped_count,
+        error_count,
+        would_submit_rate_pct,
+        risk_rejection_rate_pct,
+        last_shadow_run_at,
+        runner_alignment_current,
+        recommendation,
+        status,
+        outcome_breakdown,
+        computed_at,
     }
 }
 
@@ -1907,6 +2135,94 @@ mod tests {
         );
 
         assert_eq!(summary.risk_rejection_rate, Decimal::new(2, 1).round_dp(4));
+    }
+
+    #[test]
+    fn shadow_performance_status_is_insufficient_without_runs() {
+        let performance = evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            ts(0, 0, 0),
+            ts(0, 1, 0),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            None,
+            true,
+            ts(0, 1, 0),
+        );
+
+        assert_eq!(
+            performance.status,
+            ResearchCandidateShadowPerformanceStatus::InsufficientData
+        );
+        assert_eq!(
+            performance.recommendation,
+            ResearchCandidateShadowPerformanceRecommendation::InsufficientData
+        );
+    }
+
+    #[test]
+    fn would_submit_rate_pct_calculation_is_deterministic() {
+        assert_eq!(calculate_percentage_rate(3, 12), Decimal::new(25, 0));
+    }
+
+    #[test]
+    fn shadow_risk_rejection_rate_pct_calculation_is_deterministic() {
+        let performance = evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            ts(0, 0, 0),
+            ts(0, 1, 0),
+            20,
+            4,
+            2,
+            5,
+            1,
+            0,
+            Some(ts(0, 1, 0)),
+            true,
+            ts(0, 1, 0),
+        );
+
+        assert_eq!(performance.risk_rejection_rate_pct, Decimal::new(25, 0));
+    }
+
+    #[test]
+    fn shadow_performance_recommends_reject_after_enough_zero_would_submit_runs() {
+        let performance = evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            30,
+            0,
+            20,
+            6,
+            4,
+            0,
+            Some(ts(1, 0, 0)),
+            true,
+            ts(1, 0, 0),
+        );
+
+        assert_eq!(
+            performance.status,
+            ResearchCandidateShadowPerformanceStatus::NeedsReview
+        );
+        assert_eq!(
+            performance.recommendation,
+            ResearchCandidateShadowPerformanceRecommendation::RejectCandidate
+        );
     }
 
     #[test]

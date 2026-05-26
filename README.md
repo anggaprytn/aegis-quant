@@ -125,6 +125,7 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 This workflow does not enable live trading, does not execute trades during candidate lifecycle operations, and does not auto-submit orders. Observation and candidate decisions do not mutate paper or testnet execution state.
 `ACCEPT_FOR_SHADOW` requires the latest persisted observation to be fresh. The default freshness window is 15 minutes.
 Shadow promotion requires a fresh observation, explicit confirmation, and only updates `testnet_shadow_runner_config` plus audit/system/research lifecycle records. It does not submit testnet orders or mutate paper/testnet/live execution tables.
+After promotion, linked shadow runs can be inspected through candidate shadow-performance and shadow-runs views. The association is research-only and read-only over `testnet_shadow_runs`; it does not mutate paper, testnet submit, or live execution tables.
 
 ## Local prerequisites
 
@@ -331,6 +332,10 @@ Research candidate lifecycle examples:
 `cargo run -p cli -- research candidates promote-shadow-preview <candidate_id> --allow-missing-runner-alignment`
 
 `cargo run -p cli -- research candidates promote-shadow-apply <candidate_id> --allow-missing-runner-alignment --confirm "PROMOTE CANDIDATE <candidate_id> TO SHADOW"`
+
+`cargo run -p cli -- research candidates shadow-performance <candidate_id>`
+
+`cargo run -p cli -- research candidates shadow-runs <candidate_id> --limit 50`
 
 If `ACCEPT_FOR_SHADOW` is rejected with `OBSERVATION_STALE` or `RUNNER_CONFIG_CHANGED`, run `observe` again before retrying.
 

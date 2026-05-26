@@ -11,9 +11,11 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use db::{
     get_latest_market_tick, get_recent_closed_candles, get_risk_config, get_system_state,
-    insert_audit_log, insert_risk_decision, insert_signal_deduped, insert_system_event,
-    insert_testnet_shadow_run, list_market_feed_statuses, load_risk_state_snapshot,
-    risk_config_from_record, update_strategy_state, StateActor, TestnetShadowRunRecord,
+    insert_audit_log, insert_research_candidate_shadow_run_link, insert_risk_decision,
+    insert_signal_deduped, insert_system_event, insert_testnet_shadow_run,
+    list_market_feed_statuses, load_risk_state_snapshot,
+    resolve_promoted_research_candidate_for_shadow_run, risk_config_from_record,
+    update_strategy_state, ShadowRunCandidateMatchOutcome, StateActor, TestnetShadowRunRecord,
 };
 use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
@@ -259,6 +261,45 @@ async fn persist_shadow_result(
         .await
         .context("failed to persist testnet shadow run")?;
     let result = db::testnet_shadow_run_result_from_record(&persisted)?;
+
+    if let ShadowRunCandidateMatchOutcome::Matched(candidate_id) =
+        resolve_promoted_research_candidate_for_shadow_run(
+            &state.db_pool,
+            &request.strategy_id,
+            &request.symbol,
+            &request.timeframe,
+        )
+        .await
+        .context("failed to resolve promoted research candidate shadow link")?
+    {
+        if insert_research_candidate_shadow_run_link(
+            &state.db_pool,
+            candidate_id,
+            persisted.id,
+            created_at,
+        )
+        .await
+        .context("failed to persist research candidate shadow run link")?
+        .is_some()
+        {
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "research.candidate.shadow_run_linked",
+                    correlation_id,
+                    &state.config.app_name,
+                    json!({
+                        "candidate_id": candidate_id,
+                        "shadow_run_id": persisted.id,
+                        "strategy_id": result.strategy_id,
+                        "symbol": result.symbol,
+                        "timeframe": result.timeframe,
+                    }),
+                ),
+            )
+            .await;
+        }
+    }
 
     telemetry().inc_exchange_testnet_shadow_run(
         &result.strategy_id,

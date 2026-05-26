@@ -7,15 +7,17 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use aegis_core::{
-    CandleInterval, MarketDataSource, ResearchCandidate, ResearchCandidateDecision,
-    ResearchCandidateLifecycleEvent, ResearchCandidateStatus, ResearchDataCoverageResult,
-    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, ResearchDatasetBuildStatus,
-    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
-    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
-    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
-    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, Symbol,
+    evaluate_research_candidate_shadow_performance, CandleInterval, MarketDataSource,
+    ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
+    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
+    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+    StrategyCandidateObservationSummary, StrategyResearchCandidate,
+    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
+    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
+    StrategyResearchCandidateStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -117,6 +119,13 @@ pub struct StrategyCandidateObservationCheckRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateShadowRunLinkRecord {
+    pub candidate_id: Uuid,
+    pub shadow_run_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateRecord {
     pub id: Uuid,
     pub experiment_id: Option<Uuid>,
@@ -168,6 +177,26 @@ pub struct ResearchCandidateListFilters {
     pub symbol: Option<String>,
     pub timeframe: Option<String>,
     pub status: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchCandidateShadowRunsQuery {
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchCandidateShadowPerformanceWindow {
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowRunCandidateMatchOutcome {
+    NotFound,
+    Matched(Uuid),
+    Ambiguous,
 }
 
 fn legacy_status_for_research_candidate(
@@ -1215,6 +1244,198 @@ pub async fn list_testnet_shadow_runs_in_window(
             correlation_id: row.get("correlation_id"),
         })
         .collect())
+}
+
+fn bounded_research_candidate_shadow_run_limit(limit: i64) -> i64 {
+    limit.clamp(1, 500)
+}
+
+pub async fn resolve_promoted_research_candidate_for_shadow_run(
+    pool: &PgPool,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+) -> Result<ShadowRunCandidateMatchOutcome> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            promoted_at
+        FROM strategy_research_candidates
+        WHERE status = 'PROMOTED_TO_SHADOW_CONFIG'
+          AND promoted_at IS NOT NULL
+          AND strategy_id = $1
+          AND symbol = $2
+          AND timeframe = $3
+        ORDER BY promoted_at DESC, created_at DESC, id DESC
+        LIMIT 2
+        "#,
+    )
+    .bind(strategy_id.trim().to_ascii_lowercase())
+    .bind(symbol.trim().to_ascii_uppercase())
+    .bind(timeframe.trim().to_ascii_lowercase())
+    .fetch_all(pool)
+    .await?;
+
+    let Some(first) = rows.first() else {
+        return Ok(ShadowRunCandidateMatchOutcome::NotFound);
+    };
+    let first_id = first.get::<Uuid, _>("id");
+    let first_promoted_at = first.get::<DateTime<Utc>, _>("promoted_at");
+
+    if rows.len() > 1 {
+        let second_promoted_at = rows[1].get::<DateTime<Utc>, _>("promoted_at");
+        if second_promoted_at == first_promoted_at {
+            return Ok(ShadowRunCandidateMatchOutcome::Ambiguous);
+        }
+    }
+
+    Ok(ShadowRunCandidateMatchOutcome::Matched(first_id))
+}
+
+pub async fn insert_research_candidate_shadow_run_link(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    shadow_run_id: Uuid,
+    created_at: DateTime<Utc>,
+) -> Result<Option<ResearchCandidateShadowRunLinkRecord>> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_shadow_runs (
+            candidate_id,
+            shadow_run_id,
+            created_at
+        )
+        VALUES ($1, $2, $3)
+        ON CONFLICT (shadow_run_id) DO NOTHING
+        RETURNING candidate_id, shadow_run_id, created_at
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(shadow_run_id)
+    .bind(created_at)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| ResearchCandidateShadowRunLinkRecord {
+        candidate_id: row.get("candidate_id"),
+        shadow_run_id: row.get("shadow_run_id"),
+        created_at: row.get("created_at"),
+    }))
+}
+
+pub async fn list_research_candidate_shadow_runs(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    query: &ResearchCandidateShadowRunsQuery,
+) -> Result<Vec<ResearchCandidateShadowRunLink>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            link.candidate_id,
+            link.shadow_run_id,
+            link.created_at AS linked_at,
+            run.strategy_id,
+            run.symbol,
+            run.timeframe,
+            run.decision,
+            run.status,
+            run.signal_id,
+            run.risk_decision_id,
+            run.created_at AS shadow_created_at,
+            run.correlation_id
+        FROM research_candidate_shadow_runs link
+        INNER JOIN testnet_shadow_runs run
+            ON run.id = link.shadow_run_id
+        WHERE link.candidate_id = $1
+          AND run.created_at >= $2
+          AND run.created_at <= $3
+        ORDER BY run.created_at DESC, run.id DESC
+        LIMIT $4
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(query.start_time)
+    .bind(query.end_time)
+    .bind(bounded_research_candidate_shadow_run_limit(query.limit))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ResearchCandidateShadowRunLink {
+            candidate_id: row.get("candidate_id"),
+            shadow_run_id: row.get("shadow_run_id"),
+            strategy_id: row.get("strategy_id"),
+            symbol: row.get("symbol"),
+            timeframe: row.get("timeframe"),
+            decision: row.get("decision"),
+            status: row.get("status"),
+            signal_id: row.get("signal_id"),
+            risk_decision_id: row.get("risk_decision_id"),
+            linked_at: row.get("linked_at"),
+            shadow_created_at: row.get("shadow_created_at"),
+            correlation_id: row.get("correlation_id"),
+        })
+        .collect())
+}
+
+pub async fn get_research_candidate_shadow_performance(
+    pool: &PgPool,
+    candidate: &ResearchCandidate,
+    window: &ResearchCandidateShadowPerformanceWindow,
+    runner_alignment_current: bool,
+    computed_at: DateTime<Utc>,
+) -> Result<ResearchCandidateShadowPerformance> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS total_shadow_runs,
+            COUNT(*) FILTER (WHERE run.decision = 'WOULD_SUBMIT')::BIGINT AS would_submit_count,
+            COUNT(*) FILTER (WHERE run.decision = 'NO_SIGNAL')::BIGINT AS no_signal_count,
+            COUNT(*) FILTER (WHERE run.decision = 'RISK_REJECTED')::BIGINT AS risk_rejected_count,
+            COUNT(*) FILTER (WHERE run.decision LIKE 'SKIPPED_%')::BIGINT AS skipped_count,
+            COUNT(*) FILTER (WHERE run.decision = 'ERROR' OR run.status = 'ERROR')::BIGINT AS error_count,
+            MAX(run.created_at) AS last_shadow_run_at
+        FROM research_candidate_shadow_runs link
+        INNER JOIN testnet_shadow_runs run
+            ON run.id = link.shadow_run_id
+        WHERE link.candidate_id = $1
+          AND run.created_at >= $2
+          AND run.created_at <= $3
+        "#,
+    )
+    .bind(candidate.id)
+    .bind(window.start_time)
+    .bind(window.end_time)
+    .fetch_one(pool)
+    .await?;
+
+    let total_shadow_runs: i64 = row.get("total_shadow_runs");
+    let would_submit_count: i64 = row.get("would_submit_count");
+    let no_signal_count: i64 = row.get("no_signal_count");
+    let risk_rejected_count: i64 = row.get("risk_rejected_count");
+    let skipped_count: i64 = row.get("skipped_count");
+    let error_count: i64 = row.get("error_count");
+    let last_shadow_run_at = row.get("last_shadow_run_at");
+
+    Ok(evaluate_research_candidate_shadow_performance(
+        candidate.id,
+        candidate.strategy_id.clone(),
+        candidate.symbol.clone(),
+        candidate.timeframe.clone(),
+        window.start_time,
+        window.end_time,
+        total_shadow_runs,
+        would_submit_count,
+        no_signal_count,
+        risk_rejected_count,
+        skipped_count,
+        error_count,
+        last_shadow_run_at,
+        runner_alignment_current,
+        computed_at,
+    ))
 }
 
 pub async fn insert_strategy_research_candidate_promotion(

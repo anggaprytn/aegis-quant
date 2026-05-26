@@ -29,4 +29,5 @@ Research candidate lifecycle boundaries:
 - Candidate lifecycle operations do not mutate signals, risk decisions, paper state, testnet state, or live execution state.
 - `ACCEPT_FOR_SHADOW` requires a fresh persisted observation. The default freshness window is 15 minutes.
 - Shadow promotion only updates shadow-runner config/state-adjacent audit records. It does not submit testnet orders or mutate paper/testnet/live execution tables.
+- After promotion, candidate-linked shadow performance is read-only and research-only. It links to persisted `testnet_shadow_runs` for inspection and recommendation surfacing without changing execution behavior.
 - No live trading path is enabled.

@@ -40,9 +40,10 @@ use aegis_core::{
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidatePromotionReadiness, ResearchCandidateShadowPromotionMode,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
+    ResearchCandidatePromotionReadiness, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
     ResearchCandidateStatus, ResearchDataCoverageRequest, ResearchDataCoverageResult,
     ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskCheckContext, RiskConfig,
     RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision,
@@ -93,7 +94,7 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
     backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
@@ -104,18 +105,18 @@ use db::{
     get_closed_1m_candles_range, get_default_paper_account, get_exchange_private_stream_state,
     get_exchange_testnet_order_by_client_order_id, get_latest_market_tick,
     get_latest_strategy_candidate_observation, get_order_by_id, get_paper_position_by_id,
-    get_recent_closed_candles, get_research_candidate, get_risk_config, get_risk_decision_by_id,
-    get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
-    get_strategy_experiment, get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_research_candidate,
-    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
-    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
-    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
-    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
-    insert_exchange_testnet_repair_action, insert_paper_account, insert_paper_equity_snapshot,
-    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
-    insert_strategy_config_audit, insert_strategy_research_candidate,
+    get_recent_closed_candles, get_research_candidate, get_research_candidate_shadow_performance,
+    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
+    get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_research_candidate, get_strategy_shadow_decision_breakdown, get_strategy_status,
+    get_strategy_walk_forward_run, get_system_event, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
+    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
+    insert_exchange_testnet_order, insert_exchange_testnet_repair_action, insert_paper_account,
+    insert_paper_equity_snapshot, insert_risk_config_audit, insert_risk_evaluation, insert_session,
+    insert_signal_deduped, insert_strategy_config_audit, insert_strategy_research_candidate,
     insert_strategy_research_candidate_promotion, insert_system_event,
     insert_testnet_shadow_promotion, insert_user, list_backtest_runs, list_candle_backfill_runs,
     list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
@@ -123,14 +124,15 @@ use db::{
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
-    list_recent_system_events_filtered, list_research_candidate_events, list_research_candidates,
-    list_risk_config_audit, list_risk_config_versions, list_strategy_candidate_observations,
-    list_strategy_config_audit, list_strategy_config_versions, list_strategy_experiment_runs,
-    list_strategy_experiments, list_strategy_experiments_by_group,
-    list_strategy_performance_rankings, list_strategy_research_candidates, list_strategy_status,
-    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
-    list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
-    load_risk_state_snapshot, mark_strategy_research_candidate_promoted, paper_account_from_record,
+    list_recent_system_events_filtered, list_research_candidate_events,
+    list_research_candidate_shadow_runs, list_research_candidates, list_risk_config_audit,
+    list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
+    list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
+    list_strategy_experiments_by_group, list_strategy_performance_rankings,
+    list_strategy_research_candidates, list_strategy_status, list_strategy_walk_forward_runs,
+    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
+    list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
+    mark_strategy_research_candidate_promoted, paper_account_from_record,
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
     persist_strategy_config_version, research_candidate_event_from_record,
     research_candidate_from_record, revoke_session, risk_config_audit_from_record,
@@ -151,8 +153,9 @@ use db::{
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
     PaperPositionRecord, PaperTradeJournalRecord, PgPool, ResearchCandidateListFilters,
-    RiskDecisionRecord, SignalRecord, StateActor, StrategyResearchCandidateListFilters,
-    StrategyStatusRecord, SystemEventRecord, SystemStateRecord, TestnetShadowPromotionRecord,
+    ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery, RiskDecisionRecord,
+    SignalRecord, StateActor, StrategyResearchCandidateListFilters, StrategyStatusRecord,
+    SystemEventRecord, SystemStateRecord, TestnetShadowPromotionRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
@@ -1356,6 +1359,13 @@ struct ResearchCandidatesQuery {
 }
 
 #[derive(Deserialize)]
+struct ResearchCandidateShadowRunsQueryParams {
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct StrategyCandidateObservationEvaluateRequest {
     start_time: Option<DateTime<Utc>>,
     min_observation_hours: Option<i64>,
@@ -1534,6 +1544,22 @@ struct ResearchCandidateShadowPromotionPreviewResponse {
 #[derive(Serialize)]
 struct ResearchCandidateShadowPromotionResultResponse {
     result: ResearchCandidateShadowPromotionResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateShadowPerformanceResponse {
+    performance: ResearchCandidateShadowPerformance,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateShadowRunsResponse {
+    runs: Vec<ResearchCandidateShadowRunLink>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2334,6 +2360,14 @@ async fn main() {
             get(get_research_candidate_observation_summary_handler),
         )
         .route(
+            "/research/candidates/:id/shadow-performance",
+            get(get_research_candidate_shadow_performance_handler),
+        )
+        .route(
+            "/research/candidates/:id/shadow-runs",
+            get(list_research_candidate_shadow_runs_handler),
+        )
+        .route(
             "/research/candidates/:id/promote-shadow/preview",
             post(preview_research_candidate_shadow_promotion_handler),
         )
@@ -2997,6 +3031,38 @@ fn bounded_research_candidate_limit(limit: Option<i64>) -> i64 {
         Some(value) if value > 0 => value.min(200),
         _ => 50,
     }
+}
+
+fn bounded_research_candidate_shadow_run_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(500),
+        _ => 100,
+    }
+}
+
+fn candidate_shadow_window_start(
+    candidate: &ResearchCandidate,
+    start_time: Option<DateTime<Utc>>,
+) -> DateTime<Utc> {
+    start_time.unwrap_or(candidate.updated_at)
+}
+
+fn candidate_runner_alignment_current(
+    candidate: &ResearchCandidate,
+    config: &TestnetShadowRunnerConfig,
+) -> bool {
+    config
+        .timeframe
+        .trim()
+        .eq_ignore_ascii_case(&candidate.timeframe)
+        && config
+            .symbols
+            .iter()
+            .any(|value| value.trim().eq_ignore_ascii_case(&candidate.symbol))
+        && config
+            .strategies
+            .iter()
+            .any(|value| value.trim().eq_ignore_ascii_case(&candidate.strategy_id))
 }
 
 fn bounded_risk_decisions_limit(limit: Option<i64>) -> i64 {
@@ -15825,6 +15891,176 @@ async fn get_research_candidate_observation_summary_handler(
     }
 }
 
+async fn get_research_candidate_shadow_performance_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    Query(query): Query<ResearchCandidateShadowRunsQueryParams>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    let candidate = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let runner_alignment_current =
+        load_testnet_shadow_runner_snapshot(&shadow_runtime_state(&state))
+            .await
+            .map(|snapshot| candidate_runner_alignment_current(&candidate, &snapshot.config))
+            .unwrap_or(false);
+    let window = ResearchCandidateShadowPerformanceWindow {
+        start_time: candidate_shadow_window_start(&candidate, query.start_time),
+        end_time: query.end_time.unwrap_or(now),
+    };
+
+    match get_research_candidate_shadow_performance(
+        &state.db_pool,
+        &candidate,
+        &window,
+        runner_alignment_current,
+        now,
+    )
+    .await
+    {
+        Ok(performance) => (
+            StatusCode::OK,
+            Json(ResearchCandidateShadowPerformanceResponse {
+                performance,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_get_research_candidate_shadow_performance",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_research_candidate_shadow_runs_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    Query(query): Query<ResearchCandidateShadowRunsQueryParams>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+
+    match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let query = ResearchCandidateShadowRunsQuery {
+        start_time: query.start_time.unwrap_or_else(|| {
+            Utc.timestamp_opt(0, 0)
+                .single()
+                .expect("unix epoch is valid")
+        }),
+        end_time: query.end_time.unwrap_or(now),
+        limit: bounded_research_candidate_shadow_run_limit(query.limit),
+    };
+
+    match list_research_candidate_shadow_runs(&state.db_pool, candidate_id, &query).await {
+        Ok(runs) => (
+            StatusCode::OK,
+            Json(ResearchCandidateShadowRunsResponse {
+                runs,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_candidate_shadow_runs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn get_strategy_candidate_observation_handler(
     State(state): State<AppState>,
     Path(observation_id): Path<Uuid>,
@@ -18017,11 +18253,13 @@ mod tests {
         check_execution_readiness_handler, evaluate_strategy_candidate_observation_handler,
         generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
         get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
-        get_research_candidate_observation_summary_handler, get_risk_decisions,
+        get_research_candidate_observation_summary_handler,
+        get_research_candidate_shadow_performance_handler, get_risk_decisions,
         get_strategy_candidate_observation_handler, get_strategy_config_handler, get_strategy_list,
         get_strategy_research_candidate_handler, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
+        list_research_candidate_shadow_runs_handler,
         list_execution_readiness_snapshots_handler, list_strategy_candidate_observations_handler,
         list_strategy_research_candidates_handler, login, logout, metrics, normalize_route_label,
         observation_rejection, order_view, parse_correlation_id_filter, parse_cors_allowed_origins,
@@ -18083,6 +18321,7 @@ mod tests {
     use db::{
         count_users, create_research_candidate, get_exchange_testnet_order_by_client_order_id,
         get_session_by_id, get_user_by_email, insert_exchange_reconciliation_run,
+        insert_research_candidate_shadow_run_link,
         insert_exchange_testnet_order, insert_exchange_testnet_repair_action, insert_market_tick,
         insert_paper_account, insert_strategy_experiment, insert_strategy_experiment_runs,
         insert_strategy_research_candidate, insert_strategy_walk_forward_run,
@@ -19020,6 +19259,14 @@ mod tests {
             .route(
                 "/research/candidates/:id/observation-summary",
                 get(get_research_candidate_observation_summary_handler),
+            )
+            .route(
+                "/research/candidates/:id/shadow-performance",
+                get(get_research_candidate_shadow_performance_handler),
+            )
+            .route(
+                "/research/candidates/:id/shadow-runs",
+                get(list_research_candidate_shadow_runs_handler),
             )
             .route(
                 "/research/candidate-observations/:id",
@@ -22769,6 +23016,150 @@ mod tests {
         assert_eq!(items[2]["freshness_status"], "STALE");
 
         assert_observation_execution_unchanged(&test_db.pool, before).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_shadow_endpoints_return_only_linked_runs_without_execution_mutation(
+    ) {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let viewer_email = "research-viewer-shadow-performance@example.com";
+        insert_test_user(
+            &test_db.pool,
+            viewer_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::FifteenMinutes,
+            ),
+        )
+        .await
+        .expect("runner config should persist");
+
+        let candidate = sample_lifecycle_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::AcceptedForShadow,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &candidate,
+            None,
+            ResearchCandidateDecision::AcceptForShadow,
+            Some("fixture"),
+            Some("accepted fixture"),
+            &json!({"fixture": true}),
+        )
+        .await
+        .expect("candidate should persist");
+
+        let linked_run = TestnetShadowRunRecord {
+            id: Uuid::new_v4(),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            decision: "WOULD_SUBMIT".to_string(),
+            signal_id: None,
+            risk_decision_id: None,
+            would_submit_payload: None,
+            price_source: Some("local".to_string()),
+            resolved_price: Some(Decimal::new(100_000, 0)),
+            reasons: Vec::new(),
+            status: "COMPLETED".to_string(),
+            created_at: Utc::now() - chrono::Duration::minutes(20),
+            correlation_id: Some(Uuid::new_v4()),
+        };
+        let unlinked_run = TestnetShadowRunRecord {
+            id: Uuid::new_v4(),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            decision: "RISK_REJECTED".to_string(),
+            signal_id: None,
+            risk_decision_id: None,
+            would_submit_payload: None,
+            price_source: Some("local".to_string()),
+            resolved_price: Some(Decimal::new(100_000, 0)),
+            reasons: vec!["risk_rejected".to_string()],
+            status: "REJECTED".to_string(),
+            created_at: Utc::now() - chrono::Duration::minutes(10),
+            correlation_id: Some(Uuid::new_v4()),
+        };
+        insert_testnet_shadow_run(&test_db.pool, &linked_run)
+            .await
+            .expect("linked run should persist");
+        insert_testnet_shadow_run(&test_db.pool, &unlinked_run)
+            .await
+            .expect("unlinked run should persist");
+        insert_research_candidate_shadow_run_link(
+            &test_db.pool,
+            candidate.id,
+            linked_run.id,
+            linked_run.created_at,
+        )
+        .await
+        .expect("shadow link should persist");
+
+        let before = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let (viewer_login, _) =
+            login_cli(&app, viewer_email, "replace-with-a-12-char-min-password").await;
+
+        let performance = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/shadow-performance",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("performance request"),
+            )
+            .await
+            .expect("performance response");
+        assert_eq!(performance.status(), StatusCode::OK);
+        let performance_payload = response_json::<Value>(performance).await;
+        assert_eq!(performance_payload["performance"]["total_shadow_runs"], 1);
+        assert_eq!(performance_payload["performance"]["would_submit_count"], 1);
+        assert_eq!(performance_payload["performance"]["risk_rejected_count"], 0);
+
+        let runs = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/shadow-runs?limit=50",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("runs request"),
+            )
+            .await
+            .expect("runs response");
+        assert_eq!(runs.status(), StatusCode::OK);
+        let runs_payload = response_json::<Value>(runs).await;
+        let runs = runs_payload["runs"].as_array().expect("runs array");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["shadow_run_id"], linked_run.id.to_string());
+
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before).await;
     }
 
     #[tokio::test]

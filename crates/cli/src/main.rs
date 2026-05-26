@@ -542,6 +542,35 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_observation_summary(&response.summary);
                     }
                 }
+                ResearchCandidateCommands::ShadowPerformance(args) => {
+                    let response = client
+                        .get_research_candidate_shadow_performance(
+                            args.candidate_id,
+                            args.start_time,
+                            args.end_time,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_shadow_performance(&response.performance);
+                    }
+                }
+                ResearchCandidateCommands::ShadowRuns(args) => {
+                    let response = client
+                        .list_research_candidate_shadow_runs(
+                            args.candidate_id,
+                            args.start_time,
+                            args.end_time,
+                            args.limit,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_shadow_runs(&response.runs);
+                    }
+                }
                 ResearchCandidateCommands::Create(args) => {
                     let config = serde_json::from_str(&args.config_json)
                         .context("failed to parse --config-json as JSON")?;

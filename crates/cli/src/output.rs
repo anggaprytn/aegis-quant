@@ -1,7 +1,8 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult, User,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1836,6 +1837,66 @@ pub fn print_research_candidate_observation_summary(
         println!(
             "Latest recommendations: {}",
             summary.latest_recommendations.join(" | ")
+        );
+    }
+}
+
+pub fn print_research_candidate_shadow_performance(
+    performance: &ResearchCandidateShadowPerformance,
+) {
+    println!("Candidate ID: {}", performance.candidate_id);
+    println!(
+        "Window: {} -> {}",
+        performance.window_start.to_rfc3339(),
+        performance.window_end.to_rfc3339()
+    );
+    println!("Total runs: {}", performance.total_shadow_runs);
+    println!(
+        "Outcome breakdown: would_submit={} no_signal={} risk_rejected={} skipped={} error={}",
+        performance.would_submit_count,
+        performance.no_signal_count,
+        performance.risk_rejected_count,
+        performance.skipped_count,
+        performance.error_count
+    );
+    println!("Would-submit rate: {}%", performance.would_submit_rate_pct);
+    println!(
+        "Risk rejection rate: {}%",
+        performance.risk_rejection_rate_pct
+    );
+    println!(
+        "Last run time: {}",
+        performance
+            .last_shadow_run_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Runner alignment: {}",
+        if performance.runner_alignment_current {
+            "COVERED"
+        } else {
+            "NOT_COVERED"
+        }
+    );
+    println!("Status: {}", performance.status.as_str());
+    println!("Recommendation: {}", performance.recommendation.as_str());
+}
+
+pub fn print_research_candidate_shadow_runs(runs: &[ResearchCandidateShadowRunLink]) {
+    if runs.is_empty() {
+        println!("No linked shadow runs found.");
+        return;
+    }
+
+    for run in runs {
+        println!(
+            "{}  run={} decision={} status={} linked_at={}",
+            run.shadow_created_at.to_rfc3339(),
+            run.shadow_run_id,
+            run.decision,
+            run.status,
+            run.linked_at.to_rfc3339()
         );
     }
 }

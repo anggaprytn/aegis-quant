@@ -65,6 +65,7 @@ import type {
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
   ResearchCandidateObservationSummaryResponse,
+  ResearchCandidateShadowPerformanceResponse,
   CreateResearchCandidateFromExperimentRunRequest,
   CreateResearchCandidateRequest,
   ResearchCandidateDecisionRequest,
@@ -72,6 +73,7 @@ import type {
   ResearchCandidateShadowPromotionPreviewResponse,
   ResearchCandidateShadowPromotionRequest,
   ResearchCandidateShadowPromotionResultResponse,
+  ResearchCandidateShadowRunsResponse,
   ResearchCandidateResponse,
   ResearchCandidatesResponse,
   StrategyCandidateObservationsResponse,
@@ -385,6 +387,24 @@ export const api = {
   getResearchCandidateObservationSummary: (id: string) =>
     request<ResearchCandidateObservationSummaryResponse>(
       `/research/candidates/${id}/observation-summary`,
+    ),
+  getResearchCandidateShadowPerformance: (
+    id: string,
+    query?: { start_time?: string; end_time?: string },
+  ) =>
+    request<ResearchCandidateShadowPerformanceResponse>(
+      `/research/candidates/${id}/shadow-performance`,
+      undefined,
+      query,
+    ),
+  getResearchCandidateShadowRuns: (
+    id: string,
+    query?: { start_time?: string; end_time?: string; limit?: number },
+  ) =>
+    request<ResearchCandidateShadowRunsResponse>(
+      `/research/candidates/${id}/shadow-runs`,
+      undefined,
+      query,
     ),
   observeResearchCandidate: (id: string) =>
     request<StrategyCandidateObservationResponse>(`/research/candidates/${id}/observe`, {

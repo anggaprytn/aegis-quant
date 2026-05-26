@@ -6011,6 +6011,10 @@ pub enum CoreError {
     UnsupportedResearchCandidateStatus(String),
     #[error("unsupported research candidate decision: {0}")]
     UnsupportedResearchCandidateDecision(String),
+    #[error("unsupported research candidate shadow performance status: {0}")]
+    UnsupportedResearchCandidateShadowPerformanceStatus(String),
+    #[error("unsupported research candidate shadow performance recommendation: {0}")]
+    UnsupportedResearchCandidateShadowPerformanceRecommendation(String),
     #[error("invalid research candidate transition from {0} using decision {1}")]
     InvalidResearchCandidateTransition(String, String),
     #[error("unsupported replay mode: {0}")]

@@ -8,22 +8,22 @@ use aegis_core::{
     PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchCandidate,
     ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchDataCoverageResult,
-    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
+    RiskConfigVersion, StrategyCandidateObservationResult, StrategyComparisonSummary,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -707,6 +707,47 @@ impl ApiClient {
         self.get(
             &format!("/research/candidates/{candidate_id}/observation-summary"),
             &[],
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_shadow_performance(
+        &self,
+        candidate_id: Uuid,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+    ) -> Result<ResearchCandidateShadowPerformanceResponse, ApiClientError> {
+        let mut query = Vec::new();
+        if let Some(start_time) = start_time {
+            query.push(("start_time", start_time.to_rfc3339()));
+        }
+        if let Some(end_time) = end_time {
+            query.push(("end_time", end_time.to_rfc3339()));
+        }
+        self.get(
+            &format!("/research/candidates/{candidate_id}/shadow-performance"),
+            &query,
+        )
+        .await
+    }
+
+    pub async fn list_research_candidate_shadow_runs(
+        &self,
+        candidate_id: Uuid,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        limit: i64,
+    ) -> Result<ResearchCandidateShadowRunsResponse, ApiClientError> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(start_time) = start_time {
+            query.push(("start_time", start_time.to_rfc3339()));
+        }
+        if let Some(end_time) = end_time {
+            query.push(("end_time", end_time.to_rfc3339()));
+        }
+        self.get(
+            &format!("/research/candidates/{candidate_id}/shadow-runs"),
+            &query,
         )
         .await
     }
@@ -1996,6 +2037,22 @@ pub struct ResearchCandidateObservationsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateObservationSummaryResponse {
     pub summary: ResearchCandidateObservationSummaryView,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateShadowPerformanceResponse {
+    pub performance: ResearchCandidateShadowPerformance,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateShadowRunsResponse {
+    pub runs: Vec<ResearchCandidateShadowRunLink>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -43,6 +43,7 @@ use db::{
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_paper_account, insert_research_dataset_build, insert_risk_decision,
+    insert_research_candidate_shadow_run_link,
     insert_signal_deduped, insert_strategy_candidate_observation, insert_strategy_experiment,
     insert_strategy_experiment_runs, insert_strategy_research_candidate,
     insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
@@ -52,11 +53,13 @@ use db::{
     list_orders, list_recent_signals, list_research_dataset_build_steps,
     list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_performance_rankings, list_strategy_research_candidates,
+    list_research_candidate_shadow_runs,
     list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
     list_testnet_promotion_funnel_rows, list_testnet_shadow_runs,
     list_testnet_shadow_runs_in_window, mark_strategy_research_candidate_promoted,
     replace_research_dataset_build_steps, research_candidate_event_from_record,
     research_candidate_from_record, research_dataset_build_result_from_records,
+    resolve_promoted_research_candidate_for_shadow_run,
     set_kill_switch_state, strategy_candidate_observation_result_from_record,
     strategy_experiment_result_from_records, strategy_research_candidate_from_record,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
@@ -69,6 +72,8 @@ use db::{
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, StateActor,
     StrategyResearchCandidateListFilters, TestnetShadowPromotionRecord, TestnetShadowRunRecord,
+    ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
+    ShadowRunCandidateMatchOutcome, get_research_candidate_shadow_performance,
     TESTNET_SHADOW_RUNNER_CONFIG_ID, TESTNET_SHADOW_RUNNER_STATE_ID,
 };
 use exchange::{
@@ -395,6 +400,29 @@ fn sample_lifecycle_candidate(id: Uuid, created_at: chrono::DateTime<Utc>) -> Re
         notes: Some("fixture".to_string()),
         created_at,
         updated_at: created_at,
+        correlation_id: Some(Uuid::new_v4()),
+    }
+}
+
+fn sample_shadow_run(
+    decision: &str,
+    status: &str,
+    created_at: chrono::DateTime<Utc>,
+) -> TestnetShadowRunRecord {
+    TestnetShadowRunRecord {
+        id: Uuid::new_v4(),
+        strategy_id: "momentum_v1".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "15m".to_string(),
+        decision: decision.to_string(),
+        signal_id: None,
+        risk_decision_id: None,
+        would_submit_payload: None,
+        price_source: None,
+        resolved_price: None,
+        reasons: Vec::new(),
+        status: status.to_string(),
+        created_at,
         correlation_id: Some(Uuid::new_v4()),
     }
 }
@@ -3419,6 +3447,199 @@ async fn list_testnet_shadow_runs_supports_current_schema() {
     assert_eq!(listed[0].reasons, vec!["insufficient_momentum"]);
     assert_eq!(fetched.id, run.id);
     assert_eq!(fetched.decision, "NO_SIGNAL");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn promoted_candidate_links_to_shadow_runs() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let promoted_at = fixed_time();
+    let mut candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        promoted_at,
+    );
+    candidate.promoted_at = Some(promoted_at);
+    insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+        .await
+        .expect("candidate should persist");
+
+    let run = sample_shadow_run("WOULD_SUBMIT", "COMPLETED", promoted_at + chrono::Duration::minutes(5));
+    insert_testnet_shadow_run(&test_db.pool, &run)
+        .await
+        .expect("shadow run should persist");
+
+    let matched = resolve_promoted_research_candidate_for_shadow_run(
+        &test_db.pool,
+        "momentum_v1",
+        "BTCUSDT",
+        "15m",
+    )
+    .await
+    .expect("candidate resolution should succeed");
+    assert_eq!(matched, ShadowRunCandidateMatchOutcome::Matched(candidate.id));
+
+    insert_research_candidate_shadow_run_link(&test_db.pool, candidate.id, run.id, run.created_at)
+        .await
+        .expect("link insert should succeed")
+        .expect("link should be created");
+
+    let linked = list_research_candidate_shadow_runs(
+        &test_db.pool,
+        candidate.id,
+        &ResearchCandidateShadowRunsQuery {
+            start_time: promoted_at,
+            end_time: promoted_at + chrono::Duration::hours(1),
+            limit: 50,
+        },
+    )
+    .await
+    .expect("linked runs should list");
+
+    assert_eq!(linked.len(), 1);
+    assert_eq!(linked[0].shadow_run_id, run.id);
+    assert_eq!(linked[0].decision, "WOULD_SUBMIT");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn unaccepted_candidate_does_not_link_to_shadow_runs() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::Registered,
+        fixed_time(),
+    );
+    insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+        .await
+        .expect("candidate should persist");
+
+    let matched = resolve_promoted_research_candidate_for_shadow_run(
+        &test_db.pool,
+        "momentum_v1",
+        "BTCUSDT",
+        "15m",
+    )
+    .await
+    .expect("candidate resolution should succeed");
+
+    assert_eq!(matched, ShadowRunCandidateMatchOutcome::NotFound);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn shadow_performance_summary_reads_linked_runs_only() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let promoted_at = fixed_time();
+    let mut candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        promoted_at,
+    );
+    candidate.promoted_at = Some(promoted_at);
+    insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+        .await
+        .expect("candidate should persist");
+
+    let lifecycle_candidate = sample_lifecycle_candidate(candidate.id, promoted_at);
+    let linked_run = sample_shadow_run("WOULD_SUBMIT", "COMPLETED", promoted_at + chrono::Duration::minutes(1));
+    let unlinked_run = sample_shadow_run("RISK_REJECTED", "REJECTED", promoted_at + chrono::Duration::minutes(2));
+    insert_testnet_shadow_run(&test_db.pool, &linked_run)
+        .await
+        .expect("linked shadow run should persist");
+    insert_testnet_shadow_run(&test_db.pool, &unlinked_run)
+        .await
+        .expect("unlinked shadow run should persist");
+    insert_research_candidate_shadow_run_link(
+        &test_db.pool,
+        candidate.id,
+        linked_run.id,
+        linked_run.created_at,
+    )
+    .await
+    .expect("link insert should succeed");
+
+    let performance = get_research_candidate_shadow_performance(
+        &test_db.pool,
+        &lifecycle_candidate,
+        &ResearchCandidateShadowPerformanceWindow {
+            start_time: promoted_at,
+            end_time: promoted_at + chrono::Duration::hours(1),
+        },
+        true,
+        promoted_at + chrono::Duration::hours(1),
+    )
+    .await
+    .expect("performance summary should load");
+
+    assert_eq!(performance.total_shadow_runs, 1);
+    assert_eq!(performance.would_submit_count, 1);
+    assert_eq!(performance.risk_rejected_count, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn ambiguous_candidate_matching_uses_latest_promoted_candidate() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let first_promoted_at = fixed_time();
+    let second_promoted_at = fixed_time() + chrono::Duration::minutes(10);
+    let mut first = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        first_promoted_at,
+    );
+    first.promoted_at = Some(first_promoted_at);
+    let mut second = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        second_promoted_at,
+    );
+    second.promoted_at = Some(second_promoted_at);
+    insert_strategy_research_candidate(&test_db.pool, &first, None)
+        .await
+        .expect("first candidate should persist");
+    insert_strategy_research_candidate(&test_db.pool, &second, None)
+        .await
+        .expect("second candidate should persist");
+
+    let matched = resolve_promoted_research_candidate_for_shadow_run(
+        &test_db.pool,
+        "momentum_v1",
+        "BTCUSDT",
+        "15m",
+    )
+    .await
+    .expect("candidate resolution should succeed");
+
+    assert_eq!(matched, ShadowRunCandidateMatchOutcome::Matched(second.id));
 }
 
 #[tokio::test]

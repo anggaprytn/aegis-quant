@@ -34,10 +34,12 @@ import type {
   ResearchDatasetBuildResult,
   ResearchCandidateObservationHistoryItem,
   ResearchCandidateObservationSummary,
+  ResearchCandidateShadowPerformance,
   ResearchCandidate as StrategyResearchCandidate,
   ResearchCandidateLifecycleEvent,
   ResearchCandidateShadowPromotionPreview,
   ResearchCandidateShadowPromotionResult,
+  ResearchCandidateShadowRunLink,
   ResearchCandidateStatus as StrategyResearchCandidateStatus,
   RiskConfig,
   RiskDecisionRecord,
@@ -136,6 +138,25 @@ function observationFreshnessState(observation: StrategyCandidateObservation | n
     return "UNKNOWN" as const;
   }
   return age <= maxAge ? "FRESH" as const : "STALE" as const;
+}
+
+function shadowRecommendationLabel(
+  recommendation: ResearchCandidateShadowPerformance["recommendation"] | null | undefined,
+) {
+  switch (recommendation) {
+    case "KEEP_OBSERVING":
+      return "keep observing";
+    case "NEEDS_REVIEW":
+      return "needs review";
+    case "INSUFFICIENT_DATA":
+      return "insufficient data";
+    case "CANDIDATE_NOT_COVERED_BY_RUNNER":
+      return "candidate not covered by runner";
+    case "REJECT_CANDIDATE":
+      return "reject candidate";
+    default:
+      return "unknown";
+  }
 }
 
 type StrategyExperimentFormState = {
@@ -939,6 +960,19 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
+  const selectedResearchCandidateShadowPerformanceQuery = useQuery({
+    queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidateShadowPerformance(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
+  const selectedResearchCandidateShadowRunsQuery = useQuery({
+    queryKey: ["research-candidate-shadow-runs", selectedResearchCandidateId],
+    queryFn: () =>
+      api.getResearchCandidateShadowRuns(selectedResearchCandidateId ?? "", { limit: 50 }),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const eventsQuery = useQuery({
     queryKey: ["events", eventTypeFilter, eventSourceFilter, eventCorrelationFilter],
     queryFn: () =>
@@ -1589,6 +1623,12 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-shadow-runs", selectedResearchCandidateId],
+      });
       setResearchCandidateDecisionReason("");
     },
   });
@@ -1613,6 +1653,12 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-shadow-runs", selectedResearchCandidateId],
       });
     },
   });
@@ -1678,6 +1724,12 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-shadow-runs", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({
         queryKey: ["exchange-testnet-shadow-runner-config"],
@@ -1953,6 +2005,10 @@ function AuthenticatedDashboard({
     selectedResearchCandidateObservationQuery.data?.history ?? [];
   const researchCandidateObservationSummary: ResearchCandidateObservationSummary | null =
     selectedResearchCandidateObservationSummaryQuery.data?.summary ?? null;
+  const researchCandidateShadowPerformance: ResearchCandidateShadowPerformance | null =
+    selectedResearchCandidateShadowPerformanceQuery.data?.performance ?? null;
+  const researchCandidateShadowRuns: ResearchCandidateShadowRunLink[] =
+    selectedResearchCandidateShadowRunsQuery.data?.runs ?? [];
   const latestResearchCandidateObservation: StrategyCandidateObservation | null =
     observeResearchCandidateMutation.data?.observation ??
     lastResearchCandidateObservation ??
@@ -1973,6 +2029,9 @@ function AuthenticatedDashboard({
       ? "Eligible"
       : "Not eligible"
     : "Unknown";
+  const shadowPerformanceRecommendationLabel = shadowRecommendationLabel(
+    researchCandidateShadowPerformance?.recommendation,
+  );
   const shadowPromotionPreview =
     researchCandidateShadowPromotionPreview ??
     (researchCandidateShadowPromotionResult
@@ -4721,6 +4780,106 @@ function AuthenticatedDashboard({
                         />
                       </div>
                     </div>
+                    <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
+                      <div className="font-semibold text-slate-100">Shadow Performance</div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div>
+                          Total runs: {researchCandidateShadowPerformance?.total_shadow_runs ?? 0}
+                        </div>
+                        <div>
+                          Status: {researchCandidateShadowPerformance?.status ?? "UNKNOWN"}
+                        </div>
+                        <div>
+                          Would-submit:{" "}
+                          {researchCandidateShadowPerformance?.would_submit_count ?? 0}
+                          {" / "}
+                          {researchCandidateShadowPerformance?.would_submit_rate_pct ?? "0"}%
+                        </div>
+                        <div>
+                          Risk rejected:{" "}
+                          {researchCandidateShadowPerformance?.risk_rejected_count ?? 0}
+                          {" / "}
+                          {researchCandidateShadowPerformance?.risk_rejection_rate_pct ?? "0"}%
+                        </div>
+                        <div>
+                          No signal: {researchCandidateShadowPerformance?.no_signal_count ?? 0}
+                        </div>
+                        <div>
+                          Skipped / error:{" "}
+                          {(researchCandidateShadowPerformance?.skipped_count ?? 0) +
+                            (researchCandidateShadowPerformance?.error_count ?? 0)}
+                        </div>
+                        <div>
+                          Last shadow run:{" "}
+                          {formatDateTime(researchCandidateShadowPerformance?.last_shadow_run_at)}
+                        </div>
+                        <div>
+                          Runner coverage:{" "}
+                          {researchCandidateShadowPerformance?.runner_alignment_current
+                            ? "covered"
+                            : "not covered"}
+                        </div>
+                      </div>
+                      <div className="mt-3 rounded-xl border border-border/70 bg-surface/40 p-3">
+                        Recommendation: {shadowPerformanceRecommendationLabel}
+                      </div>
+                      <InlineStatus
+                        error={getErrorMessage(selectedResearchCandidateShadowPerformanceQuery.error)}
+                      />
+                    </div>
+                    <div className="mt-4 text-xs uppercase tracking-[0.2em] text-muted">
+                      Linked Shadow Runs
+                    </div>
+                    <div className="mt-2 overflow-auto rounded-2xl border border-border">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-surface/60 text-left text-slate-300">
+                          <tr>
+                            <th className="px-3 py-2">Run</th>
+                            <th className="px-3 py-2">Created</th>
+                            <th className="px-3 py-2">Decision</th>
+                            <th className="px-3 py-2">Status</th>
+                            <th className="px-3 py-2">Signal</th>
+                            <th className="px-3 py-2">Risk</th>
+                            <th className="px-3 py-2">Linked</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {researchCandidateShadowRuns.length === 0 ? (
+                            <tr>
+                              <td className="px-3 py-3 text-slate-400" colSpan={7}>
+                                No linked shadow runs yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            researchCandidateShadowRuns.map((run) => (
+                              <tr
+                                key={run.shadow_run_id}
+                                className="border-t border-border/60 text-slate-200"
+                              >
+                                <td className="px-3 py-2 font-mono">
+                                  {shortenId(run.shadow_run_id)}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {formatDateTime(run.shadow_created_at)}
+                                </td>
+                                <td className="px-3 py-2">{run.decision}</td>
+                                <td className="px-3 py-2">{run.status}</td>
+                                <td className="px-3 py-2">
+                                  {run.signal_id ? shortenId(run.signal_id) : "-"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {run.risk_decision_id ? shortenId(run.risk_decision_id) : "-"}
+                                </td>
+                                <td className="px-3 py-2">{formatDateTime(run.linked_at)}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <InlineStatus
+                      error={getErrorMessage(selectedResearchCandidateShadowRunsQuery.error)}
+                    />
                     <div className="mt-4 text-xs uppercase tracking-[0.2em] text-muted">
                       Latest Findings
                     </div>

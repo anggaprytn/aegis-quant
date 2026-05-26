@@ -721,6 +721,8 @@ pub enum ResearchCandidateCommands {
     Events { candidate_id: Uuid },
     Observations { candidate_id: Uuid },
     ObservationSummary { candidate_id: Uuid },
+    ShadowPerformance(ResearchCandidateShadowWindowArgs),
+    ShadowRuns(ResearchCandidateShadowRunsArgs),
     Create(ResearchCandidateCreateArgs),
     FromExperimentRun(ResearchCandidateFromExperimentRunArgs),
     Observe { candidate_id: Uuid },
@@ -791,6 +793,26 @@ pub struct ResearchCandidatePromoteShadowApplyArgs {
     pub confirm: Option<String>,
     #[arg(long, default_value_t = false)]
     pub allow_missing_runner_alignment: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateShadowWindowArgs {
+    pub candidate_id: Uuid,
+    #[arg(long = "start")]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long = "end")]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateShadowRunsArgs {
+    pub candidate_id: Uuid,
+    #[arg(long = "start")]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long = "end")]
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long, default_value_t = 100)]
+    pub limit: i64,
 }
 
 impl From<&ResearchCandidatePromoteShadowPreviewArgs> for ResearchCandidateShadowPromotionRequest {

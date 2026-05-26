@@ -1103,6 +1103,82 @@ export type ResearchCandidateObservationSummaryResponse = {
   timestamp: string;
 };
 
+export type ResearchCandidateShadowPerformanceStatus =
+  | "INSUFFICIENT_DATA"
+  | "HEALTHY"
+  | "UNDER_OBSERVATION"
+  | "NEEDS_REVIEW";
+
+export type ResearchCandidateShadowPerformanceRecommendation =
+  | "INSUFFICIENT_DATA"
+  | "KEEP_OBSERVING"
+  | "NEEDS_REVIEW"
+  | "CANDIDATE_NOT_COVERED_BY_RUNNER"
+  | "REJECT_CANDIDATE";
+
+export type ResearchCandidateShadowOutcomeBreakdown = {
+  total_shadow_runs: number;
+  would_submit_count: number;
+  no_signal_count: number;
+  risk_rejected_count: number;
+  skipped_count: number;
+  error_count: number;
+  would_submit_rate_pct: string;
+  risk_rejection_rate_pct: string;
+};
+
+export type ResearchCandidateShadowPerformance = {
+  candidate_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  window_start: string;
+  window_end: string;
+  total_shadow_runs: number;
+  would_submit_count: number;
+  no_signal_count: number;
+  risk_rejected_count: number;
+  skipped_count: number;
+  error_count: number;
+  would_submit_rate_pct: string;
+  risk_rejection_rate_pct: string;
+  last_shadow_run_at: string | null;
+  runner_alignment_current: boolean;
+  recommendation: ResearchCandidateShadowPerformanceRecommendation;
+  status: ResearchCandidateShadowPerformanceStatus;
+  outcome_breakdown: ResearchCandidateShadowOutcomeBreakdown;
+  computed_at: string;
+};
+
+export type ResearchCandidateShadowRunLink = {
+  candidate_id: string;
+  shadow_run_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  decision: string;
+  status: string;
+  signal_id: string | null;
+  risk_decision_id: string | null;
+  linked_at: string;
+  shadow_created_at: string;
+  correlation_id: string | null;
+};
+
+export type ResearchCandidateShadowPerformanceResponse = {
+  performance: ResearchCandidateShadowPerformance;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateShadowRunsResponse = {
+  runs: ResearchCandidateShadowRunLink[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateShadowPromotionMode = "PREVIEW_ONLY" | "APPLY";
 
 export type ResearchCandidateShadowPromotionStatus =
