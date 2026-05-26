@@ -28,6 +28,8 @@ const TEST_TABLES: &[&str] = &[
     "backtest_runs",
     "strategy_walk_forward_windows",
     "strategy_walk_forward_runs",
+    "strategy_candidate_observation_checks",
+    "strategy_candidate_observations",
     "audit_logs",
     "system_events",
     "orders",

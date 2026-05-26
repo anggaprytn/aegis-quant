@@ -705,6 +705,9 @@ pub enum ResearchCandidateCommands {
     RegisterFromWalkForward { walk_forward_id: Uuid },
     List(ResearchCandidateListArgs),
     Get { candidate_id: Uuid },
+    Observe(ResearchCandidateObserveArgs),
+    Observations { candidate_id: Uuid },
+    ObservationGet { observation_id: Uuid },
     PromoteShadow(ResearchCandidatePromoteArgs),
 }
 
@@ -727,6 +730,25 @@ pub struct ResearchCandidatePromoteArgs {
     pub candidate_id: Uuid,
     #[arg(long = "confirm")]
     pub confirmation_text: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateObserveArgs {
+    pub candidate_id: Uuid,
+    #[arg(long = "start-time")]
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long = "min-hours", default_value_t = 24)]
+    pub min_observation_hours: i64,
+    #[arg(long = "min-shadow-runs", default_value_t = 30)]
+    pub min_shadow_runs: i64,
+    #[arg(long = "max-risk-rejection-rate")]
+    pub max_risk_rejection_rate: Option<rust_decimal::Decimal>,
+    #[arg(long = "min-would-submit", default_value_t = 1)]
+    pub min_would_submit_count: i64,
+    #[arg(long = "max-no-signal-rate")]
+    pub max_no_signal_rate: Option<rust_decimal::Decimal>,
+    #[arg(long = "require-readiness-ready", default_value_t = true)]
+    pub require_readiness_ready: bool,
 }
 
 #[derive(Debug, Args)]

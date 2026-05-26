@@ -9,12 +9,15 @@ use uuid::Uuid;
 use aegis_core::{
     CandleInterval, MarketDataSource, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
+    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
+    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
+    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
     StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
     StrategyResearchCandidateSource, StrategyResearchCandidateStatus, Symbol,
 };
 
-use crate::PgPool;
+use crate::{PgPool, TestnetShadowRunRecord};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchDatasetBuildRecord {
@@ -76,6 +79,34 @@ pub struct StrategyResearchCandidatePromotionRecord {
     pub actor_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyCandidateObservationRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub status: String,
+    pub requirements: Value,
+    pub summary: Value,
+    pub decision: String,
+    pub started_at: DateTime<Utc>,
+    pub evaluated_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyCandidateObservationCheckRecord {
+    pub id: Uuid,
+    pub observation_id: Uuid,
+    pub finding_index: i32,
+    pub code: String,
+    pub message: String,
+    pub blocking: bool,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -278,6 +309,249 @@ pub async fn get_active_strategy_research_candidate_promotion(
     Ok(row.map(map_strategy_research_candidate_promotion))
 }
 
+pub async fn insert_strategy_candidate_observation(
+    pool: &PgPool,
+    observation: &StrategyCandidateObservationResult,
+) -> Result<StrategyCandidateObservationRecord> {
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_candidate_observations (
+            id,
+            candidate_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            status,
+            requirements,
+            summary,
+            decision,
+            started_at,
+            evaluated_at,
+            created_by,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING
+            id,
+            candidate_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            status,
+            requirements,
+            summary,
+            decision,
+            started_at,
+            evaluated_at,
+            created_by,
+            correlation_id
+        "#,
+    )
+    .bind(observation.observation_id)
+    .bind(observation.candidate_id)
+    .bind(&observation.strategy_id)
+    .bind(&observation.symbol)
+    .bind(&observation.timeframe)
+    .bind(observation.status.as_str())
+    .bind(serde_json::to_value(&observation.requirements)?)
+    .bind(serde_json::to_value(&observation.summary)?)
+    .bind(observation.decision.as_str())
+    .bind(observation.started_at)
+    .bind(observation.evaluated_at)
+    .bind(observation.created_by)
+    .bind(observation.correlation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    for (index, finding) in observation.summary.findings.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO strategy_candidate_observation_checks (
+                id,
+                observation_id,
+                finding_index,
+                code,
+                message,
+                blocking,
+                created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(observation.observation_id)
+        .bind(index as i32)
+        .bind(&finding.code)
+        .bind(&finding.message)
+        .bind(finding.blocking)
+        .bind(observation.evaluated_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(map_strategy_candidate_observation(row))
+}
+
+pub async fn get_strategy_candidate_observation(
+    pool: &PgPool,
+    observation_id: Uuid,
+) -> Result<Option<StrategyCandidateObservationRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            status,
+            requirements,
+            summary,
+            decision,
+            started_at,
+            evaluated_at,
+            created_by,
+            correlation_id
+        FROM strategy_candidate_observations
+        WHERE id = $1
+        "#,
+    )
+    .bind(observation_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_strategy_candidate_observation))
+}
+
+pub async fn list_strategy_candidate_observations(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Vec<StrategyCandidateObservationRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            status,
+            requirements,
+            summary,
+            decision,
+            started_at,
+            evaluated_at,
+            created_by,
+            correlation_id
+        FROM strategy_candidate_observations
+        WHERE candidate_id = $1
+        ORDER BY evaluated_at DESC, id DESC
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_strategy_candidate_observation)
+        .collect())
+}
+
+pub async fn list_strategy_candidate_observation_checks(
+    pool: &PgPool,
+    observation_id: Uuid,
+) -> Result<Vec<StrategyCandidateObservationCheckRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            observation_id,
+            finding_index,
+            code,
+            message,
+            blocking,
+            created_at
+        FROM strategy_candidate_observation_checks
+        WHERE observation_id = $1
+        ORDER BY finding_index ASC, created_at ASC
+        "#,
+    )
+    .bind(observation_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_strategy_candidate_observation_check)
+        .collect())
+}
+
+pub async fn list_testnet_shadow_runs_in_window(
+    pool: &PgPool,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) -> Result<Vec<TestnetShadowRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            decision,
+            signal_id,
+            risk_decision_id,
+            would_submit_payload,
+            price_source,
+            resolved_price,
+            reasons,
+            status,
+            created_at,
+            correlation_id
+        FROM testnet_shadow_runs
+        WHERE strategy_id = $1
+          AND symbol = $2
+          AND timeframe = $3
+          AND created_at >= $4
+          AND created_at <= $5
+        ORDER BY created_at ASC, id ASC
+        "#,
+    )
+    .bind(strategy_id)
+    .bind(symbol.trim().to_ascii_uppercase())
+    .bind(timeframe)
+    .bind(start_time)
+    .bind(end_time)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| TestnetShadowRunRecord {
+            id: row.get("id"),
+            strategy_id: row.get("strategy_id"),
+            symbol: row.get("symbol"),
+            timeframe: row.get("timeframe"),
+            decision: row.get("decision"),
+            signal_id: row.get("signal_id"),
+            risk_decision_id: row.get("risk_decision_id"),
+            would_submit_payload: row.get("would_submit_payload"),
+            price_source: row.get("price_source"),
+            resolved_price: row.get("resolved_price"),
+            reasons: serde_json::from_value(row.get("reasons")).unwrap_or_default(),
+            status: row.get("status"),
+            created_at: row.get("created_at"),
+            correlation_id: row.get("correlation_id"),
+        })
+        .collect())
+}
+
 pub async fn insert_strategy_research_candidate_promotion(
     pool: &PgPool,
     promotion_id: Uuid,
@@ -420,6 +694,36 @@ pub fn strategy_research_candidate_promotion_result_from_records(
         promoted_at: promotion.created_at,
         promoted_by: promotion.actor_id,
         correlation_id: promotion.correlation_id,
+    })
+}
+
+pub fn strategy_candidate_observation_result_from_record(
+    record: &StrategyCandidateObservationRecord,
+) -> Result<StrategyCandidateObservationResult> {
+    let requirements = serde_json::from_value::<StrategyCandidateObservationRequirement>(
+        record.requirements.clone(),
+    )?;
+    let summary =
+        serde_json::from_value::<StrategyCandidateObservationSummary>(record.summary.clone())?;
+
+    Ok(StrategyCandidateObservationResult {
+        observation_id: record.id,
+        candidate_id: record.candidate_id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        status: record
+            .status
+            .parse::<StrategyCandidateObservationStatus>()?,
+        requirements,
+        summary,
+        decision: record
+            .decision
+            .parse::<StrategyCandidateObservationDecision>()?,
+        started_at: record.started_at,
+        evaluated_at: record.evaluated_at,
+        created_by: record.created_by,
+        correlation_id: record.correlation_id,
     })
 }
 
@@ -833,5 +1137,39 @@ fn map_strategy_research_candidate_promotion(
         actor_id: row.get("actor_id"),
         created_at: row.get("created_at"),
         correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_strategy_candidate_observation(
+    row: sqlx::postgres::PgRow,
+) -> StrategyCandidateObservationRecord {
+    StrategyCandidateObservationRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        status: row.get("status"),
+        requirements: row.get("requirements"),
+        summary: row.get("summary"),
+        decision: row.get("decision"),
+        started_at: row.get("started_at"),
+        evaluated_at: row.get("evaluated_at"),
+        created_by: row.get("created_by"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_strategy_candidate_observation_check(
+    row: sqlx::postgres::PgRow,
+) -> StrategyCandidateObservationCheckRecord {
+    StrategyCandidateObservationCheckRecord {
+        id: row.get("id"),
+        observation_id: row.get("observation_id"),
+        finding_index: row.get("finding_index"),
+        code: row.get("code"),
+        message: row.get("message"),
+        blocking: row.get("blocking"),
+        created_at: row.get("created_at"),
     }
 }

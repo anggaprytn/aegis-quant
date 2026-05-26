@@ -117,9 +117,10 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 3. Run walk-forward validation.
 4. Register a promising research candidate.
 5. Promote it to shadow config only after owner review and exact confirmation.
-6. Observe it through the shadow runner.
+6. Observe it through the shadow runner and persist observation evidence.
+7. Review the persisted observation before any testnet promotion discussion.
 
-This workflow does not enable live trading, does not execute trades during promotion, and does not auto-submit orders.
+This workflow does not enable live trading, does not execute trades during promotion or observation, and does not auto-submit orders. Observation is required before testnet promotion review.
 
 ## Local prerequisites
 

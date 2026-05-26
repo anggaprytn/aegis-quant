@@ -7,20 +7,21 @@ use aegis_core::{
     ExecutionReadinessSnapshot, MarketCandleCoverageSummary, OperatorReport, OperatorReportRequest,
     PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchDataCoverageResult,
     ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyComparisonSummary,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
-    StrategyDryRunRequest, StrategyDryRunResult, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
-    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyResearchCandidate,
-    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionRequest,
-    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateSource,
-    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardWindowResult,
-    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
+    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
+    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
+    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategyPerformanceSummary, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    StrategyResearchCandidatePromotionRequest, StrategyResearchCandidatePromotionResult,
+    StrategyResearchCandidateSource, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -657,6 +658,40 @@ impl ApiClient {
     ) -> Result<ResearchCandidateResponse, ApiClientError> {
         self.get(&format!("/research/candidates/{candidate_id}"), &[])
             .await
+    }
+
+    pub async fn observe_research_candidate(
+        &self,
+        candidate_id: Uuid,
+        request: &ResearchCandidateObservationEvaluateRequest,
+    ) -> Result<ResearchCandidateObservationResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidates/{candidate_id}/observe"),
+            request,
+        )
+        .await
+    }
+
+    pub async fn list_research_candidate_observations(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateObservationsResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/observations"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_observation(
+        &self,
+        observation_id: Uuid,
+    ) -> Result<ResearchCandidateObservationResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidate-observations/{observation_id}"),
+            &[],
+        )
+        .await
     }
 
     pub async fn promote_research_candidate_shadow(
@@ -1891,6 +1926,34 @@ pub struct ResearchCandidatePromotionResponse {
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateObservationResponse {
+    pub observation: StrategyCandidateObservationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateObservationsResponse {
+    pub observations: Vec<StrategyCandidateObservationResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ResearchCandidateObservationEvaluateRequest {
+    pub start_time: Option<DateTime<Utc>>,
+    pub min_observation_hours: i64,
+    pub min_shadow_runs: i64,
+    pub max_risk_rejection_rate: Option<Decimal>,
+    pub min_would_submit_count: i64,
+    pub max_no_signal_rate: Option<Decimal>,
+    pub require_readiness_ready: bool,
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -17,10 +17,12 @@ Research workflow:
 3. Run walk-forward validation on the same prepared window.
 4. Register a research candidate from the strongest experiment run, walk-forward result, or manual review package.
 5. Promote to shadow config only after operator review and exact owner confirmation.
-6. Observe the promoted config through the shadow runner.
+6. Observe the promoted config through the shadow runner and persist the observation result.
+7. Review the observation result before any testnet promotion.
 
 Research candidate promotion boundaries:
 - Candidate promotion does not execute trades.
 - Candidate promotion does not auto-submit anything.
+- Candidate observation does not execute trades and does not mutate paper or testnet execution state.
 - Candidate promotion does not mutate signals, risk decisions, paper state, testnet state, or live execution state.
 - No live trading path is enabled.

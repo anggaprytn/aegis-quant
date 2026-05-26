@@ -6003,6 +6003,10 @@ pub enum CoreError {
     UnsupportedStrategyResearchCandidateStatus(String),
     #[error("unsupported strategy research candidate rejection reason: {0}")]
     UnsupportedStrategyResearchCandidateRejectionReason(String),
+    #[error("unsupported strategy candidate observation status: {0}")]
+    UnsupportedStrategyCandidateObservationStatus(String),
+    #[error("unsupported strategy candidate observation decision: {0}")]
+    UnsupportedStrategyCandidateObservationDecision(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
     #[error("unsupported exchange environment: {0}")]

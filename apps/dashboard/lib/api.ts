@@ -64,6 +64,9 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  StrategyCandidateObservationEvaluateRequest,
+  StrategyCandidateObservationResponse,
+  StrategyCandidateObservationsResponse,
   StrategyResearchCandidatePromotionRequest,
   StrategyResearchCandidatePromotionResponse,
   StrategyResearchCandidateRegisterRequest,
@@ -357,6 +360,18 @@ export const api = {
     request<StrategyResearchCandidatesResponse>("/research/candidates", undefined, query),
   getResearchCandidate: (id: string) =>
     request<StrategyResearchCandidateResponse>(`/research/candidates/${id}`),
+  observeResearchCandidate: (
+    id: string,
+    payload: StrategyCandidateObservationEvaluateRequest,
+  ) =>
+    request<StrategyCandidateObservationResponse>(`/research/candidates/${id}/observe`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchCandidateObservations: (id: string) =>
+    request<StrategyCandidateObservationsResponse>(`/research/candidates/${id}/observations`),
+  getResearchCandidateObservation: (id: string) =>
+    request<StrategyCandidateObservationResponse>(`/research/candidate-observations/${id}`),
   promoteResearchCandidateShadow: (
     id: string,
     payload: StrategyResearchCandidatePromotionRequest,

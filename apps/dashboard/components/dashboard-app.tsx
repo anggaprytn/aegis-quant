@@ -35,6 +35,7 @@ import type {
   RiskConfig,
   RiskDecisionRecord,
   StrategyComparisonSummary,
+  StrategyCandidateObservation,
   StrategyDiagnosticsResult,
   StrategyExperimentResult,
   StrategyExperimentRun,
@@ -877,6 +878,12 @@ function AuthenticatedDashboard({
     queryFn: () => api.getResearchCandidate(selectedResearchCandidateId ?? ""),
     enabled: Boolean(selectedResearchCandidateId),
   });
+  const selectedResearchCandidateObservationsQuery = useQuery({
+    queryKey: ["research-candidate-observations", selectedResearchCandidateId],
+    queryFn: () => api.listResearchCandidateObservations(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const eventsQuery = useQuery({
     queryKey: ["events", eventTypeFilter, eventSourceFilter, eventCorrelationFilter],
     queryFn: () =>
@@ -1326,6 +1333,7 @@ function AuthenticatedDashboard({
       queryClient.invalidateQueries({ queryKey: ["latest-tick"] }),
       queryClient.invalidateQueries({ queryKey: ["strategy-status"] }),
       queryClient.invalidateQueries({ queryKey: ["strategies"] }),
+      queryClient.invalidateQueries({ queryKey: ["research-candidate-observations"] }),
     ]);
   };
 
@@ -1521,6 +1529,23 @@ function AuthenticatedDashboard({
         setSelectedStrategyId(refreshed.candidate.strategy_id);
       }
       setResearchPromotionConfirmationText("");
+    },
+  });
+  const observeResearchCandidateMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedResearchCandidateId) {
+        throw new Error("Select a candidate first.");
+      }
+      return api.observeResearchCandidate(selectedResearchCandidateId, {
+        min_observation_hours: 24,
+        min_shadow_runs: 30,
+        min_would_submit_count: 1,
+        require_readiness_ready: true,
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["research-candidate-observations"] });
+      await queryClient.invalidateQueries({ queryKey: ["events"] });
     },
   });
   const operatorReportMutation = useMutation({
@@ -1783,6 +1808,10 @@ function AuthenticatedDashboard({
   const researchCandidates = researchCandidatesQuery.data?.candidates ?? [];
   const selectedResearchCandidate: StrategyResearchCandidate | null =
     selectedResearchCandidateQuery.data?.candidate ?? null;
+  const researchCandidateObservations: StrategyCandidateObservation[] =
+    selectedResearchCandidateObservationsQuery.data?.observations ?? [];
+  const latestResearchCandidateObservation: StrategyCandidateObservation | null =
+    researchCandidateObservations[0] ?? null;
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
@@ -4180,7 +4209,7 @@ function AuthenticatedDashboard({
                   loading={selectedResearchCandidateQuery.isLoading}
                   error={getErrorMessage(selectedResearchCandidateQuery.error)}
                 />
-                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
                   <div className="rounded-2xl border border-border bg-surface/40 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted">Config</div>
                     <pre className="mt-2 overflow-auto text-xs text-slate-200">
@@ -4222,6 +4251,108 @@ function AuthenticatedDashboard({
                       />
                     </div>
                   </div>
+                  <div className="rounded-2xl border border-border bg-surface/40 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted">
+                      Shadow Observation
+                    </div>
+                    <div className="mt-2 space-y-2 text-sm text-slate-200">
+                      <div>
+                        Status: {latestResearchCandidateObservation?.status ?? "NONE"}
+                      </div>
+                      <div>
+                        Decision: {latestResearchCandidateObservation?.decision ?? "NONE"}
+                      </div>
+                      <div>
+                        Runs: {latestResearchCandidateObservation?.summary.shadow_runs ?? 0} /
+                        would-submit{" "}
+                        {latestResearchCandidateObservation?.summary.would_submit_count ?? 0}
+                      </div>
+                      <div>
+                        Readiness:{" "}
+                        {latestResearchCandidateObservation?.summary.latest_readiness_status ??
+                          "UNKNOWN"}
+                        {" / "}
+                        {latestResearchCandidateObservation?.summary.latest_readiness_score ?? "-"}
+                      </div>
+                    </div>
+                    <div className="mt-3 flex items-center gap-3">
+                      <ActionButton
+                        label="Run Observation"
+                        onClick={() => observeResearchCandidateMutation.mutate()}
+                        busy={observeResearchCandidateMutation.isPending}
+                        disabled={
+                          (user.role !== "OWNER" && user.role !== "OPERATOR") ||
+                          !selectedResearchCandidate
+                        }
+                      />
+                      <InlineStatus
+                        error={getErrorMessage(observeResearchCandidateMutation.error)}
+                        success={
+                          observeResearchCandidateMutation.data
+                            ? observeResearchCandidateMutation.data.observation.decision
+                            : undefined
+                        }
+                      />
+                    </div>
+                    <div className="mt-4 text-xs uppercase tracking-[0.2em] text-muted">
+                      Latest Findings
+                    </div>
+                    <div className="mt-2 space-y-1 text-xs text-slate-300">
+                      {(latestResearchCandidateObservation?.summary.findings ?? []).length === 0
+                        ? "No observation findings yet."
+                        : latestResearchCandidateObservation?.summary.findings.map((finding) => (
+                            <div key={finding.code}>
+                              {finding.code}: {finding.message}
+                            </div>
+                          ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 rounded-2xl border border-border bg-surface/40 p-4">
+                  <div className="text-xs uppercase tracking-[0.2em] text-muted">
+                    Observation History
+                  </div>
+                  <div className="mt-3 overflow-auto rounded-2xl border border-border">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-surface/60 text-left text-slate-300">
+                        <tr>
+                          {["Observed", "Status", "Decision", "Runs", "Readiness", "Summary"].map(
+                            (label) => (
+                              <th key={label} className="px-3 py-2 font-medium">
+                                {label}
+                              </th>
+                            ),
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {researchCandidateObservations.map((observation) => (
+                          <tr key={observation.observation_id} className="border-t border-border">
+                            <td className="px-3 py-2">{formatDateTime(observation.evaluated_at)}</td>
+                            <td className="px-3 py-2">{observation.status}</td>
+                            <td className="px-3 py-2">{observation.decision}</td>
+                            <td className="px-3 py-2">
+                              {observation.summary.shadow_runs} / would-submit{" "}
+                              {observation.summary.would_submit_count}
+                            </td>
+                            <td className="px-3 py-2">
+                              {observation.summary.latest_readiness_status ?? "UNKNOWN"}
+                              {" / "}
+                              {observation.summary.latest_readiness_score ?? "-"}
+                            </td>
+                            <td className="px-3 py-2">
+                              {observation.summary.findings
+                                .map((finding) => finding.code)
+                                .join(", ") || "requirements_met"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <InlineStatus
+                    error={getErrorMessage(selectedResearchCandidateObservationsQuery.error)}
+                  />
                 </div>
               </Panel>
             </section>

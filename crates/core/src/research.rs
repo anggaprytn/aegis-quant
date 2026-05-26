@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{Candle, CandleInterval, CoreError, MarketDataSource, Symbol};
+use crate::{
+    calculate_strategy_rejection_rate, Candle, CandleInterval, CoreError, ExecutionReadinessStatus,
+    MarketDataSource, Symbol,
+};
 
 fn default_required_coverage_pct() -> Decimal {
     Decimal::new(95, 0)
@@ -399,6 +402,335 @@ pub struct StrategyResearchCandidatePromotionResult {
     pub promoted_at: DateTime<Utc>,
     pub promoted_by: Option<Uuid>,
     pub correlation_id: Option<Uuid>,
+}
+
+fn default_min_observation_hours() -> i64 {
+    24
+}
+
+fn default_min_shadow_runs() -> i64 {
+    30
+}
+
+fn default_min_would_submit_count() -> i64 {
+    1
+}
+
+fn default_require_readiness_ready() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyCandidateObservationStatus {
+    Observing,
+    ReadyForReview,
+    Failed,
+    InsufficientData,
+    Archived,
+}
+
+impl StrategyCandidateObservationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observing => "OBSERVING",
+            Self::ReadyForReview => "READY_FOR_REVIEW",
+            Self::Failed => "FAILED",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::Archived => "ARCHIVED",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyCandidateObservationStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "OBSERVING" => Ok(Self::Observing),
+            "READY_FOR_REVIEW" => Ok(Self::ReadyForReview),
+            "FAILED" => Ok(Self::Failed),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "ARCHIVED" => Ok(Self::Archived),
+            other => Err(CoreError::UnsupportedStrategyCandidateObservationStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyCandidateObservationDecision {
+    Pass,
+    Fail,
+    ContinueObserving,
+    InsufficientData,
+}
+
+impl StrategyCandidateObservationDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "PASS",
+            Self::Fail => "FAIL",
+            Self::ContinueObserving => "CONTINUE_OBSERVING",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyCandidateObservationDecision {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PASS" => Ok(Self::Pass),
+            "FAIL" => Ok(Self::Fail),
+            "CONTINUE_OBSERVING" => Ok(Self::ContinueObserving),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            other => Err(CoreError::UnsupportedStrategyCandidateObservationDecision(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrategyCandidateObservationFinding {
+    pub code: String,
+    pub message: String,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyCandidateObservationRequirement {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    #[serde(default = "default_min_observation_hours")]
+    pub min_observation_hours: i64,
+    #[serde(default = "default_min_shadow_runs")]
+    pub min_shadow_runs: i64,
+    pub max_risk_rejection_rate: Option<Decimal>,
+    #[serde(default = "default_min_would_submit_count")]
+    pub min_would_submit_count: i64,
+    pub max_no_signal_rate: Option<Decimal>,
+    #[serde(default = "default_require_readiness_ready")]
+    pub require_readiness_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyCandidateObservationRequest {
+    pub candidate_id: Uuid,
+    pub start_time: Option<DateTime<Utc>>,
+    #[serde(default = "default_min_observation_hours")]
+    pub min_observation_hours: i64,
+    #[serde(default = "default_min_shadow_runs")]
+    pub min_shadow_runs: i64,
+    pub max_risk_rejection_rate: Option<Decimal>,
+    #[serde(default = "default_min_would_submit_count")]
+    pub min_would_submit_count: i64,
+    pub max_no_signal_rate: Option<Decimal>,
+    #[serde(default = "default_require_readiness_ready")]
+    pub require_readiness_ready: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyCandidateObservationSummary {
+    pub candidate_id: Uuid,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub shadow_runs: i64,
+    pub would_submit_count: i64,
+    pub no_signal_count: i64,
+    pub risk_rejected_count: i64,
+    pub skipped_count: i64,
+    pub risk_rejection_rate: Decimal,
+    pub no_signal_rate: Decimal,
+    pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub latest_readiness_score: Option<i32>,
+    pub decision: StrategyCandidateObservationDecision,
+    pub findings: Vec<StrategyCandidateObservationFinding>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyCandidateObservationResult {
+    pub observation_id: Uuid,
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub status: StrategyCandidateObservationStatus,
+    pub requirements: StrategyCandidateObservationRequirement,
+    pub summary: StrategyCandidateObservationSummary,
+    pub decision: StrategyCandidateObservationDecision,
+    pub started_at: DateTime<Utc>,
+    pub evaluated_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl StrategyCandidateObservationRequest {
+    pub fn to_requirement(
+        &self,
+        strategy_id: impl Into<String>,
+        symbol: impl Into<String>,
+        timeframe: impl Into<String>,
+    ) -> StrategyCandidateObservationRequirement {
+        StrategyCandidateObservationRequirement {
+            candidate_id: self.candidate_id,
+            strategy_id: strategy_id.into(),
+            symbol: symbol.into(),
+            timeframe: timeframe.into(),
+            min_observation_hours: self.min_observation_hours,
+            min_shadow_runs: self.min_shadow_runs,
+            max_risk_rejection_rate: self.max_risk_rejection_rate,
+            min_would_submit_count: self.min_would_submit_count,
+            max_no_signal_rate: self.max_no_signal_rate,
+            require_readiness_ready: self.require_readiness_ready,
+        }
+    }
+}
+
+pub fn calculate_observation_rate(count: i64, total: i64) -> Decimal {
+    if count <= 0 || total <= 0 {
+        Decimal::ZERO
+    } else {
+        Decimal::from(count) / Decimal::from(total)
+    }
+}
+
+pub fn evaluate_strategy_candidate_observation(
+    requirements: &StrategyCandidateObservationRequirement,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    shadow_runs: i64,
+    would_submit_count: i64,
+    no_signal_count: i64,
+    risk_rejected_count: i64,
+    skipped_count: i64,
+    latest_readiness_status: Option<ExecutionReadinessStatus>,
+    latest_readiness_score: Option<i32>,
+    created_at: DateTime<Utc>,
+) -> StrategyCandidateObservationSummary {
+    let risk_rejection_rate = calculate_strategy_rejection_rate(risk_rejected_count, shadow_runs);
+    let no_signal_rate = calculate_observation_rate(no_signal_count, shadow_runs);
+    let mut findings = Vec::new();
+    let observed_hours = window_end.signed_duration_since(window_start).num_hours();
+    let mut decision = StrategyCandidateObservationDecision::Pass;
+
+    if observed_hours < requirements.min_observation_hours {
+        decision = StrategyCandidateObservationDecision::ContinueObserving;
+        findings.push(StrategyCandidateObservationFinding {
+            code: "not_enough_time_observed".to_string(),
+            message: format!(
+                "Observed {observed_hours}h but requires at least {}h.",
+                requirements.min_observation_hours
+            ),
+            blocking: true,
+        });
+    }
+
+    if shadow_runs < requirements.min_shadow_runs {
+        decision = StrategyCandidateObservationDecision::InsufficientData;
+        findings.push(StrategyCandidateObservationFinding {
+            code: "not_enough_shadow_runs".to_string(),
+            message: format!(
+                "Observed {shadow_runs} shadow runs but requires at least {}.",
+                requirements.min_shadow_runs
+            ),
+            blocking: true,
+        });
+    }
+
+    if decision == StrategyCandidateObservationDecision::Pass {
+        if requirements.require_readiness_ready
+            && latest_readiness_status != Some(ExecutionReadinessStatus::Ready)
+        {
+            decision = StrategyCandidateObservationDecision::Fail;
+            findings.push(StrategyCandidateObservationFinding {
+                code: "readiness_not_ready".to_string(),
+                message: format!(
+                    "Latest TESTNET_SHADOW readiness was {}.",
+                    latest_readiness_status
+                        .map(|value| value.as_str().to_string())
+                        .unwrap_or_else(|| "UNKNOWN".to_string())
+                ),
+                blocking: true,
+            });
+        }
+
+        if would_submit_count < requirements.min_would_submit_count {
+            decision = StrategyCandidateObservationDecision::Fail;
+            findings.push(StrategyCandidateObservationFinding {
+                code: "zero_or_low_would_submit".to_string(),
+                message: format!(
+                    "Observed {would_submit_count} WOULD_SUBMIT runs but requires at least {}.",
+                    requirements.min_would_submit_count
+                ),
+                blocking: true,
+            });
+        }
+
+        if let Some(max_risk_rejection_rate) = requirements.max_risk_rejection_rate {
+            if risk_rejection_rate > max_risk_rejection_rate {
+                decision = StrategyCandidateObservationDecision::Fail;
+                findings.push(StrategyCandidateObservationFinding {
+                    code: "high_risk_rejection_rate".to_string(),
+                    message: format!(
+                        "Risk rejection rate {} exceeded max {}.",
+                        risk_rejection_rate.round_dp(4),
+                        max_risk_rejection_rate.round_dp(4)
+                    ),
+                    blocking: true,
+                });
+            }
+        }
+
+        if let Some(max_no_signal_rate) = requirements.max_no_signal_rate {
+            if no_signal_rate > max_no_signal_rate {
+                decision = StrategyCandidateObservationDecision::Fail;
+                findings.push(StrategyCandidateObservationFinding {
+                    code: "high_no_signal_rate".to_string(),
+                    message: format!(
+                        "No-signal rate {} exceeded max {}.",
+                        no_signal_rate.round_dp(4),
+                        max_no_signal_rate.round_dp(4)
+                    ),
+                    blocking: true,
+                });
+            }
+        }
+    }
+
+    if findings.is_empty() {
+        findings.push(StrategyCandidateObservationFinding {
+            code: "requirements_met".to_string(),
+            message: "Observation requirements were met.".to_string(),
+            blocking: false,
+        });
+    }
+
+    StrategyCandidateObservationSummary {
+        candidate_id: requirements.candidate_id,
+        window_start,
+        window_end,
+        shadow_runs,
+        would_submit_count,
+        no_signal_count,
+        risk_rejected_count,
+        skipped_count,
+        risk_rejection_rate: risk_rejection_rate.round_dp(4),
+        no_signal_rate: no_signal_rate.round_dp(4),
+        latest_readiness_status,
+        latest_readiness_score,
+        decision,
+        findings,
+        created_at,
+    }
 }
 
 pub fn expected_strategy_research_promotion_confirmation(strategy_id: &str) -> String {
@@ -968,5 +1300,171 @@ mod tests {
         let second = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
 
         assert_eq!(first, second);
+    }
+
+    fn base_observation_requirement() -> StrategyCandidateObservationRequirement {
+        StrategyCandidateObservationRequirement {
+            candidate_id: Uuid::from_u128(0xabc),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            min_observation_hours: 24,
+            min_shadow_runs: 30,
+            max_risk_rejection_rate: Some(Decimal::new(2, 1)),
+            min_would_submit_count: 1,
+            max_no_signal_rate: Some(Decimal::new(6, 1)),
+            require_readiness_ready: true,
+        }
+    }
+
+    #[test]
+    fn insufficient_hours_continue_observing() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(23, 0, 0),
+            30,
+            2,
+            5,
+            3,
+            1,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(92),
+            ts(23, 0, 0),
+        );
+
+        assert_eq!(
+            summary.decision,
+            StrategyCandidateObservationDecision::ContinueObserving
+        );
+        assert!(summary
+            .findings
+            .iter()
+            .any(|finding| finding.code == "not_enough_time_observed"));
+    }
+
+    #[test]
+    fn insufficient_shadow_runs_yield_insufficient_data() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            12,
+            2,
+            2,
+            1,
+            0,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(90),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(
+            summary.decision,
+            StrategyCandidateObservationDecision::InsufficientData
+        );
+        assert!(summary
+            .findings
+            .iter()
+            .any(|finding| finding.code == "not_enough_shadow_runs"));
+    }
+
+    #[test]
+    fn zero_would_submit_fails_after_requirements_met() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            0,
+            5,
+            2,
+            0,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(90),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(summary.decision, StrategyCandidateObservationDecision::Fail);
+        assert!(summary
+            .findings
+            .iter()
+            .any(|finding| finding.code == "zero_or_low_would_submit"));
+    }
+
+    #[test]
+    fn readiness_not_ready_fails() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            2,
+            5,
+            2,
+            0,
+            Some(ExecutionReadinessStatus::Degraded),
+            Some(70),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(summary.decision, StrategyCandidateObservationDecision::Fail);
+        assert!(summary
+            .findings
+            .iter()
+            .any(|finding| finding.code == "readiness_not_ready"));
+    }
+
+    #[test]
+    fn pass_when_requirements_met() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            4,
+            6,
+            3,
+            1,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(95),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(summary.decision, StrategyCandidateObservationDecision::Pass);
+        assert_eq!(summary.findings[0].code, "requirements_met");
+    }
+
+    #[test]
+    fn no_signal_rate_calculation_is_deterministic() {
+        assert_eq!(
+            calculate_observation_rate(6, 30).round_dp(4),
+            Decimal::new(2, 1).round_dp(4)
+        );
+    }
+
+    #[test]
+    fn risk_rejection_rate_calculation_is_deterministic() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            3,
+            2,
+            6,
+            0,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(95),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(summary.risk_rejection_rate, Decimal::new(2, 1).round_dp(4));
     }
 }

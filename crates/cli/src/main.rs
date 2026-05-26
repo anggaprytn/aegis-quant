@@ -12,7 +12,8 @@ use cli::api::{
     build_research_data_build_request, build_research_data_coverage_query,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
     build_strategy_walk_forward_request, ApiClient, RecentEventsQuery,
-    ResearchCandidateRegisterRequest, ResearchCandidatesQuery, RiskDecisionsQuery,
+    ResearchCandidateObservationEvaluateRequest, ResearchCandidateRegisterRequest,
+    ResearchCandidatesQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
@@ -516,6 +517,48 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate(&response.candidate);
+                    }
+                }
+                ResearchCandidateCommands::Observe(args) => {
+                    let response = client
+                        .observe_research_candidate(
+                            args.candidate_id,
+                            &ResearchCandidateObservationEvaluateRequest {
+                                start_time: args.start_time,
+                                min_observation_hours: args.min_observation_hours,
+                                min_shadow_runs: args.min_shadow_runs,
+                                max_risk_rejection_rate: args.max_risk_rejection_rate,
+                                min_would_submit_count: args.min_would_submit_count,
+                                max_no_signal_rate: args.max_no_signal_rate,
+                                require_readiness_ready: args.require_readiness_ready,
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_observation(&response.observation);
+                    }
+                }
+                ResearchCandidateCommands::Observations { candidate_id } => {
+                    let response = client
+                        .list_research_candidate_observations(candidate_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_observations(&response.observations);
+                    }
+                }
+                ResearchCandidateCommands::ObservationGet { observation_id } => {
+                    let response = client
+                        .get_research_candidate_observation(observation_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_observation(&response.observation);
                     }
                 }
                 ResearchCandidateCommands::PromoteShadow(args) => {

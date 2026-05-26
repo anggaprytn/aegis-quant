@@ -3,6 +3,7 @@ mod exchange_reconcile;
 mod operator_reports;
 mod pipeline;
 mod readiness;
+mod research_candidate_observation;
 
 use std::{
     env,
@@ -36,14 +37,15 @@ use aegis_core::{
     PaperTradingPipelineRequest, ResearchDataCoverageRequest, ResearchDataCoverageResult,
     ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskCheckContext, RiskConfig,
     RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason, StrategyComparisonSummary,
-    StrategyConfig, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDataHealth,
-    StrategyDecisionBreakdown, StrategyDiagnosticCheck, StrategyDiagnosticsDecision,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyEvaluationContext, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyId, StrategyMode,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentGlobalRanking,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
+    StrategyMode, StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyNoSignalReason, StrategyPerformanceMode, StrategyPerformanceRequest,
     StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyResearchCandidate,
     StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionRequest,
@@ -111,16 +113,18 @@ use db::{
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
     list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
-    list_strategy_config_audit, list_strategy_config_versions, list_strategy_experiment_runs,
-    list_strategy_experiments, list_strategy_experiments_by_group,
-    list_strategy_performance_rankings, list_strategy_research_candidates, list_strategy_status,
-    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
-    list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
-    load_risk_state_snapshot, mark_strategy_research_candidate_promoted, paper_account_from_record,
+    list_strategy_candidate_observations, list_strategy_config_audit,
+    list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
+    list_strategy_experiments_by_group, list_strategy_performance_rankings,
+    list_strategy_research_candidates, list_strategy_status, list_strategy_walk_forward_runs,
+    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
+    list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
+    mark_strategy_research_candidate_promoted, paper_account_from_record,
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
     persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
     risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
-    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
+    set_kill_switch_state, strategy_candidate_observation_result_from_record,
+    strategy_config_audit_from_record, strategy_config_from_record,
     strategy_config_version_from_record, strategy_experiment_result_from_records,
     strategy_experiment_run_from_record, strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
@@ -145,6 +149,7 @@ use exchange::{
 };
 use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig, ResearchDatasetService};
 use replay_engine::ReplayEngine;
+use research_candidate_observation::evaluate_candidate_observation;
 use risk_engine::{validate_risk_config, RiskEvaluator};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -1305,6 +1310,18 @@ struct StrategyResearchCandidatesQuery {
 }
 
 #[derive(Deserialize)]
+struct StrategyCandidateObservationEvaluateRequest {
+    start_time: Option<DateTime<Utc>>,
+    min_observation_hours: Option<i64>,
+    min_shadow_runs: Option<i64>,
+    max_risk_rejection_rate: Option<Decimal>,
+    min_would_submit_count: Option<i64>,
+    max_no_signal_rate: Option<Decimal>,
+    require_readiness_ready: Option<bool>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
 struct StrategyResearchCandidateRegisterRequest {
     source_type: StrategyResearchCandidateSource,
     source_id: Option<Uuid>,
@@ -1389,6 +1406,22 @@ struct StrategyResearchCandidateResponse {
 #[derive(Serialize)]
 struct StrategyResearchCandidatePromotionResponse {
     promotion: StrategyResearchCandidatePromotionResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyCandidateObservationsResponse {
+    observations: Vec<StrategyCandidateObservationResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyCandidateObservationResponse {
+    observation: StrategyCandidateObservationResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2159,6 +2192,18 @@ async fn main() {
         .route(
             "/research/candidates/:id",
             get(get_strategy_research_candidate_handler),
+        )
+        .route(
+            "/research/candidates/:id/observe",
+            post(evaluate_strategy_candidate_observation_handler),
+        )
+        .route(
+            "/research/candidates/:id/observations",
+            get(list_strategy_candidate_observations_handler),
+        )
+        .route(
+            "/research/candidate-observations/:id",
+            get(get_strategy_candidate_observation_handler),
         )
         .route(
             "/research/candidates/:id/promote-shadow-config",
@@ -14239,6 +14284,183 @@ async fn get_strategy_research_candidate_handler(
     }
 }
 
+async fn evaluate_strategy_candidate_observation_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<StrategyCandidateObservationEvaluateRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can evaluate candidate observations."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let observation_request = StrategyCandidateObservationRequest {
+        candidate_id,
+        start_time: payload.start_time,
+        min_observation_hours: payload.min_observation_hours.unwrap_or(24),
+        min_shadow_runs: payload.min_shadow_runs.unwrap_or(30),
+        max_risk_rejection_rate: payload.max_risk_rejection_rate,
+        min_would_submit_count: payload.min_would_submit_count.unwrap_or(1),
+        max_no_signal_rate: payload.max_no_signal_rate,
+        require_readiness_ready: payload.require_readiness_ready.unwrap_or(true),
+        correlation_id: payload
+            .correlation_id
+            .or_else(|| Some(parse_correlation_id(&request.correlation_id))),
+    };
+    match evaluate_candidate_observation(&state, &observation_request, Some(actor.user_id)).await {
+        Ok(observation) => (
+            StatusCode::OK,
+            Json(StrategyCandidateObservationResponse {
+                observation,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) if err.to_string().contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_candidate_not_found",
+                message: "Research candidate was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_evaluate_candidate_observation",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_strategy_candidate_observations_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_strategy_candidate_observations(&state.db_pool, candidate_id).await {
+        Ok(records) => match records
+            .iter()
+            .map(strategy_candidate_observation_result_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(observations) => (
+                StatusCode::OK,
+                Json(StrategyCandidateObservationsResponse {
+                    observations,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_candidate_observations",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_candidate_observations",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_candidate_observation_handler(
+    State(state): State<AppState>,
+    Path(observation_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match db::get_strategy_candidate_observation(&state.db_pool, observation_id).await {
+        Ok(Some(record)) => match strategy_candidate_observation_result_from_record(&record) {
+            Ok(observation) => (
+                StatusCode::OK,
+                Json(StrategyCandidateObservationResponse {
+                    observation,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_candidate_observation",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "candidate_observation_not_found",
+                message: "Candidate observation was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_candidate_observation",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn promote_strategy_research_candidate_handler(
     State(state): State<AppState>,
     Path(candidate_id): Path<Uuid>,
@@ -15988,16 +16210,19 @@ mod tests {
     use super::{
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
         build_cors_layer, cancel_exchange_testnet_order, check_execution_readiness_handler,
-        generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
+        evaluate_strategy_candidate_observation_handler, generate_testnet_client_order_id,
+        get_exchange_testnet_shadow_promotion_handler,
         get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
-        get_risk_decisions, get_strategy_config_handler, get_strategy_list,
+        get_risk_decisions, get_strategy_candidate_observation_handler,
+        get_strategy_config_handler, get_strategy_list,
         get_strategy_research_candidate_handler, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
-        list_execution_readiness_snapshots_handler, list_strategy_research_candidates_handler,
-        login, logout, metrics, normalize_route_label, order_view, parse_correlation_id_filter,
-        parse_cors_allowed_origins, parse_order_intent, parse_risk_check_context,
-        preview_exchange_testnet_pipeline, preview_exchange_testnet_shadow_promotion_handler,
+        list_execution_readiness_snapshots_handler, list_strategy_candidate_observations_handler,
+        list_strategy_research_candidates_handler, login, logout, metrics, normalize_route_label,
+        order_view, parse_correlation_id_filter, parse_cors_allowed_origins,
+        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline,
+        preview_exchange_testnet_shadow_promotion_handler,
         promote_strategy_research_candidate_handler, reconcile_exchange_testnet_orders_handler,
         reconcile_testnet_orders, refresh, register_strategy_research_candidate_handler,
         repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
@@ -16055,12 +16280,12 @@ mod tests {
         list_exchange_reconciliation_mismatches, list_exchange_reconciliation_runs,
         list_exchange_testnet_order_lifecycle_events, list_exchange_testnet_orders,
         list_exchange_testnet_repair_actions, list_orders, list_paper_equity_snapshots,
-        list_paper_positions, list_paper_trade_journal, set_kill_switch_state,
-        test_support::TestDatabase, upsert_candle, upsert_exchange_private_stream_state,
-        upsert_market_feed_status, upsert_risk_config, upsert_strategy_config,
-        upsert_testnet_shadow_runner_state, ExchangePrivateStreamStateRecord,
-        ExchangeReconciliationRunRecord, ExchangeTestnetOrderRecord, OrderRecord, PgPool,
-        StateActor, TestnetShadowRunRecord,
+        list_paper_positions, list_paper_trade_journal, mark_strategy_research_candidate_promoted,
+        set_kill_switch_state, test_support::TestDatabase, upsert_candle,
+        upsert_exchange_private_stream_state, upsert_market_feed_status, upsert_risk_config,
+        upsert_strategy_config, upsert_testnet_shadow_runner_state,
+        ExchangePrivateStreamStateRecord, ExchangeReconciliationRunRecord,
+        ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor, TestnetShadowRunRecord,
     };
     use exchange::{
         testing::{FakeExchangeAdapter, FakeOrderStatus, FakeSubmitAck},
@@ -16724,6 +16949,18 @@ mod tests {
                 get(get_strategy_research_candidate_handler),
             )
             .route(
+                "/research/candidates/:id/observe",
+                post(evaluate_strategy_candidate_observation_handler),
+            )
+            .route(
+                "/research/candidates/:id/observations",
+                get(list_strategy_candidate_observations_handler),
+            )
+            .route(
+                "/research/candidate-observations/:id",
+                get(get_strategy_candidate_observation_handler),
+            )
+            .route(
                 "/research/candidates/:id/promote-shadow-config",
                 post(promote_strategy_research_candidate_handler),
             )
@@ -17180,6 +17417,14 @@ mod tests {
             .get::<i64, _>("count")
     }
 
+    async fn count_research_candidate_observations(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM strategy_candidate_observations")
+            .fetch_one(pool)
+            .await
+            .expect("research candidate observation count")
+            .get::<i64, _>("count")
+    }
+
     async fn count_backtest_runs(pool: &PgPool) -> i64 {
         sqlx::query("SELECT COUNT(*) AS count FROM backtest_runs")
             .fetch_one(pool)
@@ -17570,6 +17815,24 @@ mod tests {
             count_backtest_runs(pool).await,
             count_backtest_trades(pool).await,
         )
+    }
+
+    async fn assert_observation_execution_unchanged(
+        pool: &PgPool,
+        before: (i64, i64, i64, i64, i64),
+    ) {
+        assert_eq!(count_paper_orders(pool).await, before.0);
+        assert_eq!(count_exchange_testnet_orders(pool).await, before.1);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(pool).await,
+            before.2
+        );
+        assert_eq!(count_backtest_runs(pool).await, before.3);
+        assert_eq!(count_backtest_trades(pool).await, before.4);
+    }
+
+    async fn observation_mutation_counts(pool: &PgPool) -> (i64, i64, i64, i64, i64) {
+        readiness_mutation_counts(pool).await
     }
 
     fn sample_shadow_run_would_submit(created_at: chrono::DateTime<Utc>) -> TestnetShadowRunRecord {
@@ -19960,6 +20223,191 @@ mod tests {
             count_research_candidate_promotions(&test_db.pool).await,
             promotions_after_first
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_observation_persists_lists_gets_and_avoids_execution_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-observe@example.com";
+        let viewer_email = "research-viewer-observe@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            viewer_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("shadow strategy config should persist");
+        upsert_risk_config(&test_db.pool, &readiness_risk_config())
+            .await
+            .expect("risk config should persist");
+        seed_readiness_market(&test_db.pool, "BTCUSDT").await;
+
+        let mut candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::OneMinute, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let promoted_at = Utc::now() - chrono::Duration::hours(1);
+        mark_strategy_research_candidate_promoted(
+            &test_db.pool,
+            candidate.id,
+            None,
+            promoted_at,
+            candidate.correlation_id,
+        )
+        .await
+        .expect("candidate should be promoted");
+        candidate.promoted_at = Some(promoted_at);
+
+        for offset_minutes in [45, 30, 15] {
+            let mut run = sample_shadow_run_would_submit(
+                Utc::now() - chrono::Duration::minutes(offset_minutes),
+            );
+            run.timeframe = "1m".to_string();
+            insert_testnet_shadow_run(&test_db.pool, &run)
+                .await
+                .expect("shadow run should persist");
+        }
+
+        let before = observation_mutation_counts(&test_db.pool).await;
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+        let (viewer_login, _) =
+            login_cli(&app, viewer_email, "replace-with-a-12-char-min-password").await;
+
+        let evaluate = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/research/candidates/{}/observe", candidate.id),
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 3,
+                    "min_would_submit_count": 1
+                }),
+            ))
+            .await
+            .expect("observe response");
+        assert_eq!(evaluate.status(), StatusCode::OK);
+        let payload = response_json::<Value>(evaluate).await;
+        let observation_id = payload["observation"]["observation_id"]
+            .as_str()
+            .expect("observation id");
+        assert_eq!(
+            count_research_candidate_observations(&test_db.pool).await,
+            1
+        );
+        assert_eq!(payload["observation"]["summary"]["shadow_runs"], 3);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/observations",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("list request"),
+            )
+            .await
+            .expect("list response");
+        assert_eq!(listed.status(), StatusCode::OK);
+        let list_payload = response_json::<Value>(listed).await;
+        assert_eq!(
+            list_payload["observations"]
+                .as_array()
+                .expect("observations array")
+                .len(),
+            1
+        );
+
+        let fetched = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/research/candidate-observations/{observation_id}"))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("get request"),
+            )
+            .await
+            .expect("get response");
+        assert_eq!(fetched.status(), StatusCode::OK);
+        let fetched_payload = response_json::<Value>(fetched).await;
+        assert_eq!(
+            fetched_payload["observation"]["observation_id"],
+            payload["observation"]["observation_id"]
+        );
+        assert_observation_execution_unchanged(&test_db.pool, before).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_observation_not_promoted_returns_insufficient_data() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-observe-unpromoted@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::OneMinute, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/research/candidates/{}/observe", candidate.id),
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 1
+                }),
+            ))
+            .await
+            .expect("observe response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["observation"]["decision"], "INSUFFICIENT_DATA");
+        assert_eq!(payload["observation"]["status"], "INSUFFICIENT_DATA");
     }
 
     #[tokio::test]

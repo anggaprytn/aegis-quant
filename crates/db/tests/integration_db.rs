@@ -4,16 +4,19 @@ use aegis_core::{
     CandleInterval, ExchangeEnvironment, ExchangeExecutionReport, ExchangeExecutionReportType,
     ExchangeExecutionStatus, ExchangeName, ExchangeOrderSide, ExchangeOrderState,
     ExchangeOrderStatus, ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeReconciliationAction,
-    ExchangeReconciliationMismatchKind, ExchangeReconciliationSummary, FeeModel, MarketDataSource,
-    OrderIntent, PaperAccount, PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide,
-    PositionStatus, ReplayMode, ReplayRunStatus, ResearchDataCoverageResult,
-    ResearchDataReadinessStatus, ResearchDatasetBuildRequest, ResearchDatasetBuildStatus,
-    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
-    SignalConfidence, SignalReason, SignalSide, StrategyConfig, StrategyExperimentCandidate,
-    StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
-    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
+    ExchangeReconciliationMismatchKind, ExchangeReconciliationSummary, ExecutionReadinessStatus,
+    FeeModel, MarketDataSource, OrderIntent, PaperAccount, PaperAccountStatus, PaperPosition,
+    PaperPriceStatus, PositionSide, PositionStatus, ReplayMode, ReplayRunStatus,
+    ResearchDataCoverageResult, ResearchDataReadinessStatus, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
+    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
+    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
+    StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
+    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
+    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary, StrategyConfig,
+    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+    StrategyMode, StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
     StrategyResearchCandidateEvidence, StrategyResearchCandidateScore,
     StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategySignal,
     StrategyWalkForwardCandidate, StrategyWalkForwardRequest, StrategyWalkForwardResult,
@@ -38,18 +41,20 @@ use db::{
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_paper_account, insert_research_dataset_build, insert_risk_decision,
-    insert_signal_deduped, insert_strategy_experiment, insert_strategy_experiment_runs,
-    insert_strategy_research_candidate, insert_strategy_walk_forward_run,
-    insert_strategy_walk_forward_windows, insert_testnet_shadow_promotion,
-    insert_testnet_shadow_run, list_closed_candle_open_times_in_range,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
-    list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
-    list_research_dataset_build_steps, list_strategy_experiment_runs, list_strategy_experiments,
+    insert_signal_deduped, insert_strategy_candidate_observation, insert_strategy_experiment,
+    insert_strategy_experiment_runs, insert_strategy_research_candidate,
+    insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
+    insert_testnet_shadow_promotion, insert_testnet_shadow_run,
+    list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
+    list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
+    list_orders, list_recent_signals, list_research_dataset_build_steps,
+    list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_performance_rankings, list_strategy_research_candidates,
     list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
-    list_testnet_promotion_funnel_rows, mark_strategy_research_candidate_promoted,
-    replace_research_dataset_build_steps, research_dataset_build_result_from_records,
-    set_kill_switch_state, strategy_experiment_result_from_records,
+    list_testnet_promotion_funnel_rows, list_testnet_shadow_runs_in_window,
+    mark_strategy_research_candidate_promoted, replace_research_dataset_build_steps,
+    research_dataset_build_result_from_records, set_kill_switch_state,
+    strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
     strategy_research_candidate_from_record, strategy_walk_forward_result_from_records,
     strategy_walk_forward_window_from_record, test_support::TestDatabase,
     testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
@@ -3175,4 +3180,260 @@ async fn research_candidate_get_returns_exact_detail_payload() {
         strategy_research_candidate_from_record(&row).expect("candidate should deserialize");
     assert_eq!(hydrated.evidence, candidate.evidence);
     assert_eq!(hydrated.correlation_id, candidate.correlation_id);
+}
+
+fn sample_candidate_observation(
+    candidate: &StrategyResearchCandidate,
+) -> StrategyCandidateObservationResult {
+    let evaluated_at = fixed_time() + chrono::Duration::hours(24);
+    let requirements = StrategyCandidateObservationRequirement {
+        candidate_id: candidate.id,
+        strategy_id: candidate.strategy_id.clone(),
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        min_observation_hours: 24,
+        min_shadow_runs: 30,
+        max_risk_rejection_rate: Some(Decimal::new(2, 1)),
+        min_would_submit_count: 1,
+        max_no_signal_rate: Some(Decimal::new(6, 1)),
+        require_readiness_ready: true,
+    };
+    let summary = StrategyCandidateObservationSummary {
+        candidate_id: candidate.id,
+        window_start: fixed_time(),
+        window_end: evaluated_at,
+        shadow_runs: 30,
+        would_submit_count: 3,
+        no_signal_count: 6,
+        risk_rejected_count: 3,
+        skipped_count: 1,
+        risk_rejection_rate: Decimal::new(1, 1),
+        no_signal_rate: Decimal::new(2, 1),
+        latest_readiness_status: Some(ExecutionReadinessStatus::Ready),
+        latest_readiness_score: Some(93),
+        decision: StrategyCandidateObservationDecision::Pass,
+        findings: vec![StrategyCandidateObservationFinding {
+            code: "requirements_met".to_string(),
+            message: "Observation requirements were met.".to_string(),
+            blocking: false,
+        }],
+        created_at: evaluated_at,
+    };
+
+    StrategyCandidateObservationResult {
+        observation_id: Uuid::new_v4(),
+        candidate_id: candidate.id,
+        strategy_id: candidate.strategy_id.clone(),
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        status: StrategyCandidateObservationStatus::ReadyForReview,
+        requirements,
+        summary,
+        decision: StrategyCandidateObservationDecision::Pass,
+        started_at: fixed_time(),
+        evaluated_at,
+        created_by: None,
+        correlation_id: Some(Uuid::new_v4()),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candidate_observation_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let mut candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        fixed_time(),
+    );
+    candidate.promoted_at = Some(fixed_time());
+    insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+        .await
+        .expect("candidate should persist");
+    let observation = sample_candidate_observation(&candidate);
+
+    let record = insert_strategy_candidate_observation(&test_db.pool, &observation)
+        .await
+        .expect("observation should persist");
+    let hydrated = strategy_candidate_observation_result_from_record(&record)
+        .expect("observation should deserialize");
+
+    assert_eq!(hydrated.observation_id, observation.observation_id);
+    assert_eq!(
+        hydrated.decision,
+        StrategyCandidateObservationDecision::Pass
+    );
+    assert_eq!(
+        hydrated.status,
+        StrategyCandidateObservationStatus::ReadyForReview
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candidate_observation_reads_shadow_runs() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    insert_testnet_shadow_run(
+        &test_db.pool,
+        &TestnetShadowRunRecord {
+            id: Uuid::new_v4(),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            decision: "WOULD_SUBMIT".to_string(),
+            signal_id: None,
+            risk_decision_id: None,
+            would_submit_payload: None,
+            price_source: Some("local".to_string()),
+            resolved_price: Some(Decimal::new(100_000, 0)),
+            reasons: Vec::new(),
+            status: "COMPLETED".to_string(),
+            created_at: fixed_time() + chrono::Duration::hours(1),
+            correlation_id: Some(Uuid::new_v4()),
+        },
+    )
+    .await
+    .expect("shadow run should persist");
+
+    let rows = list_testnet_shadow_runs_in_window(
+        &test_db.pool,
+        "momentum_v1",
+        "BTCUSDT",
+        "15m",
+        fixed_time(),
+        fixed_time() + chrono::Duration::hours(2),
+    )
+    .await
+    .expect("shadow runs should load");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].decision, "WOULD_SUBMIT");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candidate_observation_list_filters_by_candidate() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let mut first = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        fixed_time(),
+    );
+    first.promoted_at = Some(fixed_time());
+    let mut second = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "ETHUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        fixed_time(),
+    );
+    second.promoted_at = Some(fixed_time());
+    insert_strategy_research_candidate(&test_db.pool, &first, None)
+        .await
+        .expect("first candidate should persist");
+    insert_strategy_research_candidate(&test_db.pool, &second, None)
+        .await
+        .expect("second candidate should persist");
+    insert_strategy_candidate_observation(&test_db.pool, &sample_candidate_observation(&first))
+        .await
+        .expect("first observation should persist");
+    insert_strategy_candidate_observation(&test_db.pool, &sample_candidate_observation(&second))
+        .await
+        .expect("second observation should persist");
+
+    let filtered = list_strategy_candidate_observations(&test_db.pool, first.id)
+        .await
+        .expect("filtered observations should load");
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].candidate_id, first.id);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candidate_observation_insert_does_not_mutate_execution_tables() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let mut candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        fixed_time(),
+    );
+    candidate.promoted_at = Some(fixed_time());
+    insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+        .await
+        .expect("candidate should persist");
+    let before_orders = list_orders(&test_db.pool)
+        .await
+        .expect("orders should list")
+        .len();
+    let before_signals = list_recent_signals(&test_db.pool, None, 20)
+        .await
+        .expect("signals should list")
+        .len();
+    let before_shadow = list_testnet_shadow_runs_in_window(
+        &test_db.pool,
+        "momentum_v1",
+        "BTCUSDT",
+        "15m",
+        fixed_time(),
+        fixed_time() + chrono::Duration::hours(24),
+    )
+    .await
+    .expect("shadow runs should list")
+    .len();
+
+    insert_strategy_candidate_observation(&test_db.pool, &sample_candidate_observation(&candidate))
+        .await
+        .expect("observation should persist");
+
+    assert_eq!(
+        list_orders(&test_db.pool)
+            .await
+            .expect("orders should list")
+            .len(),
+        before_orders
+    );
+    assert_eq!(
+        list_recent_signals(&test_db.pool, None, 20)
+            .await
+            .expect("signals should list")
+            .len(),
+        before_signals
+    );
+    assert_eq!(
+        list_testnet_shadow_runs_in_window(
+            &test_db.pool,
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            fixed_time(),
+            fixed_time() + chrono::Duration::hours(24),
+        )
+        .await
+        .expect("shadow runs should list")
+        .len(),
+        before_shadow
+    );
 }

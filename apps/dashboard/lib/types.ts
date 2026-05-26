@@ -932,6 +932,83 @@ export type StrategyResearchCandidatePromotionResult = {
   correlation_id: string | null;
 };
 
+export type StrategyCandidateObservationStatus =
+  | "OBSERVING"
+  | "READY_FOR_REVIEW"
+  | "FAILED"
+  | "INSUFFICIENT_DATA"
+  | "ARCHIVED";
+
+export type StrategyCandidateObservationDecision =
+  | "PASS"
+  | "FAIL"
+  | "CONTINUE_OBSERVING"
+  | "INSUFFICIENT_DATA";
+
+export type StrategyCandidateObservationFinding = {
+  code: string;
+  message: string;
+  blocking: boolean;
+};
+
+export type StrategyCandidateObservationRequirement = {
+  candidate_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  min_observation_hours: number;
+  min_shadow_runs: number;
+  max_risk_rejection_rate: string | null;
+  min_would_submit_count: number;
+  max_no_signal_rate: string | null;
+  require_readiness_ready: boolean;
+};
+
+export type StrategyCandidateObservationSummary = {
+  candidate_id: string;
+  window_start: string;
+  window_end: string;
+  shadow_runs: number;
+  would_submit_count: number;
+  no_signal_count: number;
+  risk_rejected_count: number;
+  skipped_count: number;
+  risk_rejection_rate: string;
+  no_signal_rate: string;
+  latest_readiness_status: ExecutionReadinessStatus | null;
+  latest_readiness_score: number | null;
+  decision: StrategyCandidateObservationDecision;
+  findings: StrategyCandidateObservationFinding[];
+  created_at: string;
+};
+
+export type StrategyCandidateObservation = {
+  observation_id: string;
+  candidate_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  status: StrategyCandidateObservationStatus;
+  requirements: StrategyCandidateObservationRequirement;
+  summary: StrategyCandidateObservationSummary;
+  decision: StrategyCandidateObservationDecision;
+  started_at: string;
+  evaluated_at: string;
+  created_by: string | null;
+  correlation_id: string | null;
+};
+
+export type StrategyCandidateObservationEvaluateRequest = {
+  start_time?: string | null;
+  min_observation_hours?: number;
+  min_shadow_runs?: number;
+  max_risk_rejection_rate?: string | null;
+  min_would_submit_count?: number;
+  max_no_signal_rate?: string | null;
+  require_readiness_ready?: boolean;
+  correlation_id?: string | null;
+};
+
 export type StrategyResearchCandidatesResponse = {
   candidates: StrategyResearchCandidate[];
   request_id: string;
@@ -948,6 +1025,20 @@ export type StrategyResearchCandidateResponse = {
 
 export type StrategyResearchCandidatePromotionResponse = {
   promotion: StrategyResearchCandidatePromotionResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyCandidateObservationsResponse = {
+  observations: StrategyCandidateObservation[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyCandidateObservationResponse = {
+  observation: StrategyCandidateObservation;
   request_id: string;
   correlation_id: string;
   timestamp: string;

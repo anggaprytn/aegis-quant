@@ -51,6 +51,7 @@ pub struct Telemetry {
     analytics_promotion_funnel_requests_total: IntCounter,
     research_candidates_total: IntCounterVec,
     research_candidate_promotions_total: IntCounterVec,
+    research_candidate_observations_total: IntCounterVec,
     exchange_testnet_requests_total: IntCounterVec,
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
@@ -330,6 +331,13 @@ impl Telemetry {
             registry
         )
         .expect("research_candidate_promotions_total should register");
+        let research_candidate_observations_total = register_int_counter_vec_with_registry!(
+            "research_candidate_observations_total",
+            "Research candidate shadow observation evaluations by decision and status.",
+            &["decision", "status"],
+            registry
+        )
+        .expect("research_candidate_observations_total should register");
         let exchange_testnet_requests_total = register_int_counter_vec_with_registry!(
             "exchange_testnet_requests_total",
             "Exchange testnet adapter requests by operation and result.",
@@ -592,6 +600,7 @@ impl Telemetry {
             analytics_promotion_funnel_requests_total,
             research_candidates_total,
             research_candidate_promotions_total,
+            research_candidate_observations_total,
             exchange_testnet_requests_total,
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
@@ -866,6 +875,12 @@ impl Telemetry {
     pub fn inc_research_candidate_promotion(&self, status: &str) {
         self.research_candidate_promotions_total
             .with_label_values(&[status])
+            .inc();
+    }
+
+    pub fn inc_research_candidate_observation(&self, decision: &str, status: &str) {
+        self.research_candidate_observations_total
+            .with_label_values(&[decision, status])
             .inc();
     }
 

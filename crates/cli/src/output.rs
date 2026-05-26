@@ -1620,6 +1620,93 @@ pub fn print_research_candidate_promotion(
     );
 }
 
+pub fn print_research_candidate_observations(
+    observations: &[aegis_core::StrategyCandidateObservationResult],
+) {
+    for observation in observations {
+        println!(
+            "{}  {} {} runs={} would_submit={} decision={} status={}",
+            observation.observation_id,
+            observation.strategy_id,
+            observation.timeframe,
+            observation.summary.shadow_runs,
+            observation.summary.would_submit_count,
+            observation.decision.as_str(),
+            observation.status.as_str()
+        );
+    }
+}
+
+pub fn print_research_candidate_observation(
+    observation: &aegis_core::StrategyCandidateObservationResult,
+) {
+    println!("Observation ID: {}", observation.observation_id);
+    println!("Candidate ID: {}", observation.candidate_id);
+    println!("Strategy: {}", observation.strategy_id);
+    println!(
+        "Symbol / Timeframe: {} / {}",
+        observation.symbol, observation.timeframe
+    );
+    println!(
+        "Window: {} -> {}",
+        observation.summary.window_start, observation.summary.window_end
+    );
+    println!(
+        "Decision: {}  Status: {}",
+        observation.decision.as_str(),
+        observation.status.as_str()
+    );
+    println!(
+        "Shadow runs: {}  Would-submit: {}  No-signal: {}  Risk-rejected: {}  Skipped: {}",
+        observation.summary.shadow_runs,
+        observation.summary.would_submit_count,
+        observation.summary.no_signal_count,
+        observation.summary.risk_rejected_count,
+        observation.summary.skipped_count
+    );
+    println!(
+        "Readiness: {} / {}",
+        observation
+            .summary
+            .latest_readiness_status
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "UNKNOWN".to_string()),
+        observation
+            .summary
+            .latest_readiness_score
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Rates: risk_rejection={} no_signal={}",
+        observation.summary.risk_rejection_rate, observation.summary.no_signal_rate
+    );
+    println!("Findings:");
+    for finding in &observation.summary.findings {
+        println!(
+            "- {} [{}] {}",
+            finding.code,
+            if finding.blocking { "blocking" } else { "info" },
+            finding.message
+        );
+    }
+    let next_action = match observation.decision {
+        aegis_core::StrategyCandidateObservationDecision::Pass => {
+            "Review candidate for testnet promotion readiness."
+        }
+        aegis_core::StrategyCandidateObservationDecision::Fail => {
+            "Investigate failed findings before any promotion review."
+        }
+        aegis_core::StrategyCandidateObservationDecision::ContinueObserving => {
+            "Keep shadow runner active until the observation window is satisfied."
+        }
+        aegis_core::StrategyCandidateObservationDecision::InsufficientData => {
+            "Collect more shadow data before promotion review."
+        }
+    };
+    println!("Next action: {}", next_action);
+}
+
 pub fn print_strategy_performance_summary(response: &StrategyPerformanceSummaryResponse) {
     let summary = &response.summary;
     println!(
