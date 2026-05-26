@@ -2299,6 +2299,7 @@ pub async fn get_testnet_shadow_run_by_id(
         r#"
         SELECT
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -5668,6 +5669,7 @@ pub async fn get_backtest_run(pool: &PgPool, run_id: Uuid) -> Result<Option<Back
         r#"
         SELECT
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -5706,6 +5708,7 @@ pub async fn list_backtest_runs(pool: &PgPool, limit: i64) -> Result<Vec<Backtes
         r#"
         SELECT
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -6088,6 +6091,7 @@ pub async fn get_strategy_experiment(
         r#"
         SELECT
             id,
+            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -8409,10 +8413,23 @@ pub async fn persist_strategy_config_version(
 ) -> Result<StrategyConfigRecord> {
     let mut tx = pool.begin().await?;
     let existing = get_strategy_config_tx(&mut tx, config.strategy_id).await?;
+    let persisted_version = sqlx::query_scalar::<_, Option<i32>>(
+        r#"
+        SELECT MAX(version)
+        FROM strategy_config_versions
+        WHERE strategy_id = $1
+        "#,
+    )
+    .bind(config.strategy_id.as_str())
+    .fetch_one(&mut *tx)
+    .await?
+    .unwrap_or(0);
     let next_version = existing
         .as_ref()
-        .map(|record| record.current_version + 1)
-        .unwrap_or(1);
+        .map(|record| record.current_version)
+        .unwrap_or(0)
+        .max(persisted_version)
+        + 1;
     let record = upsert_strategy_config_tx(&mut tx, config, next_version).await?;
     let config_json = strategy_config_to_value(config)?;
 

@@ -10,14 +10,17 @@ use aegis_core::{
     ResearchDataReadinessStatus, ResearchDatasetBuildRequest, ResearchDatasetBuildStatus,
     ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, RiskCheckContext,
     RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
-    SignalConfidence, SignalReason, SignalSide, StrategyExperimentCandidate,
+    SignalConfidence, SignalReason, SignalSide, StrategyConfig, StrategyExperimentCandidate,
     StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyPerformanceMode,
-    StrategyPerformanceRequest, StrategySignal, StrategyWalkForwardCandidate,
-    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary,
-    StrategyWalkForwardStatus, StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
+    StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
+    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
+    StrategyResearchCandidateEvidence, StrategyResearchCandidateScore,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategySignal,
+    StrategyWalkForwardCandidate, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus, StrategyWalkForwardWindow,
+    StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
+    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetShadowRunnerConfig,
+    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
 use db::{
@@ -36,16 +39,18 @@ use db::{
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_paper_account, insert_research_dataset_build, insert_risk_decision,
     insert_signal_deduped, insert_strategy_experiment, insert_strategy_experiment_runs,
-    insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
-    insert_testnet_shadow_promotion, insert_testnet_shadow_run,
-    list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
-    list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
-    list_orders, list_recent_signals, list_research_dataset_build_steps,
-    list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
+    insert_strategy_research_candidate, insert_strategy_walk_forward_run,
+    insert_strategy_walk_forward_windows, insert_testnet_shadow_promotion,
+    insert_testnet_shadow_run, list_closed_candle_open_times_in_range,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
+    list_research_dataset_build_steps, list_strategy_experiment_runs, list_strategy_experiments,
+    list_strategy_performance_rankings, list_strategy_research_candidates,
     list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
-    list_testnet_promotion_funnel_rows, replace_research_dataset_build_steps,
-    research_dataset_build_result_from_records, set_kill_switch_state,
-    strategy_experiment_result_from_records, strategy_walk_forward_result_from_records,
+    list_testnet_promotion_funnel_rows, mark_strategy_research_candidate_promoted,
+    replace_research_dataset_build_steps, research_dataset_build_result_from_records,
+    set_kill_switch_state, strategy_experiment_result_from_records,
+    strategy_research_candidate_from_record, strategy_walk_forward_result_from_records,
     strategy_walk_forward_window_from_record, test_support::TestDatabase,
     testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
     update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
@@ -54,8 +59,8 @@ use db::{
     CreateOrderError, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, StateActor,
-    TestnetShadowPromotionRecord, TestnetShadowRunRecord, TESTNET_SHADOW_RUNNER_CONFIG_ID,
-    TESTNET_SHADOW_RUNNER_STATE_ID,
+    StrategyResearchCandidateListFilters, TestnetShadowPromotionRecord, TestnetShadowRunRecord,
+    TESTNET_SHADOW_RUNNER_CONFIG_ID, TESTNET_SHADOW_RUNNER_STATE_ID,
 };
 use exchange::{
     apply_testnet_transition, local_testnet_order_status_from_private_execution_report,
@@ -255,6 +260,84 @@ fn sample_strategy_experiment_result(
         skipped_reason: None,
         created_at: fixed_time(),
         correlation_id: Some(Uuid::from_u128(0xefe)),
+    }
+}
+
+fn sample_strategy_config_for_candidate(
+    strategy_id: StrategyId,
+    symbol: &str,
+    timeframe: CandleInterval,
+    mode: StrategyMode,
+    lookback_candles: u32,
+) -> StrategyConfig {
+    StrategyConfig {
+        strategy_id,
+        enabled: true,
+        mode,
+        symbols: vec![Symbol::new(symbol).expect("valid symbol")],
+        timeframe,
+        suggested_notional: Decimal::new(100_000, 0),
+        max_signal_age_ms: 180_000,
+        cooldown_seconds: 900,
+        lookback_candles,
+        confidence_floor: None,
+        stop_loss_pct: None,
+        take_profit_pct: None,
+        holding_candles: Some(3),
+        notes: Some("research candidate fixture".to_string()),
+    }
+}
+
+fn sample_research_candidate(
+    id: Uuid,
+    strategy_id: StrategyId,
+    symbol: &str,
+    timeframe: CandleInterval,
+    source_type: StrategyResearchCandidateSource,
+    status: StrategyResearchCandidateStatus,
+    created_at: chrono::DateTime<Utc>,
+) -> StrategyResearchCandidate {
+    let config = sample_strategy_config_for_candidate(
+        strategy_id,
+        symbol,
+        timeframe,
+        StrategyMode::Paper,
+        5,
+    );
+    StrategyResearchCandidate {
+        id,
+        strategy_id: config.strategy_id.to_string(),
+        symbol: symbol.to_string(),
+        timeframe: timeframe.as_str().to_string(),
+        config: serde_json::to_value(&config).expect("config should serialize"),
+        source_type,
+        source_id: Some(Uuid::new_v4()),
+        evidence: StrategyResearchCandidateEvidence {
+            experiment_id: Some(Uuid::new_v4()),
+            experiment_run_id: Some(Uuid::new_v4()),
+            walk_forward_id: None,
+            pnl_pct: Some(Decimal::new(425, 2)),
+            max_drawdown_pct: Some(Decimal::new(125, 2)),
+            win_rate: Some(Decimal::new(63, 0)),
+            trade_count: Some(17),
+            fee_paid: Some(Decimal::new(750, 0)),
+            slippage_cost: Some(Decimal::new(125, 0)),
+            robustness_score: Some(Decimal::new(72, 2)),
+            profitable_windows: Some(4),
+            losing_windows: Some(1),
+            skipped_windows: Some(0),
+            notes: Some("fixture".to_string()),
+        },
+        score: StrategyResearchCandidateScore {
+            score: Decimal::new(8125, 2),
+            warnings: vec!["watch_turnover".to_string()],
+            rejection_hints: Vec::new(),
+        },
+        status,
+        created_at,
+        promoted_at: None,
+        promoted_by: None,
+        correlation_id: Some(Uuid::new_v4()),
     }
 }
 
@@ -2913,4 +2996,183 @@ async fn promotion_summary_handles_missing_linked_order_without_crashing() {
 
     assert_eq!(summary.promotion_submitted_count, 1);
     assert_eq!(summary.testnet_orders_created_count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_candidate_persists_manual_fixture_fields() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::Manual,
+        StrategyResearchCandidateStatus::Registered,
+        fixed_time(),
+    );
+
+    let row = insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+        .await
+        .expect("candidate should persist");
+    assert_eq!(row.strategy_id, "momentum_v1");
+    assert_eq!(row.symbol, "BTCUSDT");
+    assert_eq!(row.timeframe, "15m");
+    assert_eq!(row.score, Decimal::new(8125, 2));
+    assert_eq!(row.status, "REGISTERED");
+
+    let hydrated =
+        strategy_research_candidate_from_record(&row).expect("candidate should deserialize");
+
+    assert_eq!(hydrated.id, candidate.id);
+    assert_eq!(hydrated.config, candidate.config);
+    assert_eq!(hydrated.evidence, candidate.evidence);
+    assert_eq!(hydrated.score.score, candidate.score.score);
+    assert_eq!(hydrated.score.warnings, candidate.score.warnings);
+    assert_eq!(hydrated.status, StrategyResearchCandidateStatus::Registered);
+    assert_eq!(
+        hydrated.source_type,
+        StrategyResearchCandidateSource::Manual
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_candidate_list_filters_match_expected_rows() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let registered_btc = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "SOLUSDT",
+        CandleInterval::OneMinute,
+        StrategyResearchCandidateSource::ExperimentRun,
+        StrategyResearchCandidateStatus::Registered,
+        fixed_time(),
+    );
+    let registered_eth = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "ADAUSDT",
+        CandleInterval::OneMinute,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::Registered,
+        fixed_time() + chrono::Duration::seconds(1),
+    );
+    let promoted_btc = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::VolatilityBreakoutV1,
+        "XRPUSDT",
+        CandleInterval::OneHour,
+        StrategyResearchCandidateSource::Manual,
+        StrategyResearchCandidateStatus::Registered,
+        fixed_time() + chrono::Duration::seconds(2),
+    );
+
+    insert_strategy_research_candidate(&test_db.pool, &registered_btc, None)
+        .await
+        .expect("registered btc should persist");
+    insert_strategy_research_candidate(&test_db.pool, &registered_eth, None)
+        .await
+        .expect("registered eth should persist");
+    insert_strategy_research_candidate(&test_db.pool, &promoted_btc, None)
+        .await
+        .expect("promoted fixture should persist");
+    mark_strategy_research_candidate_promoted(
+        &test_db.pool,
+        promoted_btc.id,
+        None,
+        fixed_time() + chrono::Duration::minutes(1),
+        None,
+    )
+    .await
+    .expect("promotion marker should persist");
+
+    let by_strategy = list_strategy_research_candidates(
+        &test_db.pool,
+        &StrategyResearchCandidateListFilters {
+            strategy_id: Some("volatility_breakout_v1".to_string()),
+            ..StrategyResearchCandidateListFilters::default()
+        },
+        20,
+    )
+    .await
+    .expect("strategy filter should succeed");
+    assert_eq!(by_strategy.len(), 1);
+    assert_eq!(by_strategy[0].id, promoted_btc.id);
+
+    let by_symbol = list_strategy_research_candidates(
+        &test_db.pool,
+        &StrategyResearchCandidateListFilters {
+            symbol: Some("xrpusdt".to_string()),
+            ..StrategyResearchCandidateListFilters::default()
+        },
+        20,
+    )
+    .await
+    .expect("symbol filter should succeed");
+    assert_eq!(by_symbol.len(), 1);
+    assert_eq!(by_symbol[0].id, promoted_btc.id);
+
+    let by_timeframe = list_strategy_research_candidates(
+        &test_db.pool,
+        &StrategyResearchCandidateListFilters {
+            timeframe: Some("1h".to_string()),
+            ..StrategyResearchCandidateListFilters::default()
+        },
+        20,
+    )
+    .await
+    .expect("timeframe filter should succeed");
+    assert_eq!(by_timeframe.len(), 1);
+    assert_eq!(by_timeframe[0].id, promoted_btc.id);
+
+    let by_status = list_strategy_research_candidates(
+        &test_db.pool,
+        &StrategyResearchCandidateListFilters {
+            status: Some("PROMOTED_TO_SHADOW_CONFIG".to_string()),
+            ..StrategyResearchCandidateListFilters::default()
+        },
+        20,
+    )
+    .await
+    .expect("status filter should succeed");
+    assert_eq!(by_status.len(), 1);
+    assert_eq!(by_status[0].id, promoted_btc.id);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_candidate_get_returns_exact_detail_payload() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::Registered,
+        fixed_time(),
+    );
+
+    let row = insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+        .await
+        .expect("candidate should persist");
+
+    assert_eq!(row.id, candidate.id);
+    assert_eq!(row.strategy_id, candidate.strategy_id);
+    assert_eq!(row.symbol, candidate.symbol);
+    assert_eq!(row.timeframe, candidate.timeframe);
+    assert_eq!(row.config, candidate.config);
+    assert_eq!(row.source_type, "WALK_FORWARD");
+
+    let hydrated =
+        strategy_research_candidate_from_record(&row).expect("candidate should deserialize");
+    assert_eq!(hydrated.evidence, candidate.evidence);
+    assert_eq!(hydrated.correlation_id, candidate.correlation_id);
 }

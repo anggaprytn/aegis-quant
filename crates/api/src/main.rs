@@ -2900,8 +2900,12 @@ fn default_strategy_symbol(config: &StrategyConfig) -> Symbol {
 async fn ensure_strategy_configs(state: &AppState) -> Result<Vec<StrategyConfig>, anyhow::Error> {
     let mut configs = Vec::new();
     for config in state.strategy_runtime.default_configs() {
-        let record = upsert_strategy_config(&state.db_pool, &config).await?;
-        configs.push(strategy_config_from_record(&record)?);
+        if let Some(record) = get_strategy_status(&state.db_pool, config.strategy_id).await? {
+            configs.push(strategy_config_from_record(&record.config)?);
+        } else {
+            let record = upsert_strategy_config(&state.db_pool, &config).await?;
+            configs.push(strategy_config_from_record(&record)?);
+        }
     }
 
     Ok(configs)
@@ -15986,14 +15990,16 @@ mod tests {
         build_cors_layer, cancel_exchange_testnet_order, check_execution_readiness_handler,
         generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
         get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
-        get_risk_decisions, get_strategy_list, is_valid_resume_confirmation,
+        get_risk_decisions, get_strategy_config_handler, get_strategy_list,
+        get_strategy_research_candidate_handler, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
-        list_execution_readiness_snapshots_handler, login, logout, metrics, normalize_route_label,
-        order_view, parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
-        parse_risk_check_context, preview_exchange_testnet_pipeline,
-        preview_exchange_testnet_shadow_promotion_handler,
-        reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
+        list_execution_readiness_snapshots_handler, list_strategy_research_candidates_handler,
+        login, logout, metrics, normalize_route_label, order_view, parse_correlation_id_filter,
+        parse_cors_allowed_origins, parse_order_intent, parse_risk_check_context,
+        preview_exchange_testnet_pipeline, preview_exchange_testnet_shadow_promotion_handler,
+        promote_strategy_research_candidate_handler, reconcile_exchange_testnet_orders_handler,
+        reconcile_testnet_orders, refresh, register_strategy_research_candidate_handler,
         repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
         route_access, run_exchange_testnet_shadow_handler, strategy_diagnostics_handler,
         submit_exchange_testnet_pipeline, submit_exchange_testnet_shadow_promotion_handler,
@@ -16007,15 +16013,23 @@ mod tests {
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
-        expected_testnet_pipeline_confirmation, expected_testnet_shadow_promotion_confirmation,
-        AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse, Candle,
-        CandleInterval, DataFreshnessStatus, ExchangeEnvironment, ExchangeOrderState,
-        ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
-        ExecutionReadinessStatus, ExecutionReadinessTarget, FeedStatus, MarketDataSource,
-        MarketMode, MarketTick, PaperAccount, PaperAccountStatus, RiskConfig, Side, StrategyConfig,
-        StrategyId, StrategyMode, Symbol, TestnetExecutionState, TestnetRepairAction,
-        TestnetShadowDecision, TestnetShadowPromotionStatus, TestnetShadowPromotionSubmitRequest,
-        TestnetShadowRunnerState, TestnetShadowRunnerStatus, UserRole, UserStatus,
+        expected_strategy_research_promotion_confirmation, expected_testnet_pipeline_confirmation,
+        expected_testnet_shadow_promotion_confirmation, AuthLoginResponse, AuthLogoutResponse,
+        AuthRefreshResponse, AuthUserResponse, Candle, CandleInterval, DataFreshnessStatus,
+        ExchangeEnvironment, ExchangeOrderState, ExecutionReadinessCheckSeverity,
+        ExecutionReadinessRecommendation, ExecutionReadinessStatus, ExecutionReadinessTarget,
+        FeedStatus, MarketDataSource, MarketMode, MarketTick, PaperAccount, PaperAccountStatus,
+        RiskConfig, Side, StrategyConfig, StrategyExperimentCandidate,
+        StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
+        StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
+        StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+        StrategyResearchCandidateScore, StrategyResearchCandidateSource,
+        StrategyResearchCandidateStatus, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
+        StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus,
+        StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
+        TestnetRepairAction, TestnetShadowDecision, TestnetShadowPromotionStatus,
+        TestnetShadowPromotionSubmitRequest, TestnetShadowRunnerState, TestnetShadowRunnerStatus,
+        UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -16035,15 +16049,18 @@ mod tests {
         count_users, get_exchange_testnet_order_by_client_order_id, get_session_by_id,
         get_user_by_email, insert_exchange_reconciliation_run, insert_exchange_testnet_order,
         insert_exchange_testnet_repair_action, insert_market_tick, insert_paper_account,
-        insert_testnet_shadow_run, insert_user, list_exchange_reconciliation_mismatches,
-        list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
-        list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_orders,
-        list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
-        set_kill_switch_state, test_support::TestDatabase, upsert_candle,
-        upsert_exchange_private_stream_state, upsert_market_feed_status, upsert_risk_config,
-        upsert_strategy_config, upsert_testnet_shadow_runner_state,
-        ExchangePrivateStreamStateRecord, ExchangeReconciliationRunRecord,
-        ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor, TestnetShadowRunRecord,
+        insert_strategy_experiment, insert_strategy_experiment_runs,
+        insert_strategy_research_candidate, insert_strategy_walk_forward_run,
+        insert_strategy_walk_forward_windows, insert_testnet_shadow_run, insert_user,
+        list_exchange_reconciliation_mismatches, list_exchange_reconciliation_runs,
+        list_exchange_testnet_order_lifecycle_events, list_exchange_testnet_orders,
+        list_exchange_testnet_repair_actions, list_orders, list_paper_equity_snapshots,
+        list_paper_positions, list_paper_trade_journal, set_kill_switch_state,
+        test_support::TestDatabase, upsert_candle, upsert_exchange_private_stream_state,
+        upsert_market_feed_status, upsert_risk_config, upsert_strategy_config,
+        upsert_testnet_shadow_runner_state, ExchangePrivateStreamStateRecord,
+        ExchangeReconciliationRunRecord, ExchangeTestnetOrderRecord, OrderRecord, PgPool,
+        StateActor, TestnetShadowRunRecord,
     };
     use exchange::{
         testing::{FakeExchangeAdapter, FakeOrderStatus, FakeSubmitAck},
@@ -16691,6 +16708,33 @@ mod tests {
             .with_state(state)
     }
 
+    fn research_test_router(state: AppState) -> Router {
+        Router::new()
+            .route("/auth/login", post(login))
+            .route(
+                "/research/candidates/register",
+                post(register_strategy_research_candidate_handler),
+            )
+            .route(
+                "/research/candidates",
+                get(list_strategy_research_candidates_handler),
+            )
+            .route(
+                "/research/candidates/:id",
+                get(get_strategy_research_candidate_handler),
+            )
+            .route(
+                "/research/candidates/:id/promote-shadow-config",
+                post(promote_strategy_research_candidate_handler),
+            )
+            .route("/strategy/:id/config", get(get_strategy_config_handler))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
     fn risk_test_router(state: AppState) -> Router {
         Router::new()
             .route("/risk/decisions", get(get_risk_decisions))
@@ -16820,6 +16864,135 @@ mod tests {
         )
         .await
         .expect("user insert");
+    }
+
+    fn research_strategy_config(timeframe: CandleInterval, symbol: &str) -> StrategyConfig {
+        StrategyConfig {
+            strategy_id: StrategyId::MomentumV1,
+            enabled: true,
+            mode: StrategyMode::Paper,
+            symbols: vec![Symbol::new(symbol).expect("valid symbol")],
+            timeframe,
+            suggested_notional: Decimal::new(100_000, 0),
+            max_signal_age_ms: 180_000,
+            cooldown_seconds: 900,
+            lookback_candles: 3,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: Some("research fixture".to_string()),
+        }
+    }
+
+    fn sample_research_candidate(
+        strategy: &StrategyConfig,
+        candidate_id: Uuid,
+        source_type: StrategyResearchCandidateSource,
+    ) -> StrategyResearchCandidate {
+        StrategyResearchCandidate {
+            id: candidate_id,
+            strategy_id: strategy.strategy_id.to_string(),
+            symbol: strategy.symbols[0].as_str().to_string(),
+            timeframe: strategy.timeframe.as_str().to_string(),
+            config: serde_json::to_value(strategy).expect("strategy config should serialize"),
+            source_type,
+            source_id: Some(Uuid::new_v4()),
+            evidence: StrategyResearchCandidateEvidence {
+                experiment_id: Some(Uuid::new_v4()),
+                experiment_run_id: Some(Uuid::new_v4()),
+                walk_forward_id: None,
+                pnl_pct: Some(Decimal::new(425, 2)),
+                max_drawdown_pct: Some(Decimal::new(175, 2)),
+                win_rate: Some(Decimal::new(62, 0)),
+                trade_count: Some(14),
+                fee_paid: Some(Decimal::new(700, 0)),
+                slippage_cost: Some(Decimal::new(120, 0)),
+                robustness_score: Some(Decimal::new(68, 2)),
+                profitable_windows: Some(4),
+                losing_windows: Some(1),
+                skipped_windows: Some(0),
+                notes: Some("fixture".to_string()),
+            },
+            score: StrategyResearchCandidateScore {
+                score: Decimal::new(7750, 2),
+                warnings: vec!["watch_turnover".to_string()],
+                rejection_hints: Vec::new(),
+            },
+            status: StrategyResearchCandidateStatus::Registered,
+            created_at: Utc::now(),
+            promoted_at: None,
+            promoted_by: None,
+            correlation_id: Some(Uuid::new_v4()),
+        }
+    }
+
+    fn sample_strategy_experiment_run(
+        experiment_id: Uuid,
+        run_id: Uuid,
+        lookback_candles: u32,
+    ) -> StrategyExperimentRun {
+        StrategyExperimentRun {
+            id: run_id,
+            experiment_id,
+            rank: 1,
+            candidate: StrategyExperimentCandidate {
+                lookback_candles,
+                holding_candles: Some(3),
+                stop_loss_pct: None,
+                take_profit_pct: None,
+                max_signal_age_ms: Some(180_000),
+            },
+            final_equity: Decimal::new(1_045_000, 0),
+            pnl: Decimal::new(45_000, 0),
+            pnl_pct: Decimal::new(45, 2),
+            max_drawdown_pct: Decimal::new(15, 2),
+            win_rate: Decimal::new(60, 0),
+            trade_count: 9,
+            fee_paid: Decimal::new(500, 0),
+            slippage_cost: Decimal::new(120, 0),
+            fee_slippage_drag_pct: Decimal::new(10, 2),
+            score: Decimal::new(499, 2),
+            status: StrategyExperimentStatus::Completed,
+            warnings: Vec::new(),
+            created_at: Utc::now(),
+        }
+    }
+
+    fn sample_strategy_experiment_result(
+        experiment_id: Uuid,
+        run: &StrategyExperimentRun,
+        timeframe: &str,
+    ) -> StrategyExperimentResult {
+        StrategyExperimentResult {
+            experiment_id,
+            experiment_group_id: Some(Uuid::new_v4()),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: timeframe.to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            initial_capital: Decimal::new(1_000_000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            max_signal_age_ms: Some(180_000),
+            max_runs: Some(1),
+            status: StrategyExperimentStatus::Completed,
+            run_count: 1,
+            comparison: StrategyExperimentComparison {
+                ranking_metric: StrategyExperimentMetric::RiskAdjustedScore,
+                best_run_id: Some(run.id),
+                worst_run_id: Some(run.id),
+                ranked_run_ids: vec![run.id],
+            },
+            best_run: Some(run.clone()),
+            worst_run: Some(run.clone()),
+            candle_count: Some(96),
+            warnings: Vec::new(),
+            skipped_reason: None,
+            created_at: Utc::now(),
+            correlation_id: Some(Uuid::new_v4()),
+        }
     }
 
     fn sample_testnet_order(
@@ -16988,6 +17161,22 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("testnet order count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_research_candidates(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM strategy_research_candidates")
+            .fetch_one(pool)
+            .await
+            .expect("research candidate count")
+            .get::<i64, _>("count")
+    }
+
+    async fn count_research_candidate_promotions(pool: &PgPool) -> i64 {
+        sqlx::query("SELECT COUNT(*) AS count FROM strategy_research_candidate_promotions")
+            .fetch_one(pool)
+            .await
+            .expect("research candidate promotion count")
             .get::<i64, _>("count")
     }
 
@@ -19253,6 +19442,524 @@ mod tests {
 
         assert_eq!(fake_exchange.calls().submitted_orders.len(), 1);
         assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_register_from_experiment_run_persists_and_supports_list_get() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-register@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(
+            &test_db.pool,
+            &research_strategy_config(CandleInterval::OneMinute, "BTCUSDT"),
+        )
+        .await
+        .expect("strategy config should persist");
+
+        let experiment_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let run = sample_strategy_experiment_run(experiment_id, run_id, 5);
+        let experiment = sample_strategy_experiment_result(experiment_id, &run, "15m");
+        insert_strategy_experiment(&test_db.pool, &experiment)
+            .await
+            .expect("experiment should persist");
+        insert_strategy_experiment_runs(&test_db.pool, &[run.clone()])
+            .await
+            .expect("runs should persist");
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let register_response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                "/research/candidates/register",
+                &operator_login.access_token,
+                json!({
+                    "source_type": "EXPERIMENT_RUN",
+                    "source_id": run_id,
+                }),
+            ))
+            .await
+            .expect("register response");
+        assert_eq!(register_response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(register_response).await;
+        let candidate_id = payload["candidate"]["id"]
+            .as_str()
+            .expect("candidate id should exist");
+        assert_eq!(payload["candidate"]["source_type"], "EXPERIMENT_RUN");
+        assert_eq!(payload["candidate"]["timeframe"], "15m");
+        assert_eq!(payload["candidate"]["symbol"], "BTCUSDT");
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/research/candidates?strategy_id=momentum_v1&symbol=BTCUSDT&timeframe=15m&status=REGISTERED&limit=10")
+                    .header(AUTHORIZATION, format!("Bearer {}", operator_login.access_token))
+                    .body(Body::empty())
+                    .expect("list request"),
+            )
+            .await
+            .expect("list response");
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_payload = response_json::<Value>(list_response).await;
+        assert_eq!(
+            list_payload["candidates"]
+                .as_array()
+                .expect("candidates array")
+                .len(),
+            1
+        );
+
+        let get_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/research/candidates/{candidate_id}"))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", operator_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("get request"),
+            )
+            .await
+            .expect("get response");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let get_payload = response_json::<Value>(get_response).await;
+        assert_eq!(get_payload["candidate"]["id"], payload["candidate"]["id"]);
+        assert_eq!(count_research_candidates(&test_db.pool).await, 1,);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_register_invalid_manual_config_rejects_without_persisting() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-invalid@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/research/candidates/register",
+                &operator_login.access_token,
+                json!({
+                    "source_type": "MANUAL",
+                    "config": {
+                        "strategy_id": "momentum_v1",
+                        "enabled": true,
+                        "mode": "PAPER",
+                        "symbols": [],
+                        "timeframe": "1m",
+                        "suggested_notional": "100000",
+                        "max_signal_age_ms": 180000,
+                        "cooldown_seconds": 900,
+                        "lookback_candles": 3,
+                        "confidence_floor": null,
+                        "stop_loss_pct": null,
+                        "take_profit_pct": null,
+                        "holding_candles": 3,
+                        "notes": "invalid fixture"
+                    },
+                    "evidence": {
+                        "notes": "invalid config should reject"
+                    }
+                }),
+            ))
+            .await
+            .expect("register response");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(count_research_candidates(&test_db.pool).await, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_promotion_updates_config_and_avoids_execution_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let owner_email = "research-owner-success@example.com";
+        insert_test_user(
+            &test_db.pool,
+            owner_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+
+        let base_config = research_strategy_config(CandleInterval::OneMinute, "BTCUSDT");
+        upsert_strategy_config(&test_db.pool, &base_config)
+            .await
+            .expect("base strategy config should persist");
+        let mut candidate_config =
+            research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT");
+        candidate_config.lookback_candles = 5;
+        let candidate = sample_research_candidate(
+            &candidate_config,
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let (owner_login, _) =
+            login_cli(&app, owner_email, "replace-with-a-12-char-min-password").await;
+
+        let before_versions = sqlx::query(
+            "SELECT COUNT(*) AS count FROM strategy_config_versions WHERE strategy_id = $1",
+        )
+        .bind("momentum_v1")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("version count")
+        .get::<i64, _>("count");
+        let before_audit = sqlx::query(
+            "SELECT COUNT(*) AS count FROM strategy_config_audit WHERE strategy_id = $1",
+        )
+        .bind("momentum_v1")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("audit count")
+        .get::<i64, _>("count");
+        let before_signals = count_signals(&test_db.pool).await;
+        let before_risk = count_risk_decisions(&test_db.pool).await;
+        let before_orders = count_paper_orders(&test_db.pool).await;
+        let before_positions = count_paper_positions(&test_db.pool).await;
+        let before_fills = count_paper_fills(&test_db.pool).await;
+        let before_testnet_orders = count_exchange_testnet_orders(&test_db.pool).await;
+        let before_shadow_runs = count_testnet_shadow_runs(&test_db.pool).await;
+
+        let response = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/research/candidates/{}/promote-shadow-config",
+                    candidate.id
+                ),
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_strategy_research_promotion_confirmation("momentum_v1")
+                }),
+            ))
+            .await
+            .expect("promote response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["promotion"]["status"], "PROMOTED_TO_SHADOW_CONFIG");
+        let config_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/strategy/momentum_v1/config")
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", owner_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("config request"),
+            )
+            .await
+            .expect("config response");
+        assert_eq!(config_response.status(), StatusCode::OK);
+        let config_payload = response_json::<Value>(config_response).await;
+        assert_eq!(config_payload["strategy"]["mode"], "shadow");
+        assert_eq!(config_payload["strategy"]["timeframe"], "15m");
+        assert_eq!(config_payload["strategy"]["lookback_candles"], 5);
+
+        let promoted = sqlx::query(
+            "SELECT status, promoted_by, promoted_at FROM strategy_research_candidates WHERE id = $1",
+        )
+        .bind(candidate.id)
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("candidate query should succeed");
+        assert_eq!(
+            promoted.get::<String, _>("status"),
+            "PROMOTED_TO_SHADOW_CONFIG"
+        );
+        assert!(promoted.get::<Option<Uuid>, _>("promoted_by").is_some());
+        assert!(promoted
+            .get::<Option<chrono::DateTime<Utc>>, _>("promoted_at")
+            .is_some());
+
+        let strategy = sqlx::query(
+            "SELECT mode, timeframe, lookback_candles FROM strategy_configs WHERE strategy_id = $1",
+        )
+        .bind("momentum_v1")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("strategy config query should succeed");
+        assert_eq!(strategy.get::<String, _>("mode"), "shadow");
+        assert_eq!(strategy.get::<String, _>("timeframe"), "15m");
+        assert_eq!(strategy.get::<i32, _>("lookback_candles"), 5);
+
+        let after_versions = sqlx::query(
+            "SELECT COUNT(*) AS count FROM strategy_config_versions WHERE strategy_id = $1",
+        )
+        .bind("momentum_v1")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("version count")
+        .get::<i64, _>("count");
+        let after_audit = sqlx::query(
+            "SELECT COUNT(*) AS count FROM strategy_config_audit WHERE strategy_id = $1",
+        )
+        .bind("momentum_v1")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("audit count")
+        .get::<i64, _>("count");
+        assert_eq!(after_versions, before_versions + 1);
+        assert_eq!(after_audit, before_audit + 1);
+        assert_eq!(count_research_candidate_promotions(&test_db.pool).await, 1);
+        assert_eq!(count_signals(&test_db.pool).await, before_signals);
+        assert_eq!(count_risk_decisions(&test_db.pool).await, before_risk);
+        assert_eq!(count_paper_orders(&test_db.pool).await, before_orders);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before_positions);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before_fills);
+        assert_eq!(
+            count_exchange_testnet_orders(&test_db.pool).await,
+            before_testnet_orders
+        );
+        assert_eq!(
+            count_testnet_shadow_runs(&test_db.pool).await,
+            before_shadow_runs
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_promotion_requires_owner_and_exact_confirmation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let owner_email = "research-owner-confirm@example.com";
+        let operator_email = "research-operator-confirm@example.com";
+        let viewer_email = "research-viewer-confirm@example.com";
+        insert_test_user(
+            &test_db.pool,
+            owner_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            viewer_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        let base_config = research_strategy_config(CandleInterval::OneMinute, "BTCUSDT");
+        upsert_strategy_config(&test_db.pool, &base_config)
+            .await
+            .expect("base config should persist");
+        let candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let (owner_login, _) =
+            login_cli(&app, owner_email, "replace-with-a-12-char-min-password").await;
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+        let (viewer_login, _) =
+            login_cli(&app, viewer_email, "replace-with-a-12-char-min-password").await;
+
+        for token in [&operator_login.access_token, &viewer_login.access_token] {
+            let forbidden = app
+                .clone()
+                .oneshot(bearer_request(
+                    "POST",
+                    &format!(
+                        "/research/candidates/{}/promote-shadow-config",
+                        candidate.id
+                    ),
+                    token,
+                    json!({
+                        "confirmation_text": expected_strategy_research_promotion_confirmation("momentum_v1")
+                    }),
+                ))
+                .await
+                .expect("forbidden response");
+            assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        }
+
+        let wrong_confirmation = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/research/candidates/{}/promote-shadow-config",
+                    candidate.id
+                ),
+                &owner_login.access_token,
+                json!({ "confirmation_text": "PROMOTE STRATEGY BTCUSDT" }),
+            ))
+            .await
+            .expect("wrong confirmation response");
+        assert_eq!(wrong_confirmation.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(count_research_candidate_promotions(&test_db.pool).await, 0);
+        assert_eq!(
+            sqlx::query("SELECT status FROM strategy_research_candidates WHERE id = $1")
+                .bind(candidate.id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("candidate query")
+                .get::<String, _>("status"),
+            "REGISTERED"
+        );
+        assert_eq!(
+            sqlx::query(
+                "SELECT COUNT(*) AS count FROM strategy_config_versions WHERE strategy_id = $1",
+            )
+            .bind("momentum_v1")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("version count")
+            .get::<i64, _>("count"),
+            0
+        );
+
+        let success = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/research/candidates/{}/promote-shadow-config",
+                    candidate.id
+                ),
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_strategy_research_promotion_confirmation("momentum_v1")
+                }),
+            ))
+            .await
+            .expect("success response");
+        assert_eq!(success.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_duplicate_promotion_is_rejected_without_extra_side_effects() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let owner_email = "research-owner-duplicate@example.com";
+        insert_test_user(
+            &test_db.pool,
+            owner_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Owner,
+        )
+        .await;
+        upsert_strategy_config(
+            &test_db.pool,
+            &research_strategy_config(CandleInterval::OneMinute, "BTCUSDT"),
+        )
+        .await
+        .expect("base config should persist");
+        let candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let (owner_login, _) =
+            login_cli(&app, owner_email, "replace-with-a-12-char-min-password").await;
+
+        let uri = format!(
+            "/research/candidates/{}/promote-shadow-config",
+            candidate.id
+        );
+        let first = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &uri,
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_strategy_research_promotion_confirmation("momentum_v1")
+                }),
+            ))
+            .await
+            .expect("first response");
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let versions_after_first = sqlx::query(
+            "SELECT COUNT(*) AS count FROM strategy_config_versions WHERE strategy_id = $1",
+        )
+        .bind("momentum_v1")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("version count")
+        .get::<i64, _>("count");
+        let promotions_after_first = count_research_candidate_promotions(&test_db.pool).await;
+
+        let second = app
+            .oneshot(bearer_request(
+                "POST",
+                &uri,
+                &owner_login.access_token,
+                json!({
+                    "confirmation_text": expected_strategy_research_promotion_confirmation("momentum_v1")
+                }),
+            ))
+            .await
+            .expect("second response");
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+
+        let error = response_json::<Value>(second).await;
+        assert_eq!(error["error"], "candidate_not_registered");
+        assert_eq!(
+            sqlx::query(
+                "SELECT COUNT(*) AS count FROM strategy_config_versions WHERE strategy_id = $1",
+            )
+            .bind("momentum_v1")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("version count")
+            .get::<i64, _>("count"),
+            versions_after_first
+        );
+        assert_eq!(
+            count_research_candidate_promotions(&test_db.pool).await,
+            promotions_after_first
+        );
     }
 
     #[tokio::test]

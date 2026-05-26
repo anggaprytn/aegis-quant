@@ -3059,7 +3059,7 @@ mod tests {
         StrategyExperimentRunArgs,
     };
     use crate::config::{clear_token_file, load_token_file, StoredAuthSession, StoredUserSummary};
-    use aegis_core::{User, UserRole, UserStatus};
+    use aegis_core::{StrategyResearchCandidateSource, User, UserRole, UserStatus};
     use chrono::{TimeZone, Utc};
     use reqwest::{header::AUTHORIZATION, Method, StatusCode};
     use rust_decimal::Decimal;
@@ -3071,6 +3071,8 @@ mod tests {
         },
     };
     use uuid::Uuid;
+
+    use crate::api::{ResearchCandidateRegisterRequest, ResearchCandidatesQuery};
 
     fn sample_user() -> User {
         User {
@@ -3543,5 +3545,229 @@ mod tests {
             .await
             .expect("submit should succeed");
         assert_eq!(submit_response.result.promotion_id, promotion_id);
+    }
+
+    #[tokio::test]
+    async fn research_candidate_client_uses_expected_register_paths() {
+        let experiment_run_id =
+            Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("valid uuid");
+        let walk_forward_id =
+            Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid");
+        let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
+            match (request.method().as_str(), request.url().path()) {
+                ("POST", "/research/candidates/register") => {
+                    let payload: ResearchCandidateRegisterRequest = request_json(&request);
+                    assert!(matches!(
+                        payload.source_type,
+                        StrategyResearchCandidateSource::ExperimentRun
+                            | StrategyResearchCandidateSource::WalkForward
+                    ));
+                    assert!(matches!(
+                        payload.source_id,
+                        Some(id) if id == experiment_run_id || id == walk_forward_id
+                    ));
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "candidate": {
+                                "id": "11111111-1111-1111-1111-111111111111",
+                                "strategy_id": "momentum_v1",
+                                "symbol": "BTCUSDT",
+                                "timeframe": "15m",
+                                "config": {},
+                                "source_type": payload.source_type,
+                                "source_id": payload.source_id,
+                                "evidence": {
+                                    "experiment_id": null,
+                                    "experiment_run_id": null,
+                                    "walk_forward_id": null,
+                                    "pnl_pct": null,
+                                    "max_drawdown_pct": null,
+                                    "win_rate": null,
+                                    "trade_count": null,
+                                    "fee_paid": null,
+                                    "slippage_cost": null,
+                                    "robustness_score": null,
+                                    "profitable_windows": null,
+                                    "losing_windows": null,
+                                    "skipped_windows": null,
+                                    "notes": null
+                                },
+                                "score": {
+                                    "score": "50",
+                                    "warnings": [],
+                                    "rejection_hints": []
+                                },
+                                "status": "REGISTERED",
+                                "created_at": "2026-05-24T00:00:00Z",
+                                "promoted_at": null,
+                                "promoted_by": null,
+                                "correlation_id": null
+                            },
+                            "request_id": "req-1",
+                            "correlation_id": "corr-1",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                _ => Err(format!(
+                    "unexpected request {} {}",
+                    request.method(),
+                    request.url()
+                )),
+            }
+        });
+
+        client
+            .register_research_candidate(&ResearchCandidateRegisterRequest {
+                source_type: StrategyResearchCandidateSource::ExperimentRun,
+                source_id: Some(experiment_run_id),
+                symbol: None,
+                config: None,
+                evidence: None,
+                correlation_id: None,
+            })
+            .await
+            .expect("experiment registration should succeed");
+        client
+            .register_research_candidate(&ResearchCandidateRegisterRequest {
+                source_type: StrategyResearchCandidateSource::WalkForward,
+                source_id: Some(walk_forward_id),
+                symbol: None,
+                config: None,
+                evidence: None,
+                correlation_id: None,
+            })
+            .await
+            .expect("walk-forward registration should succeed");
+    }
+
+    #[tokio::test]
+    async fn research_candidate_client_uses_expected_list_get_and_promote_paths() {
+        let candidate_id =
+            Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").expect("valid uuid");
+        let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
+            match (request.method().as_str(), request.url().path()) {
+                ("GET", "/research/candidates") => {
+                    assert_eq!(
+                        request.url().query(),
+                        Some("limit=25&strategy_id=momentum_v1&symbol=BTCUSDT&timeframe=15m&status=REGISTERED")
+                    );
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "candidates": [],
+                            "request_id": "req-list",
+                            "correlation_id": "corr-list",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                ("GET", "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc") => Ok((
+                    StatusCode::OK,
+                    json_response(serde_json::json!({
+                        "candidate": {
+                            "id": candidate_id,
+                            "strategy_id": "momentum_v1",
+                            "symbol": "BTCUSDT",
+                            "timeframe": "15m",
+                            "config": {},
+                            "source_type": "MANUAL",
+                            "source_id": null,
+                            "evidence": {
+                                "experiment_id": null,
+                                "experiment_run_id": null,
+                                "walk_forward_id": null,
+                                "pnl_pct": null,
+                                "max_drawdown_pct": null,
+                                "win_rate": null,
+                                "trade_count": null,
+                                "fee_paid": null,
+                                "slippage_cost": null,
+                                "robustness_score": null,
+                                "profitable_windows": null,
+                                "losing_windows": null,
+                                "skipped_windows": null,
+                                "notes": null
+                            },
+                            "score": {
+                                "score": "50",
+                                "warnings": [],
+                                "rejection_hints": []
+                            },
+                            "status": "REGISTERED",
+                            "created_at": "2026-05-24T00:00:00Z",
+                            "promoted_at": null,
+                            "promoted_by": null,
+                            "correlation_id": null
+                        },
+                        "request_id": "req-get",
+                        "correlation_id": "corr-get",
+                        "timestamp": "2026-05-24T00:00:00Z"
+                    })),
+                )),
+                ("POST", "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/promote-shadow-config") => {
+                    let payload: aegis_core::StrategyResearchCandidatePromotionRequest =
+                        request_json(&request);
+                    assert_eq!(
+                        payload.confirmation_text,
+                        "PROMOTE STRATEGY MOMENTUM_V1"
+                    );
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "promotion": {
+                                "candidate_id": candidate_id,
+                                "strategy_id": "momentum_v1",
+                                "previous_config": null,
+                                "promoted_config": {},
+                                "status": "PROMOTED_TO_SHADOW_CONFIG",
+                                "promoted_at": "2026-05-24T00:00:00Z",
+                                "promoted_by": null,
+                                "correlation_id": null
+                            },
+                            "request_id": "req-promote",
+                            "correlation_id": "corr-promote",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                _ => Err(format!(
+                    "unexpected request {} {}",
+                    request.method(),
+                    request.url()
+                )),
+            }
+        });
+
+        let list = client
+            .list_research_candidates(&ResearchCandidatesQuery {
+                strategy_id: Some("momentum_v1".to_string()),
+                symbol: Some("BTCUSDT".to_string()),
+                timeframe: Some("15m".to_string()),
+                status: Some("REGISTERED".to_string()),
+                limit: 25,
+            })
+            .await
+            .expect("list should succeed");
+        assert!(list.candidates.is_empty());
+
+        let get = client
+            .get_research_candidate(candidate_id)
+            .await
+            .expect("get should succeed");
+        assert_eq!(get.candidate.id, candidate_id);
+
+        let promote = client
+            .promote_research_candidate_shadow(
+                candidate_id,
+                &aegis_core::StrategyResearchCandidatePromotionRequest {
+                    confirmation_text: "PROMOTE STRATEGY MOMENTUM_V1".to_string(),
+                    correlation_id: None,
+                },
+            )
+            .await
+            .expect("promotion should succeed");
+        assert_eq!(promote.promotion.candidate_id, candidate_id);
     }
 }
