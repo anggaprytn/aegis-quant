@@ -65,6 +65,8 @@ import type {
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
   ResearchCandidateQualificationResponse,
+  ResearchCandidateQualificationEvaluateResponse,
+  ResearchCandidateQualificationHistoryResponse,
   ResearchCandidateObservationSummaryResponse,
   ResearchCandidateShadowPerformanceResponse,
   CreateResearchCandidateFromExperimentRunRequest,
@@ -75,6 +77,7 @@ import type {
   ResearchCandidateShadowPromotionRequest,
   ResearchCandidateShadowPromotionResultResponse,
   ResearchCandidateShadowRunsResponse,
+  ResearchCandidateWatchlistResponse,
   ResearchCandidateResponse,
   ResearchCandidatesResponse,
   StrategyCandidateObservationsResponse,
@@ -391,6 +394,26 @@ export const api = {
     ),
   getResearchCandidateQualification: (id: string) =>
     request<ResearchCandidateQualificationResponse>(`/research/candidates/${id}/qualification`),
+  evaluateResearchCandidateQualification: (id: string) =>
+    request<ResearchCandidateQualificationEvaluateResponse>(
+      `/research/candidates/${id}/qualification/evaluate`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
+    ),
+  getResearchCandidateQualificationHistory: (id: string, limit = 20) =>
+    request<ResearchCandidateQualificationHistoryResponse>(
+      `/research/candidates/${id}/qualification/history`,
+      undefined,
+      { limit },
+    ),
+  getResearchCandidateWatchlist: (limit = 50) =>
+    request<ResearchCandidateWatchlistResponse>(
+      "/research/candidates/watchlist",
+      undefined,
+      { limit },
+    ),
   getResearchCandidateShadowPerformance: (
     id: string,
     query?: { start_time?: string; end_time?: string },

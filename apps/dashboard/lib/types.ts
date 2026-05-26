@@ -1252,6 +1252,96 @@ export type ResearchCandidateQualificationResponse = {
   timestamp: string;
 };
 
+export type ResearchCandidateQualificationTrend =
+  | "IMPROVING"
+  | "STABLE"
+  | "DEGRADING"
+  | "NEWLY_QUALIFIED"
+  | "LOST_QUALIFICATION"
+  | "NEEDS_ATTENTION"
+  | "INSUFFICIENT_HISTORY";
+
+export type ResearchCandidateWatchlistStatus =
+  | "IMPROVING"
+  | "STABLE"
+  | "DEGRADING"
+  | "NEWLY_QUALIFIED"
+  | "LOST_QUALIFICATION"
+  | "NEEDS_ATTENTION"
+  | "INSUFFICIENT_HISTORY";
+
+export type ResearchCandidateQualificationEvaluation = {
+  id: string;
+  candidate_id: string;
+  status: ResearchCandidateQualificationStatus;
+  score: number;
+  latest_readiness_status: ExecutionReadinessStatus | null;
+  total_shadow_runs: number;
+  would_submit_count: number;
+  risk_rejection_rate_pct: string | null;
+  warnings: string[];
+  blockers: string[];
+  recommendations: ResearchCandidateQualificationRecommendation[];
+  thresholds: ResearchCandidateQualificationThresholds;
+  evaluated_at: string;
+  correlation_id: string | null;
+};
+
+export type ResearchCandidateQualificationChange = {
+  status_changed: boolean;
+  material_score_change: boolean;
+  newly_qualified: boolean;
+  lost_qualification: boolean;
+  previous_status: ResearchCandidateQualificationStatus | null;
+  current_status: ResearchCandidateQualificationStatus;
+  previous_score: number | null;
+  current_score: number;
+  score_delta: number;
+};
+
+export type ResearchCandidateQualificationHistory = {
+  candidate_id: string;
+  evaluations: ResearchCandidateQualificationEvaluation[];
+  latest_change: ResearchCandidateQualificationChange | null;
+  latest_trend: ResearchCandidateQualificationTrend;
+};
+
+export type ResearchCandidateWatchlistEntry = {
+  candidate_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  candidate_status: ResearchCandidateStatus;
+  latest_evaluation: ResearchCandidateQualificationEvaluation | null;
+  latest_change: ResearchCandidateQualificationChange | null;
+  trend: ResearchCandidateQualificationTrend;
+  watchlist_status: ResearchCandidateWatchlistStatus;
+};
+
+export type ResearchCandidateQualificationEvaluateResponse = {
+  evaluation: ResearchCandidateQualificationEvaluation;
+  change: ResearchCandidateQualificationChange | null;
+  trend: ResearchCandidateQualificationTrend;
+  qualification: ResearchCandidateQualificationResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateQualificationHistoryResponse = {
+  history: ResearchCandidateQualificationHistory;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateWatchlistResponse = {
+  watchlist: ResearchCandidateWatchlistEntry[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateShadowPromotionMode = "PREVIEW_ONLY" | "APPLY";
 
 export type ResearchCandidateShadowPromotionStatus =

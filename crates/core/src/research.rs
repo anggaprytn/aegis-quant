@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1126,6 +1126,113 @@ impl ResearchCandidateQualificationStatus {
     }
 }
 
+impl std::str::FromStr for ResearchCandidateQualificationStatus {
+    type Err = crate::CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "QUALIFIED" => Ok(Self::Qualified),
+            "NOT_QUALIFIED" => Ok(Self::NotQualified),
+            "NEEDS_MORE_DATA" => Ok(Self::NeedsMoreData),
+            "DEGRADED" => Ok(Self::Degraded),
+            "UNKNOWN" => Ok(Self::Unknown),
+            other => Err(crate::CoreError::UnsupportedResearchCandidateStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateQualificationTrend {
+    Improving,
+    Stable,
+    Degrading,
+    NewlyQualified,
+    LostQualification,
+    NeedsAttention,
+    InsufficientHistory,
+}
+
+impl ResearchCandidateQualificationTrend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Improving => "IMPROVING",
+            Self::Stable => "STABLE",
+            Self::Degrading => "DEGRADING",
+            Self::NewlyQualified => "NEWLY_QUALIFIED",
+            Self::LostQualification => "LOST_QUALIFICATION",
+            Self::NeedsAttention => "NEEDS_ATTENTION",
+            Self::InsufficientHistory => "INSUFFICIENT_HISTORY",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateQualificationTrend {
+    type Err = crate::CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "IMPROVING" => Ok(Self::Improving),
+            "STABLE" => Ok(Self::Stable),
+            "DEGRADING" => Ok(Self::Degrading),
+            "NEWLY_QUALIFIED" => Ok(Self::NewlyQualified),
+            "LOST_QUALIFICATION" => Ok(Self::LostQualification),
+            "NEEDS_ATTENTION" => Ok(Self::NeedsAttention),
+            "INSUFFICIENT_HISTORY" => Ok(Self::InsufficientHistory),
+            other => Err(crate::CoreError::UnsupportedResearchCandidateStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateWatchlistStatus {
+    Improving,
+    Stable,
+    Degrading,
+    NewlyQualified,
+    LostQualification,
+    NeedsAttention,
+    InsufficientHistory,
+}
+
+impl ResearchCandidateWatchlistStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Improving => "IMPROVING",
+            Self::Stable => "STABLE",
+            Self::Degrading => "DEGRADING",
+            Self::NewlyQualified => "NEWLY_QUALIFIED",
+            Self::LostQualification => "LOST_QUALIFICATION",
+            Self::NeedsAttention => "NEEDS_ATTENTION",
+            Self::InsufficientHistory => "INSUFFICIENT_HISTORY",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateWatchlistStatus {
+    type Err = crate::CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "IMPROVING" => Ok(Self::Improving),
+            "STABLE" => Ok(Self::Stable),
+            "DEGRADING" => Ok(Self::Degrading),
+            "NEWLY_QUALIFIED" => Ok(Self::NewlyQualified),
+            "LOST_QUALIFICATION" => Ok(Self::LostQualification),
+            "NEEDS_ATTENTION" => Ok(Self::NeedsAttention),
+            "INSUFFICIENT_HISTORY" => Ok(Self::InsufficientHistory),
+            other => Err(crate::CoreError::UnsupportedResearchCandidateStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateQualificationSeverity {
@@ -1215,6 +1322,30 @@ impl ResearchCandidateQualificationRecommendation {
     }
 }
 
+impl std::str::FromStr for ResearchCandidateQualificationRecommendation {
+    type Err = crate::CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "REFRESH_CANDIDATE_OBSERVATION" => Ok(Self::RefreshCandidateObservation),
+            "FIX_RUNNER_ALIGNMENT" => Ok(Self::FixRunnerAlignment),
+            "EXPAND_SHADOW_RUNNER_COVERAGE" => Ok(Self::ExpandShadowRunnerCoverage),
+            "GATHER_MORE_SHADOW_RUNS" => Ok(Self::GatherMoreShadowRuns),
+            "GENERATE_MORE_WOULD_SUBMIT_EVIDENCE" => Ok(Self::GenerateMoreWouldSubmitEvidence),
+            "REVIEW_RISK_REJECTIONS" => Ok(Self::ReviewRiskRejections),
+            "REDUCE_SHADOW_ERRORS_OR_SKIPS" => Ok(Self::ReduceShadowErrorsOrSkips),
+            "RESTORE_TESTNET_SHADOW_READINESS" => Ok(Self::RestoreTestnetShadowReadiness),
+            "RE_ACCEPT_CANDIDATE_FOR_SHADOW" => Ok(Self::ReAcceptCandidateForShadow),
+            "READY_FOR_TESTNET_PROMOTION_CONSIDERATION" => {
+                Ok(Self::ReadyForTestnetPromotionConsideration)
+            }
+            other => Err(crate::CoreError::UnsupportedResearchCandidateStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchCandidateQualificationThresholds {
     #[serde(default = "default_min_shadow_runs")]
@@ -1297,6 +1428,197 @@ pub struct ResearchCandidateQualificationResult {
     pub thresholds: ResearchCandidateQualificationThresholds,
     pub shadow_performance: Option<ResearchCandidateShadowPerformance>,
     pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateQualificationEvaluation {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub status: ResearchCandidateQualificationStatus,
+    pub score: i32,
+    pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub total_shadow_runs: i64,
+    pub would_submit_count: i64,
+    pub risk_rejection_rate_pct: Option<Decimal>,
+    pub warnings: Vec<String>,
+    pub blockers: Vec<String>,
+    pub recommendations: Vec<ResearchCandidateQualificationRecommendation>,
+    pub thresholds: ResearchCandidateQualificationThresholds,
+    pub evaluated_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateQualificationChange {
+    pub status_changed: bool,
+    pub material_score_change: bool,
+    pub newly_qualified: bool,
+    pub lost_qualification: bool,
+    pub previous_status: Option<ResearchCandidateQualificationStatus>,
+    pub current_status: ResearchCandidateQualificationStatus,
+    pub previous_score: Option<i32>,
+    pub current_score: i32,
+    pub score_delta: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateQualificationHistory {
+    pub candidate_id: Uuid,
+    pub evaluations: Vec<ResearchCandidateQualificationEvaluation>,
+    pub latest_change: Option<ResearchCandidateQualificationChange>,
+    pub latest_trend: ResearchCandidateQualificationTrend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateWatchlistEntry {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub candidate_status: ResearchCandidateStatus,
+    pub latest_evaluation: Option<ResearchCandidateQualificationEvaluation>,
+    pub latest_change: Option<ResearchCandidateQualificationChange>,
+    pub trend: ResearchCandidateQualificationTrend,
+    pub watchlist_status: ResearchCandidateWatchlistStatus,
+}
+
+fn qualification_status_counts_as_qualified(status: ResearchCandidateQualificationStatus) -> bool {
+    status == ResearchCandidateQualificationStatus::Qualified
+}
+
+pub fn research_candidate_qualification_change(
+    current: &ResearchCandidateQualificationEvaluation,
+    previous: Option<&ResearchCandidateQualificationEvaluation>,
+) -> Option<ResearchCandidateQualificationChange> {
+    previous.map(|previous| {
+        let score_delta = current.score - previous.score;
+        let newly_qualified = !qualification_status_counts_as_qualified(previous.status)
+            && qualification_status_counts_as_qualified(current.status);
+        let lost_qualification = qualification_status_counts_as_qualified(previous.status)
+            && !qualification_status_counts_as_qualified(current.status);
+
+        ResearchCandidateQualificationChange {
+            status_changed: previous.status != current.status,
+            material_score_change: score_delta.abs() >= 10,
+            newly_qualified,
+            lost_qualification,
+            previous_status: Some(previous.status),
+            current_status: current.status,
+            previous_score: Some(previous.score),
+            current_score: current.score,
+            score_delta,
+        }
+    })
+}
+
+pub fn research_candidate_qualification_trend(
+    current: &ResearchCandidateQualificationEvaluation,
+    previous: Option<&ResearchCandidateQualificationEvaluation>,
+) -> ResearchCandidateQualificationTrend {
+    let Some(change) = research_candidate_qualification_change(current, previous) else {
+        return ResearchCandidateQualificationTrend::InsufficientHistory;
+    };
+
+    if change.newly_qualified {
+        ResearchCandidateQualificationTrend::NewlyQualified
+    } else if change.lost_qualification {
+        ResearchCandidateQualificationTrend::LostQualification
+    } else if matches!(
+        current.status,
+        ResearchCandidateQualificationStatus::Degraded
+            | ResearchCandidateQualificationStatus::NotQualified
+    ) {
+        ResearchCandidateQualificationTrend::NeedsAttention
+    } else if change.score_delta >= 10 {
+        ResearchCandidateQualificationTrend::Improving
+    } else if change.score_delta <= -10 {
+        ResearchCandidateQualificationTrend::Degrading
+    } else {
+        ResearchCandidateQualificationTrend::Stable
+    }
+}
+
+pub fn research_candidate_watchlist_status(
+    latest: Option<&ResearchCandidateQualificationEvaluation>,
+    trend: ResearchCandidateQualificationTrend,
+    now: DateTime<Utc>,
+    stale_after: Duration,
+) -> ResearchCandidateWatchlistStatus {
+    let Some(latest) = latest else {
+        return ResearchCandidateWatchlistStatus::InsufficientHistory;
+    };
+
+    if now - latest.evaluated_at > stale_after {
+        return ResearchCandidateWatchlistStatus::NeedsAttention;
+    }
+
+    match trend {
+        ResearchCandidateQualificationTrend::Improving => {
+            ResearchCandidateWatchlistStatus::Improving
+        }
+        ResearchCandidateQualificationTrend::Stable => ResearchCandidateWatchlistStatus::Stable,
+        ResearchCandidateQualificationTrend::Degrading => {
+            ResearchCandidateWatchlistStatus::Degrading
+        }
+        ResearchCandidateQualificationTrend::NewlyQualified => {
+            ResearchCandidateWatchlistStatus::NewlyQualified
+        }
+        ResearchCandidateQualificationTrend::LostQualification => {
+            ResearchCandidateWatchlistStatus::LostQualification
+        }
+        ResearchCandidateQualificationTrend::NeedsAttention => {
+            ResearchCandidateWatchlistStatus::NeedsAttention
+        }
+        ResearchCandidateQualificationTrend::InsufficientHistory => {
+            ResearchCandidateWatchlistStatus::InsufficientHistory
+        }
+    }
+}
+
+pub fn is_research_candidate_evaluation_stale(
+    evaluation: &ResearchCandidateQualificationEvaluation,
+    now: DateTime<Utc>,
+    stale_after: Duration,
+) -> bool {
+    now - evaluation.evaluated_at > stale_after
+}
+
+pub fn research_candidate_qualification_evaluation_from_result(
+    id: Uuid,
+    qualification: &ResearchCandidateQualificationResult,
+    correlation_id: Option<Uuid>,
+) -> ResearchCandidateQualificationEvaluation {
+    let total_shadow_runs = qualification
+        .shadow_performance
+        .as_ref()
+        .map(|value| value.total_shadow_runs)
+        .unwrap_or(0);
+    let would_submit_count = qualification
+        .shadow_performance
+        .as_ref()
+        .map(|value| value.would_submit_count)
+        .unwrap_or(0);
+    let risk_rejection_rate_pct = qualification
+        .shadow_performance
+        .as_ref()
+        .map(|value| value.risk_rejection_rate_pct);
+
+    ResearchCandidateQualificationEvaluation {
+        id,
+        candidate_id: qualification.candidate_id,
+        status: qualification.status,
+        score: qualification.score,
+        latest_readiness_status: qualification.latest_readiness_status,
+        total_shadow_runs,
+        would_submit_count,
+        risk_rejection_rate_pct,
+        warnings: qualification.warnings.clone(),
+        blockers: qualification.blockers.clone(),
+        recommendations: qualification.recommendations.clone(),
+        thresholds: qualification.thresholds.clone(),
+        evaluated_at: qualification.computed_at,
+        correlation_id,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3203,6 +3525,157 @@ mod tests {
                 ResearchCandidateQualificationRecommendation::ReviewRiskRejections,
                 ResearchCandidateQualificationRecommendation::ReduceShadowErrorsOrSkips,
             ]
+        );
+    }
+
+    fn sample_qualification_evaluation(
+        status: ResearchCandidateQualificationStatus,
+        score: i32,
+        evaluated_at: DateTime<Utc>,
+    ) -> ResearchCandidateQualificationEvaluation {
+        ResearchCandidateQualificationEvaluation {
+            id: Uuid::new_v4(),
+            candidate_id: Uuid::new_v4(),
+            status,
+            score,
+            latest_readiness_status: Some(ExecutionReadinessStatus::Ready),
+            total_shadow_runs: 30,
+            would_submit_count: 5,
+            risk_rejection_rate_pct: Some(Decimal::new(10, 0)),
+            warnings: Vec::new(),
+            blockers: Vec::new(),
+            recommendations: Vec::new(),
+            thresholds: ResearchCandidateQualificationThresholds::default(),
+            evaluated_at,
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn qualification_change_detects_newly_qualified() {
+        let previous = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::NeedsMoreData,
+            68,
+            Utc::now() - Duration::hours(2),
+        );
+        let current = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::Qualified,
+            82,
+            Utc::now(),
+        );
+
+        let change = research_candidate_qualification_change(&current, Some(&previous))
+            .expect("change should exist");
+
+        assert!(change.newly_qualified);
+        assert!(!change.lost_qualification);
+    }
+
+    #[test]
+    fn qualification_change_detects_lost_qualification() {
+        let previous = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::Qualified,
+            88,
+            Utc::now() - Duration::hours(2),
+        );
+        let current = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::Degraded,
+            70,
+            Utc::now(),
+        );
+
+        let change = research_candidate_qualification_change(&current, Some(&previous))
+            .expect("change should exist");
+
+        assert!(change.lost_qualification);
+        assert!(!change.newly_qualified);
+    }
+
+    #[test]
+    fn qualification_trend_detects_improving_and_degrading() {
+        let previous = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::NeedsMoreData,
+            60,
+            Utc::now() - Duration::hours(2),
+        );
+        let improving = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::NeedsMoreData,
+            74,
+            Utc::now(),
+        );
+        let degrading = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::NeedsMoreData,
+            48,
+            Utc::now(),
+        );
+
+        assert_eq!(
+            research_candidate_qualification_trend(&improving, Some(&previous)),
+            ResearchCandidateQualificationTrend::Improving
+        );
+        assert_eq!(
+            research_candidate_qualification_trend(&degrading, Some(&previous)),
+            ResearchCandidateQualificationTrend::Degrading
+        );
+    }
+
+    #[test]
+    fn qualification_evaluation_stale_detection_is_deterministic() {
+        let now = Utc::now();
+        let stale = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::Qualified,
+            90,
+            now - Duration::hours(25),
+        );
+        let fresh = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::Qualified,
+            90,
+            now - Duration::hours(1),
+        );
+
+        assert!(is_research_candidate_evaluation_stale(
+            &stale,
+            now,
+            Duration::hours(24)
+        ));
+        assert!(!is_research_candidate_evaluation_stale(
+            &fresh,
+            now,
+            Duration::hours(24)
+        ));
+    }
+
+    #[test]
+    fn watchlist_status_uses_latest_evaluation_and_staleness() {
+        let now = Utc::now();
+        let latest = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::Qualified,
+            90,
+            now - Duration::hours(1),
+        );
+        let stale = sample_qualification_evaluation(
+            ResearchCandidateQualificationStatus::Qualified,
+            90,
+            now - Duration::hours(30),
+        );
+
+        assert_eq!(
+            research_candidate_watchlist_status(
+                Some(&latest),
+                ResearchCandidateQualificationTrend::NewlyQualified,
+                now,
+                Duration::hours(24),
+            ),
+            ResearchCandidateWatchlistStatus::NewlyQualified
+        );
+        assert_eq!(
+            research_candidate_watchlist_status(
+                Some(&stale),
+                ResearchCandidateQualificationTrend::Stable,
+                now,
+                Duration::hours(24),
+            ),
+            ResearchCandidateWatchlistStatus::NeedsAttention
         );
     }
 

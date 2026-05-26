@@ -506,6 +506,14 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidates(&response.candidates);
                     }
                 }
+                ResearchCandidateCommands::Watchlist(args) => {
+                    let response = client.get_research_candidate_watchlist(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_watchlist(&response.watchlist);
+                    }
+                }
                 ResearchCandidateCommands::Get { candidate_id } => {
                     let response = client.get_research_candidate(candidate_id).await?;
                     if cli.json {
@@ -550,6 +558,33 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate_qualification(&response.qualification);
+                    }
+                }
+                ResearchCandidateCommands::QualificationEvaluate(args) => {
+                    let response = client
+                        .evaluate_research_candidate_qualification(
+                            args.candidate_id,
+                            &args.thresholds(),
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_qualification_evaluation(
+                            &response.evaluation,
+                            response.change.as_ref(),
+                            response.trend,
+                        );
+                    }
+                }
+                ResearchCandidateCommands::QualificationHistory(args) => {
+                    let response = client
+                        .get_research_candidate_qualification_history(args.candidate_id, args.limit)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_qualification_history(&response.history);
                     }
                 }
                 ResearchCandidateCommands::ShadowPerformance(args) => {

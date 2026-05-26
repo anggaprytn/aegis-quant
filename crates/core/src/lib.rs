@@ -2801,6 +2801,11 @@ pub struct OperatorReportResearchQualificationSnapshot {
     pub readiness_not_ready_count: i64,
     pub degraded_or_not_ready_readiness_count: i64,
     pub below_default_threshold_override_count: i64,
+    pub latest_evaluated_candidates_count: i64,
+    pub newly_qualified_count: i64,
+    pub lost_qualification_count: i64,
+    pub needs_attention_count: i64,
+    pub stale_evaluation_count: i64,
     pub top_candidate: Option<OperatorReportResearchQualificationTopCandidate>,
 }
 

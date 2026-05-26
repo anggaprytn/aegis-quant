@@ -38,9 +38,14 @@ import type {
   ResearchCandidateShadowPerformance,
   ResearchCandidate as StrategyResearchCandidate,
   ResearchCandidateLifecycleEvent,
+  ResearchCandidateQualificationHistory,
+  ResearchCandidateQualificationTrend,
+  ResearchCandidateQualificationChange,
+  ResearchCandidateQualificationEvaluation,
   ResearchCandidateShadowPromotionPreview,
   ResearchCandidateShadowPromotionResult,
   ResearchCandidateShadowRunLink,
+  ResearchCandidateWatchlistEntry,
   ResearchCandidateStatus as StrategyResearchCandidateStatus,
   RiskConfig,
   RiskDecisionRecord,
@@ -187,6 +192,10 @@ function qualificationRecommendationLabel(
     default:
       return recommendation;
   }
+}
+
+function qualificationTrendLabel(trend: ResearchCandidateQualificationTrend): string {
+  return trend.replaceAll("_", " ");
 }
 
 type StrategyExperimentFormState = {
@@ -996,6 +1005,19 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
+  const researchCandidateWatchlistQuery = useQuery({
+    queryKey: ["research-candidate-watchlist"],
+    queryFn: () => api.getResearchCandidateWatchlist(50),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchCandidateQualificationHistoryQuery = useQuery({
+    queryKey: ["research-candidate-qualification-history", selectedResearchCandidateId],
+    queryFn: () =>
+      api.getResearchCandidateQualificationHistory(selectedResearchCandidateId ?? "", 20),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const selectedResearchCandidateShadowPerformanceQuery = useQuery({
     queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
     queryFn: () => api.getResearchCandidateShadowPerformance(selectedResearchCandidateId ?? ""),
@@ -1704,6 +1726,23 @@ function AuthenticatedDashboard({
       });
     },
   });
+  const evaluateResearchCandidateQualificationMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedResearchCandidateId) {
+        throw new Error("Select a candidate first.");
+      }
+      return api.evaluateResearchCandidateQualification(selectedResearchCandidateId);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification-history", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["research-candidate-watchlist"] });
+    },
+  });
   const previewResearchCandidateShadowPromotionMutation = useMutation({
     mutationFn: async () => {
       if (!selectedResearchCandidateId) {
@@ -2052,6 +2091,10 @@ function AuthenticatedDashboard({
     selectedResearchCandidateObservationSummaryQuery.data?.summary ?? null;
   const researchCandidateQualification: ResearchCandidateQualificationResult | null =
     selectedResearchCandidateQualificationQuery.data?.qualification ?? null;
+  const researchCandidateQualificationHistory: ResearchCandidateQualificationHistory | null =
+    selectedResearchCandidateQualificationHistoryQuery.data?.history ?? null;
+  const researchCandidateWatchlist: ResearchCandidateWatchlistEntry[] =
+    researchCandidateWatchlistQuery.data?.watchlist ?? [];
   const researchCandidateShadowPerformance: ResearchCandidateShadowPerformance | null =
     selectedResearchCandidateShadowPerformanceQuery.data?.performance ?? null;
   const researchCandidateShadowRuns: ResearchCandidateShadowRunLink[] =
@@ -2106,6 +2149,10 @@ function AuthenticatedDashboard({
   const expectedShadowPromotionConfirmation = selectedResearchCandidate
     ? `PROMOTE CANDIDATE ${selectedResearchCandidate.id} TO SHADOW`
     : "";
+  const latestQualificationEvaluation: ResearchCandidateQualificationEvaluation | null =
+    researchCandidateQualificationHistory?.evaluations[0] ?? null;
+  const latestQualificationChange: ResearchCandidateQualificationChange | null =
+    researchCandidateQualificationHistory?.latest_change ?? null;
   const canApplyShadowPromotion =
     user.role === "OWNER" &&
     Boolean(selectedResearchCandidate) &&
@@ -4492,6 +4539,53 @@ function AuthenticatedDashboard({
                 </div>
                 <InlineStatus error={getErrorMessage(researchCandidatesQuery.error)} />
               </Panel>
+              <Panel className="xl:col-span-4" title="Research Watchlist">
+                <div className="overflow-auto rounded-2xl border border-border">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-surface/60 text-left text-slate-300">
+                      <tr>
+                        {[
+                          "Candidate",
+                          "Candidate Status",
+                          "Qualification",
+                          "Score",
+                          "Trend",
+                          "Last Evaluated",
+                        ].map((label) => (
+                          <th key={label} className="px-3 py-2 font-medium">{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {researchCandidateWatchlist.map((entry) => (
+                        <tr
+                          key={entry.candidate_id}
+                          className="cursor-pointer border-t border-border"
+                          onClick={() => setSelectedResearchCandidateId(entry.candidate_id)}
+                        >
+                          <td className="px-3 py-2 text-slate-100">
+                            {entry.strategy_id} {entry.symbol} {entry.timeframe}
+                          </td>
+                          <td className="px-3 py-2">{entry.candidate_status}</td>
+                          <td className="px-3 py-2">
+                            {entry.latest_evaluation?.status ?? "UNKNOWN"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {entry.latest_evaluation?.score ?? "-"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {qualificationTrendLabel(entry.trend)}
+                          </td>
+                          <td className="px-3 py-2">
+                            {formatDateTime(entry.latest_evaluation?.evaluated_at ?? null)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <InlineStatus error={getErrorMessage(researchCandidateWatchlistQuery.error)} />
+              </Panel>
               <Panel className="xl:col-span-8" title="Candidate Detail">
                 <KeyValue
                   items={[
@@ -4830,7 +4924,18 @@ function AuthenticatedDashboard({
                       </div>
                     </div>
                     <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
-                      <div className="font-semibold text-slate-100">Qualification</div>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="font-semibold text-slate-100">Qualification</div>
+                        <ActionButton
+                          label="Evaluate"
+                          onClick={() => evaluateResearchCandidateQualificationMutation.mutate()}
+                          busy={evaluateResearchCandidateQualificationMutation.isPending}
+                          disabled={
+                            (user.role !== "OWNER" && user.role !== "OPERATOR") ||
+                            !selectedResearchCandidate
+                          }
+                        />
+                      </div>
                       <div className="mt-2 grid gap-2 sm:grid-cols-2">
                         <div>Status: {researchCandidateQualification?.status ?? "UNKNOWN"}</div>
                         <div>Score: {researchCandidateQualification?.score ?? "-"}</div>
@@ -4852,7 +4957,21 @@ function AuthenticatedDashboard({
                           {researchCandidateQualification?.shadow_performance
                             ?.would_submit_count ?? 0}
                         </div>
+                        <div>Trend: {qualificationTrendLabel(researchCandidateQualificationHistory?.latest_trend ?? "INSUFFICIENT_HISTORY")}</div>
+                        <div>
+                          Last evaluated: {formatDateTime(latestQualificationEvaluation?.evaluated_at ?? null)}
+                        </div>
                       </div>
+                      {latestQualificationChange ? (
+                        <div className="mt-3 rounded-xl border border-border/70 bg-surface/40 p-3">
+                          Latest change:{" "}
+                          {(latestQualificationChange.previous_status ?? "UNKNOWN").toString()} to{" "}
+                          {latestQualificationChange.current_status}
+                          {" · "}score {latestQualificationChange.previous_score ?? "-"} to{" "}
+                          {latestQualificationChange.current_score}
+                          {" · "}delta {latestQualificationChange.score_delta}
+                        </div>
+                      ) : null}
                       {researchCandidateQualification?.latest_readiness_status === "DEGRADED" ? (
                         <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-100">
                           Resolve degraded readiness conditions before considering testnet
@@ -4931,8 +5050,46 @@ function AuthenticatedDashboard({
                           </div>
                         </div>
                       ) : null}
+                      {(researchCandidateQualificationHistory?.evaluations.length ?? 0) > 0 ? (
+                        <div className="mt-3 rounded-xl border border-border/70 bg-black/10 p-3">
+                          <div className="font-semibold text-slate-100">Qualification History</div>
+                          <div className="mt-2 overflow-auto">
+                            <table className="min-w-full text-[11px]">
+                              <thead className="text-left text-slate-400">
+                                <tr>
+                                  {["Evaluated", "Status", "Score", "Readiness", "Runs", "Would Submit"].map((label) => (
+                                    <th key={label} className="px-2 py-1 font-medium">{label}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {researchCandidateQualificationHistory?.evaluations.map((evaluation) => (
+                                  <tr key={evaluation.id} className="border-t border-border/60">
+                                    <td className="px-2 py-1">{formatDateTime(evaluation.evaluated_at)}</td>
+                                    <td className="px-2 py-1">{evaluation.status}</td>
+                                    <td className="px-2 py-1">{evaluation.score}</td>
+                                    <td className="px-2 py-1">{evaluation.latest_readiness_status ?? "UNKNOWN"}</td>
+                                    <td className="px-2 py-1">{evaluation.total_shadow_runs}</td>
+                                    <td className="px-2 py-1">{evaluation.would_submit_count}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ) : null}
                       <InlineStatus
                         error={getErrorMessage(selectedResearchCandidateQualificationQuery.error)}
+                      />
+                      <InlineStatus
+                        error={getErrorMessage(selectedResearchCandidateQualificationHistoryQuery.error)}
+                        success={
+                          evaluateResearchCandidateQualificationMutation.data
+                            ? qualificationTrendLabel(
+                                evaluateResearchCandidateQualificationMutation.data.trend,
+                              )
+                            : undefined
+                        }
                       />
                     </div>
                     <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">

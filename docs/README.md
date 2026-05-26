@@ -31,5 +31,6 @@ Research candidate lifecycle boundaries:
 - `ACCEPT_FOR_SHADOW` requires a fresh persisted observation. The default freshness window is 15 minutes.
 - Shadow promotion only updates shadow-runner config/state-adjacent audit records. It does not submit testnet orders or mutate paper/testnet/live execution tables.
 - After promotion, candidate-linked shadow performance is read-only and research-only. It links to persisted `testnet_shadow_runs` for inspection and recommendation surfacing without changing execution behavior.
-- Candidate qualification is read-only decision support for testnet promotion consideration. It does not auto-promote, submit orders, or mutate paper/testnet/live execution tables. Default thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
+- Candidate qualification checks are stateless/read-only decision support for testnet promotion consideration. They do not auto-promote, submit orders, or mutate paper/testnet/live execution tables. Default thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
+- Persisted qualification evaluations are research snapshots only. They power qualification history and the candidate watchlist so operators can track improving, degrading, newly qualified, lost qualification, or stale candidate health over time with no execution side effects.
 - No live trading path is enabled.

@@ -8,23 +8,26 @@ use aegis_core::{
     PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchCandidate,
     ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
-    RiskConfigVersion, StrategyCandidateObservationResult, StrategyComparisonSummary,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
-    StrategyDryRunRequest, StrategyDryRunResult, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
-    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateWatchlistEntry, ResearchDataCoverageResult,
+    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
+    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
+    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
+    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -734,6 +737,46 @@ impl ApiClient {
                     thresholds.max_error_or_skipped_rate_pct.to_string(),
                 ),
             ],
+        )
+        .await
+    }
+
+    pub async fn evaluate_research_candidate_qualification(
+        &self,
+        candidate_id: Uuid,
+        thresholds: &ResearchCandidateQualificationThresholds,
+    ) -> Result<ResearchCandidateQualificationEvaluateResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidates/{candidate_id}/qualification/evaluate"),
+            &serde_json::json!({
+                "min_shadow_runs": thresholds.min_shadow_runs,
+                "min_would_submit_count": thresholds.min_would_submit_count,
+                "max_risk_rejection_rate_pct": thresholds.max_risk_rejection_rate_pct,
+                "max_error_or_skipped_rate_pct": thresholds.max_error_or_skipped_rate_pct,
+            }),
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_qualification_history(
+        &self,
+        candidate_id: Uuid,
+        limit: i64,
+    ) -> Result<ResearchCandidateQualificationHistoryResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/qualification/history"),
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_watchlist(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchCandidateWatchlistResponse, ApiClientError> {
+        self.get(
+            "/research/candidates/watchlist",
+            &[("limit", limit.to_string())],
         )
         .await
     }
@@ -2072,6 +2115,33 @@ pub struct ResearchCandidateObservationSummaryResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateQualificationResponse {
     pub qualification: ResearchCandidateQualificationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateQualificationEvaluateResponse {
+    pub evaluation: ResearchCandidateQualificationEvaluation,
+    pub change: Option<ResearchCandidateQualificationChange>,
+    pub trend: ResearchCandidateQualificationTrend,
+    pub qualification: ResearchCandidateQualificationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateQualificationHistoryResponse {
+    pub history: ResearchCandidateQualificationHistory,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateWatchlistResponse {
+    pub watchlist: Vec<ResearchCandidateWatchlistEntry>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

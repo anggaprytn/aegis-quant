@@ -7,17 +7,19 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use aegis_core::{
-    evaluate_research_candidate_shadow_performance, CandleInterval, MarketDataSource,
-    ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
-    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
-    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
-    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
-    StrategyCandidateObservationSummary, StrategyResearchCandidate,
-    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
-    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
-    StrategyResearchCandidateStatus, Symbol,
+    evaluate_research_candidate_shadow_performance, CandleInterval, ExecutionReadinessStatus,
+    MarketDataSource, ResearchCandidate, ResearchCandidateDecision,
+    ResearchCandidateLifecycleEvent, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationRecommendation, ResearchCandidateQualificationStatus,
+    ResearchCandidateQualificationThresholds, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchDataCoverageResult,
+    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, ResearchDatasetBuildStatus,
+    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
+    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
+    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
+    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -163,6 +165,46 @@ pub struct ResearchCandidateEventRecord {
     pub correlation_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateQualificationEvaluationRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub status: String,
+    pub score: i32,
+    pub latest_readiness_status: Option<String>,
+    pub total_shadow_runs: i64,
+    pub would_submit_count: i64,
+    pub risk_rejection_rate_pct: Option<Decimal>,
+    pub warnings: Value,
+    pub blockers: Value,
+    pub recommendations: Value,
+    pub thresholds: Value,
+    pub evaluated_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateWatchlistRow {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub candidate_status: String,
+    pub evaluation_id: Option<Uuid>,
+    pub evaluation_status: Option<String>,
+    pub evaluation_score: Option<i32>,
+    pub latest_readiness_status: Option<String>,
+    pub total_shadow_runs: Option<i64>,
+    pub would_submit_count: Option<i64>,
+    pub risk_rejection_rate_pct: Option<Decimal>,
+    pub warnings: Option<Value>,
+    pub blockers: Option<Value>,
+    pub recommendations: Option<Value>,
+    pub thresholds: Option<Value>,
+    pub evaluated_at: Option<DateTime<Utc>>,
+    pub correlation_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StrategyResearchCandidateListFilters {
     pub strategy_id: Option<String>,
@@ -212,6 +254,143 @@ fn legacy_status_for_research_candidate(
         ResearchCandidateStatus::Rejected => StrategyResearchCandidateStatus::Rejected,
         ResearchCandidateStatus::Archived => StrategyResearchCandidateStatus::Archived,
     }
+}
+
+fn map_research_candidate_qualification_evaluation(
+    row: sqlx::postgres::PgRow,
+) -> ResearchCandidateQualificationEvaluationRecord {
+    ResearchCandidateQualificationEvaluationRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        status: row.get("status"),
+        score: row.get("score"),
+        latest_readiness_status: row.get("latest_readiness_status"),
+        total_shadow_runs: row.get("total_shadow_runs"),
+        would_submit_count: row.get("would_submit_count"),
+        risk_rejection_rate_pct: row.get("risk_rejection_rate_pct"),
+        warnings: row.get("warnings"),
+        blockers: row.get("blockers"),
+        recommendations: row.get("recommendations"),
+        thresholds: row.get("thresholds"),
+        evaluated_at: row.get("evaluated_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_research_candidate_watchlist_row(
+    row: sqlx::postgres::PgRow,
+) -> ResearchCandidateWatchlistRow {
+    ResearchCandidateWatchlistRow {
+        candidate_id: row.get("candidate_id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        candidate_status: row.get("candidate_status"),
+        evaluation_id: row.get("evaluation_id"),
+        evaluation_status: row.get("evaluation_status"),
+        evaluation_score: row.get("evaluation_score"),
+        latest_readiness_status: row.get("latest_readiness_status"),
+        total_shadow_runs: row.get("total_shadow_runs"),
+        would_submit_count: row.get("would_submit_count"),
+        risk_rejection_rate_pct: row.get("risk_rejection_rate_pct"),
+        warnings: row.get("warnings"),
+        blockers: row.get("blockers"),
+        recommendations: row.get("recommendations"),
+        thresholds: row.get("thresholds"),
+        evaluated_at: row.get("evaluated_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn parse_qualification_status(value: &str) -> Result<ResearchCandidateQualificationStatus> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "QUALIFIED" => Ok(ResearchCandidateQualificationStatus::Qualified),
+        "NOT_QUALIFIED" => Ok(ResearchCandidateQualificationStatus::NotQualified),
+        "NEEDS_MORE_DATA" => Ok(ResearchCandidateQualificationStatus::NeedsMoreData),
+        "DEGRADED" => Ok(ResearchCandidateQualificationStatus::Degraded),
+        "UNKNOWN" => Ok(ResearchCandidateQualificationStatus::Unknown),
+        other => anyhow::bail!("unsupported research candidate qualification status: {other}"),
+    }
+}
+
+fn parse_qualification_recommendation(
+    value: &str,
+) -> Result<ResearchCandidateQualificationRecommendation> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "REFRESH_CANDIDATE_OBSERVATION" => {
+            Ok(ResearchCandidateQualificationRecommendation::RefreshCandidateObservation)
+        }
+        "FIX_RUNNER_ALIGNMENT" => {
+            Ok(ResearchCandidateQualificationRecommendation::FixRunnerAlignment)
+        }
+        "EXPAND_SHADOW_RUNNER_COVERAGE" => {
+            Ok(ResearchCandidateQualificationRecommendation::ExpandShadowRunnerCoverage)
+        }
+        "GATHER_MORE_SHADOW_RUNS" => {
+            Ok(ResearchCandidateQualificationRecommendation::GatherMoreShadowRuns)
+        }
+        "GENERATE_MORE_WOULD_SUBMIT_EVIDENCE" => {
+            Ok(ResearchCandidateQualificationRecommendation::GenerateMoreWouldSubmitEvidence)
+        }
+        "REVIEW_RISK_REJECTIONS" => {
+            Ok(ResearchCandidateQualificationRecommendation::ReviewRiskRejections)
+        }
+        "REDUCE_SHADOW_ERRORS_OR_SKIPS" => {
+            Ok(ResearchCandidateQualificationRecommendation::ReduceShadowErrorsOrSkips)
+        }
+        "RESTORE_TESTNET_SHADOW_READINESS" => {
+            Ok(ResearchCandidateQualificationRecommendation::RestoreTestnetShadowReadiness)
+        }
+        "RE_ACCEPT_CANDIDATE_FOR_SHADOW" => {
+            Ok(ResearchCandidateQualificationRecommendation::ReAcceptCandidateForShadow)
+        }
+        "READY_FOR_TESTNET_PROMOTION_CONSIDERATION" => {
+            Ok(ResearchCandidateQualificationRecommendation::ReadyForTestnetPromotionConsideration)
+        }
+        other => {
+            anyhow::bail!("unsupported research candidate qualification recommendation: {other}")
+        }
+    }
+}
+
+fn parse_execution_readiness_status(value: &str) -> Result<ExecutionReadinessStatus> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "READY" => Ok(ExecutionReadinessStatus::Ready),
+        "NOT_READY" => Ok(ExecutionReadinessStatus::NotReady),
+        "DEGRADED" => Ok(ExecutionReadinessStatus::Degraded),
+        "UNKNOWN" => Ok(ExecutionReadinessStatus::Unknown),
+        other => anyhow::bail!("unsupported readiness status: {other}"),
+    }
+}
+
+pub fn research_candidate_qualification_evaluation_from_record(
+    record: &ResearchCandidateQualificationEvaluationRecord,
+) -> Result<ResearchCandidateQualificationEvaluation> {
+    Ok(ResearchCandidateQualificationEvaluation {
+        id: record.id,
+        candidate_id: record.candidate_id,
+        status: parse_qualification_status(&record.status)?,
+        score: record.score,
+        latest_readiness_status: record
+            .latest_readiness_status
+            .as_deref()
+            .map(parse_execution_readiness_status)
+            .transpose()?,
+        total_shadow_runs: record.total_shadow_runs,
+        would_submit_count: record.would_submit_count,
+        risk_rejection_rate_pct: record.risk_rejection_rate_pct,
+        warnings: serde_json::from_value(record.warnings.clone())?,
+        blockers: serde_json::from_value(record.blockers.clone())?,
+        recommendations: serde_json::from_value::<Vec<String>>(record.recommendations.clone())?
+            .into_iter()
+            .map(|value| parse_qualification_recommendation(&value))
+            .collect::<Result<Vec<_>>>()?,
+        thresholds: serde_json::from_value::<ResearchCandidateQualificationThresholds>(
+            record.thresholds.clone(),
+        )?,
+        evaluated_at: record.evaluated_at,
+        correlation_id: record.correlation_id,
+    })
 }
 
 pub async fn create_research_candidate(
@@ -1250,6 +1429,10 @@ fn bounded_research_candidate_shadow_run_limit(limit: i64) -> i64 {
     limit.clamp(1, 500)
 }
 
+fn bounded_research_candidate_qualification_history_limit(limit: i64) -> i64 {
+    limit.clamp(1, 500)
+}
+
 pub async fn resolve_promoted_research_candidate_for_shadow_run(
     pool: &PgPool,
     strategy_id: &str,
@@ -1377,6 +1560,247 @@ pub async fn list_research_candidate_shadow_runs(
             shadow_created_at: row.get("shadow_created_at"),
             correlation_id: row.get("correlation_id"),
         })
+        .collect())
+}
+
+pub async fn insert_research_candidate_qualification_evaluation(
+    pool: &PgPool,
+    evaluation: &ResearchCandidateQualificationEvaluation,
+) -> Result<ResearchCandidateQualificationEvaluationRecord> {
+    let recommendations = evaluation
+        .recommendations
+        .iter()
+        .map(|value| value.as_str().to_string())
+        .collect::<Vec<_>>();
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_qualification_evaluations (
+            id,
+            candidate_id,
+            status,
+            score,
+            latest_readiness_status,
+            total_shadow_runs,
+            would_submit_count,
+            risk_rejection_rate_pct,
+            warnings,
+            blockers,
+            recommendations,
+            thresholds,
+            evaluated_at,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+        )
+        RETURNING
+            id,
+            candidate_id,
+            status,
+            score,
+            latest_readiness_status,
+            total_shadow_runs::BIGINT AS total_shadow_runs,
+            would_submit_count::BIGINT AS would_submit_count,
+            risk_rejection_rate_pct,
+            warnings,
+            blockers,
+            recommendations,
+            thresholds,
+            evaluated_at,
+            correlation_id
+        "#,
+    )
+    .bind(evaluation.id)
+    .bind(evaluation.candidate_id)
+    .bind(evaluation.status.as_str())
+    .bind(evaluation.score)
+    .bind(
+        evaluation
+            .latest_readiness_status
+            .map(|value| value.as_str().to_string()),
+    )
+    .bind(evaluation.total_shadow_runs)
+    .bind(evaluation.would_submit_count)
+    .bind(evaluation.risk_rejection_rate_pct)
+    .bind(serde_json::to_value(&evaluation.warnings)?)
+    .bind(serde_json::to_value(&evaluation.blockers)?)
+    .bind(serde_json::to_value(&recommendations)?)
+    .bind(serde_json::to_value(&evaluation.thresholds)?)
+    .bind(evaluation.evaluated_at)
+    .bind(evaluation.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_research_candidate_qualification_evaluation(row))
+}
+
+pub async fn get_latest_research_candidate_qualification_evaluation(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Option<ResearchCandidateQualificationEvaluationRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            status,
+            score,
+            latest_readiness_status,
+            total_shadow_runs::BIGINT AS total_shadow_runs,
+            would_submit_count::BIGINT AS would_submit_count,
+            risk_rejection_rate_pct,
+            warnings,
+            blockers,
+            recommendations,
+            thresholds,
+            evaluated_at,
+            correlation_id
+        FROM research_candidate_qualification_evaluations
+        WHERE candidate_id = $1
+        ORDER BY evaluated_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_qualification_evaluation))
+}
+
+pub async fn list_research_candidate_qualification_evaluations(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    limit: i64,
+) -> Result<Vec<ResearchCandidateQualificationEvaluationRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            status,
+            score,
+            latest_readiness_status,
+            total_shadow_runs::BIGINT AS total_shadow_runs,
+            would_submit_count::BIGINT AS would_submit_count,
+            risk_rejection_rate_pct,
+            warnings,
+            blockers,
+            recommendations,
+            thresholds,
+            evaluated_at,
+            correlation_id
+        FROM research_candidate_qualification_evaluations
+        WHERE candidate_id = $1
+        ORDER BY evaluated_at DESC, id DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(bounded_research_candidate_qualification_history_limit(
+        limit,
+    ))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_research_candidate_qualification_evaluation)
+        .collect())
+}
+
+pub async fn list_research_candidate_watchlist_rows(
+    pool: &PgPool,
+    filters: &ResearchCandidateListFilters,
+    limit: i64,
+) -> Result<Vec<ResearchCandidateWatchlistRow>> {
+    let rows = sqlx::query(
+        r#"
+        WITH filtered_candidates AS (
+            SELECT
+                id,
+                strategy_id,
+                symbol,
+                timeframe,
+                status
+            FROM research_candidates
+            WHERE ($1::text IS NULL OR strategy_id = $1)
+              AND ($2::text IS NULL OR symbol = $2)
+              AND ($3::text IS NULL OR timeframe = $3)
+              AND ($4::text IS NULL OR status = $4)
+            ORDER BY updated_at DESC, id DESC
+            LIMIT $5
+        ),
+        latest_evaluations AS (
+            SELECT DISTINCT ON (candidate_id)
+                id,
+                candidate_id,
+                status,
+                score,
+                latest_readiness_status,
+                total_shadow_runs::BIGINT AS total_shadow_runs,
+                would_submit_count::BIGINT AS would_submit_count,
+                risk_rejection_rate_pct,
+                warnings,
+                blockers,
+                recommendations,
+                thresholds,
+                evaluated_at,
+                correlation_id
+            FROM research_candidate_qualification_evaluations
+            ORDER BY candidate_id, evaluated_at DESC, id DESC
+        )
+        SELECT
+            candidate.id AS candidate_id,
+            candidate.strategy_id,
+            candidate.symbol,
+            candidate.timeframe,
+            candidate.status AS candidate_status,
+            eval.id AS evaluation_id,
+            eval.status AS evaluation_status,
+            eval.score AS evaluation_score,
+            eval.latest_readiness_status,
+            eval.total_shadow_runs::BIGINT AS total_shadow_runs,
+            eval.would_submit_count::BIGINT AS would_submit_count,
+            eval.risk_rejection_rate_pct,
+            eval.warnings,
+            eval.blockers,
+            eval.recommendations,
+            eval.thresholds,
+            eval.evaluated_at,
+            eval.correlation_id
+        FROM filtered_candidates candidate
+        LEFT JOIN latest_evaluations eval
+            ON eval.candidate_id = candidate.id
+        ORDER BY
+            eval.evaluated_at DESC NULLS LAST,
+            candidate.status ASC,
+            candidate.strategy_id ASC,
+            candidate.symbol ASC,
+            candidate.timeframe ASC
+        "#,
+    )
+    .bind(filters.strategy_id.as_deref())
+    .bind(
+        filters
+            .symbol
+            .as_ref()
+            .map(|value| value.trim().to_ascii_uppercase()),
+    )
+    .bind(
+        filters
+            .timeframe
+            .as_ref()
+            .map(|value| value.trim().to_ascii_lowercase()),
+    )
+    .bind(filters.status.as_deref())
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_research_candidate_watchlist_row)
         .collect())
 }
 

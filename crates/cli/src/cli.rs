@@ -717,11 +717,14 @@ pub enum ResearchDataCommands {
 #[derive(Debug, Subcommand)]
 pub enum ResearchCandidateCommands {
     List(ResearchCandidateListArgs),
+    Watchlist(ResearchCandidateWatchlistArgs),
     Get { candidate_id: Uuid },
     Events { candidate_id: Uuid },
     Observations { candidate_id: Uuid },
     ObservationSummary { candidate_id: Uuid },
     Qualification(ResearchCandidateQualificationArgs),
+    QualificationEvaluate(ResearchCandidateQualificationArgs),
+    QualificationHistory(ResearchCandidateQualificationHistoryArgs),
     ShadowPerformance(ResearchCandidateShadowWindowArgs),
     ShadowRuns(ResearchCandidateShadowRunsArgs),
     Create(ResearchCandidateCreateArgs),
@@ -807,6 +810,19 @@ pub struct ResearchCandidateQualificationArgs {
     pub max_risk_rejection_rate_pct: Option<rust_decimal::Decimal>,
     #[arg(long)]
     pub max_error_or_skipped_rate_pct: Option<rust_decimal::Decimal>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateQualificationHistoryArgs {
+    pub candidate_id: Uuid,
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateWatchlistArgs {
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
 }
 
 impl ResearchCandidateQualificationArgs {

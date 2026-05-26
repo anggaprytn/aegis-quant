@@ -1,9 +1,11 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationTrend, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, User,
+    ResearchCandidateShadowRunLink, ResearchCandidateWatchlistEntry, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1966,6 +1968,162 @@ pub fn print_research_candidate_qualification(
     println!("Score explanation:");
     for item in &qualification.score_explanation {
         println!("  - {item}");
+    }
+}
+
+pub fn print_research_candidate_qualification_evaluation(
+    evaluation: &ResearchCandidateQualificationEvaluation,
+    change: Option<&ResearchCandidateQualificationChange>,
+    trend: ResearchCandidateQualificationTrend,
+) {
+    println!(
+        "Status: {}  Score: {}  Trend: {}",
+        evaluation.status.as_str(),
+        evaluation.score,
+        trend.as_str()
+    );
+    if let Some(change) = change {
+        println!(
+            "Previous: {} / {}  Delta: {}",
+            change
+                .previous_status
+                .map(|value| value.as_str())
+                .unwrap_or("UNKNOWN"),
+            change
+                .previous_score
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            change.score_delta
+        );
+        println!(
+            "Changed: status={} material_score={} newly_qualified={} lost_qualification={}",
+            change.status_changed,
+            change.material_score_change,
+            change.newly_qualified,
+            change.lost_qualification
+        );
+    } else {
+        println!("Previous: none");
+    }
+    println!(
+        "Readiness: {}  Runs: {}  Would-submit: {}  Risk rejection: {}",
+        evaluation
+            .latest_readiness_status
+            .map(|value| value.as_str())
+            .unwrap_or("UNKNOWN"),
+        evaluation.total_shadow_runs,
+        evaluation.would_submit_count,
+        evaluation
+            .risk_rejection_rate_pct
+            .map(|value| format!("{value}%"))
+            .unwrap_or_else(|| "-".to_string())
+    );
+    if evaluation.blockers.is_empty() {
+        println!("Blockers: none");
+    } else {
+        println!("Blockers:");
+        for blocker in &evaluation.blockers {
+            println!("  - {blocker}");
+        }
+    }
+    if evaluation.warnings.is_empty() {
+        println!("Warnings: none");
+    } else {
+        println!("Warnings:");
+        for warning in &evaluation.warnings {
+            println!("  - {warning}");
+        }
+    }
+    if evaluation.recommendations.is_empty() {
+        println!("Recommendations: none");
+    } else {
+        println!("Recommendations:");
+        for recommendation in &evaluation.recommendations {
+            println!("  - {}", recommendation.message());
+        }
+    }
+}
+
+pub fn print_research_candidate_qualification_history(
+    history: &ResearchCandidateQualificationHistory,
+) {
+    println!(
+        "Candidate: {}  Evaluations: {}  Trend: {}",
+        history.candidate_id,
+        history.evaluations.len(),
+        history.latest_trend.as_str()
+    );
+    if let Some(change) = &history.latest_change {
+        println!(
+            "Latest change: {} -> {}  score {} -> {}",
+            change
+                .previous_status
+                .map(|value| value.as_str())
+                .unwrap_or("UNKNOWN"),
+            change.current_status.as_str(),
+            change
+                .previous_score
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            change.current_score
+        );
+    }
+    for evaluation in &history.evaluations {
+        println!(
+            "{}  status={} score={} readiness={} runs={} would_submit={}",
+            evaluation.evaluated_at.to_rfc3339(),
+            evaluation.status.as_str(),
+            evaluation.score,
+            evaluation
+                .latest_readiness_status
+                .map(|value| value.as_str())
+                .unwrap_or("UNKNOWN"),
+            evaluation.total_shadow_runs,
+            evaluation.would_submit_count
+        );
+    }
+}
+
+pub fn print_research_candidate_watchlist(watchlist: &[ResearchCandidateWatchlistEntry]) {
+    if watchlist.is_empty() {
+        println!("No watchlist entries found.");
+        return;
+    }
+
+    for entry in watchlist {
+        let latest = entry.latest_evaluation.as_ref();
+        println!(
+            "{} {} {}  candidate_status={} eval_status={} score={} trend={} watchlist={} last_evaluated={}",
+            entry.strategy_id,
+            entry.symbol,
+            entry.timeframe,
+            entry.candidate_status.as_str(),
+            latest
+                .map(|value| value.status.as_str())
+                .unwrap_or("UNKNOWN"),
+            latest
+                .map(|value| value.score.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            entry.trend.as_str(),
+            entry.watchlist_status.as_str(),
+            latest
+                .map(|value| value.evaluated_at.to_rfc3339())
+                .unwrap_or_else(|| "-".to_string())
+        );
+        if let Some(change) = &entry.latest_change {
+            println!(
+                "  previous={} previous_score={} delta={}",
+                change
+                    .previous_status
+                    .map(|value| value.as_str())
+                    .unwrap_or("UNKNOWN"),
+                change
+                    .previous_score
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                change.score_delta
+            );
+        }
     }
 }
 

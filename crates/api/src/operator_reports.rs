@@ -22,7 +22,10 @@ use telemetry::telemetry;
 use uuid::Uuid;
 
 use crate::AppState;
-use db::{list_research_candidates, ResearchCandidateListFilters};
+use db::{
+    list_research_candidate_qualification_evaluations, list_research_candidates,
+    research_candidate_qualification_evaluation_from_record, ResearchCandidateListFilters,
+};
 
 const DEFAULT_REPORT_WINDOW_HOURS: i64 = 24;
 const REPORT_LIST_DEFAULT_LIMIT: i64 = 20;
@@ -894,6 +897,11 @@ async fn load_research_candidate_qualification_snapshot(
         readiness_not_ready_count: 0,
         degraded_or_not_ready_readiness_count: 0,
         below_default_threshold_override_count: 0,
+        latest_evaluated_candidates_count: 0,
+        newly_qualified_count: 0,
+        lost_qualification_count: 0,
+        needs_attention_count: 0,
+        stale_evaluation_count: 0,
         top_candidate: None,
     };
 
@@ -940,6 +948,43 @@ async fn load_research_candidate_qualification_snapshot(
         }
         if qualification.threshold_override_below_default {
             summary.below_default_threshold_override_count += 1;
+        }
+
+        let evaluation_history =
+            list_research_candidate_qualification_evaluations(&state.db_pool, candidate.id, 2)
+                .await?;
+        let evaluations = evaluation_history
+            .iter()
+            .map(research_candidate_qualification_evaluation_from_record)
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(latest_evaluation) = evaluations.first() {
+            summary.latest_evaluated_candidates_count += 1;
+            if aegis_core::is_research_candidate_evaluation_stale(
+                latest_evaluation,
+                window.generated_at,
+                Duration::hours(24),
+            ) {
+                summary.stale_evaluation_count += 1;
+            }
+            let previous = evaluations.get(1);
+            let trend =
+                aegis_core::research_candidate_qualification_trend(latest_evaluation, previous);
+            match trend {
+                aegis_core::ResearchCandidateQualificationTrend::NewlyQualified => {
+                    summary.newly_qualified_count += 1;
+                }
+                aegis_core::ResearchCandidateQualificationTrend::LostQualification => {
+                    summary.lost_qualification_count += 1;
+                    summary.needs_attention_count += 1;
+                }
+                aegis_core::ResearchCandidateQualificationTrend::NeedsAttention => {
+                    summary.needs_attention_count += 1;
+                }
+                aegis_core::ResearchCandidateQualificationTrend::Degrading => {
+                    summary.needs_attention_count += 1;
+                }
+                _ => {}
+            }
         }
 
         let replace_top = summary
@@ -1160,6 +1205,36 @@ fn build_findings(
             OperatorReportSeverity::High,
             "Candidate qualification reports NOT_READY readiness blocker",
             "At least one candidate is blocked by NOT_READY TESTNET_SHADOW readiness.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.stale_evaluation_count > 0 {
+        findings.push(finding(
+            "candidate_qualification_evaluations_stale",
+            OperatorReportSeverity::Low,
+            "Candidate qualification evaluations are stale",
+            "One or more persisted qualification evaluations are older than 24 hours.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.lost_qualification_count > 0 {
+        findings.push(finding(
+            "candidate_lost_qualification",
+            OperatorReportSeverity::Medium,
+            "Candidate lost qualification",
+            "At least one persisted qualification evaluation shows a candidate lost qualified status.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.needs_attention_count > 0 {
+        findings.push(finding(
+            "candidate_needs_attention",
+            OperatorReportSeverity::Medium,
+            "Candidate needs attention",
+            "At least one candidate is degrading, stale, or otherwise requires qualification follow-up.",
             "research_candidate_qualification",
         ));
     }
@@ -1527,6 +1602,28 @@ fn build_sections(
                     research_qualification
                         .degraded_or_not_ready_readiness_count
                         .to_string(),
+                ),
+                highlight(
+                    "Latest Evaluated",
+                    research_qualification
+                        .latest_evaluated_candidates_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Newly Qualified",
+                    research_qualification.newly_qualified_count.to_string(),
+                ),
+                highlight(
+                    "Lost Qualification",
+                    research_qualification.lost_qualification_count.to_string(),
+                ),
+                highlight(
+                    "Needs Attention",
+                    research_qualification.needs_attention_count.to_string(),
+                ),
+                highlight(
+                    "Stale Evaluations",
+                    research_qualification.stale_evaluation_count.to_string(),
                 ),
                 highlight(
                     "Top Candidate",
@@ -1954,6 +2051,11 @@ mod tests {
             readiness_not_ready_count: 0,
             degraded_or_not_ready_readiness_count: 0,
             below_default_threshold_override_count: 0,
+            latest_evaluated_candidates_count: 0,
+            newly_qualified_count: 0,
+            lost_qualification_count: 0,
+            needs_attention_count: 0,
+            stale_evaluation_count: 0,
             top_candidate: None,
         }
     }

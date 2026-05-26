@@ -40,19 +40,21 @@ use aegis_core::{
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidatePromotionReadiness, ResearchCandidateQualificationRequest,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidatePromotionReadiness, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
-    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchDataCoverageRequest,
-    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
-    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side,
-    SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateWatchlistEntry,
+    ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
+    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentGlobalRanking,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
@@ -105,6 +107,7 @@ use db::{
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
     get_closed_1m_candles_range, get_default_paper_account, get_exchange_private_stream_state,
     get_exchange_testnet_order_by_client_order_id, get_latest_market_tick,
+    get_latest_research_candidate_qualification_evaluation,
     get_latest_strategy_candidate_observation, get_order_by_id, get_paper_position_by_id,
     get_recent_closed_candles, get_research_candidate, get_research_candidate_shadow_performance,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
@@ -116,8 +119,9 @@ use db::{
     get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
     get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
     insert_exchange_testnet_order, insert_exchange_testnet_repair_action, insert_paper_account,
-    insert_paper_equity_snapshot, insert_risk_config_audit, insert_risk_evaluation, insert_session,
-    insert_signal_deduped, insert_strategy_config_audit, insert_strategy_research_candidate,
+    insert_paper_equity_snapshot, insert_research_candidate_qualification_evaluation,
+    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
+    insert_strategy_config_audit, insert_strategy_research_candidate,
     insert_strategy_research_candidate_promotion, insert_system_event,
     insert_testnet_shadow_promotion, insert_user, list_backtest_runs, list_candle_backfill_runs,
     list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
@@ -126,7 +130,8 @@ use db::{
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
     list_recent_system_events_filtered, list_research_candidate_events,
-    list_research_candidate_shadow_runs, list_research_candidates, list_risk_config_audit,
+    list_research_candidate_qualification_evaluations, list_research_candidate_shadow_runs,
+    list_research_candidate_watchlist_rows, list_research_candidates, list_risk_config_audit,
     list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
@@ -136,12 +141,13 @@ use db::{
     mark_strategy_research_candidate_promoted, paper_account_from_record,
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
     persist_strategy_config_version, research_candidate_event_from_record,
-    research_candidate_from_record, revoke_session, risk_config_audit_from_record,
-    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
-    set_kill_switch_state, strategy_candidate_observation_result_from_record,
-    strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, strategy_experiment_result_from_records,
-    strategy_experiment_run_from_record, strategy_research_candidate_from_record,
+    research_candidate_from_record, research_candidate_qualification_evaluation_from_record,
+    revoke_session, risk_config_audit_from_record, risk_config_from_record,
+    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
+    strategy_candidate_observation_result_from_record, strategy_config_audit_from_record,
+    strategy_config_from_record, strategy_config_version_from_record,
+    strategy_experiment_result_from_records, strategy_experiment_run_from_record,
+    strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
     update_research_candidate_status, update_strategy_state,
@@ -154,9 +160,10 @@ use db::{
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
     PaperPositionRecord, PaperTradeJournalRecord, PgPool, ResearchCandidateListFilters,
-    ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery, RiskDecisionRecord,
-    SignalRecord, StateActor, StrategyResearchCandidateListFilters, StrategyStatusRecord,
-    SystemEventRecord, SystemStateRecord, TestnetShadowPromotionRecord,
+    ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
+    ResearchCandidateWatchlistRow, RiskDecisionRecord, SignalRecord, StateActor,
+    StrategyResearchCandidateListFilters, StrategyStatusRecord, SystemEventRecord,
+    SystemStateRecord, TestnetShadowPromotionRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
@@ -1375,6 +1382,29 @@ struct ResearchCandidateQualificationQueryParams {
 }
 
 #[derive(Deserialize)]
+struct ResearchCandidateQualificationHistoryQueryParams {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ResearchCandidateWatchlistQueryParams {
+    strategy_id: Option<String>,
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct ResearchCandidateQualificationEvaluateRequest {
+    min_shadow_runs: Option<i64>,
+    min_would_submit_count: Option<i64>,
+    max_risk_rejection_rate_pct: Option<Decimal>,
+    max_error_or_skipped_rate_pct: Option<Decimal>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
 struct StrategyCandidateObservationEvaluateRequest {
     start_time: Option<DateTime<Utc>>,
     min_observation_hours: Option<i64>,
@@ -1577,6 +1607,33 @@ struct ResearchCandidateShadowRunsResponse {
 #[derive(Serialize)]
 struct ResearchCandidateQualificationResponse {
     qualification: ResearchCandidateQualificationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateQualificationEvaluateResponse {
+    evaluation: ResearchCandidateQualificationEvaluation,
+    change: Option<ResearchCandidateQualificationChange>,
+    trend: ResearchCandidateQualificationTrend,
+    qualification: ResearchCandidateQualificationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateQualificationHistoryResponse {
+    history: ResearchCandidateQualificationHistory,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateWatchlistResponse {
+    watchlist: Vec<ResearchCandidateWatchlistEntry>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2345,6 +2402,10 @@ async fn main() {
             get(list_research_candidates_handler).post(create_research_candidate_handler),
         )
         .route(
+            "/research/candidates/watchlist",
+            get(get_research_candidate_watchlist_handler),
+        )
+        .route(
             "/research/candidates/:id",
             get(get_research_candidate_handler),
         )
@@ -2383,6 +2444,14 @@ async fn main() {
         .route(
             "/research/candidates/:id/qualification",
             get(get_research_candidate_qualification_handler),
+        )
+        .route(
+            "/research/candidates/:id/qualification/evaluate",
+            post(evaluate_research_candidate_qualification_handler),
+        )
+        .route(
+            "/research/candidates/:id/qualification/history",
+            get(get_research_candidate_qualification_history_handler),
         )
         .route(
             "/research/candidates/:id/shadow-runs",
@@ -14450,6 +14519,47 @@ fn qualification_thresholds_from_query(
     thresholds
 }
 
+fn qualification_thresholds_from_evaluate_request(
+    payload: &ResearchCandidateQualificationEvaluateRequest,
+) -> ResearchCandidateQualificationThresholds {
+    let mut thresholds = ResearchCandidateQualificationThresholds::default();
+    if let Some(value) = payload.min_shadow_runs {
+        thresholds.min_shadow_runs = value.max(0);
+    }
+    if let Some(value) = payload.min_would_submit_count {
+        thresholds.min_would_submit_count = value.max(0);
+    }
+    if let Some(value) = payload.max_risk_rejection_rate_pct {
+        thresholds.max_risk_rejection_rate_pct = value.max(Decimal::ZERO);
+    }
+    if let Some(value) = payload.max_error_or_skipped_rate_pct {
+        thresholds.max_error_or_skipped_rate_pct = value.max(Decimal::ZERO);
+    }
+    thresholds
+}
+
+fn bounded_research_candidate_qualification_history_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(20).clamp(1, 500)
+}
+
+fn bounded_research_candidate_watchlist_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(50).clamp(1, 500)
+}
+
+fn parse_execution_readiness_status(
+    value: &str,
+) -> Result<ExecutionReadinessStatus, aegis_core::CoreError> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "READY" => Ok(ExecutionReadinessStatus::Ready),
+        "NOT_READY" => Ok(ExecutionReadinessStatus::NotReady),
+        "DEGRADED" => Ok(ExecutionReadinessStatus::Degraded),
+        "UNKNOWN" => Ok(ExecutionReadinessStatus::Unknown),
+        other => Err(aegis_core::CoreError::UnsupportedResearchCandidateStatus(
+            other.to_string(),
+        )),
+    }
+}
+
 async fn build_research_candidate_qualification(
     state: &AppState,
     candidate: &ResearchCandidate,
@@ -14499,6 +14609,96 @@ async fn build_research_candidate_qualification(
             computed_at: now,
         },
     ))
+}
+
+fn build_research_candidate_qualification_history(
+    candidate_id: Uuid,
+    evaluations: Vec<ResearchCandidateQualificationEvaluation>,
+) -> ResearchCandidateQualificationHistory {
+    let latest = evaluations.first();
+    let previous = evaluations.get(1);
+    let latest_change = latest
+        .and_then(|current| aegis_core::research_candidate_qualification_change(current, previous));
+    let latest_trend = latest
+        .map(|current| aegis_core::research_candidate_qualification_trend(current, previous))
+        .unwrap_or(ResearchCandidateQualificationTrend::InsufficientHistory);
+
+    ResearchCandidateQualificationHistory {
+        candidate_id,
+        evaluations,
+        latest_change,
+        latest_trend,
+    }
+}
+
+fn watchlist_entry_from_row(
+    row: ResearchCandidateWatchlistRow,
+    previous: Option<&ResearchCandidateQualificationEvaluation>,
+    now: DateTime<Utc>,
+) -> anyhow::Result<ResearchCandidateWatchlistEntry> {
+    let latest_evaluation = match row.evaluation_id {
+        Some(id) => Some(ResearchCandidateQualificationEvaluation {
+            id,
+            candidate_id: row.candidate_id,
+            status: row
+                .evaluation_status
+                .as_deref()
+                .unwrap_or("UNKNOWN")
+                .parse()?,
+            score: row.evaluation_score.unwrap_or_default(),
+            latest_readiness_status: row
+                .latest_readiness_status
+                .as_deref()
+                .map(parse_execution_readiness_status)
+                .transpose()?,
+            total_shadow_runs: row.total_shadow_runs.unwrap_or_default(),
+            would_submit_count: row.would_submit_count.unwrap_or_default(),
+            risk_rejection_rate_pct: row.risk_rejection_rate_pct,
+            warnings: serde_json::from_value(
+                row.warnings.unwrap_or_else(|| serde_json::json!([])),
+            )?,
+            blockers: serde_json::from_value(
+                row.blockers.unwrap_or_else(|| serde_json::json!([])),
+            )?,
+            recommendations: serde_json::from_value::<Vec<String>>(
+                row.recommendations.unwrap_or_else(|| serde_json::json!([])),
+            )?
+            .into_iter()
+            .map(|value| value.parse())
+            .collect::<Result<Vec<_>, _>>()?,
+            thresholds: serde_json::from_value(
+                row.thresholds.unwrap_or_else(|| serde_json::json!({})),
+            )?,
+            evaluated_at: row.evaluated_at.unwrap_or(now),
+            correlation_id: row.correlation_id,
+        }),
+        None => None,
+    };
+    let latest_change = latest_evaluation
+        .as_ref()
+        .and_then(|current| aegis_core::research_candidate_qualification_change(current, previous));
+    let trend = latest_evaluation
+        .as_ref()
+        .map(|current| aegis_core::research_candidate_qualification_trend(current, previous))
+        .unwrap_or(ResearchCandidateQualificationTrend::InsufficientHistory);
+    let watchlist_status = aegis_core::research_candidate_watchlist_status(
+        latest_evaluation.as_ref(),
+        trend,
+        now,
+        chrono::Duration::hours(24),
+    );
+
+    Ok(ResearchCandidateWatchlistEntry {
+        candidate_id: row.candidate_id,
+        strategy_id: row.strategy_id,
+        symbol: row.symbol,
+        timeframe: row.timeframe,
+        candidate_status: row.candidate_status.parse()?,
+        latest_evaluation,
+        latest_change,
+        trend,
+        watchlist_status,
+    })
 }
 
 fn observation_rejection(
@@ -16189,6 +16389,392 @@ async fn get_research_candidate_qualification_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_get_research_candidate_qualification",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn evaluate_research_candidate_qualification_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCandidateQualificationEvaluateRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor =
+        match current_actor(actor) {
+            Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+            _ => return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message:
+                        "Only OPERATOR or OWNER can persist candidate qualification evaluations."
+                            .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        };
+    let now = Utc::now();
+    let candidate = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let thresholds = qualification_thresholds_from_evaluate_request(&payload);
+    let qualification =
+        match build_research_candidate_qualification(&state, &candidate, thresholds, now).await {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_evaluate_research_candidate_qualification",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let previous =
+        match get_latest_research_candidate_qualification_evaluation(&state.db_pool, candidate_id)
+            .await
+        {
+            Ok(Some(record)) => {
+                match research_candidate_qualification_evaluation_from_record(&record) {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_research_candidate_qualification_history",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: now,
+                            }),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_load_previous_research_candidate_qualification",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let correlation_id = payload
+        .correlation_id
+        .or_else(|| Some(parse_correlation_id(&request.correlation_id)));
+    let evaluation = aegis_core::research_candidate_qualification_evaluation_from_result(
+        Uuid::new_v4(),
+        &qualification,
+        correlation_id,
+    );
+    let change =
+        aegis_core::research_candidate_qualification_change(&evaluation, previous.as_ref());
+    let trend = aegis_core::research_candidate_qualification_trend(&evaluation, previous.as_ref());
+
+    match insert_research_candidate_qualification_evaluation(&state.db_pool, &evaluation).await {
+        Ok(record) => match research_candidate_qualification_evaluation_from_record(&record) {
+            Ok(evaluation) => (
+                StatusCode::OK,
+                Json(ResearchCandidateQualificationEvaluateResponse {
+                    evaluation,
+                    change,
+                    trend,
+                    qualification,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate_qualification_evaluation",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_research_candidate_qualification_evaluation",
+                message: format!("{err}; actor_id={}", actor.user_id),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_qualification_history_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    Query(query): Query<ResearchCandidateQualificationHistoryQueryParams>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+
+    match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    match list_research_candidate_qualification_evaluations(
+        &state.db_pool,
+        candidate_id,
+        bounded_research_candidate_qualification_history_limit(query.limit),
+    )
+    .await
+    {
+        Ok(records) => match records
+            .iter()
+            .map(research_candidate_qualification_evaluation_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(evaluations) => (
+                StatusCode::OK,
+                Json(ResearchCandidateQualificationHistoryResponse {
+                    history: build_research_candidate_qualification_history(
+                        candidate_id,
+                        evaluations,
+                    ),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate_qualification_history",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_candidate_qualification_history",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_watchlist_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchCandidateWatchlistQueryParams>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    let filters = ResearchCandidateListFilters {
+        strategy_id: query.strategy_id,
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        status: query.status,
+    };
+
+    match list_research_candidate_watchlist_rows(
+        &state.db_pool,
+        &filters,
+        bounded_research_candidate_watchlist_limit(query.limit),
+    )
+    .await
+    {
+        Ok(rows) => {
+            let mut watchlist = Vec::with_capacity(rows.len());
+            for row in rows {
+                let previous =
+                    match row.evaluation_id {
+                        Some(_) => {
+                            let records = list_research_candidate_qualification_evaluations(
+                                &state.db_pool,
+                                row.candidate_id,
+                                2,
+                            )
+                            .await;
+                            match records {
+                                Ok(records) => {
+                                    let evaluations = records
+                                        .iter()
+                                        .map(
+                                            research_candidate_qualification_evaluation_from_record,
+                                        )
+                                        .collect::<anyhow::Result<Vec<_>>>();
+                                    match evaluations {
+                                        Ok(values) => values.get(1).cloned(),
+                                        Err(err) => return (
+                                            StatusCode::INTERNAL_SERVER_ERROR,
+                                            Json(ErrorResponse {
+                                                error: "failed_to_map_research_candidate_watchlist",
+                                                message: err.to_string(),
+                                                request_id: request.request_id,
+                                                correlation_id: request.correlation_id,
+                                                timestamp: now,
+                                            }),
+                                        )
+                                            .into_response(),
+                                    }
+                                }
+                                Err(err) => return (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(ErrorResponse {
+                                        error:
+                                            "failed_to_load_research_candidate_watchlist_history",
+                                        message: err.to_string(),
+                                        request_id: request.request_id,
+                                        correlation_id: request.correlation_id,
+                                        timestamp: now,
+                                    }),
+                                )
+                                    .into_response(),
+                            }
+                        }
+                        None => None,
+                    };
+                match watchlist_entry_from_row(row, previous.as_ref(), now) {
+                    Ok(entry) => watchlist.push(entry),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_research_candidate_watchlist",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: now,
+                            }),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+
+            (
+                StatusCode::OK,
+                Json(ResearchCandidateWatchlistResponse {
+                    watchlist,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_candidate_watchlist",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
@@ -20422,6 +21008,18 @@ mod tests {
         assert_eq!(count_testnet_shadow_promotions(pool).await, before.5);
     }
 
+    async fn count_research_candidate_qualification_evaluations(pool: &PgPool) -> i64 {
+        sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM research_candidate_qualification_evaluations
+            "#,
+        )
+        .fetch_one(pool)
+        .await
+        .expect("qualification evaluation count")
+    }
+
     fn sample_shadow_run_would_submit(created_at: chrono::DateTime<Utc>) -> TestnetShadowRunRecord {
         TestnetShadowRunRecord {
             id: Uuid::new_v4(),
@@ -23903,6 +24501,263 @@ mod tests {
                 .as_str()
                 .unwrap_or_default()
                 .contains("Risk rejection rate")));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_qualification_evaluation_history_and_watchlist_persist_without_execution_mutation(
+    ) {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let viewer_email = "research-viewer-qualification-history@example.com";
+        let operator_email = "research-operator-qualification-history@example.com";
+        insert_test_user(
+            &test_db.pool,
+            viewer_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::FifteenMinutes,
+            ),
+        )
+        .await
+        .expect("runner config should persist");
+
+        let candidate = sample_lifecycle_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::AcceptedForShadow,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &candidate,
+            None,
+            ResearchCandidateDecision::AcceptForShadow,
+            Some("fixture"),
+            Some("qualification history fixture"),
+            &json!({"fixture": true}),
+        )
+        .await
+        .expect("candidate should persist");
+
+        let mut observation = sample_observation_for_tests(
+            Utc::now(),
+            900,
+            true,
+            Some(ExecutionReadinessStatus::Ready),
+        );
+        observation.candidate_id = candidate.id;
+        observation.strategy_id = candidate.strategy_id.clone();
+        observation.symbol = candidate.symbol.clone();
+        observation.timeframe = candidate.timeframe.clone();
+        observation.requirements.candidate_id = candidate.id;
+        observation.requirements.strategy_id = candidate.strategy_id.clone();
+        observation.requirements.symbol = candidate.symbol.clone();
+        observation.requirements.timeframe = candidate.timeframe.clone();
+        observation.summary.candidate_id = candidate.id;
+        insert_strategy_candidate_observation(&test_db.pool, &observation)
+            .await
+            .expect("observation should persist");
+
+        for index in 0..5 {
+            let run = TestnetShadowRunRecord {
+                id: Uuid::new_v4(),
+                strategy_id: candidate.strategy_id.clone(),
+                symbol: candidate.symbol.clone(),
+                timeframe: candidate.timeframe.clone(),
+                decision: "WOULD_SUBMIT".to_string(),
+                signal_id: None,
+                risk_decision_id: None,
+                would_submit_payload: None,
+                price_source: Some("local".to_string()),
+                resolved_price: Some(Decimal::new(100_000, 0)),
+                reasons: Vec::new(),
+                status: "COMPLETED".to_string(),
+                created_at: Utc::now() - chrono::Duration::minutes(20 - index),
+                correlation_id: Some(Uuid::new_v4()),
+            };
+            insert_testnet_shadow_run(&test_db.pool, &run)
+                .await
+                .expect("run should persist");
+            insert_research_candidate_shadow_run_link(
+                &test_db.pool,
+                candidate.id,
+                run.id,
+                run.created_at,
+            )
+            .await
+            .expect("link should persist");
+        }
+
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let before_evaluations =
+            count_research_candidate_qualification_evaluations(&test_db.pool).await;
+        let (viewer_login, _) =
+            login_cli(&app, viewer_email, "replace-with-a-12-char-min-password").await;
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let stateless = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/qualification",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("qualification request"),
+            )
+            .await
+            .expect("qualification response");
+        assert_eq!(stateless.status(), StatusCode::OK);
+        assert_eq!(
+            count_research_candidate_qualification_evaluations(&test_db.pool).await,
+            before_evaluations
+        );
+
+        let persisted = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/research/candidates/{}/qualification/evaluate",
+                    candidate.id
+                ),
+                &operator_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("evaluation response");
+        assert_eq!(persisted.status(), StatusCode::OK);
+        let first_payload = response_json::<Value>(persisted).await;
+        assert_eq!(first_payload["evaluation"]["status"], "NEEDS_MORE_DATA");
+        assert_eq!(
+            count_research_candidate_qualification_evaluations(&test_db.pool).await,
+            before_evaluations + 1
+        );
+
+        for index in 0..25 {
+            let run = TestnetShadowRunRecord {
+                id: Uuid::new_v4(),
+                strategy_id: candidate.strategy_id.clone(),
+                symbol: candidate.symbol.clone(),
+                timeframe: candidate.timeframe.clone(),
+                decision: "WOULD_SUBMIT".to_string(),
+                signal_id: None,
+                risk_decision_id: None,
+                would_submit_payload: None,
+                price_source: Some("local".to_string()),
+                resolved_price: Some(Decimal::new(100_000, 0)),
+                reasons: Vec::new(),
+                status: "COMPLETED".to_string(),
+                created_at: Utc::now() + chrono::Duration::minutes(index + 1),
+                correlation_id: Some(Uuid::new_v4()),
+            };
+            insert_testnet_shadow_run(&test_db.pool, &run)
+                .await
+                .expect("run should persist");
+            insert_research_candidate_shadow_run_link(
+                &test_db.pool,
+                candidate.id,
+                run.id,
+                run.created_at,
+            )
+            .await
+            .expect("link should persist");
+        }
+
+        let persisted_again = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &format!(
+                    "/research/candidates/{}/qualification/evaluate",
+                    candidate.id
+                ),
+                &operator_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("second evaluation response");
+        assert_eq!(persisted_again.status(), StatusCode::OK);
+        let second_payload = response_json::<Value>(persisted_again).await;
+        assert_eq!(second_payload["evaluation"]["status"], "QUALIFIED");
+        assert_eq!(second_payload["change"]["newly_qualified"], true);
+        assert_eq!(second_payload["trend"], "NEWLY_QUALIFIED");
+
+        let history = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/qualification/history?limit=20",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("history request"),
+            )
+            .await
+            .expect("history response");
+        assert_eq!(history.status(), StatusCode::OK);
+        let history_payload = response_json::<Value>(history).await;
+        let evaluations = history_payload["history"]["evaluations"]
+            .as_array()
+            .expect("evaluations array");
+        assert_eq!(evaluations.len(), 2);
+        assert_eq!(evaluations[0]["status"], "QUALIFIED");
+        assert_eq!(evaluations[1]["status"], "NEEDS_MORE_DATA");
+
+        let watchlist = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/research/candidates/watchlist?limit=50")
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("watchlist request"),
+            )
+            .await
+            .expect("watchlist response");
+        assert_eq!(watchlist.status(), StatusCode::OK);
+        let watchlist_payload = response_json::<Value>(watchlist).await;
+        let entry = watchlist_payload["watchlist"]
+            .as_array()
+            .expect("watchlist array")
+            .iter()
+            .find(|item| item["candidate_id"] == candidate.id.to_string())
+            .expect("candidate watchlist entry");
+        assert_eq!(entry["latest_evaluation"]["status"], "QUALIFIED");
+        assert_eq!(entry["trend"], "NEWLY_QUALIFIED");
+
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
     }
 
     #[tokio::test]

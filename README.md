@@ -127,7 +127,9 @@ This workflow does not enable live trading, does not execute trades during candi
 `ACCEPT_FOR_SHADOW` requires the latest persisted observation to be fresh. The default freshness window is 15 minutes.
 Shadow promotion requires a fresh observation, explicit confirmation, and only updates `testnet_shadow_runner_config` plus audit/system/research lifecycle records. It does not submit testnet orders or mutate paper/testnet/live execution tables.
 After promotion, linked shadow runs can be inspected through candidate shadow-performance and shadow-runs views. The association is research-only and read-only over `testnet_shadow_runs`; it does not mutate paper, testnet submit, or live execution tables.
-Candidate qualification is also read-only decision support. It gates whether a candidate is ready for testnet promotion consideration, does not auto-promote anything, does not submit orders, and does not mutate paper/testnet/live execution tables. Default qualification thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
+Candidate qualification checks are stateless and read-only decision support. They gate whether a candidate is ready for testnet promotion consideration, do not auto-promote anything, do not submit orders, and do not mutate paper/testnet/live execution tables. Default qualification thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
+
+Persisted qualification evaluations are separate research snapshots. `POST /research/candidates/:id/qualification/evaluate` stores the current qualification result, the watchlist tracks how candidate health changes over time, and the history endpoints remain research-only with no execution side effects.
 
 ## Local prerequisites
 
@@ -336,6 +338,9 @@ Research candidate lifecycle examples:
 `cargo run -p cli -- research candidates promote-shadow-apply <candidate_id> --allow-missing-runner-alignment --confirm "PROMOTE CANDIDATE <candidate_id> TO SHADOW"`
 
 `cargo run -p cli -- research candidates qualification <candidate_id>`
+`cargo run -p cli -- research candidates qualification-evaluate <candidate_id>`
+`cargo run -p cli -- research candidates qualification-history <candidate_id> --limit 20`
+`cargo run -p cli -- research candidates watchlist --limit 50`
 
 `cargo run -p cli -- research candidates shadow-performance <candidate_id>`
 
