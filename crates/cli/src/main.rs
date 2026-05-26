@@ -1,7 +1,7 @@
 use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
-    StrategyResearchCandidatePromotionRequest, StrategyResearchCandidateSource,
-    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
+    ResearchCandidateDecisionRequest, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -11,9 +11,9 @@ use cli::api::{
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
     build_research_data_build_request, build_research_data_coverage_query,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
-    build_strategy_walk_forward_request, ApiClient, RecentEventsQuery,
-    ResearchCandidateObservationEvaluateRequest, ResearchCandidateRegisterRequest,
-    ResearchCandidatesQuery, RiskDecisionsQuery,
+    build_strategy_walk_forward_request, ApiClient,
+    CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
+    RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
@@ -461,40 +461,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             },
             ResearchCommands::Candidates(command) => match command {
-                ResearchCandidateCommands::RegisterFromExperimentRun { run_id } => {
-                    let response = client
-                        .register_research_candidate(&ResearchCandidateRegisterRequest {
-                            source_type: StrategyResearchCandidateSource::ExperimentRun,
-                            source_id: Some(run_id),
-                            symbol: None,
-                            config: None,
-                            evidence: None,
-                            correlation_id: None,
-                        })
-                        .await?;
-                    if cli.json {
-                        output::print_json(&response)?;
-                    } else {
-                        output::print_research_candidate(&response.candidate);
-                    }
-                }
-                ResearchCandidateCommands::RegisterFromWalkForward { walk_forward_id } => {
-                    let response = client
-                        .register_research_candidate(&ResearchCandidateRegisterRequest {
-                            source_type: StrategyResearchCandidateSource::WalkForward,
-                            source_id: Some(walk_forward_id),
-                            symbol: None,
-                            config: None,
-                            evidence: None,
-                            correlation_id: None,
-                        })
-                        .await?;
-                    if cli.json {
-                        output::print_json(&response)?;
-                    } else {
-                        output::print_research_candidate(&response.candidate);
-                    }
-                }
                 ResearchCandidateCommands::List(args) => {
                     let response = client
                         .list_research_candidates(&ResearchCandidatesQuery {
@@ -519,18 +485,39 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate(&response.candidate);
                     }
                 }
-                ResearchCandidateCommands::Observe(args) => {
+                ResearchCandidateCommands::Events { candidate_id } => {
+                    let response = client.list_research_candidate_events(candidate_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_events(&response.events);
+                    }
+                }
+                ResearchCandidateCommands::Create(args) => {
+                    let config = serde_json::from_str(&args.config_json)
+                        .context("failed to parse --config-json as JSON")?;
                     let response = client
-                        .observe_research_candidate(
-                            args.candidate_id,
-                            &ResearchCandidateObservationEvaluateRequest {
-                                start_time: args.start_time,
-                                min_observation_hours: args.min_observation_hours,
-                                min_shadow_runs: args.min_shadow_runs,
-                                max_risk_rejection_rate: args.max_risk_rejection_rate,
-                                min_would_submit_count: args.min_would_submit_count,
-                                max_no_signal_rate: args.max_no_signal_rate,
-                                require_readiness_ready: args.require_readiness_ready,
+                        .create_research_candidate(&CreateResearchCandidateRequest {
+                            strategy_id: args.strategy_id,
+                            symbol: args.symbol,
+                            timeframe: args.timeframe,
+                            config,
+                            notes: args.notes,
+                            correlation_id: None,
+                        })
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate(&response.candidate);
+                    }
+                }
+                ResearchCandidateCommands::FromExperimentRun(args) => {
+                    let response = client
+                        .create_research_candidate_from_experiment_run(
+                            &CreateResearchCandidateFromExperimentRunRequest {
+                                experiment_run_id: args.run_id,
+                                notes: args.notes,
                                 correlation_id: None,
                             },
                         )
@@ -538,35 +525,26 @@ async fn main() -> anyhow::Result<()> {
                     if cli.json {
                         output::print_json(&response)?;
                     } else {
-                        output::print_research_candidate_observation(&response.observation);
+                        output::print_research_candidate(&response.candidate);
                     }
                 }
-                ResearchCandidateCommands::Observations { candidate_id } => {
-                    let response = client
-                        .list_research_candidate_observations(candidate_id)
-                        .await?;
-                    if cli.json {
-                        output::print_json(&response)?;
-                    } else {
-                        output::print_research_candidate_observations(&response.observations);
-                    }
-                }
-                ResearchCandidateCommands::ObservationGet { observation_id } => {
-                    let response = client
-                        .get_research_candidate_observation(observation_id)
-                        .await?;
+                ResearchCandidateCommands::Observe { candidate_id } => {
+                    let response = client.observe_research_candidate(candidate_id).await?;
                     if cli.json {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate_observation(&response.observation);
                     }
                 }
-                ResearchCandidateCommands::PromoteShadow(args) => {
+                ResearchCandidateCommands::Decide(args) => {
                     let response = client
-                        .promote_research_candidate_shadow(
+                        .decide_research_candidate(
                             args.candidate_id,
-                            &StrategyResearchCandidatePromotionRequest {
-                                confirmation_text: args.confirmation_text,
+                            &ResearchCandidateDecisionRequest {
+                                decision: args.decision,
+                                reason: args.reason,
+                                notes: args.notes,
+                                acknowledge_runner_mismatch: args.acknowledge_runner_mismatch,
                                 correlation_id: None,
                             },
                         )
@@ -574,7 +552,7 @@ async fn main() -> anyhow::Result<()> {
                     if cli.json {
                         output::print_json(&response)?;
                     } else {
-                        output::print_research_candidate_promotion(&response.promotion);
+                        output::print_research_candidate(&response.candidate);
                     }
                 }
             },

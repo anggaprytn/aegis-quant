@@ -854,82 +854,76 @@ export type ResearchDatasetBuildsResponse = {
   timestamp: string;
 };
 
-export type StrategyResearchCandidateSource =
-  | "EXPERIMENT_RUN"
-  | "MULTI_TIMEFRAME_EXPERIMENT"
-  | "WALK_FORWARD"
-  | "MANUAL";
-
-export type StrategyResearchCandidateStatus =
-  | "DRAFT"
-  | "REGISTERED"
+export type ResearchCandidateStatus =
+  | "DISCOVERED"
+  | "OBSERVING"
+  | "ACCEPTED_FOR_SHADOW"
   | "REJECTED"
-  | "PROMOTED_TO_SHADOW_CONFIG"
   | "ARCHIVED";
 
-export type StrategyResearchCandidateEvidence = {
+export type ResearchCandidateDecision =
+  | "ACCEPT_FOR_SHADOW"
+  | "REJECT"
+  | "ARCHIVE"
+  | "REOPEN";
+
+export type ResearchCandidate = {
+  id: string;
   experiment_id: string | null;
   experiment_run_id: string | null;
-  walk_forward_id: string | null;
-  pnl_pct: string | null;
-  max_drawdown_pct: string | null;
-  win_rate: string | null;
-  trade_count: number | null;
-  fee_paid: string | null;
-  slippage_cost: string | null;
-  robustness_score: string | null;
-  profitable_windows: number | null;
-  losing_windows: number | null;
-  skipped_windows: number | null;
-  notes: string | null;
-};
-
-export type StrategyResearchCandidateScore = {
-  score: string;
-  warnings: string[];
-  rejection_hints: string[];
-};
-
-export type StrategyResearchCandidate = {
-  id: string;
   strategy_id: string;
   symbol: string;
   timeframe: string;
   config: Record<string, unknown>;
-  source_type: StrategyResearchCandidateSource;
-  source_id: string | null;
-  evidence: StrategyResearchCandidateEvidence;
-  score: StrategyResearchCandidateScore;
-  status: StrategyResearchCandidateStatus;
+  score: string | null;
+  pnl_pct: string | null;
+  max_drawdown_pct: string | null;
+  trade_count: number | null;
+  win_rate: string | null;
+  fee_drag: string | null;
+  status: ResearchCandidateStatus;
+  rejection_reason: string | null;
+  notes: string | null;
   created_at: string;
-  promoted_at: string | null;
-  promoted_by: string | null;
+  updated_at: string;
   correlation_id: string | null;
 };
 
-export type StrategyResearchCandidateRegisterRequest = {
-  source_type: StrategyResearchCandidateSource;
-  source_id?: string | null;
-  symbol?: string | null;
-  config?: StrategyConfigUpdateRequest | null;
-  evidence?: StrategyResearchCandidateEvidence | null;
-  correlation_id?: string | null;
-};
-
-export type StrategyResearchCandidatePromotionRequest = {
-  confirmation_text: string;
-  correlation_id?: string | null;
-};
-
-export type StrategyResearchCandidatePromotionResult = {
-  candidate_id: string;
+export type CreateResearchCandidateRequest = {
   strategy_id: string;
-  previous_config: Record<string, unknown> | null;
-  promoted_config: Record<string, unknown>;
-  status: StrategyResearchCandidateStatus;
-  promoted_at: string;
-  promoted_by: string | null;
+  symbol: string;
+  timeframe: string;
+  config: Record<string, unknown>;
+  notes?: string | null;
+  correlation_id?: string | null;
+};
+
+export type CreateResearchCandidateFromExperimentRunRequest = {
+  experiment_run_id: string;
+  notes?: string | null;
+  correlation_id?: string | null;
+};
+
+export type ResearchCandidateLifecycleEvent = {
+  id: string;
+  candidate_id: string;
+  previous_status: ResearchCandidateStatus | null;
+  next_status: ResearchCandidateStatus;
+  decision: ResearchCandidateDecision;
+  reason: string | null;
+  notes: string | null;
+  actor_id: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
   correlation_id: string | null;
+};
+
+export type ResearchCandidateDecisionRequest = {
+  decision: ResearchCandidateDecision;
+  reason?: string | null;
+  notes?: string | null;
+  acknowledge_runner_mismatch?: boolean;
+  correlation_id?: string | null;
 };
 
 export type StrategyCandidateObservationStatus =
@@ -1022,29 +1016,22 @@ export type StrategyCandidateObservationEvaluateRequest = {
   correlation_id?: string | null;
 };
 
-export type StrategyResearchCandidatesResponse = {
-  candidates: StrategyResearchCandidate[];
+export type ResearchCandidatesResponse = {
+  candidates: ResearchCandidate[];
   request_id: string;
   correlation_id: string;
   timestamp: string;
 };
 
-export type StrategyResearchCandidateResponse = {
-  candidate: StrategyResearchCandidate;
+export type ResearchCandidateResponse = {
+  candidate: ResearchCandidate;
   request_id: string;
   correlation_id: string;
   timestamp: string;
 };
 
-export type StrategyResearchCandidatePromotionResponse = {
-  promotion: StrategyResearchCandidatePromotionResult;
-  request_id: string;
-  correlation_id: string;
-  timestamp: string;
-};
-
-export type StrategyCandidateObservationsResponse = {
-  observations: StrategyCandidateObservation[];
+export type ResearchCandidateEventsResponse = {
+  events: ResearchCandidateLifecycleEvent[];
   request_id: string;
   correlation_id: string;
   timestamp: string;

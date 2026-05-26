@@ -15,14 +15,14 @@ Research workflow:
 1. Build the research dataset so 1m coverage gaps are backfilled and 5m/15m/1h candles are re-aggregated.
 2. Run the multi-timeframe strategy experiment on the prepared dataset.
 3. Run walk-forward validation on the same prepared window.
-4. Register a research candidate from the strongest experiment run, walk-forward result, or manual review package.
-5. Promote to shadow config only after operator review and exact owner confirmation.
-6. Observe the promoted config through the shadow runner and persist the observation result.
-7. Review the observation result before any testnet promotion.
+4. Create a research candidate from the strongest experiment run or manual review package.
+5. Review candidate details, lifecycle events, and read-only observation output.
+6. Explicitly mark the candidate as observing when shadow review begins.
+7. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
 
-Research candidate promotion boundaries:
-- Candidate promotion does not execute trades.
-- Candidate promotion does not auto-submit anything.
-- Candidate observation does not execute trades and does not mutate paper or testnet execution state.
-- Candidate promotion does not mutate signals, risk decisions, paper state, testnet state, or live execution state.
+Research candidate lifecycle boundaries:
+- Candidate creation, observation, decisions, and archival do not execute trades.
+- Candidate lifecycle operations do not auto-submit anything.
+- Candidate observation does not mutate paper or testnet execution state.
+- Candidate lifecycle operations do not mutate signals, risk decisions, paper state, testnet state, or live execution state.
 - No live trading path is enabled.

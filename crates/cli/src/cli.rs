@@ -3,8 +3,9 @@ use uuid::Uuid;
 
 use aegis_core::{
     expected_testnet_pipeline_confirmation, ExecutionReadinessRequest, ExecutionReadinessTarget,
-    OperatorReportFormat, OperatorReportRequest, TestnetShadowPromotionRequest,
-    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
+    OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
+    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerStaleFeedPolicy,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -701,14 +702,13 @@ pub enum ResearchDataCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum ResearchCandidateCommands {
-    RegisterFromExperimentRun { run_id: Uuid },
-    RegisterFromWalkForward { walk_forward_id: Uuid },
     List(ResearchCandidateListArgs),
     Get { candidate_id: Uuid },
-    Observe(ResearchCandidateObserveArgs),
-    Observations { candidate_id: Uuid },
-    ObservationGet { observation_id: Uuid },
-    PromoteShadow(ResearchCandidatePromoteArgs),
+    Events { candidate_id: Uuid },
+    Create(ResearchCandidateCreateArgs),
+    FromExperimentRun(ResearchCandidateFromExperimentRunArgs),
+    Observe { candidate_id: Uuid },
+    Decide(ResearchCandidateDecideArgs),
 }
 
 #[derive(Debug, Args)]
@@ -726,33 +726,37 @@ pub struct ResearchCandidateListArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ResearchCandidatePromoteArgs {
-    pub candidate_id: Uuid,
-    #[arg(long = "confirm")]
-    pub confirmation_text: String,
+pub struct ResearchCandidateCreateArgs {
+    #[arg(long = "strategy")]
+    pub strategy_id: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "config-json")]
+    pub config_json: String,
+    #[arg(long)]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Args)]
-pub struct ResearchCandidateObserveArgs {
+pub struct ResearchCandidateFromExperimentRunArgs {
+    pub run_id: Uuid,
+    #[arg(long)]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateDecideArgs {
     pub candidate_id: Uuid,
-    #[arg(long = "start-time")]
-    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
-    #[arg(long = "min-hours", default_value_t = 24)]
-    pub min_observation_hours: i64,
-    #[arg(long = "min-shadow-runs", default_value_t = 30)]
-    pub min_shadow_runs: i64,
-    #[arg(long = "max-risk-rejection-rate")]
-    pub max_risk_rejection_rate: Option<rust_decimal::Decimal>,
-    #[arg(long = "min-would-submit", default_value_t = 1)]
-    pub min_would_submit_count: i64,
-    #[arg(long = "max-no-signal-rate")]
-    pub max_no_signal_rate: Option<rust_decimal::Decimal>,
-    #[arg(
-        long = "require-readiness-ready",
-        default_value_t = true,
-        action = clap::ArgAction::Set
-    )]
-    pub require_readiness_ready: bool,
+    #[arg(long)]
+    pub decision: ResearchCandidateDecision,
+    #[arg(long)]
+    pub reason: Option<String>,
+    #[arg(long)]
+    pub notes: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub acknowledge_runner_mismatch: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1301,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn research_candidate_observe_parses_explicit_false_readiness_flag() {
+    fn research_candidate_observe_parses_candidate_id() {
         let candidate_id =
             Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid");
         let cli = Cli::try_parse_from([
@@ -1310,24 +1314,18 @@ mod tests {
             "candidates",
             "observe",
             &candidate_id.to_string(),
-            "--min-hours",
-            "0",
-            "--min-shadow-runs",
-            "1",
-            "--min-would-submit",
-            "0",
-            "--require-readiness-ready",
-            "false",
         ])
         .expect("cli parses");
 
         let Commands::Research(super::ResearchCommands::Candidates(
-            super::ResearchCandidateCommands::Observe(args),
+            super::ResearchCandidateCommands::Observe {
+                candidate_id: parsed_candidate_id,
+            },
         )) = cli.command
         else {
             panic!("expected research observe command");
         };
 
-        assert!(!args.require_readiness_ready);
+        assert_eq!(parsed_candidate_id, candidate_id);
     }
 }

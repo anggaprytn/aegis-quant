@@ -3,19 +3,19 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use aegis_core::{
-    EventEnvelope, ExecutionReadinessRequest, ExecutionReadinessTarget,
-    StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
+    EventEnvelope, ExecutionReadinessRequest, ExecutionReadinessTarget, ResearchCandidateDecision,
+    ResearchCandidateLifecycleEvent, ResearchCandidateStatus, StrategyCandidateObservationDecision,
     StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
-    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyCandidateRunnerAlignment, StrategyResearchCandidateStatus, TestnetShadowDecision,
+    StrategyCandidateObservationStatus, StrategyCandidateRunnerAlignment, TestnetShadowDecision,
     TestnetShadowRunnerConfig, TestnetShadowRunnerState,
 };
 use db::{
-    ensure_testnet_shadow_runner_config, ensure_testnet_shadow_runner_state,
-    get_strategy_research_candidate, insert_strategy_candidate_observation, insert_system_event,
-    list_testnet_shadow_runs_in_window, strategy_candidate_observation_result_from_record,
-    strategy_research_candidate_from_record, testnet_shadow_runner_config_from_record,
-    testnet_shadow_runner_state_from_record,
+    append_research_candidate_event, ensure_testnet_shadow_runner_config,
+    ensure_testnet_shadow_runner_state, get_research_candidate,
+    insert_strategy_candidate_observation, insert_system_event, list_testnet_shadow_runs_in_window,
+    research_candidate_from_record, strategy_candidate_observation_result_from_record,
+    testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
+    update_research_candidate_status,
 };
 use telemetry::telemetry;
 
@@ -96,13 +96,14 @@ pub async fn evaluate_candidate_observation(
     state: &AppState,
     request: &StrategyCandidateObservationRequest,
     created_by: Option<Uuid>,
+    mark_observing: bool,
 ) -> Result<StrategyCandidateObservationResult> {
     let evaluated_at = Utc::now();
     let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
-    let candidate_record = get_strategy_research_candidate(&state.db_pool, request.candidate_id)
+    let candidate_record = get_research_candidate(&state.db_pool, request.candidate_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("research candidate was not found"))?;
-    let candidate = strategy_research_candidate_from_record(&candidate_record)?;
+    let candidate = research_candidate_from_record(&candidate_record)?;
     let requirements = request.to_requirement(
         candidate.strategy_id.clone(),
         candidate.symbol.clone(),
@@ -116,141 +117,133 @@ pub async fn evaluate_candidate_observation(
         &runner_snapshot,
     );
 
-    let observation = if candidate.status != StrategyResearchCandidateStatus::PromotedToShadowConfig
-        || candidate.promoted_at.is_none()
-    {
-        let window_start = evaluated_at;
-        let summary = StrategyCandidateObservationSummary {
-            candidate_id: candidate.id,
-            window_start,
-            window_end: evaluated_at,
-            shadow_runs: 0,
-            would_submit_count: 0,
-            no_signal_count: 0,
-            risk_rejected_count: 0,
-            skipped_count: 0,
-            risk_rejection_rate: rust_decimal::Decimal::ZERO,
-            no_signal_rate: rust_decimal::Decimal::ZERO,
-            latest_readiness_status: None,
-            latest_readiness_score: None,
-            runner_alignment: runner_alignment.clone(),
-            decision: StrategyCandidateObservationDecision::InsufficientData,
-            findings: vec![StrategyCandidateObservationFinding {
-                code: "candidate_not_promoted_to_shadow".to_string(),
-                message: "Candidate has not been promoted to shadow config.".to_string(),
-                blocking: true,
-            }],
-            recommendations: Vec::new(),
-            created_at: evaluated_at,
-        };
-        StrategyCandidateObservationResult {
-            observation_id: Uuid::new_v4(),
-            candidate_id: candidate.id,
-            strategy_id: candidate.strategy_id.clone(),
-            symbol: candidate.symbol.clone(),
-            timeframe: candidate.timeframe.clone(),
-            status: StrategyCandidateObservationStatus::InsufficientData,
-            requirements,
-            runner_alignment,
-            summary,
-            decision: StrategyCandidateObservationDecision::InsufficientData,
-            started_at: window_start,
-            evaluated_at,
-            created_by,
-            correlation_id: Some(correlation_id),
-        }
-    } else {
-        let window_start = request.start_time.unwrap_or(candidate.promoted_at.unwrap());
-        let shadow_runs = list_testnet_shadow_runs_in_window(
-            &state.db_pool,
-            &candidate.strategy_id,
-            &candidate.symbol,
-            &candidate.timeframe,
-            window_start,
-            evaluated_at,
-        )
-        .await?;
-        let would_submit_count = shadow_runs
-            .iter()
-            .filter(|run| run.decision == TestnetShadowDecision::WouldSubmit.as_str())
-            .count() as i64;
-        let no_signal_count = shadow_runs
-            .iter()
-            .filter(|run| run.decision == TestnetShadowDecision::NoSignal.as_str())
-            .count() as i64;
-        let risk_rejected_count = shadow_runs
-            .iter()
-            .filter(|run| run.decision == TestnetShadowDecision::RiskRejected.as_str())
-            .count() as i64;
-        let skipped_count = shadow_runs
-            .iter()
-            .filter(|run| run.decision.starts_with("SKIPPED_"))
-            .count() as i64;
+    let window_start = request.start_time.unwrap_or(candidate.created_at);
+    let shadow_runs = list_testnet_shadow_runs_in_window(
+        &state.db_pool,
+        &candidate.strategy_id,
+        &candidate.symbol,
+        &candidate.timeframe,
+        window_start,
+        evaluated_at,
+    )
+    .await?;
+    let would_submit_count = shadow_runs
+        .iter()
+        .filter(|run| run.decision == TestnetShadowDecision::WouldSubmit.as_str())
+        .count() as i64;
+    let no_signal_count = shadow_runs
+        .iter()
+        .filter(|run| run.decision == TestnetShadowDecision::NoSignal.as_str())
+        .count() as i64;
+    let risk_rejected_count = shadow_runs
+        .iter()
+        .filter(|run| run.decision == TestnetShadowDecision::RiskRejected.as_str())
+        .count() as i64;
+    let skipped_count = shadow_runs
+        .iter()
+        .filter(|run| run.decision.starts_with("SKIPPED_"))
+        .count() as i64;
 
-        let readiness = compute_execution_readiness(
-            state,
-            &ExecutionReadinessRequest {
-                target: ExecutionReadinessTarget::TestnetShadow,
-                symbol: Some(candidate.symbol.clone()),
-                strategy_id: Some(candidate.strategy_id.clone()),
-                timeframe: Some(candidate.timeframe.clone()),
-                promotion_id: None,
-                risk_decision_id: None,
-                start_time: Some(window_start),
-                end_time: Some(evaluated_at),
-                persist: false,
-                correlation_id: Some(correlation_id),
-            },
-            None,
-        )
-        .await?;
-        let summary = aegis_core::evaluate_strategy_candidate_observation(
-            &requirements,
-            window_start,
-            evaluated_at,
-            shadow_runs.len() as i64,
-            would_submit_count,
-            no_signal_count,
-            risk_rejected_count,
-            skipped_count,
-            Some(readiness.status),
-            Some(readiness.score),
-            runner_alignment.clone(),
-            evaluated_at,
-        );
-        StrategyCandidateObservationResult {
-            observation_id: Uuid::new_v4(),
-            candidate_id: candidate.id,
-            strategy_id: candidate.strategy_id.clone(),
-            symbol: candidate.symbol.clone(),
-            timeframe: candidate.timeframe.clone(),
-            status: match summary.decision {
-                StrategyCandidateObservationDecision::Pass => {
-                    StrategyCandidateObservationStatus::ReadyForReview
-                }
-                StrategyCandidateObservationDecision::Fail => {
-                    StrategyCandidateObservationStatus::Failed
-                }
-                StrategyCandidateObservationDecision::ContinueObserving => {
-                    StrategyCandidateObservationStatus::Observing
-                }
-                StrategyCandidateObservationDecision::InsufficientData => {
-                    StrategyCandidateObservationStatus::InsufficientData
-                }
-            },
-            requirements,
-            runner_alignment,
-            decision: summary.decision,
-            summary,
-            started_at: window_start,
-            evaluated_at,
-            created_by,
+    let readiness = compute_execution_readiness(
+        state,
+        &ExecutionReadinessRequest {
+            target: ExecutionReadinessTarget::TestnetShadow,
+            symbol: Some(candidate.symbol.clone()),
+            strategy_id: Some(candidate.strategy_id.clone()),
+            timeframe: Some(candidate.timeframe.clone()),
+            promotion_id: None,
+            risk_decision_id: None,
+            start_time: Some(window_start),
+            end_time: Some(evaluated_at),
+            persist: false,
             correlation_id: Some(correlation_id),
-        }
+        },
+        None,
+    )
+    .await?;
+    let summary = aegis_core::evaluate_strategy_candidate_observation(
+        &requirements,
+        window_start,
+        evaluated_at,
+        shadow_runs.len() as i64,
+        would_submit_count,
+        no_signal_count,
+        risk_rejected_count,
+        skipped_count,
+        Some(readiness.status),
+        Some(readiness.score),
+        runner_alignment.clone(),
+        evaluated_at,
+    );
+    let observation = StrategyCandidateObservationResult {
+        observation_id: Uuid::new_v4(),
+        candidate_id: candidate.id,
+        strategy_id: candidate.strategy_id.clone(),
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        status: match summary.decision {
+            StrategyCandidateObservationDecision::Pass => {
+                StrategyCandidateObservationStatus::ReadyForReview
+            }
+            StrategyCandidateObservationDecision::Fail => {
+                StrategyCandidateObservationStatus::Failed
+            }
+            StrategyCandidateObservationDecision::ContinueObserving => {
+                StrategyCandidateObservationStatus::Observing
+            }
+            StrategyCandidateObservationDecision::InsufficientData => {
+                StrategyCandidateObservationStatus::InsufficientData
+            }
+        },
+        requirements,
+        runner_alignment,
+        decision: summary.decision,
+        summary,
+        started_at: window_start,
+        evaluated_at,
+        created_by,
+        correlation_id: Some(correlation_id),
     };
 
     let record = insert_strategy_candidate_observation(&state.db_pool, &observation).await?;
     let persisted = strategy_candidate_observation_result_from_record(&record)?;
+
+    if mark_observing && candidate.status == ResearchCandidateStatus::Discovered {
+        let _ = update_research_candidate_status(
+            &state.db_pool,
+            candidate.id,
+            ResearchCandidateStatus::Observing,
+            None,
+            Some("Observation explicitly requested."),
+            evaluated_at,
+            Some(correlation_id),
+        )
+        .await;
+        let _ = append_research_candidate_event(
+            &state.db_pool,
+            &ResearchCandidateLifecycleEvent {
+                id: Uuid::new_v4(),
+                candidate_id: candidate.id,
+                previous_status: Some(ResearchCandidateStatus::Discovered),
+                next_status: ResearchCandidateStatus::Observing,
+                decision: ResearchCandidateDecision::Reopen,
+                reason: Some("observation_requested".to_string()),
+                notes: Some(
+                    "Candidate moved into OBSERVING after explicit observation request."
+                        .to_string(),
+                ),
+                actor_id: created_by,
+                payload: serde_json::json!({
+                    "observation_id": persisted.observation_id,
+                    "decision": persisted.decision.as_str(),
+                }),
+                created_at: evaluated_at,
+                correlation_id: Some(correlation_id),
+            },
+        )
+        .await;
+    }
+
     emit_observation_events(state, &persisted, correlation_id).await;
     telemetry()
         .inc_research_candidate_observation(persisted.decision.as_str(), persisted.status.as_str());

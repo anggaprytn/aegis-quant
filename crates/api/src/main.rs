@@ -19,26 +19,28 @@ use aegis_core::{
     aggregate_closed_1m_candles, expected_strategy_research_promotion_confirmation,
     expected_testnet_pipeline_confirmation, expected_testnet_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
-    is_valid_testnet_shadow_promotion_confirmation, score_strategy_research_candidate,
-    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
-    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
-    CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest, CandleBackfillResult,
-    CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
-    ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
-    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
-    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
-    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
-    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo,
-    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    is_valid_testnet_shadow_promotion_confirmation, research_candidate_next_status,
+    score_strategy_research_candidate, validate_testnet_repair_transition, AuthLoginRequest,
+    AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
+    AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
+    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
+    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
+    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
+    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
+    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
+    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketMode, OperatorReport,
-    OperatorReportRequest, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
+    ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary, MarketMode,
+    OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
     PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, ResearchDataCoverageRequest, ResearchDataCoverageResult,
-    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskCheckContext, RiskConfig,
-    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
+    PaperTradingPipelineRequest, ResearchCandidate, ResearchCandidateDecision,
+    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ResearchCandidatePromotionReadiness, ResearchCandidateStatus, ResearchDataCoverageRequest,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
+    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side,
+    SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
     StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
     StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
     StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
@@ -86,14 +88,16 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use db::{
-    append_exchange_testnet_lifecycle_event_and_update_order, backtest_result_from_record,
-    candle_backfill_result_from_record, check_health, connect_pool, count_users,
-    create_paper_order, ensure_system_state, get_active_strategy_research_candidate_promotion,
+    append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
+    backtest_result_from_record, candle_backfill_result_from_record, check_health, connect_pool,
+    count_users, create_paper_order, create_research_candidate, ensure_system_state,
+    get_active_strategy_research_candidate_promotion,
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
     get_closed_1m_candles_range, get_default_paper_account, get_exchange_private_stream_state,
-    get_exchange_testnet_order_by_client_order_id, get_latest_market_tick, get_order_by_id,
-    get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
+    get_exchange_testnet_order_by_client_order_id, get_latest_market_tick,
+    get_latest_strategy_candidate_observation, get_order_by_id, get_paper_position_by_id,
+    get_recent_closed_candles, get_research_candidate, get_risk_config, get_risk_decision_by_id,
     get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
     get_strategy_experiment, get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
     get_strategy_performance_summary, get_strategy_research_candidate,
@@ -112,16 +116,17 @@ use db::{
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
     list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
-    list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
-    list_strategy_candidate_observations, list_strategy_config_audit,
-    list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
-    list_strategy_experiments_by_group, list_strategy_performance_rankings,
-    list_strategy_research_candidates, list_strategy_status, list_strategy_walk_forward_runs,
-    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
-    list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
-    mark_strategy_research_candidate_promoted, paper_account_from_record,
+    list_recent_system_events_filtered, list_research_candidate_events, list_research_candidates,
+    list_risk_config_audit, list_risk_config_versions, list_strategy_candidate_observations,
+    list_strategy_config_audit, list_strategy_config_versions, list_strategy_experiment_runs,
+    list_strategy_experiments, list_strategy_experiments_by_group,
+    list_strategy_performance_rankings, list_strategy_research_candidates, list_strategy_status,
+    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
+    list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
+    load_risk_state_snapshot, mark_strategy_research_candidate_promoted, paper_account_from_record,
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
+    persist_strategy_config_version, research_candidate_event_from_record,
+    research_candidate_from_record, revoke_session, risk_config_audit_from_record,
     risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
     set_kill_switch_state, strategy_candidate_observation_result_from_record,
     strategy_config_audit_from_record, strategy_config_from_record,
@@ -129,17 +134,18 @@ use db::{
     strategy_experiment_run_from_record, strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
-    update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
-    upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
-    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    update_research_candidate_status, update_strategy_state,
+    update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
+    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
+    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
+    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
-    PaperPositionRecord, PaperTradeJournalRecord, PgPool, RiskDecisionRecord, SignalRecord,
-    StateActor, StrategyResearchCandidateListFilters, StrategyStatusRecord, SystemEventRecord,
-    SystemStateRecord, TestnetShadowPromotionRecord,
+    PaperPositionRecord, PaperTradeJournalRecord, PgPool, ResearchCandidateListFilters,
+    RiskDecisionRecord, SignalRecord, StateActor, StrategyResearchCandidateListFilters,
+    StrategyStatusRecord, SystemEventRecord, SystemStateRecord, TestnetShadowPromotionRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
@@ -1310,6 +1316,15 @@ struct StrategyResearchCandidatesQuery {
 }
 
 #[derive(Deserialize)]
+struct ResearchCandidatesQuery {
+    strategy_id: Option<String>,
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct StrategyCandidateObservationEvaluateRequest {
     start_time: Option<DateTime<Utc>>,
     min_observation_hours: Option<i64>,
@@ -1319,6 +1334,47 @@ struct StrategyCandidateObservationEvaluateRequest {
     max_no_signal_rate: Option<Decimal>,
     require_readiness_ready: Option<bool>,
     correlation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+struct CreateResearchCandidateRequest {
+    strategy_id: String,
+    symbol: String,
+    timeframe: String,
+    config: Value,
+    notes: Option<String>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+struct CreateResearchCandidateFromExperimentRunRequest {
+    experiment_run_id: Uuid,
+    notes: Option<String>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidatesResponse {
+    candidates: Vec<ResearchCandidate>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateResponse {
+    candidate: ResearchCandidate,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateEventsResponse {
+    events: Vec<ResearchCandidateLifecycleEvent>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
 }
 
 #[derive(Deserialize)]
@@ -2182,16 +2238,32 @@ async fn main() {
         .route("/research/data/builds", get(list_research_data_builds))
         .route("/research/data/builds/:id", get(get_research_data_build))
         .route(
-            "/research/candidates/register",
-            post(register_strategy_research_candidate_handler),
+            "/research/candidates/from-experiment-run",
+            post(create_research_candidate_from_experiment_run_handler),
         )
         .route(
             "/research/candidates",
-            get(list_strategy_research_candidates_handler),
+            get(list_research_candidates_handler).post(create_research_candidate_handler),
         )
         .route(
             "/research/candidates/:id",
-            get(get_strategy_research_candidate_handler),
+            get(get_research_candidate_handler),
+        )
+        .route(
+            "/research/candidates/:id/events",
+            get(list_research_candidate_events_handler),
+        )
+        .route(
+            "/research/candidates/:id/observation",
+            get(get_research_candidate_observation_handler),
+        )
+        .route(
+            "/research/candidates/:id/decision",
+            post(decide_research_candidate_handler),
+        )
+        .route(
+            "/research/candidates/register",
+            post(register_strategy_research_candidate_handler),
         )
         .route(
             "/research/candidates/:id/observe",
@@ -13954,6 +14026,804 @@ async fn candidate_from_walk_forward_source(
     })
 }
 
+async fn lifecycle_candidate_from_experiment_run(
+    state: &AppState,
+    run_id: Uuid,
+    notes: Option<String>,
+    correlation_id: Uuid,
+) -> anyhow::Result<ResearchCandidate> {
+    let run_record = get_strategy_experiment_run(&state.db_pool, run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("strategy experiment run was not found"))?;
+    let experiment_record = get_strategy_experiment(&state.db_pool, run_record.experiment_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("strategy experiment was not found"))?;
+    let run = strategy_experiment_run_from_record(&run_record)?;
+    let now = Utc::now();
+
+    Ok(ResearchCandidate {
+        id: Uuid::new_v4(),
+        experiment_id: Some(experiment_record.id),
+        experiment_run_id: Some(run.id),
+        strategy_id: experiment_record.strategy_id.clone(),
+        symbol: experiment_record.symbol.clone(),
+        timeframe: experiment_record.timeframe.clone(),
+        config: serde_json::to_value(&run.candidate)?,
+        score: Some(run.score),
+        pnl_pct: Some(run.pnl_pct),
+        max_drawdown_pct: Some(run.max_drawdown_pct),
+        trade_count: Some(run.trade_count),
+        win_rate: Some(run.win_rate),
+        fee_drag: Some(run.fee_slippage_drag_pct),
+        status: ResearchCandidateStatus::Discovered,
+        rejection_reason: None,
+        notes,
+        created_at: now,
+        updated_at: now,
+        correlation_id: Some(correlation_id),
+    })
+}
+
+fn manual_research_candidate(
+    payload: CreateResearchCandidateRequest,
+    correlation_id: Uuid,
+) -> anyhow::Result<ResearchCandidate> {
+    if payload.strategy_id.trim().is_empty() {
+        anyhow::bail!("strategy_id is required");
+    }
+    if payload.symbol.trim().is_empty() {
+        anyhow::bail!("symbol is required");
+    }
+    if payload.timeframe.trim().is_empty() {
+        anyhow::bail!("timeframe is required");
+    }
+    payload.timeframe.parse::<CandleInterval>()?;
+
+    let now = Utc::now();
+    Ok(ResearchCandidate {
+        id: Uuid::new_v4(),
+        experiment_id: None,
+        experiment_run_id: None,
+        strategy_id: payload.strategy_id,
+        symbol: payload.symbol.trim().to_ascii_uppercase(),
+        timeframe: payload.timeframe,
+        config: payload.config,
+        score: None,
+        pnl_pct: None,
+        max_drawdown_pct: None,
+        trade_count: None,
+        win_rate: None,
+        fee_drag: None,
+        status: ResearchCandidateStatus::Discovered,
+        rejection_reason: None,
+        notes: payload.notes,
+        created_at: now,
+        updated_at: now,
+        correlation_id: Some(correlation_id),
+    })
+}
+
+fn latest_recommendation(observation: &StrategyCandidateObservationResult) -> Option<String> {
+    observation.summary.recommendations.first().cloned()
+}
+
+fn candidate_promotion_readiness(
+    candidate_id: Uuid,
+    observation: &StrategyCandidateObservationResult,
+) -> ResearchCandidatePromotionReadiness {
+    let readiness_status = observation.summary.latest_readiness_status;
+    let mut blockers = Vec::new();
+
+    if !observation.runner_alignment.strategy_config_matches_runner {
+        blockers.push("shadow_runner_mismatch".to_string());
+    }
+    if matches!(readiness_status, Some(ExecutionReadinessStatus::NotReady)) {
+        blockers.push("testnet_shadow_not_ready".to_string());
+    }
+    if observation.decision != aegis_core::StrategyCandidateObservationDecision::Pass {
+        blockers.push(format!(
+            "observation_{}",
+            observation.decision.as_str().to_ascii_lowercase()
+        ));
+    }
+
+    ResearchCandidatePromotionReadiness {
+        candidate_id,
+        target: "TESTNET_SHADOW".to_string(),
+        latest_observation_id: Some(observation.observation_id),
+        latest_observation_decision: Some(observation.decision),
+        latest_recommendation: latest_recommendation(observation),
+        readiness_status,
+        readiness_score: observation.summary.latest_readiness_score,
+        runner_alignment: observation.runner_alignment.clone(),
+        blockers: blockers.clone(),
+        is_ready: blockers.is_empty(),
+        evaluated_at: observation.evaluated_at,
+    }
+}
+
+async fn create_research_candidate_from_experiment_run_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<CreateResearchCandidateFromExperimentRunRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can create research candidates.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let candidate = match lifecycle_candidate_from_experiment_run(
+        &state,
+        payload.experiment_run_id,
+        payload.notes.clone(),
+        correlation_id,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse {
+                    error: "failed_to_build_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match create_research_candidate(
+        &state.db_pool,
+        &candidate,
+        Some(actor.user_id),
+        ResearchCandidateDecision::Reopen,
+        Some("created_from_experiment_run"),
+        candidate.notes.as_deref(),
+        &json!({
+            "source": "experiment_run",
+            "experiment_id": candidate.experiment_id,
+            "experiment_run_id": candidate.experiment_run_id,
+        }),
+    )
+    .await
+    {
+        Ok((record, _)) => {
+            telemetry().set_research_candidate_total(candidate.status.as_str(), 1);
+            let candidate = research_candidate_from_record(&record).expect("candidate should map");
+            (
+                StatusCode::OK,
+                Json(ResearchCandidateResponse {
+                    candidate,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_research_candidate",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn create_research_candidate_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<CreateResearchCandidateRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can create research candidates.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let candidate = match manual_research_candidate(payload, correlation_id) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_research_candidate_request",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match create_research_candidate(
+        &state.db_pool,
+        &candidate,
+        Some(actor.user_id),
+        ResearchCandidateDecision::Reopen,
+        Some("manual_candidate_created"),
+        candidate.notes.as_deref(),
+        &json!({ "source": "manual" }),
+    )
+    .await
+    {
+        Ok((record, _)) => {
+            telemetry().set_research_candidate_total(candidate.status.as_str(), 1);
+            let candidate = research_candidate_from_record(&record).expect("candidate should map");
+            (
+                StatusCode::OK,
+                Json(ResearchCandidateResponse {
+                    candidate,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_research_candidate",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_research_candidates_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchCandidatesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let filters = ResearchCandidateListFilters {
+        strategy_id: query.strategy_id,
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        status: query.status,
+    };
+    match list_research_candidates(
+        &state.db_pool,
+        &filters,
+        bounded_research_candidate_limit(query.limit),
+    )
+    .await
+    {
+        Ok(records) => match records
+            .iter()
+            .map(research_candidate_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(candidates) => (
+                StatusCode::OK,
+                Json(ResearchCandidatesResponse {
+                    candidates,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidates",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_candidates",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => (
+                StatusCode::OK,
+                Json(ResearchCandidateResponse {
+                    candidate,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_candidate_not_found",
+                message: "Research candidate was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_candidate",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_research_candidate_events_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_candidate_events(&state.db_pool, candidate_id).await {
+        Ok(records) => match records
+            .iter()
+            .map(research_candidate_event_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(events) => (
+                StatusCode::OK,
+                Json(ResearchCandidateEventsResponse {
+                    events,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate_events",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_candidate_events",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_observation_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can observe research candidates.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let observation_request = StrategyCandidateObservationRequest {
+        candidate_id,
+        start_time: None,
+        min_observation_hours: 24,
+        min_shadow_runs: 30,
+        max_risk_rejection_rate: None,
+        min_would_submit_count: 1,
+        max_no_signal_rate: None,
+        require_readiness_ready: true,
+        correlation_id: Some(parse_correlation_id(&request.correlation_id)),
+    };
+    match evaluate_candidate_observation(&state, &observation_request, Some(actor.user_id), false)
+        .await
+    {
+        Ok(observation) => (
+            StatusCode::OK,
+            Json(StrategyCandidateObservationResponse {
+                observation,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) if err.to_string().contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_candidate_not_found",
+                message: "Research candidate was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_evaluate_candidate_observation",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn decide_research_candidate_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCandidateDecisionRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can decide research candidates.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let record = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let candidate = match research_candidate_from_record(&record) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    if payload.decision == ResearchCandidateDecision::Reject
+        && payload.reason.as_deref().unwrap_or("").trim().is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "reason_required",
+                message: "Rejecting a research candidate requires reason.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let next_status = match research_candidate_next_status(candidate.status, payload.decision) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "invalid_research_candidate_transition",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let mut latest_observation =
+        match get_latest_strategy_candidate_observation(&state.db_pool, candidate.id).await {
+            Ok(Some(value)) => Some(
+                strategy_candidate_observation_result_from_record(&value)
+                    .expect("latest candidate observation should map"),
+            ),
+            Ok(None) => None,
+            Err(_) => None,
+        };
+
+    if payload.decision == ResearchCandidateDecision::AcceptForShadow {
+        if latest_observation.is_none() {
+            let on_demand_request = StrategyCandidateObservationRequest {
+                candidate_id: candidate.id,
+                start_time: None,
+                min_observation_hours: 24,
+                min_shadow_runs: 30,
+                max_risk_rejection_rate: None,
+                min_would_submit_count: 1,
+                max_no_signal_rate: None,
+                require_readiness_ready: true,
+                correlation_id: Some(correlation_id),
+            };
+            latest_observation = match evaluate_candidate_observation(
+                &state,
+                &on_demand_request,
+                Some(actor.user_id),
+                false,
+            )
+            .await
+            {
+                Ok(observation) => Some(observation),
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_evaluate_candidate_observation",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+        }
+        let observation = latest_observation
+            .as_ref()
+            .expect("accept-for-shadow should have observation");
+        let readiness = candidate_promotion_readiness(candidate.id, observation);
+        if !observation.runner_alignment.strategy_config_matches_runner
+            && !payload.acknowledge_runner_mismatch
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "runner_alignment_mismatch",
+                    message:
+                        "Shadow runner alignment failed and acknowledge_runner_mismatch was false."
+                            .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        if matches!(
+            readiness.readiness_status,
+            Some(ExecutionReadinessStatus::NotReady)
+        ) {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "candidate_not_ready_for_shadow",
+                    message: "TESTNET_SHADOW readiness is NOT_READY.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let updated_at = Utc::now();
+    let updated = match update_research_candidate_status(
+        &state.db_pool,
+        candidate.id,
+        next_status,
+        if next_status == ResearchCandidateStatus::Rejected {
+            payload.reason.as_deref()
+        } else {
+            None
+        },
+        payload.notes.as_deref(),
+        updated_at,
+        Some(correlation_id),
+    )
+    .await
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_update_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let _ = append_research_candidate_event(
+        &state.db_pool,
+        &ResearchCandidateLifecycleEvent {
+            id: Uuid::new_v4(),
+            candidate_id: candidate.id,
+            previous_status: Some(candidate.status),
+            next_status,
+            decision: payload.decision,
+            reason: payload.reason.clone(),
+            notes: payload.notes.clone(),
+            actor_id: Some(actor.user_id),
+            payload: json!({
+                "acknowledge_runner_mismatch": payload.acknowledge_runner_mismatch,
+                "promotion_readiness": latest_observation.as_ref().map(|observation| candidate_promotion_readiness(candidate.id, observation)),
+            }),
+            created_at: updated_at,
+            correlation_id: Some(correlation_id),
+        },
+    )
+    .await;
+    telemetry().inc_research_candidate_decision(payload.decision.as_str());
+    telemetry().adjust_research_candidate_total(candidate.status.as_str(), -1);
+    telemetry().adjust_research_candidate_total(next_status.as_str(), 1);
+
+    let candidate = research_candidate_from_record(&updated).expect("candidate should map");
+    (
+        StatusCode::OK,
+        Json(ResearchCandidateResponse {
+            candidate,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
 async fn register_strategy_research_candidate_handler(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
@@ -14322,7 +15192,9 @@ async fn evaluate_strategy_candidate_observation_handler(
             .correlation_id
             .or_else(|| Some(parse_correlation_id(&request.correlation_id))),
     };
-    match evaluate_candidate_observation(&state, &observation_request, Some(actor.user_id)).await {
+    match evaluate_candidate_observation(&state, &observation_request, Some(actor.user_id), true)
+        .await
+    {
         Ok(observation) => (
             StatusCode::OK,
             Json(StrategyCandidateObservationResponse {

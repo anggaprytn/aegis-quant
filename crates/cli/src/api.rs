@@ -5,7 +5,8 @@ use aegis_core::{
     CandleBackfillResult, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, MarketCandleCoverageSummary, OperatorReport, OperatorReportRequest,
-    PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchDataCoverageResult,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchCandidate,
+    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent, ResearchDataCoverageResult,
     ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
@@ -13,9 +14,7 @@ use aegis_core::{
     StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
-    StrategyResearchCandidatePromotionRequest, StrategyResearchCandidatePromotionResult,
-    StrategyResearchCandidateSource, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
     StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
     TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -637,13 +636,6 @@ impl ApiClient {
             .await
     }
 
-    pub async fn register_research_candidate(
-        &self,
-        request: &ResearchCandidateRegisterRequest,
-    ) -> Result<ResearchCandidateResponse, ApiClientError> {
-        self.post("/research/candidates/register", request).await
-    }
-
     pub async fn list_research_candidates(
         &self,
         query: &ResearchCandidatesQuery,
@@ -660,47 +652,47 @@ impl ApiClient {
             .await
     }
 
+    pub async fn create_research_candidate(
+        &self,
+        request: &CreateResearchCandidateRequest,
+    ) -> Result<ResearchCandidateResponse, ApiClientError> {
+        self.post("/research/candidates", request).await
+    }
+
+    pub async fn create_research_candidate_from_experiment_run(
+        &self,
+        request: &CreateResearchCandidateFromExperimentRunRequest,
+    ) -> Result<ResearchCandidateResponse, ApiClientError> {
+        self.post("/research/candidates/from-experiment-run", request)
+            .await
+    }
+
     pub async fn observe_research_candidate(
         &self,
         candidate_id: Uuid,
-        request: &ResearchCandidateObservationEvaluateRequest,
     ) -> Result<ResearchCandidateObservationResponse, ApiClientError> {
         self.post(
             &format!("/research/candidates/{candidate_id}/observe"),
-            request,
+            &serde_json::json!({}),
         )
         .await
     }
 
-    pub async fn list_research_candidate_observations(
+    pub async fn list_research_candidate_events(
         &self,
         candidate_id: Uuid,
-    ) -> Result<ResearchCandidateObservationsResponse, ApiClientError> {
-        self.get(
-            &format!("/research/candidates/{candidate_id}/observations"),
-            &[],
-        )
-        .await
+    ) -> Result<ResearchCandidateEventsResponse, ApiClientError> {
+        self.get(&format!("/research/candidates/{candidate_id}/events"), &[])
+            .await
     }
 
-    pub async fn get_research_candidate_observation(
-        &self,
-        observation_id: Uuid,
-    ) -> Result<ResearchCandidateObservationResponse, ApiClientError> {
-        self.get(
-            &format!("/research/candidate-observations/{observation_id}"),
-            &[],
-        )
-        .await
-    }
-
-    pub async fn promote_research_candidate_shadow(
+    pub async fn decide_research_candidate(
         &self,
         candidate_id: Uuid,
-        request: &StrategyResearchCandidatePromotionRequest,
-    ) -> Result<ResearchCandidatePromotionResponse, ApiClientError> {
+        request: &ResearchCandidateDecisionRequest,
+    ) -> Result<ResearchCandidateResponse, ApiClientError> {
         self.post(
-            &format!("/research/candidates/{candidate_id}/promote-shadow-config"),
+            &format!("/research/candidates/{candidate_id}/decision"),
             request,
         )
         .await
@@ -1614,12 +1606,19 @@ pub struct ResearchDataCoverageQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResearchCandidateRegisterRequest {
-    pub source_type: StrategyResearchCandidateSource,
-    pub source_id: Option<Uuid>,
-    pub symbol: Option<String>,
-    pub config: Option<StrategyConfigUpdateRequest>,
-    pub evidence: Option<StrategyResearchCandidateEvidence>,
+pub struct CreateResearchCandidateRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub config: Value,
+    pub notes: Option<String>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateResearchCandidateFromExperimentRunRequest {
+    pub experiment_run_id: Uuid,
+    pub notes: Option<String>,
     pub correlation_id: Option<Uuid>,
 }
 
@@ -1906,7 +1905,7 @@ pub struct ResearchDatasetBuildResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidatesResponse {
-    pub candidates: Vec<StrategyResearchCandidate>,
+    pub candidates: Vec<ResearchCandidate>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -1914,15 +1913,15 @@ pub struct ResearchCandidatesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateResponse {
-    pub candidate: StrategyResearchCandidate,
+    pub candidate: ResearchCandidate,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResearchCandidatePromotionResponse {
-    pub promotion: StrategyResearchCandidatePromotionResult,
+pub struct ResearchCandidateEventsResponse {
+    pub events: Vec<ResearchCandidateLifecycleEvent>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -1934,26 +1933,6 @@ pub struct ResearchCandidateObservationResponse {
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResearchCandidateObservationsResponse {
-    pub observations: Vec<StrategyCandidateObservationResult>,
-    pub request_id: String,
-    pub correlation_id: String,
-    pub timestamp: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ResearchCandidateObservationEvaluateRequest {
-    pub start_time: Option<DateTime<Utc>>,
-    pub min_observation_hours: i64,
-    pub min_shadow_runs: i64,
-    pub max_risk_rejection_rate: Option<Decimal>,
-    pub min_would_submit_count: i64,
-    pub max_no_signal_rate: Option<Decimal>,
-    pub require_readiness_ready: bool,
-    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -3122,7 +3101,7 @@ mod tests {
         StrategyExperimentRunArgs,
     };
     use crate::config::{clear_token_file, load_token_file, StoredAuthSession, StoredUserSummary};
-    use aegis_core::{StrategyResearchCandidateSource, User, UserRole, UserStatus};
+    use aegis_core::{ResearchCandidateDecisionRequest, User, UserRole, UserStatus};
     use chrono::{TimeZone, Utc};
     use reqwest::{header::AUTHORIZATION, Method, StatusCode};
     use rust_decimal::Decimal;
@@ -3135,7 +3114,10 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use crate::api::{ResearchCandidateRegisterRequest, ResearchCandidatesQuery};
+    use crate::api::{
+        CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
+        ResearchCandidatesQuery,
+    };
 
     fn sample_user() -> User {
         User {
@@ -3611,60 +3593,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn research_candidate_client_uses_expected_register_paths() {
+    async fn research_candidate_client_uses_expected_create_paths() {
         let experiment_run_id =
             Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("valid uuid");
-        let walk_forward_id =
-            Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid");
         let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
             match (request.method().as_str(), request.url().path()) {
-                ("POST", "/research/candidates/register") => {
-                    let payload: ResearchCandidateRegisterRequest = request_json(&request);
-                    assert!(matches!(
-                        payload.source_type,
-                        StrategyResearchCandidateSource::ExperimentRun
-                            | StrategyResearchCandidateSource::WalkForward
-                    ));
-                    assert!(matches!(
-                        payload.source_id,
-                        Some(id) if id == experiment_run_id || id == walk_forward_id
-                    ));
+                ("POST", "/research/candidates/from-experiment-run") => {
+                    let payload: CreateResearchCandidateFromExperimentRunRequest =
+                        request_json(&request);
+                    assert_eq!(payload.experiment_run_id, experiment_run_id);
                     Ok((
                         StatusCode::OK,
                         json_response(serde_json::json!({
                             "candidate": {
                                 "id": "11111111-1111-1111-1111-111111111111",
+                                "experiment_id": null,
+                                "experiment_run_id": payload.experiment_run_id,
                                 "strategy_id": "momentum_v1",
                                 "symbol": "BTCUSDT",
                                 "timeframe": "15m",
                                 "config": {},
-                                "source_type": payload.source_type,
-                                "source_id": payload.source_id,
-                                "evidence": {
-                                    "experiment_id": null,
-                                    "experiment_run_id": null,
-                                    "walk_forward_id": null,
-                                    "pnl_pct": null,
-                                    "max_drawdown_pct": null,
-                                    "win_rate": null,
-                                    "trade_count": null,
-                                    "fee_paid": null,
-                                    "slippage_cost": null,
-                                    "robustness_score": null,
-                                    "profitable_windows": null,
-                                    "losing_windows": null,
-                                    "skipped_windows": null,
-                                    "notes": null
-                                },
-                                "score": {
-                                    "score": "50",
-                                    "warnings": [],
-                                    "rejection_hints": []
-                                },
-                                "status": "REGISTERED",
+                                "score": "50",
+                                "pnl_pct": "1.5",
+                                "max_drawdown_pct": "0.7",
+                                "trade_count": 12,
+                                "win_rate": "0.58",
+                                "fee_drag": "0.2",
+                                "status": "DISCOVERED",
+                                "rejection_reason": null,
+                                "notes": null,
                                 "created_at": "2026-05-24T00:00:00Z",
-                                "promoted_at": null,
-                                "promoted_by": null,
+                                "updated_at": "2026-05-24T00:00:00Z",
+                                "correlation_id": null
+                            },
+                            "request_id": "req-1",
+                            "correlation_id": "corr-1",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                ("POST", "/research/candidates") => {
+                    let payload: CreateResearchCandidateRequest = request_json(&request);
+                    assert_eq!(payload.strategy_id, "momentum_v1");
+                    assert_eq!(payload.symbol, "BTCUSDT");
+                    assert_eq!(payload.timeframe, "15m");
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "candidate": {
+                                "id": "11111111-1111-1111-1111-111111111111",
+                                "experiment_id": null,
+                                "experiment_run_id": null,
+                                "strategy_id": "momentum_v1",
+                                "symbol": "BTCUSDT",
+                                "timeframe": "15m",
+                                "config": payload.config,
+                                "score": null,
+                                "pnl_pct": null,
+                                "max_drawdown_pct": null,
+                                "trade_count": null,
+                                "win_rate": null,
+                                "fee_drag": null,
+                                "status": "DISCOVERED",
+                                "rejection_reason": null,
+                                "notes": payload.notes,
+                                "created_at": "2026-05-24T00:00:00Z",
+                                "updated_at": "2026-05-24T00:00:00Z",
                                 "correlation_id": null
                             },
                             "request_id": "req-1",
@@ -3682,31 +3676,30 @@ mod tests {
         });
 
         client
-            .register_research_candidate(&ResearchCandidateRegisterRequest {
-                source_type: StrategyResearchCandidateSource::ExperimentRun,
-                source_id: Some(experiment_run_id),
-                symbol: None,
-                config: None,
-                evidence: None,
-                correlation_id: None,
-            })
+            .create_research_candidate_from_experiment_run(
+                &CreateResearchCandidateFromExperimentRunRequest {
+                    experiment_run_id,
+                    notes: None,
+                    correlation_id: None,
+                },
+            )
             .await
             .expect("experiment registration should succeed");
         client
-            .register_research_candidate(&ResearchCandidateRegisterRequest {
-                source_type: StrategyResearchCandidateSource::WalkForward,
-                source_id: Some(walk_forward_id),
-                symbol: None,
-                config: None,
-                evidence: None,
+            .create_research_candidate(&CreateResearchCandidateRequest {
+                strategy_id: "momentum_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "15m".to_string(),
+                config: serde_json::json!({ "lookback_candles": 20 }),
+                notes: Some("manual".to_string()),
                 correlation_id: None,
             })
             .await
-            .expect("walk-forward registration should succeed");
+            .expect("manual creation should succeed");
     }
 
     #[tokio::test]
-    async fn research_candidate_client_uses_expected_list_get_and_promote_paths() {
+    async fn research_candidate_client_uses_expected_list_get_event_observe_and_decide_paths() {
         let candidate_id =
             Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").expect("valid uuid");
         let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
@@ -3714,7 +3707,7 @@ mod tests {
                 ("GET", "/research/candidates") => {
                     assert_eq!(
                         request.url().query(),
-                        Some("limit=25&strategy_id=momentum_v1&symbol=BTCUSDT&timeframe=15m&status=REGISTERED")
+                        Some("limit=25&strategy_id=momentum_v1&symbol=BTCUSDT&timeframe=15m&status=DISCOVERED")
                     );
                     Ok((
                         StatusCode::OK,
@@ -3731,37 +3724,23 @@ mod tests {
                     json_response(serde_json::json!({
                         "candidate": {
                             "id": candidate_id,
+                            "experiment_id": null,
+                            "experiment_run_id": null,
                             "strategy_id": "momentum_v1",
                             "symbol": "BTCUSDT",
                             "timeframe": "15m",
                             "config": {},
-                            "source_type": "MANUAL",
-                            "source_id": null,
-                            "evidence": {
-                                "experiment_id": null,
-                                "experiment_run_id": null,
-                                "walk_forward_id": null,
-                                "pnl_pct": null,
-                                "max_drawdown_pct": null,
-                                "win_rate": null,
-                                "trade_count": null,
-                                "fee_paid": null,
-                                "slippage_cost": null,
-                                "robustness_score": null,
-                                "profitable_windows": null,
-                                "losing_windows": null,
-                                "skipped_windows": null,
-                                "notes": null
-                            },
-                            "score": {
-                                "score": "50",
-                                "warnings": [],
-                                "rejection_hints": []
-                            },
-                            "status": "REGISTERED",
+                            "score": "50",
+                            "pnl_pct": null,
+                            "max_drawdown_pct": null,
+                            "trade_count": null,
+                            "win_rate": null,
+                            "fee_drag": null,
+                            "status": "DISCOVERED",
+                            "rejection_reason": null,
+                            "notes": null,
                             "created_at": "2026-05-24T00:00:00Z",
-                            "promoted_at": null,
-                            "promoted_by": null,
+                            "updated_at": "2026-05-24T00:00:00Z",
                             "correlation_id": null
                         },
                         "request_id": "req-get",
@@ -3769,28 +3748,117 @@ mod tests {
                         "timestamp": "2026-05-24T00:00:00Z"
                     })),
                 )),
-                ("POST", "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/promote-shadow-config") => {
-                    let payload: aegis_core::StrategyResearchCandidatePromotionRequest =
-                        request_json(&request);
-                    assert_eq!(
-                        payload.confirmation_text,
-                        "PROMOTE STRATEGY MOMENTUM_V1"
-                    );
+                ("GET", "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/events") => {
                     Ok((
                         StatusCode::OK,
                         json_response(serde_json::json!({
-                            "promotion": {
+                            "events": [],
+                            "request_id": "req-events",
+                            "correlation_id": "corr-events",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                ("POST", "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/observe") => {
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "observation": {
+                                "observation_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
                                 "candidate_id": candidate_id,
                                 "strategy_id": "momentum_v1",
-                                "previous_config": null,
-                                "promoted_config": {},
-                                "status": "PROMOTED_TO_SHADOW_CONFIG",
-                                "promoted_at": "2026-05-24T00:00:00Z",
-                                "promoted_by": null,
+                                "symbol": "BTCUSDT",
+                                "timeframe": "15m",
+                                "status": "INSUFFICIENT_DATA",
+                                "requirements": {
+                                  "candidate_id": candidate_id,
+                                  "strategy_id": "momentum_v1",
+                                  "symbol": "BTCUSDT",
+                                  "timeframe": "15m",
+                                  "min_observation_hours": 24,
+                                  "min_shadow_runs": 30,
+                                  "max_risk_rejection_rate": null,
+                                  "min_would_submit_count": 1,
+                                  "max_no_signal_rate": null,
+                                  "require_readiness_ready": true
+                                },
+                                "runner_alignment": {
+                                  "strategy_config_matches_runner": false,
+                                  "runner_enabled": true,
+                                  "runner_status": "RUNNING",
+                                  "runner_timeframe": "1m",
+                                  "runner_symbols": ["BTCUSDT"],
+                                  "runner_strategies": ["momentum_v1"],
+                                  "mismatch_reasons": ["runner timeframe 1m does not include candidate timeframe 15m"]
+                                },
+                                "summary": {
+                                  "candidate_id": candidate_id,
+                                  "window_start": "2026-05-24T00:00:00Z",
+                                  "window_end": "2026-05-24T00:00:00Z",
+                                  "shadow_runs": 0,
+                                  "would_submit_count": 0,
+                                  "no_signal_count": 0,
+                                  "risk_rejected_count": 0,
+                                  "skipped_count": 0,
+                                  "risk_rejection_rate": "0",
+                                  "no_signal_rate": "0",
+                                  "latest_readiness_status": "DEGRADED",
+                                  "latest_readiness_score": 80,
+                                  "runner_alignment": {
+                                    "strategy_config_matches_runner": false,
+                                    "runner_enabled": true,
+                                    "runner_status": "RUNNING",
+                                    "runner_timeframe": "1m",
+                                    "runner_symbols": ["BTCUSDT"],
+                                    "runner_strategies": ["momentum_v1"],
+                                    "mismatch_reasons": ["runner timeframe 1m does not include candidate timeframe 15m"]
+                                  },
+                                  "decision": "INSUFFICIENT_DATA",
+                                  "findings": [],
+                                  "recommendations": ["Update shadow runner config to include momentum_v1 BTCUSDT 15m."],
+                                  "created_at": "2026-05-24T00:00:00Z"
+                                },
+                                "decision": "INSUFFICIENT_DATA",
+                                "started_at": "2026-05-24T00:00:00Z",
+                                "evaluated_at": "2026-05-24T00:00:00Z",
+                                "created_by": null,
                                 "correlation_id": null
                             },
-                            "request_id": "req-promote",
-                            "correlation_id": "corr-promote",
+                            "request_id": "req-observe",
+                            "correlation_id": "corr-observe",
+                            "timestamp": "2026-05-24T00:00:00Z"
+                        })),
+                    ))
+                }
+                ("POST", "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/decision") => {
+                    let payload: ResearchCandidateDecisionRequest = request_json(&request);
+                    assert_eq!(payload.decision.as_str(), "REJECT");
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "candidate": {
+                                "id": candidate_id,
+                                "experiment_id": null,
+                                "experiment_run_id": null,
+                                "strategy_id": "momentum_v1",
+                                "symbol": "BTCUSDT",
+                                "timeframe": "15m",
+                                "config": {},
+                                "score": "50",
+                                "pnl_pct": null,
+                                "max_drawdown_pct": null,
+                                "trade_count": null,
+                                "win_rate": null,
+                                "fee_drag": null,
+                                "status": "REJECTED",
+                                "rejection_reason": payload.reason,
+                                "notes": null,
+                                "created_at": "2026-05-24T00:00:00Z",
+                                "updated_at": "2026-05-24T00:01:00Z",
+                                "correlation_id": null
+                            },
+                            "request_id": "req-decide",
+                            "correlation_id": "corr-decide",
                             "timestamp": "2026-05-24T00:00:00Z"
                         })),
                     ))
@@ -3808,7 +3876,7 @@ mod tests {
                 strategy_id: Some("momentum_v1".to_string()),
                 symbol: Some("BTCUSDT".to_string()),
                 timeframe: Some("15m".to_string()),
-                status: Some("REGISTERED".to_string()),
+                status: Some("DISCOVERED".to_string()),
                 limit: 25,
             })
             .await
@@ -3821,16 +3889,31 @@ mod tests {
             .expect("get should succeed");
         assert_eq!(get.candidate.id, candidate_id);
 
-        let promote = client
-            .promote_research_candidate_shadow(
+        let events = client
+            .list_research_candidate_events(candidate_id)
+            .await
+            .expect("events should succeed");
+        assert!(events.events.is_empty());
+
+        let observation = client
+            .observe_research_candidate(candidate_id)
+            .await
+            .expect("observe should succeed");
+        assert_eq!(observation.observation.candidate_id, candidate_id);
+
+        let decided = client
+            .decide_research_candidate(
                 candidate_id,
-                &aegis_core::StrategyResearchCandidatePromotionRequest {
-                    confirmation_text: "PROMOTE STRATEGY MOMENTUM_V1".to_string(),
+                &ResearchCandidateDecisionRequest {
+                    decision: aegis_core::ResearchCandidateDecision::Reject,
+                    reason: Some("bad drawdown".to_string()),
+                    notes: None,
+                    acknowledge_runner_mismatch: false,
                     correlation_id: None,
                 },
             )
             .await
-            .expect("promotion should succeed");
-        assert_eq!(promote.promotion.candidate_id, candidate_id);
+            .expect("decision should succeed");
+        assert_eq!(decided.candidate.id, candidate_id);
     }
 }

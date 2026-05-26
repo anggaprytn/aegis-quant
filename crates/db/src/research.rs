@@ -7,9 +7,10 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use aegis_core::{
-    CandleInterval, MarketDataSource, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
+    CandleInterval, MarketDataSource, ResearchCandidate, ResearchCandidateDecision,
+    ResearchCandidateLifecycleEvent, ResearchCandidateStatus, ResearchDataCoverageResult,
+    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, ResearchDatasetBuildStatus,
+    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
     StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
     StrategyResearchCandidate, StrategyResearchCandidateEvidence,
@@ -109,12 +110,556 @@ pub struct StrategyCandidateObservationCheckRecord {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateRecord {
+    pub id: Uuid,
+    pub experiment_id: Option<Uuid>,
+    pub experiment_run_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub config: Value,
+    pub score: Option<Decimal>,
+    pub pnl_pct: Option<Decimal>,
+    pub max_drawdown_pct: Option<Decimal>,
+    pub trade_count: Option<i32>,
+    pub win_rate: Option<Decimal>,
+    pub fee_drag: Option<Decimal>,
+    pub status: String,
+    pub rejection_reason: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateEventRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub previous_status: Option<String>,
+    pub next_status: String,
+    pub decision: String,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    pub actor_id: Option<Uuid>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StrategyResearchCandidateListFilters {
     pub strategy_id: Option<String>,
     pub symbol: Option<String>,
     pub timeframe: Option<String>,
     pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResearchCandidateListFilters {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub status: Option<String>,
+}
+
+fn legacy_status_for_research_candidate(
+    status: ResearchCandidateStatus,
+) -> StrategyResearchCandidateStatus {
+    match status {
+        ResearchCandidateStatus::Discovered | ResearchCandidateStatus::Observing => {
+            StrategyResearchCandidateStatus::Registered
+        }
+        ResearchCandidateStatus::AcceptedForShadow => {
+            StrategyResearchCandidateStatus::PromotedToShadowConfig
+        }
+        ResearchCandidateStatus::Rejected => StrategyResearchCandidateStatus::Rejected,
+        ResearchCandidateStatus::Archived => StrategyResearchCandidateStatus::Archived,
+    }
+}
+
+pub async fn create_research_candidate(
+    pool: &PgPool,
+    candidate: &ResearchCandidate,
+    actor_id: Option<Uuid>,
+    event_decision: ResearchCandidateDecision,
+    reason: Option<&str>,
+    notes: Option<&str>,
+    payload: &Value,
+) -> Result<(ResearchCandidateRecord, ResearchCandidateEventRecord)> {
+    let mut tx = pool.begin().await?;
+    let legacy_source_type = if candidate.experiment_run_id.is_some() {
+        StrategyResearchCandidateSource::ExperimentRun
+    } else {
+        StrategyResearchCandidateSource::Manual
+    };
+    let legacy_status = legacy_status_for_research_candidate(candidate.status);
+    let legacy_evidence = StrategyResearchCandidateEvidence {
+        experiment_id: candidate.experiment_id,
+        experiment_run_id: candidate.experiment_run_id,
+        walk_forward_id: None,
+        pnl_pct: candidate.pnl_pct,
+        max_drawdown_pct: candidate.max_drawdown_pct,
+        win_rate: candidate.win_rate,
+        trade_count: candidate.trade_count,
+        fee_paid: None,
+        slippage_cost: None,
+        robustness_score: None,
+        profitable_windows: None,
+        losing_windows: None,
+        skipped_windows: None,
+        notes: candidate.notes.clone(),
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO strategy_research_candidates (
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            source_type,
+            source_id,
+            evidence,
+            score,
+            status,
+            warnings,
+            created_by,
+            created_at,
+            updated_at,
+            promoted_at,
+            promoted_by,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '[]'::JSONB, $11, $12, $13, NULL, NULL, $14
+        )
+        ON CONFLICT (id) DO NOTHING
+        "#,
+    )
+    .bind(candidate.id)
+    .bind(&candidate.strategy_id)
+    .bind(candidate.symbol.trim().to_ascii_uppercase())
+    .bind(&candidate.timeframe)
+    .bind(candidate.config.clone())
+    .bind(legacy_source_type.as_str())
+    .bind(candidate.experiment_run_id)
+    .bind(serde_json::to_value(&legacy_evidence)?)
+    .bind(candidate.score.unwrap_or(Decimal::ZERO))
+    .bind(legacy_status.as_str())
+    .bind(actor_id)
+    .bind(candidate.created_at)
+    .bind(candidate.updated_at)
+    .bind(candidate.correlation_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let candidate_row = sqlx::query(
+        r#"
+        INSERT INTO research_candidates (
+            id,
+            experiment_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            max_drawdown_pct,
+            trade_count,
+            win_rate,
+            fee_drag,
+            status,
+            rejection_reason,
+            notes,
+            created_at,
+            updated_at,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+        )
+        RETURNING
+            id,
+            experiment_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            max_drawdown_pct,
+            trade_count,
+            win_rate,
+            fee_drag,
+            status,
+            rejection_reason,
+            notes,
+            created_at,
+            updated_at,
+            correlation_id
+        "#,
+    )
+    .bind(candidate.id)
+    .bind(candidate.experiment_id)
+    .bind(candidate.experiment_run_id)
+    .bind(&candidate.strategy_id)
+    .bind(candidate.symbol.trim().to_ascii_uppercase())
+    .bind(&candidate.timeframe)
+    .bind(candidate.config.clone())
+    .bind(candidate.score)
+    .bind(candidate.pnl_pct)
+    .bind(candidate.max_drawdown_pct)
+    .bind(candidate.trade_count)
+    .bind(candidate.win_rate)
+    .bind(candidate.fee_drag)
+    .bind(candidate.status.as_str())
+    .bind(&candidate.rejection_reason)
+    .bind(&candidate.notes)
+    .bind(candidate.created_at)
+    .bind(candidate.updated_at)
+    .bind(candidate.correlation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let event_row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_events (
+            id,
+            candidate_id,
+            previous_status,
+            next_status,
+            decision,
+            reason,
+            notes,
+            actor_id,
+            payload,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING
+            id,
+            candidate_id,
+            previous_status,
+            next_status,
+            decision,
+            reason,
+            notes,
+            actor_id,
+            payload,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(candidate.id)
+    .bind(candidate.status.as_str())
+    .bind(event_decision.as_str())
+    .bind(reason)
+    .bind(notes)
+    .bind(actor_id)
+    .bind(payload.clone())
+    .bind(candidate.created_at)
+    .bind(candidate.correlation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok((
+        map_research_candidate(candidate_row),
+        map_research_candidate_event(event_row),
+    ))
+}
+
+pub async fn list_research_candidates(
+    pool: &PgPool,
+    filters: &ResearchCandidateListFilters,
+    limit: i64,
+) -> Result<Vec<ResearchCandidateRecord>> {
+    let mut builder = sqlx::QueryBuilder::new(
+        r#"
+        SELECT
+            id,
+            experiment_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            max_drawdown_pct,
+            trade_count,
+            win_rate,
+            fee_drag,
+            status,
+            rejection_reason,
+            notes,
+            created_at,
+            updated_at,
+            correlation_id
+        FROM research_candidates
+        WHERE 1 = 1
+        "#,
+    );
+
+    if let Some(strategy_id) = &filters.strategy_id {
+        builder.push(" AND strategy_id = ");
+        builder.push_bind(strategy_id);
+    }
+    if let Some(symbol) = &filters.symbol {
+        builder.push(" AND symbol = ");
+        builder.push_bind(symbol.trim().to_ascii_uppercase());
+    }
+    if let Some(timeframe) = &filters.timeframe {
+        builder.push(" AND timeframe = ");
+        builder.push_bind(timeframe);
+    }
+    if let Some(status) = &filters.status {
+        builder.push(" AND status = ");
+        builder.push_bind(status);
+    }
+
+    builder.push(" ORDER BY created_at DESC LIMIT ");
+    builder.push_bind(limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
+    Ok(rows.into_iter().map(map_research_candidate).collect())
+}
+
+pub async fn get_research_candidate(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Option<ResearchCandidateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            experiment_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            max_drawdown_pct,
+            trade_count,
+            win_rate,
+            fee_drag,
+            status,
+            rejection_reason,
+            notes,
+            created_at,
+            updated_at,
+            correlation_id
+        FROM research_candidates
+        WHERE id = $1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate))
+}
+
+pub async fn update_research_candidate_status(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    next_status: ResearchCandidateStatus,
+    rejection_reason: Option<&str>,
+    notes: Option<&str>,
+    updated_at: DateTime<Utc>,
+    correlation_id: Option<Uuid>,
+) -> Result<Option<ResearchCandidateRecord>> {
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        UPDATE research_candidates
+        SET status = $2,
+            rejection_reason = $3,
+            notes = COALESCE($4, notes),
+            updated_at = $5,
+            correlation_id = COALESCE($6, correlation_id)
+        WHERE id = $1
+        RETURNING
+            id,
+            experiment_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            max_drawdown_pct,
+            trade_count,
+            win_rate,
+            fee_drag,
+            status,
+            rejection_reason,
+            notes,
+            created_at,
+            updated_at,
+            correlation_id
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(next_status.as_str())
+    .bind(rejection_reason)
+    .bind(notes)
+    .bind(updated_at)
+    .bind(correlation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    if row.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE strategy_research_candidates
+            SET status = $2,
+                updated_at = $3,
+                correlation_id = COALESCE($4, correlation_id),
+                promoted_at = CASE
+                    WHEN $2 = 'PROMOTED_TO_SHADOW_CONFIG' THEN COALESCE(promoted_at, $3)
+                    ELSE promoted_at
+                END
+            WHERE id = $1
+            "#,
+        )
+        .bind(candidate_id)
+        .bind(legacy_status_for_research_candidate(next_status).as_str())
+        .bind(updated_at)
+        .bind(correlation_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(row.map(map_research_candidate))
+}
+
+pub async fn append_research_candidate_event(
+    pool: &PgPool,
+    event: &ResearchCandidateLifecycleEvent,
+) -> Result<ResearchCandidateEventRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_events (
+            id,
+            candidate_id,
+            previous_status,
+            next_status,
+            decision,
+            reason,
+            notes,
+            actor_id,
+            payload,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING
+            id,
+            candidate_id,
+            previous_status,
+            next_status,
+            decision,
+            reason,
+            notes,
+            actor_id,
+            payload,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(event.id)
+    .bind(event.candidate_id)
+    .bind(
+        event
+            .previous_status
+            .map(|value| value.as_str().to_string()),
+    )
+    .bind(event.next_status.as_str())
+    .bind(event.decision.as_str())
+    .bind(&event.reason)
+    .bind(&event.notes)
+    .bind(event.actor_id)
+    .bind(event.payload.clone())
+    .bind(event.created_at)
+    .bind(event.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_research_candidate_event(row))
+}
+
+pub async fn list_research_candidate_events(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Vec<ResearchCandidateEventRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            previous_status,
+            next_status,
+            decision,
+            reason,
+            notes,
+            actor_id,
+            payload,
+            created_at,
+            correlation_id
+        FROM research_candidate_events
+        WHERE candidate_id = $1
+        ORDER BY created_at ASC, id ASC
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(map_research_candidate_event).collect())
+}
+
+pub async fn get_latest_strategy_candidate_observation(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Option<StrategyCandidateObservationRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            status,
+            requirements,
+            summary,
+            decision,
+            started_at,
+            evaluated_at,
+            created_by,
+            correlation_id
+        FROM strategy_candidate_observations
+        WHERE candidate_id = $1
+        ORDER BY evaluated_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_strategy_candidate_observation))
 }
 
 pub async fn insert_strategy_research_candidate(
@@ -314,6 +859,81 @@ pub async fn insert_strategy_candidate_observation(
     observation: &StrategyCandidateObservationResult,
 ) -> Result<StrategyCandidateObservationRecord> {
     let mut tx = pool.begin().await?;
+    sqlx::query(
+        r#"
+        INSERT INTO strategy_research_candidates (
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            source_type,
+            source_id,
+            evidence,
+            score,
+            status,
+            warnings,
+            created_by,
+            created_at,
+            updated_at,
+            promoted_at,
+            promoted_by,
+            correlation_id
+        )
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            CASE
+                WHEN experiment_run_id IS NULL THEN 'MANUAL'
+                ELSE 'EXPERIMENT_RUN'
+            END,
+            experiment_run_id,
+            jsonb_build_object(
+                'experiment_id', experiment_id,
+                'experiment_run_id', experiment_run_id,
+                'walk_forward_id', NULL,
+                'pnl_pct', pnl_pct,
+                'max_drawdown_pct', max_drawdown_pct,
+                'win_rate', win_rate,
+                'trade_count', trade_count,
+                'fee_paid', NULL,
+                'slippage_cost', NULL,
+                'robustness_score', NULL,
+                'profitable_windows', NULL,
+                'losing_windows', NULL,
+                'skipped_windows', NULL,
+                'notes', notes
+            ),
+            COALESCE(score, 0),
+            CASE
+                WHEN status IN ('DISCOVERED', 'OBSERVING') THEN 'REGISTERED'
+                WHEN status = 'ACCEPTED_FOR_SHADOW' THEN 'PROMOTED_TO_SHADOW_CONFIG'
+                WHEN status = 'REJECTED' THEN 'REJECTED'
+                WHEN status = 'ARCHIVED' THEN 'ARCHIVED'
+                ELSE 'REGISTERED'
+            END,
+            '[]'::JSONB,
+            NULL,
+            created_at,
+            updated_at,
+            CASE
+                WHEN status = 'ACCEPTED_FOR_SHADOW' THEN updated_at
+                ELSE NULL
+            END,
+            NULL,
+            correlation_id
+        FROM research_candidates
+        WHERE id = $1
+        ON CONFLICT (id) DO NOTHING
+        "#,
+    )
+    .bind(observation.candidate_id)
+    .execute(&mut *tx)
+    .await?;
+
     let row = sqlx::query(
         r#"
         INSERT INTO strategy_candidate_observations (
@@ -675,6 +1295,54 @@ pub fn strategy_research_candidate_from_record(
         created_at: record.created_at,
         promoted_at: record.promoted_at,
         promoted_by: record.promoted_by,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub fn research_candidate_from_record(
+    record: &ResearchCandidateRecord,
+) -> Result<ResearchCandidate> {
+    Ok(ResearchCandidate {
+        id: record.id,
+        experiment_id: record.experiment_id,
+        experiment_run_id: record.experiment_run_id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        config: record.config.clone(),
+        score: record.score,
+        pnl_pct: record.pnl_pct,
+        max_drawdown_pct: record.max_drawdown_pct,
+        trade_count: record.trade_count,
+        win_rate: record.win_rate,
+        fee_drag: record.fee_drag,
+        status: record.status.parse::<ResearchCandidateStatus>()?,
+        rejection_reason: record.rejection_reason.clone(),
+        notes: record.notes.clone(),
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub fn research_candidate_event_from_record(
+    record: &ResearchCandidateEventRecord,
+) -> Result<ResearchCandidateLifecycleEvent> {
+    Ok(ResearchCandidateLifecycleEvent {
+        id: record.id,
+        candidate_id: record.candidate_id,
+        previous_status: record
+            .previous_status
+            .as_deref()
+            .map(str::parse::<ResearchCandidateStatus>)
+            .transpose()?,
+        next_status: record.next_status.parse::<ResearchCandidateStatus>()?,
+        decision: record.decision.parse::<ResearchCandidateDecision>()?,
+        reason: record.reason.clone(),
+        notes: record.notes.clone(),
+        actor_id: record.actor_id,
+        payload: record.payload.clone(),
+        created_at: record.created_at,
         correlation_id: record.correlation_id,
     })
 }
@@ -1122,6 +1790,46 @@ fn map_strategy_research_candidate(row: sqlx::postgres::PgRow) -> StrategyResear
         updated_at: row.get("updated_at"),
         promoted_at: row.get("promoted_at"),
         promoted_by: row.get("promoted_by"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_research_candidate(row: sqlx::postgres::PgRow) -> ResearchCandidateRecord {
+    ResearchCandidateRecord {
+        id: row.get("id"),
+        experiment_id: row.get("experiment_id"),
+        experiment_run_id: row.get("experiment_run_id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        config: row.get("config"),
+        score: row.get("score"),
+        pnl_pct: row.get("pnl_pct"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        trade_count: row.get("trade_count"),
+        win_rate: row.get("win_rate"),
+        fee_drag: row.get("fee_drag"),
+        status: row.get("status"),
+        rejection_reason: row.get("rejection_reason"),
+        notes: row.get("notes"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_research_candidate_event(row: sqlx::postgres::PgRow) -> ResearchCandidateEventRecord {
+    ResearchCandidateEventRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        previous_status: row.get("previous_status"),
+        next_status: row.get("next_status"),
+        decision: row.get("decision"),
+        reason: row.get("reason"),
+        notes: row.get("notes"),
+        actor_id: row.get("actor_id"),
+        payload: row.get("payload"),
+        created_at: row.get("created_at"),
         correlation_id: row.get("correlation_id"),
     }
 }

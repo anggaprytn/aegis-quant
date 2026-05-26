@@ -89,7 +89,7 @@ make verify
 - Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
 - Strategy experiments are research-only parameter sweeps on stored candles; they must not mutate live, paper, shadow, promotion, or testnet execution state.
-- Research candidate registration and promotion are review-only controls; promotion updates persisted strategy config for shadow observation only and does not execute trades or auto-submit anything.
+- Research candidate lifecycle operations are review-only controls; candidate creation, observation, decisions, and archival append auditable lifecycle events and do not execute trades or auto-submit anything.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
 
 ## Repository layout
@@ -115,12 +115,12 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 1. Build the research dataset.
 2. Run the multi-timeframe experiment.
 3. Run walk-forward validation.
-4. Register a promising research candidate.
-5. Promote it to shadow config only after owner review and exact confirmation.
-6. Observe it through the shadow runner and persist observation evidence.
-7. Review the persisted observation before any testnet promotion discussion.
+4. Create a research candidate from an experiment run or manual review package.
+5. Inspect the candidate, observation output, and lifecycle events.
+6. Explicitly mark it as observing when shadow review begins.
+7. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
 
-This workflow does not enable live trading, does not execute trades during promotion or observation, and does not auto-submit orders. Observation is required before testnet promotion review.
+This workflow does not enable live trading, does not execute trades during candidate lifecycle operations, and does not auto-submit orders. Observation and candidate decisions do not mutate paper or testnet execution state.
 
 ## Local prerequisites
 
@@ -310,6 +310,19 @@ Operator report example:
 
 Optional shadow example:
 `cargo run -p cli -- exchange testnet shadow-run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m`
+
+Research candidate lifecycle examples:
+`cargo run -p cli -- research candidates list --limit 10`
+
+`cargo run -p cli -- research candidates from-experiment-run <experiment_run_id> --notes "review queue"`
+
+`cargo run -p cli -- research candidates create --strategy momentum_v1 --symbol BTCUSDT --timeframe 15m --config-json '{"strategy_id":"momentum_v1","timeframe":"15m","symbols":["BTCUSDT"],"params":{"lookback_candles":8,"holding_candles":2}}' --notes "manual candidate"`
+
+`cargo run -p cli -- research candidates observe <candidate_id>`
+
+`cargo run -p cli -- research candidates decide <candidate_id> --decision REJECT --reason "bad drawdown"`
+
+`cargo run -p cli -- research candidates decide <candidate_id> --decision ACCEPT_FOR_SHADOW --reason "aligned and ready"`
 
 ## Strategy experiment interpretation
 

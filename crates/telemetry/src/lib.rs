@@ -49,7 +49,8 @@ pub struct Telemetry {
     backtest_trades_total: IntCounterVec,
     analytics_requests_total: IntCounterVec,
     analytics_promotion_funnel_requests_total: IntCounter,
-    research_candidates_total: IntCounterVec,
+    research_candidates_total: IntGaugeVec,
+    research_candidate_decisions_total: IntCounterVec,
     research_candidate_promotions_total: IntCounterVec,
     research_candidate_observations_total: IntCounterVec,
     exchange_testnet_requests_total: IntCounterVec,
@@ -317,13 +318,20 @@ impl Telemetry {
             registry
         )
         .expect("analytics_promotion_funnel_requests_total should register");
-        let research_candidates_total = register_int_counter_vec_with_registry!(
+        let research_candidates_total = register_int_gauge_vec_with_registry!(
             "research_candidates_total",
             "Research candidates by status.",
             &["status"],
             registry
         )
         .expect("research_candidates_total should register");
+        let research_candidate_decisions_total = register_int_counter_vec_with_registry!(
+            "research_candidate_decisions_total",
+            "Research candidate lifecycle decisions by decision.",
+            &["decision"],
+            registry
+        )
+        .expect("research_candidate_decisions_total should register");
         let research_candidate_promotions_total = register_int_counter_vec_with_registry!(
             "research_candidate_promotions_total",
             "Research candidate promotions by status.",
@@ -599,6 +607,7 @@ impl Telemetry {
             analytics_requests_total,
             analytics_promotion_funnel_requests_total,
             research_candidates_total,
+            research_candidate_decisions_total,
             research_candidate_promotions_total,
             research_candidate_observations_total,
             exchange_testnet_requests_total,
@@ -866,9 +875,25 @@ impl Telemetry {
         self.analytics_promotion_funnel_requests_total.inc();
     }
 
-    pub fn inc_research_candidate(&self, status: &str) {
+    pub fn set_research_candidate_total(&self, status: &str, value: i64) {
         self.research_candidates_total
             .with_label_values(&[status])
+            .set(value);
+    }
+
+    pub fn adjust_research_candidate_total(&self, status: &str, delta: i64) {
+        self.research_candidates_total
+            .with_label_values(&[status])
+            .add(delta);
+    }
+
+    pub fn inc_research_candidate(&self, status: &str) {
+        self.adjust_research_candidate_total(status, 1);
+    }
+
+    pub fn inc_research_candidate_decision(&self, decision: &str) {
+        self.research_candidate_decisions_total
+            .with_label_values(&[decision])
             .inc();
     }
 

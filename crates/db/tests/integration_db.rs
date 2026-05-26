@@ -6,7 +6,8 @@ use aegis_core::{
     ExchangeOrderStatus, ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeReconciliationAction,
     ExchangeReconciliationMismatchKind, ExchangeReconciliationSummary, ExecutionReadinessStatus,
     FeeModel, MarketDataSource, OrderIntent, PaperAccount, PaperAccountStatus, PaperPosition,
-    PaperPriceStatus, PositionSide, PositionStatus, ReplayMode, ReplayRunStatus,
+    PaperPriceStatus, PositionSide, PositionStatus, ReplayMode, ReplayRunStatus, ResearchCandidate,
+    ResearchCandidateDecision, ResearchCandidateLifecycleEvent, ResearchCandidateStatus,
     ResearchDataCoverageResult, ResearchDataReadinessStatus, ResearchDatasetBuildRequest,
     ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
     RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
@@ -28,17 +29,17 @@ use aegis_core::{
 };
 use chrono::{TimeZone, Utc};
 use db::{
-    append_exchange_testnet_lifecycle_event_and_update_order, count_candles_by_interval,
-    count_candles_range, create_paper_order, fail_exchange_reconciliation_run,
-    get_aggregated_candle_coverage, get_backtest_equity_curve, get_backtest_run,
-    get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
+    append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
+    count_candles_by_interval, count_candles_range, create_paper_order, create_research_candidate,
+    fail_exchange_reconciliation_run, get_aggregated_candle_coverage, get_backtest_equity_curve,
+    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
     get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key,
     get_research_dataset_build, get_risk_decision, get_strategy_paper_pnl_breakdown,
     get_strategy_performance_summary, get_strategy_shadow_decision_breakdown, get_system_state,
     get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
+    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_paper_account, insert_research_dataset_build, insert_risk_decision,
@@ -52,17 +53,19 @@ use db::{
     list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_performance_rankings, list_strategy_research_candidates,
     list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
-    list_testnet_promotion_funnel_rows, list_testnet_shadow_runs_in_window,
-    mark_strategy_research_candidate_promoted, replace_research_dataset_build_steps,
-    research_dataset_build_result_from_records, set_kill_switch_state,
-    strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
-    strategy_research_candidate_from_record, strategy_walk_forward_result_from_records,
-    strategy_walk_forward_window_from_record, test_support::TestDatabase,
-    testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
-    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
-    upsert_candle, upsert_candles_batch, upsert_exchange_private_stream_state,
-    upsert_paper_position, upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state,
-    CreateOrderError, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    list_testnet_promotion_funnel_rows, list_testnet_shadow_runs,
+    list_testnet_shadow_runs_in_window, mark_strategy_research_candidate_promoted,
+    replace_research_dataset_build_steps, research_candidate_event_from_record,
+    research_candidate_from_record, research_dataset_build_result_from_records,
+    set_kill_switch_state, strategy_candidate_observation_result_from_record,
+    strategy_experiment_result_from_records, strategy_research_candidate_from_record,
+    strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
+    test_support::TestDatabase, testnet_shadow_runner_config_from_record,
+    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
+    update_exchange_testnet_order_status, upsert_aggregated_candles, upsert_candle,
+    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, StateActor,
     StrategyResearchCandidateListFilters, TestnetShadowPromotionRecord, TestnetShadowRunRecord,
@@ -369,6 +372,30 @@ fn sample_strategy_walk_forward_request() -> StrategyWalkForwardRequest {
         },
         min_required_test_windows: Some(2),
         correlation_id: Some(Uuid::from_u128(0x9901)),
+    }
+}
+
+fn sample_lifecycle_candidate(id: Uuid, created_at: chrono::DateTime<Utc>) -> ResearchCandidate {
+    ResearchCandidate {
+        id,
+        experiment_id: Some(Uuid::new_v4()),
+        experiment_run_id: Some(Uuid::new_v4()),
+        strategy_id: "momentum_v1".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "15m".to_string(),
+        config: json!({ "lookback_candles": 20, "holding_candles": 3 }),
+        score: Some(Decimal::new(8750, 2)),
+        pnl_pct: Some(Decimal::new(245, 2)),
+        max_drawdown_pct: Some(Decimal::new(95, 2)),
+        trade_count: Some(18),
+        win_rate: Some(Decimal::new(57, 2)),
+        fee_drag: Some(Decimal::new(15, 2)),
+        status: ResearchCandidateStatus::Discovered,
+        rejection_reason: None,
+        notes: Some("fixture".to_string()),
+        created_at,
+        updated_at: created_at,
+        correlation_id: Some(Uuid::new_v4()),
     }
 }
 
@@ -3489,4 +3516,95 @@ async fn candidate_observation_insert_does_not_mutate_execution_tables() {
         .len(),
         before_shadow
     );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_candidate_lifecycle_creation_persists_candidate_and_event() {
+    let test_db = TestDatabase::setup().await.expect("db should setup");
+    let candidate = sample_lifecycle_candidate(Uuid::new_v4(), fixed_time());
+
+    let (candidate_record, event_record) = create_research_candidate(
+        &test_db.pool,
+        &candidate,
+        None,
+        ResearchCandidateDecision::Reopen,
+        Some("created"),
+        candidate.notes.as_deref(),
+        &json!({ "source": "manual" }),
+    )
+    .await
+    .expect("candidate should persist");
+
+    let hydrated = research_candidate_from_record(&candidate_record).expect("candidate should map");
+    let event = research_candidate_event_from_record(&event_record).expect("event should map");
+
+    assert_eq!(hydrated.status, ResearchCandidateStatus::Discovered);
+    assert_eq!(hydrated.strategy_id, "momentum_v1");
+    assert_eq!(event.previous_status, None);
+    assert_eq!(event.next_status, ResearchCandidateStatus::Discovered);
+    assert_eq!(event.decision, ResearchCandidateDecision::Reopen);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_candidate_lifecycle_events_are_ordered_and_append_on_decision() {
+    let test_db = TestDatabase::setup().await.expect("db should setup");
+    let candidate = sample_lifecycle_candidate(Uuid::new_v4(), fixed_time());
+
+    let (candidate_record, _) = create_research_candidate(
+        &test_db.pool,
+        &candidate,
+        None,
+        ResearchCandidateDecision::Reopen,
+        Some("created"),
+        candidate.notes.as_deref(),
+        &json!({ "source": "manual" }),
+    )
+    .await
+    .expect("candidate should persist");
+    let hydrated = research_candidate_from_record(&candidate_record).expect("candidate should map");
+
+    let updated = db::update_research_candidate_status(
+        &test_db.pool,
+        hydrated.id,
+        ResearchCandidateStatus::Rejected,
+        Some("bad drawdown"),
+        Some("rejecting fixture"),
+        fixed_time() + chrono::Duration::minutes(1),
+        hydrated.correlation_id,
+    )
+    .await
+    .expect("candidate should update")
+    .expect("candidate should exist");
+    let updated = research_candidate_from_record(&updated).expect("candidate should re-map");
+    assert_eq!(updated.status, ResearchCandidateStatus::Rejected);
+
+    append_research_candidate_event(
+        &test_db.pool,
+        &ResearchCandidateLifecycleEvent {
+            id: Uuid::new_v4(),
+            candidate_id: hydrated.id,
+            previous_status: Some(ResearchCandidateStatus::Discovered),
+            next_status: ResearchCandidateStatus::Rejected,
+            decision: ResearchCandidateDecision::Reject,
+            reason: Some("bad drawdown".to_string()),
+            notes: Some("rejecting fixture".to_string()),
+            actor_id: None,
+            payload: json!({ "test": true }),
+            created_at: fixed_time() + chrono::Duration::minutes(1),
+            correlation_id: hydrated.correlation_id,
+        },
+    )
+    .await
+    .expect("event should append");
+
+    let events = db::list_research_candidate_events(&test_db.pool, hydrated.id)
+        .await
+        .expect("events should list");
+    assert_eq!(events.len(), 2);
+    assert!(events[0].created_at <= events[1].created_at);
+    let last = research_candidate_event_from_record(&events[1]).expect("event should map");
+    assert_eq!(last.decision, ResearchCandidateDecision::Reject);
+    assert_eq!(last.reason.as_deref(), Some("bad drawdown"));
 }

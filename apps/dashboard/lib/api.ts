@@ -64,14 +64,13 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
-  StrategyCandidateObservationEvaluateRequest,
+  CreateResearchCandidateFromExperimentRunRequest,
+  CreateResearchCandidateRequest,
+  ResearchCandidateDecisionRequest,
+  ResearchCandidateEventsResponse,
+  ResearchCandidateResponse,
+  ResearchCandidatesResponse,
   StrategyCandidateObservationResponse,
-  StrategyCandidateObservationsResponse,
-  StrategyResearchCandidatePromotionRequest,
-  StrategyResearchCandidatePromotionResponse,
-  StrategyResearchCandidateRegisterRequest,
-  StrategyResearchCandidateResponse,
-  StrategyResearchCandidatesResponse,
   RiskActionResponse,
   RiskConfig,
   RiskConfigAuditResponse,
@@ -351,33 +350,35 @@ export const api = {
     request<ResearchDatasetBuildsResponse>("/research/data/builds", undefined, { limit }),
   getResearchDatasetBuild: (id: string) =>
     request<ResearchDatasetBuildResponse>(`/research/data/builds/${id}`),
-  registerResearchCandidate: (payload: StrategyResearchCandidateRegisterRequest) =>
-    request<StrategyResearchCandidateResponse>("/research/candidates/register", {
+  createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
+    request<ResearchCandidateResponse>("/research/candidates", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  createResearchCandidateFromExperimentRun: (
+    payload: CreateResearchCandidateFromExperimentRunRequest,
+  ) =>
+    request<ResearchCandidateResponse>("/research/candidates/from-experiment-run", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
   listResearchCandidates: (query?: Record<string, string | number | undefined>) =>
-    request<StrategyResearchCandidatesResponse>("/research/candidates", undefined, query),
+    request<ResearchCandidatesResponse>("/research/candidates", undefined, query),
   getResearchCandidate: (id: string) =>
-    request<StrategyResearchCandidateResponse>(`/research/candidates/${id}`),
-  observeResearchCandidate: (
-    id: string,
-    payload: StrategyCandidateObservationEvaluateRequest,
-  ) =>
+    request<ResearchCandidateResponse>(`/research/candidates/${id}`),
+  listResearchCandidateEvents: (id: string) =>
+    request<ResearchCandidateEventsResponse>(`/research/candidates/${id}/events`),
+  observeResearchCandidate: (id: string) =>
     request<StrategyCandidateObservationResponse>(`/research/candidates/${id}/observe`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({}),
     }),
-  listResearchCandidateObservations: (id: string) =>
-    request<StrategyCandidateObservationsResponse>(`/research/candidates/${id}/observations`),
-  getResearchCandidateObservation: (id: string) =>
-    request<StrategyCandidateObservationResponse>(`/research/candidate-observations/${id}`),
-  promoteResearchCandidateShadow: (
+  decideResearchCandidate: (
     id: string,
-    payload: StrategyResearchCandidatePromotionRequest,
+    payload: ResearchCandidateDecisionRequest,
   ) =>
-    request<StrategyResearchCandidatePromotionResponse>(
-      `/research/candidates/${id}/promote-shadow-config`,
+    request<ResearchCandidateResponse>(
+      `/research/candidates/${id}/decision`,
       {
         method: "POST",
         body: JSON.stringify(payload),

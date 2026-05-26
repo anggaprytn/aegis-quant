@@ -32,6 +32,9 @@ import type {
   ResearchDataCoverageResult,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
+  ResearchCandidate as StrategyResearchCandidate,
+  ResearchCandidateLifecycleEvent,
+  ResearchCandidateStatus as StrategyResearchCandidateStatus,
   RiskConfig,
   RiskDecisionRecord,
   StrategyComparisonSummary,
@@ -50,9 +53,6 @@ import type {
   StrategyDecisionBreakdown,
   StrategyPerformanceSummary,
   StrategyPnlBreakdown,
-  StrategyResearchCandidate,
-  StrategyResearchCandidatePromotionResult,
-  StrategyResearchCandidateStatus,
   StrategyStatusView,
   SystemEventRecord,
   TestnetPromotionFunnelRow,
@@ -607,15 +607,16 @@ function AuthenticatedDashboard({
   const [selectedResearchCandidateId, setSelectedResearchCandidateId] = useState<string | null>(
     null,
   );
+  const [lastResearchCandidateObservation, setLastResearchCandidateObservation] =
+    useState<StrategyCandidateObservation | null>(null);
   const [researchCandidateStrategyFilter, setResearchCandidateStrategyFilter] =
     useState("momentum_v1");
   const [researchCandidateSymbolFilter, setResearchCandidateSymbolFilter] =
     useState("BTCUSDT");
   const [researchCandidateTimeframeFilter, setResearchCandidateTimeframeFilter] = useState("");
   const [researchCandidateStatusFilter, setResearchCandidateStatusFilter] =
-    useState<StrategyResearchCandidateStatus | "">("REGISTERED");
-  const [researchPromotionConfirmationText, setResearchPromotionConfirmationText] =
-    useState("");
+    useState<StrategyResearchCandidateStatus | "">("DISCOVERED");
+  const [researchCandidateDecisionReason, setResearchCandidateDecisionReason] = useState("");
   const [backfillForm, setBackfillForm] =
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
   const [aggregationForm, setAggregationForm] =
@@ -878,9 +879,9 @@ function AuthenticatedDashboard({
     queryFn: () => api.getResearchCandidate(selectedResearchCandidateId ?? ""),
     enabled: Boolean(selectedResearchCandidateId),
   });
-  const selectedResearchCandidateObservationsQuery = useQuery({
-    queryKey: ["research-candidate-observations", selectedResearchCandidateId],
-    queryFn: () => api.listResearchCandidateObservations(selectedResearchCandidateId ?? ""),
+  const selectedResearchCandidateEventsQuery = useQuery({
+    queryKey: ["research-candidate-events", selectedResearchCandidateId],
+    queryFn: () => api.listResearchCandidateEvents(selectedResearchCandidateId ?? ""),
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
@@ -1509,13 +1510,15 @@ function AuthenticatedDashboard({
       });
     },
   });
-  const promoteResearchCandidateMutation = useMutation({
-    mutationFn: async () => {
+  const decideResearchCandidateMutation = useMutation({
+    mutationFn: async (decision: "ACCEPT_FOR_SHADOW" | "REJECT" | "ARCHIVE" | "REOPEN") => {
       if (!selectedResearchCandidateId) {
         throw new Error("Select a candidate first.");
       }
-      return api.promoteResearchCandidateShadow(selectedResearchCandidateId, {
-        confirmation_text: researchPromotionConfirmationText,
+      return api.decideResearchCandidate(selectedResearchCandidateId, {
+        decision,
+        reason: researchCandidateDecisionReason || undefined,
+        acknowledge_runner_mismatch: decision === "ACCEPT_FOR_SHADOW",
       });
     },
     onSuccess: async () => {
@@ -1523,12 +1526,10 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate", selectedResearchCandidateId],
       });
-      await queryClient.invalidateQueries({ queryKey: ["strategies"] });
-      if (selectedResearchCandidateId) {
-        const refreshed = await api.getResearchCandidate(selectedResearchCandidateId);
-        setSelectedStrategyId(refreshed.candidate.strategy_id);
-      }
-      setResearchPromotionConfirmationText("");
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-events", selectedResearchCandidateId],
+      });
+      setResearchCandidateDecisionReason("");
     },
   });
   const observeResearchCandidateMutation = useMutation({
@@ -1536,16 +1537,17 @@ function AuthenticatedDashboard({
       if (!selectedResearchCandidateId) {
         throw new Error("Select a candidate first.");
       }
-      return api.observeResearchCandidate(selectedResearchCandidateId, {
-        min_observation_hours: 24,
-        min_shadow_runs: 30,
-        min_would_submit_count: 1,
-        require_readiness_ready: true,
-      });
+      return api.observeResearchCandidate(selectedResearchCandidateId);
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["research-candidate-observations"] });
-      await queryClient.invalidateQueries({ queryKey: ["events"] });
+    onSuccess: async (response) => {
+      setLastResearchCandidateObservation(response.observation);
+      await queryClient.invalidateQueries({ queryKey: ["research-candidates"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-events", selectedResearchCandidateId],
+      });
     },
   });
   const operatorReportMutation = useMutation({
@@ -1808,10 +1810,10 @@ function AuthenticatedDashboard({
   const researchCandidates = researchCandidatesQuery.data?.candidates ?? [];
   const selectedResearchCandidate: StrategyResearchCandidate | null =
     selectedResearchCandidateQuery.data?.candidate ?? null;
-  const researchCandidateObservations: StrategyCandidateObservation[] =
-    selectedResearchCandidateObservationsQuery.data?.observations ?? [];
+  const researchCandidateEvents: ResearchCandidateLifecycleEvent[] =
+    selectedResearchCandidateEventsQuery.data?.events ?? [];
   const latestResearchCandidateObservation: StrategyCandidateObservation | null =
-    researchCandidateObservations[0] ?? null;
+    observeResearchCandidateMutation.data?.observation ?? lastResearchCandidateObservation;
   const latestResearchCandidateRunnerAlignment =
     latestResearchCandidateObservation?.runner_alignment ??
     latestResearchCandidateObservation?.summary.runner_alignment ??
@@ -4154,7 +4156,7 @@ function AuthenticatedDashboard({
                         value as StrategyResearchCandidateStatus | "",
                       )
                     }
-                    placeholder="REGISTERED"
+                    placeholder="DISCOVERED"
                   />
                 </div>
                 <div className="overflow-auto rounded-2xl border border-border">
@@ -4180,9 +4182,11 @@ function AuthenticatedDashboard({
                             <div>{candidate.strategy_id}</div>
                             <div className="text-xs text-muted">{shortenId(candidate.id)}</div>
                           </td>
-                          <td className="px-3 py-2">{candidate.score.score}</td>
+                          <td className="px-3 py-2">{candidate.score ?? "-"}</td>
                           <td className="px-3 py-2">{candidate.status}</td>
-                          <td className="px-3 py-2">{candidate.source_type}</td>
+                          <td className="px-3 py-2">
+                            {candidate.experiment_run_id ? "EXPERIMENT_RUN" : "MANUAL"}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -4198,17 +4202,16 @@ function AuthenticatedDashboard({
                     ["Symbol / Timeframe", selectedResearchCandidate
                       ? `${selectedResearchCandidate.symbol} / ${selectedResearchCandidate.timeframe}`
                       : "N/A"],
-                    ["Score", selectedResearchCandidate?.score.score ?? "N/A"],
+                    ["Score", selectedResearchCandidate?.score ?? "N/A"],
                     ["Status", selectedResearchCandidate?.status ?? "N/A"],
-                    ["Warnings", selectedResearchCandidate?.score.warnings.join(", ") || "None"],
-                    ["PnL %", selectedResearchCandidate?.evidence.pnl_pct ?? "N/A"],
-                    ["Max Drawdown %", selectedResearchCandidate?.evidence.max_drawdown_pct ?? "N/A"],
-                    ["Win Rate", selectedResearchCandidate?.evidence.win_rate ?? "N/A"],
-                    ["Trade Count", String(selectedResearchCandidate?.evidence.trade_count ?? 0)],
-                    ["Robustness", selectedResearchCandidate?.evidence.robustness_score ?? "N/A"],
-                    ["Windows", selectedResearchCandidate
-                      ? `${selectedResearchCandidate.evidence.profitable_windows ?? 0} / ${selectedResearchCandidate.evidence.losing_windows ?? 0} / skipped ${selectedResearchCandidate.evidence.skipped_windows ?? 0}`
-                      : "N/A"],
+                    ["Experiment Run", selectedResearchCandidate?.experiment_run_id ?? "N/A"],
+                    ["PnL %", selectedResearchCandidate?.pnl_pct ?? "N/A"],
+                    ["Max Drawdown %", selectedResearchCandidate?.max_drawdown_pct ?? "N/A"],
+                    ["Win Rate", selectedResearchCandidate?.win_rate ?? "N/A"],
+                    ["Trade Count", String(selectedResearchCandidate?.trade_count ?? 0)],
+                    ["Fee Drag", selectedResearchCandidate?.fee_drag ?? "N/A"],
+                    ["Rejection", selectedResearchCandidate?.rejection_reason ?? "None"],
+                    ["Notes", selectedResearchCandidate?.notes ?? "None"],
                   ]}
                   loading={selectedResearchCandidateQuery.isLoading}
                   error={getErrorMessage(selectedResearchCandidateQuery.error)}
@@ -4223,33 +4226,47 @@ function AuthenticatedDashboard({
                     </pre>
                   </div>
                   <div className="rounded-2xl border border-border bg-surface/40 p-4">
-                    <div className="text-xs uppercase tracking-[0.2em] text-muted">Promotion Gate</div>
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted">Decision</div>
                     <Field
-                      label="Typed Confirmation"
-                      value={researchPromotionConfirmationText}
-                      onChange={setResearchPromotionConfirmationText}
-                      placeholder={
-                        selectedResearchCandidate
-                          ? `PROMOTE STRATEGY ${selectedResearchCandidate.strategy_id.toUpperCase()}`
-                          : "PROMOTE STRATEGY momentum_v1"
-                      }
+                      label="Reason / Notes"
+                      value={researchCandidateDecisionReason}
+                      onChange={setResearchCandidateDecisionReason}
+                      placeholder="decision rationale"
                     />
-                    <div className="mt-3 flex items-center gap-3">
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
                       <ActionButton
-                        label="Promote To Shadow Config"
-                        onClick={() => promoteResearchCandidateMutation.mutate()}
-                        busy={promoteResearchCandidateMutation.isPending}
+                        label="Accept"
+                        onClick={() => decideResearchCandidateMutation.mutate("ACCEPT_FOR_SHADOW")}
+                        busy={decideResearchCandidateMutation.isPending}
                         disabled={
-                          user.role !== "OWNER" ||
+                          (user.role !== "OWNER" && user.role !== "OPERATOR") ||
                           !selectedResearchCandidate ||
-                          selectedResearchCandidate.status !== "REGISTERED"
+                          selectedResearchCandidate.status === "ARCHIVED"
                         }
                       />
+                      <ActionButton
+                        label="Reject"
+                        onClick={() => decideResearchCandidateMutation.mutate("REJECT")}
+                        busy={decideResearchCandidateMutation.isPending}
+                        disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                      />
+                      <ActionButton
+                        label="Archive"
+                        onClick={() => decideResearchCandidateMutation.mutate("ARCHIVE")}
+                        busy={decideResearchCandidateMutation.isPending}
+                        disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                      />
+                      <ActionButton
+                        label="Reopen"
+                        onClick={() => decideResearchCandidateMutation.mutate("REOPEN")}
+                        busy={decideResearchCandidateMutation.isPending}
+                        disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                      />
                       <InlineStatus
-                        error={getErrorMessage(promoteResearchCandidateMutation.error)}
+                        error={getErrorMessage(decideResearchCandidateMutation.error)}
                         success={
-                          promoteResearchCandidateMutation.data
-                            ? `Promoted ${shortenId(promoteResearchCandidateMutation.data.promotion.candidate_id)}`
+                          decideResearchCandidateMutation.data
+                            ? decideResearchCandidateMutation.data.candidate.status
                             : undefined
                         }
                       />
@@ -4356,13 +4373,13 @@ function AuthenticatedDashboard({
                 </div>
                 <div className="mt-4 rounded-2xl border border-border bg-surface/40 p-4">
                   <div className="text-xs uppercase tracking-[0.2em] text-muted">
-                    Observation History
+                    Lifecycle Events
                   </div>
                   <div className="mt-3 overflow-auto rounded-2xl border border-border">
                     <table className="min-w-full text-sm">
                       <thead className="bg-surface/60 text-left text-slate-300">
                         <tr>
-                          {["Observed", "Status", "Decision", "Runs", "Readiness", "Summary"].map(
+                          {["Created", "From", "To", "Decision", "Reason", "Notes"].map(
                             (label) => (
                               <th key={label} className="px-3 py-2 font-medium">
                                 {label}
@@ -4372,32 +4389,21 @@ function AuthenticatedDashboard({
                         </tr>
                       </thead>
                       <tbody>
-                        {researchCandidateObservations.map((observation) => (
-                          <tr key={observation.observation_id} className="border-t border-border">
-                            <td className="px-3 py-2">{formatDateTime(observation.evaluated_at)}</td>
-                            <td className="px-3 py-2">{observation.status}</td>
-                            <td className="px-3 py-2">{observation.decision}</td>
-                            <td className="px-3 py-2">
-                              {observation.summary.shadow_runs} / would-submit{" "}
-                              {observation.summary.would_submit_count}
-                            </td>
-                            <td className="px-3 py-2">
-                              {observation.summary.latest_readiness_status ?? "UNKNOWN"}
-                              {" / "}
-                              {observation.summary.latest_readiness_score ?? "-"}
-                            </td>
-                            <td className="px-3 py-2">
-                              {observation.summary.findings
-                                .map((finding) => finding.code)
-                                .join(", ") || "requirements_met"}
-                            </td>
+                        {researchCandidateEvents.map((event) => (
+                          <tr key={event.id} className="border-t border-border">
+                            <td className="px-3 py-2">{formatDateTime(event.created_at)}</td>
+                            <td className="px-3 py-2">{event.previous_status ?? "-"}</td>
+                            <td className="px-3 py-2">{event.next_status}</td>
+                            <td className="px-3 py-2">{event.decision}</td>
+                            <td className="px-3 py-2">{event.reason ?? "-"}</td>
+                            <td className="px-3 py-2">{event.notes ?? "-"}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
                   <InlineStatus
-                    error={getErrorMessage(selectedResearchCandidateObservationsQuery.error)}
+                    error={getErrorMessage(selectedResearchCandidateEventsQuery.error)}
                   />
                 </div>
               </Panel>

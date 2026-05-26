@@ -228,6 +228,197 @@ pub struct ResearchDatasetBuildResult {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateStatus {
+    Discovered,
+    Observing,
+    AcceptedForShadow,
+    Rejected,
+    Archived,
+}
+
+impl ResearchCandidateStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovered => "DISCOVERED",
+            Self::Observing => "OBSERVING",
+            Self::AcceptedForShadow => "ACCEPTED_FOR_SHADOW",
+            Self::Rejected => "REJECTED",
+            Self::Archived => "ARCHIVED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "DISCOVERED" => Ok(Self::Discovered),
+            "OBSERVING" => Ok(Self::Observing),
+            "ACCEPTED_FOR_SHADOW" => Ok(Self::AcceptedForShadow),
+            "REJECTED" => Ok(Self::Rejected),
+            "ARCHIVED" => Ok(Self::Archived),
+            other => Err(CoreError::UnsupportedResearchCandidateStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateDecision {
+    AcceptForShadow,
+    Reject,
+    Archive,
+    Reopen,
+}
+
+impl ResearchCandidateDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AcceptForShadow => "ACCEPT_FOR_SHADOW",
+            Self::Reject => "REJECT",
+            Self::Archive => "ARCHIVE",
+            Self::Reopen => "REOPEN",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateDecision {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ACCEPT_FOR_SHADOW" => Ok(Self::AcceptForShadow),
+            "REJECT" => Ok(Self::Reject),
+            "ARCHIVE" => Ok(Self::Archive),
+            "REOPEN" => Ok(Self::Reopen),
+            other => Err(CoreError::UnsupportedResearchCandidateDecision(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidate {
+    pub id: Uuid,
+    pub experiment_id: Option<Uuid>,
+    pub experiment_run_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub config: Value,
+    pub score: Option<Decimal>,
+    pub pnl_pct: Option<Decimal>,
+    pub max_drawdown_pct: Option<Decimal>,
+    pub trade_count: Option<i32>,
+    pub win_rate: Option<Decimal>,
+    pub fee_drag: Option<Decimal>,
+    pub status: ResearchCandidateStatus,
+    pub rejection_reason: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateLifecycleEvent {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub previous_status: Option<ResearchCandidateStatus>,
+    pub next_status: ResearchCandidateStatus,
+    pub decision: ResearchCandidateDecision,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    pub actor_id: Option<Uuid>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateDecisionRequest {
+    pub decision: ResearchCandidateDecision,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub acknowledge_runner_mismatch: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidatePromotionReadiness {
+    pub candidate_id: Uuid,
+    pub target: String,
+    pub latest_observation_id: Option<Uuid>,
+    pub latest_observation_decision: Option<StrategyCandidateObservationDecision>,
+    pub latest_recommendation: Option<String>,
+    pub readiness_status: Option<ExecutionReadinessStatus>,
+    pub readiness_score: Option<i32>,
+    #[serde(default)]
+    pub runner_alignment: StrategyCandidateRunnerAlignment,
+    #[serde(default)]
+    pub blockers: Vec<String>,
+    pub is_ready: bool,
+    pub evaluated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateArchiveRequest {
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    pub correlation_id: Option<Uuid>,
+}
+
+pub fn research_candidate_next_status(
+    current_status: ResearchCandidateStatus,
+    decision: ResearchCandidateDecision,
+) -> Result<ResearchCandidateStatus, CoreError> {
+    match decision {
+        ResearchCandidateDecision::AcceptForShadow => match current_status {
+            ResearchCandidateStatus::Discovered | ResearchCandidateStatus::Observing => {
+                Ok(ResearchCandidateStatus::AcceptedForShadow)
+            }
+            _ => Err(CoreError::InvalidResearchCandidateTransition(
+                current_status.as_str().to_string(),
+                decision.as_str().to_string(),
+            )),
+        },
+        ResearchCandidateDecision::Reject => match current_status {
+            ResearchCandidateStatus::Discovered
+            | ResearchCandidateStatus::Observing
+            | ResearchCandidateStatus::AcceptedForShadow => Ok(ResearchCandidateStatus::Rejected),
+            _ => Err(CoreError::InvalidResearchCandidateTransition(
+                current_status.as_str().to_string(),
+                decision.as_str().to_string(),
+            )),
+        },
+        ResearchCandidateDecision::Archive => match current_status {
+            ResearchCandidateStatus::Archived => {
+                Err(CoreError::InvalidResearchCandidateTransition(
+                    current_status.as_str().to_string(),
+                    decision.as_str().to_string(),
+                ))
+            }
+            _ => Ok(ResearchCandidateStatus::Archived),
+        },
+        ResearchCandidateDecision::Reopen => match current_status {
+            ResearchCandidateStatus::Rejected | ResearchCandidateStatus::Archived => {
+                Ok(ResearchCandidateStatus::Discovered)
+            }
+            _ => Err(CoreError::InvalidResearchCandidateTransition(
+                current_status.as_str().to_string(),
+                decision.as_str().to_string(),
+            )),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StrategyResearchCandidateSource {
     ExperimentRun,
     MultiTimeframeExperiment,
@@ -1670,5 +1861,69 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == "shadow_runner_config_mismatch"));
+    }
+
+    #[test]
+    fn accept_for_shadow_transition_is_valid_from_observing() {
+        let next = research_candidate_next_status(
+            ResearchCandidateStatus::Observing,
+            ResearchCandidateDecision::AcceptForShadow,
+        )
+        .expect("transition should be valid");
+
+        assert_eq!(next, ResearchCandidateStatus::AcceptedForShadow);
+    }
+
+    #[test]
+    fn reject_transition_requires_supported_source_status() {
+        let err = research_candidate_next_status(
+            ResearchCandidateStatus::Archived,
+            ResearchCandidateDecision::Reject,
+        )
+        .expect_err("archived candidate should not reject again");
+
+        assert!(matches!(
+            err,
+            CoreError::InvalidResearchCandidateTransition(_, _)
+        ));
+    }
+
+    #[test]
+    fn archive_transition_is_valid_from_any_non_archived_status() {
+        for status in [
+            ResearchCandidateStatus::Discovered,
+            ResearchCandidateStatus::Observing,
+            ResearchCandidateStatus::AcceptedForShadow,
+            ResearchCandidateStatus::Rejected,
+        ] {
+            let next = research_candidate_next_status(status, ResearchCandidateDecision::Archive)
+                .expect("archive should be valid");
+            assert_eq!(next, ResearchCandidateStatus::Archived);
+        }
+    }
+
+    #[test]
+    fn reopen_only_allows_rejected_or_archived() {
+        assert_eq!(
+            research_candidate_next_status(
+                ResearchCandidateStatus::Rejected,
+                ResearchCandidateDecision::Reopen
+            )
+            .expect("rejected candidate should reopen"),
+            ResearchCandidateStatus::Discovered
+        );
+        assert_eq!(
+            research_candidate_next_status(
+                ResearchCandidateStatus::Archived,
+                ResearchCandidateDecision::Reopen
+            )
+            .expect("archived candidate should reopen"),
+            ResearchCandidateStatus::Discovered
+        );
+        assert!(research_candidate_next_status(
+            ResearchCandidateStatus::Observing,
+            ResearchCandidateDecision::Reopen
+        )
+        .is_err());
     }
 }

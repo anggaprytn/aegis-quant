@@ -1555,7 +1555,7 @@ pub fn print_research_dataset_build(build: &aegis_core::ResearchDatasetBuildResu
     }
 }
 
-pub fn print_research_candidates(candidates: &[aegis_core::StrategyResearchCandidate]) {
+pub fn print_research_candidates(candidates: &[aegis_core::ResearchCandidate]) {
     for candidate in candidates {
         println!(
             "{}  {} {} {} score={} status={}",
@@ -1563,36 +1563,41 @@ pub fn print_research_candidates(candidates: &[aegis_core::StrategyResearchCandi
             candidate.strategy_id,
             candidate.symbol,
             candidate.timeframe,
-            candidate.score.score,
+            candidate
+                .score
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             candidate.status.as_str()
         );
     }
 }
 
-pub fn print_research_candidate(candidate: &aegis_core::StrategyResearchCandidate) {
+pub fn print_research_candidate(candidate: &aegis_core::ResearchCandidate) {
     println!("Candidate ID: {}", candidate.id);
     println!("Strategy: {}", candidate.strategy_id);
     println!("Symbol: {}", candidate.symbol);
     println!("Timeframe: {}", candidate.timeframe);
-    println!("Source: {}", candidate.source_type.as_str());
     println!("Status: {}", candidate.status.as_str());
-    println!("Score: {}", candidate.score.score);
-    println!("Warnings: {}", candidate.score.warnings.join(", "));
     println!(
-        "Evidence: pnl_pct={:?} max_drawdown_pct={:?} win_rate={:?} trade_count={:?} fee_paid={:?} slippage_cost={:?} robustness_score={:?} profitable_windows={:?} losing_windows={:?} skipped_windows={:?}",
-        candidate.evidence.pnl_pct,
-        candidate.evidence.max_drawdown_pct,
-        candidate.evidence.win_rate,
-        candidate.evidence.trade_count,
-        candidate.evidence.fee_paid,
-        candidate.evidence.slippage_cost,
-        candidate.evidence.robustness_score,
-        candidate.evidence.profitable_windows,
-        candidate.evidence.losing_windows,
-        candidate.evidence.skipped_windows
+        "Score: {}",
+        candidate
+            .score
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
     );
-    if let Some(notes) = &candidate.evidence.notes {
-        println!("Evidence notes: {}", notes);
+    println!(
+        "Metrics: pnl_pct={:?} max_drawdown_pct={:?} win_rate={:?} trade_count={:?} fee_drag={:?}",
+        candidate.pnl_pct,
+        candidate.max_drawdown_pct,
+        candidate.win_rate,
+        candidate.trade_count,
+        candidate.fee_drag
+    );
+    if let Some(reason) = &candidate.rejection_reason {
+        println!("Rejection reason: {}", reason);
+    }
+    if let Some(notes) = &candidate.notes {
+        println!("Notes: {}", notes);
     }
     println!(
         "Config: {}",
@@ -1600,39 +1605,18 @@ pub fn print_research_candidate(candidate: &aegis_core::StrategyResearchCandidat
     );
 }
 
-pub fn print_research_candidate_promotion(
-    promotion: &aegis_core::StrategyResearchCandidatePromotionResult,
-) {
-    println!("Candidate ID: {}", promotion.candidate_id);
-    println!("Strategy: {}", promotion.strategy_id);
-    println!("Status: {}", promotion.status.as_str());
-    println!("Promoted At: {}", promotion.promoted_at);
-    if let Some(previous) = &promotion.previous_config {
+pub fn print_research_candidate_events(events: &[aegis_core::ResearchCandidateLifecycleEvent]) {
+    for event in events {
         println!(
-            "Previous config: {}",
-            serde_json::to_string_pretty(previous).unwrap_or_else(|_| "{}".to_string())
-        );
-    }
-    println!(
-        "Promoted config: {}",
-        serde_json::to_string_pretty(&promotion.promoted_config)
-            .unwrap_or_else(|_| "{}".to_string())
-    );
-}
-
-pub fn print_research_candidate_observations(
-    observations: &[aegis_core::StrategyCandidateObservationResult],
-) {
-    for observation in observations {
-        println!(
-            "{}  {} {} runs={} would_submit={} decision={} status={}",
-            observation.observation_id,
-            observation.strategy_id,
-            observation.timeframe,
-            observation.summary.shadow_runs,
-            observation.summary.would_submit_count,
-            observation.decision.as_str(),
-            observation.status.as_str()
+            "{}  {} -> {} decision={} reason={}",
+            event.created_at.to_rfc3339(),
+            event
+                .previous_status
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            event.next_status.as_str(),
+            event.decision.as_str(),
+            event.reason.clone().unwrap_or_else(|| "-".to_string())
         );
     }
 }
