@@ -1812,6 +1812,10 @@ function AuthenticatedDashboard({
     selectedResearchCandidateObservationsQuery.data?.observations ?? [];
   const latestResearchCandidateObservation: StrategyCandidateObservation | null =
     researchCandidateObservations[0] ?? null;
+  const latestResearchCandidateRunnerAlignment =
+    latestResearchCandidateObservation?.runner_alignment ??
+    latestResearchCandidateObservation?.summary.runner_alignment ??
+    null;
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
@@ -4274,7 +4278,34 @@ function AuthenticatedDashboard({
                         {" / "}
                         {latestResearchCandidateObservation?.summary.latest_readiness_score ?? "-"}
                       </div>
+                      <div>
+                        Runner:{" "}
+                        {latestResearchCandidateRunnerAlignment
+                          ? `${latestResearchCandidateRunnerAlignment.runner_status} · ${latestResearchCandidateRunnerAlignment.runner_timeframe} · ${latestResearchCandidateRunnerAlignment.strategy_config_matches_runner ? "aligned" : "mismatch"}`
+                          : "UNKNOWN"}
+                      </div>
                     </div>
+                    {latestResearchCandidateRunnerAlignment &&
+                    !latestResearchCandidateRunnerAlignment.strategy_config_matches_runner ? (
+                      <div className="mt-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4">
+                        <div className="text-sm font-semibold text-amber-100">
+                          Shadow runner mismatch
+                        </div>
+                        <div className="mt-1 text-xs text-amber-50/80">
+                          Shadow runner is not configured for candidate timeframe/symbol/strategy.
+                        </div>
+                        <div className="mt-3 space-y-1 text-xs text-amber-50/80">
+                          {latestResearchCandidateRunnerAlignment.mismatch_reasons.map((reason) => (
+                            <div key={reason}>{reason}</div>
+                          ))}
+                          {(latestResearchCandidateObservation?.summary.recommendations ?? []).map(
+                            (recommendation) => (
+                              <div key={recommendation}>{recommendation}</div>
+                            ),
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="mt-3 flex items-center gap-3">
                       <ActionButton
                         label="Run Observation"
@@ -4306,6 +4337,21 @@ function AuthenticatedDashboard({
                             </div>
                           ))}
                     </div>
+                    {(latestResearchCandidateObservation?.summary.recommendations ?? []).length >
+                    0 ? (
+                      <>
+                        <div className="mt-4 text-xs uppercase tracking-[0.2em] text-muted">
+                          Recommendations
+                        </div>
+                        <div className="mt-2 space-y-1 text-xs text-slate-300">
+                          {latestResearchCandidateObservation?.summary.recommendations.map(
+                            (recommendation) => (
+                              <div key={recommendation}>{recommendation}</div>
+                            ),
+                          )}
+                        </div>
+                      </>
+                    ) : null}
                   </div>
                 </div>
                 <div className="mt-4 rounded-2xl border border-border bg-surface/40 p-4">

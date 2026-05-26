@@ -7,16 +7,90 @@ use aegis_core::{
     StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
     StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyResearchCandidateStatus, TestnetShadowDecision,
+    StrategyCandidateRunnerAlignment, StrategyResearchCandidateStatus, TestnetShadowDecision,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerState,
 };
 use db::{
+    ensure_testnet_shadow_runner_config, ensure_testnet_shadow_runner_state,
     get_strategy_research_candidate, insert_strategy_candidate_observation, insert_system_event,
     list_testnet_shadow_runs_in_window, strategy_candidate_observation_result_from_record,
-    strategy_research_candidate_from_record,
+    strategy_research_candidate_from_record, testnet_shadow_runner_config_from_record,
+    testnet_shadow_runner_state_from_record,
 };
 use telemetry::telemetry;
 
 use crate::{readiness::compute_execution_readiness, AppState};
+
+struct TestnetShadowRunnerSnapshot {
+    config: TestnetShadowRunnerConfig,
+    state: TestnetShadowRunnerState,
+}
+
+async fn load_testnet_shadow_runner_snapshot(
+    state: &AppState,
+) -> Result<TestnetShadowRunnerSnapshot> {
+    Ok(TestnetShadowRunnerSnapshot {
+        config: testnet_shadow_runner_config_from_record(
+            &ensure_testnet_shadow_runner_config(&state.db_pool).await?,
+        )?,
+        state: testnet_shadow_runner_state_from_record(
+            &ensure_testnet_shadow_runner_state(&state.db_pool).await?,
+        )?,
+    })
+}
+
+fn evaluate_runner_alignment(
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+    snapshot: &TestnetShadowRunnerSnapshot,
+) -> StrategyCandidateRunnerAlignment {
+    let normalized_strategy = strategy_id.trim().to_ascii_lowercase();
+    let normalized_symbol = symbol.trim().to_ascii_uppercase();
+    let normalized_timeframe = timeframe.trim().to_ascii_lowercase();
+    let mut mismatch_reasons = Vec::new();
+
+    if snapshot.config.timeframe.trim().to_ascii_lowercase() != normalized_timeframe {
+        mismatch_reasons.push(format!(
+            "runner timeframe {} does not include candidate timeframe {}",
+            snapshot.config.timeframe, timeframe
+        ));
+    }
+    if !snapshot
+        .config
+        .symbols
+        .iter()
+        .any(|value| value.trim().eq_ignore_ascii_case(&normalized_symbol))
+    {
+        mismatch_reasons.push(format!(
+            "runner symbols [{}] do not include candidate symbol {}",
+            snapshot.config.symbols.join(", "),
+            symbol
+        ));
+    }
+    if !snapshot
+        .config
+        .strategies
+        .iter()
+        .any(|value| value.trim().eq_ignore_ascii_case(&normalized_strategy))
+    {
+        mismatch_reasons.push(format!(
+            "runner strategies [{}] do not include candidate strategy {}",
+            snapshot.config.strategies.join(", "),
+            strategy_id
+        ));
+    }
+
+    StrategyCandidateRunnerAlignment {
+        strategy_config_matches_runner: mismatch_reasons.is_empty(),
+        runner_enabled: snapshot.config.enabled,
+        runner_status: snapshot.state.status.as_str().to_string(),
+        runner_timeframe: snapshot.config.timeframe.clone(),
+        runner_symbols: snapshot.config.symbols.clone(),
+        runner_strategies: snapshot.config.strategies.clone(),
+        mismatch_reasons,
+    }
+}
 
 pub async fn evaluate_candidate_observation(
     state: &AppState,
@@ -33,6 +107,13 @@ pub async fn evaluate_candidate_observation(
         candidate.strategy_id.clone(),
         candidate.symbol.clone(),
         candidate.timeframe.clone(),
+    );
+    let runner_snapshot = load_testnet_shadow_runner_snapshot(state).await?;
+    let runner_alignment = evaluate_runner_alignment(
+        &candidate.strategy_id,
+        &candidate.symbol,
+        &candidate.timeframe,
+        &runner_snapshot,
     );
 
     let observation = if candidate.status != StrategyResearchCandidateStatus::PromotedToShadowConfig
@@ -52,12 +133,14 @@ pub async fn evaluate_candidate_observation(
             no_signal_rate: rust_decimal::Decimal::ZERO,
             latest_readiness_status: None,
             latest_readiness_score: None,
+            runner_alignment: runner_alignment.clone(),
             decision: StrategyCandidateObservationDecision::InsufficientData,
             findings: vec![StrategyCandidateObservationFinding {
                 code: "candidate_not_promoted_to_shadow".to_string(),
                 message: "Candidate has not been promoted to shadow config.".to_string(),
                 blocking: true,
             }],
+            recommendations: Vec::new(),
             created_at: evaluated_at,
         };
         StrategyCandidateObservationResult {
@@ -68,6 +151,7 @@ pub async fn evaluate_candidate_observation(
             timeframe: candidate.timeframe.clone(),
             status: StrategyCandidateObservationStatus::InsufficientData,
             requirements,
+            runner_alignment,
             summary,
             decision: StrategyCandidateObservationDecision::InsufficientData,
             started_at: window_start,
@@ -131,6 +215,7 @@ pub async fn evaluate_candidate_observation(
             skipped_count,
             Some(readiness.status),
             Some(readiness.score),
+            runner_alignment.clone(),
             evaluated_at,
         );
         StrategyCandidateObservationResult {
@@ -154,6 +239,7 @@ pub async fn evaluate_candidate_observation(
                 }
             },
             requirements,
+            runner_alignment,
             decision: summary.decision,
             summary,
             started_at: window_start,
@@ -188,6 +274,7 @@ async fn emit_observation_events(
         "would_submit_count": observation.summary.would_submit_count,
         "risk_rejection_rate": observation.summary.risk_rejection_rate,
         "no_signal_rate": observation.summary.no_signal_rate,
+        "runner_alignment": observation.runner_alignment,
     });
     let _ = insert_system_event(
         &state.db_pool,

@@ -716,6 +716,7 @@ pub fn strategy_candidate_observation_result_from_record(
             .status
             .parse::<StrategyCandidateObservationStatus>()?,
         requirements,
+        runner_alignment: summary.runner_alignment.clone(),
         summary,
         decision: record
             .decision

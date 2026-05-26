@@ -502,6 +502,24 @@ pub struct StrategyCandidateObservationFinding {
     pub blocking: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct StrategyCandidateRunnerAlignment {
+    #[serde(default)]
+    pub strategy_config_matches_runner: bool,
+    #[serde(default)]
+    pub runner_enabled: bool,
+    #[serde(default)]
+    pub runner_status: String,
+    #[serde(default)]
+    pub runner_timeframe: String,
+    #[serde(default)]
+    pub runner_symbols: Vec<String>,
+    #[serde(default)]
+    pub runner_strategies: Vec<String>,
+    #[serde(default)]
+    pub mismatch_reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyCandidateObservationRequirement {
     pub candidate_id: Uuid,
@@ -551,8 +569,12 @@ pub struct StrategyCandidateObservationSummary {
     pub no_signal_rate: Decimal,
     pub latest_readiness_status: Option<ExecutionReadinessStatus>,
     pub latest_readiness_score: Option<i32>,
+    #[serde(default)]
+    pub runner_alignment: StrategyCandidateRunnerAlignment,
     pub decision: StrategyCandidateObservationDecision,
     pub findings: Vec<StrategyCandidateObservationFinding>,
+    #[serde(default)]
+    pub recommendations: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -565,6 +587,8 @@ pub struct StrategyCandidateObservationResult {
     pub timeframe: String,
     pub status: StrategyCandidateObservationStatus,
     pub requirements: StrategyCandidateObservationRequirement,
+    #[serde(default)]
+    pub runner_alignment: StrategyCandidateRunnerAlignment,
     pub summary: StrategyCandidateObservationSummary,
     pub decision: StrategyCandidateObservationDecision,
     pub started_at: DateTime<Utc>,
@@ -614,16 +638,34 @@ pub fn evaluate_strategy_candidate_observation(
     skipped_count: i64,
     latest_readiness_status: Option<ExecutionReadinessStatus>,
     latest_readiness_score: Option<i32>,
+    runner_alignment: StrategyCandidateRunnerAlignment,
     created_at: DateTime<Utc>,
 ) -> StrategyCandidateObservationSummary {
     let risk_rejection_rate = calculate_strategy_rejection_rate(risk_rejected_count, shadow_runs);
     let no_signal_rate = calculate_observation_rate(no_signal_count, shadow_runs);
     let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
     let observed_hours = window_end.signed_duration_since(window_start).num_hours();
     let mut decision = StrategyCandidateObservationDecision::Pass;
 
+    if !runner_alignment.strategy_config_matches_runner {
+        decision = StrategyCandidateObservationDecision::InsufficientData;
+        findings.push(StrategyCandidateObservationFinding {
+            code: "shadow_runner_config_mismatch".to_string(),
+            message: "Shadow runner is not configured for candidate timeframe/symbol/strategy."
+                .to_string(),
+            blocking: true,
+        });
+        recommendations.push(format!(
+            "Update shadow runner config to include {} {} {}.",
+            requirements.strategy_id, requirements.symbol, requirements.timeframe
+        ));
+    }
+
     if observed_hours < requirements.min_observation_hours {
-        decision = StrategyCandidateObservationDecision::ContinueObserving;
+        if decision == StrategyCandidateObservationDecision::Pass {
+            decision = StrategyCandidateObservationDecision::ContinueObserving;
+        }
         findings.push(StrategyCandidateObservationFinding {
             code: "not_enough_time_observed".to_string(),
             message: format!(
@@ -727,8 +769,10 @@ pub fn evaluate_strategy_candidate_observation(
         no_signal_rate: no_signal_rate.round_dp(4),
         latest_readiness_status,
         latest_readiness_score,
+        runner_alignment,
         decision,
         findings,
+        recommendations,
         created_at,
     }
 }
@@ -1317,6 +1361,18 @@ mod tests {
         }
     }
 
+    fn aligned_runner_alignment() -> StrategyCandidateRunnerAlignment {
+        StrategyCandidateRunnerAlignment {
+            strategy_config_matches_runner: true,
+            runner_enabled: true,
+            runner_status: "RUNNING".to_string(),
+            runner_timeframe: "15m".to_string(),
+            runner_symbols: vec!["BTCUSDT".to_string()],
+            runner_strategies: vec!["momentum_v1".to_string()],
+            mismatch_reasons: Vec::new(),
+        }
+    }
+
     #[test]
     fn insufficient_hours_continue_observing() {
         let requirement = base_observation_requirement();
@@ -1331,6 +1387,7 @@ mod tests {
             1,
             Some(ExecutionReadinessStatus::Ready),
             Some(92),
+            aligned_runner_alignment(),
             ts(23, 0, 0),
         );
 
@@ -1358,6 +1415,7 @@ mod tests {
             0,
             Some(ExecutionReadinessStatus::Ready),
             Some(90),
+            aligned_runner_alignment(),
             ts(0, 0, 0) + chrono::Duration::hours(24),
         );
 
@@ -1385,6 +1443,7 @@ mod tests {
             0,
             Some(ExecutionReadinessStatus::Ready),
             Some(90),
+            aligned_runner_alignment(),
             ts(0, 0, 0) + chrono::Duration::hours(24),
         );
 
@@ -1409,6 +1468,7 @@ mod tests {
             0,
             Some(ExecutionReadinessStatus::Degraded),
             Some(70),
+            aligned_runner_alignment(),
             ts(0, 0, 0) + chrono::Duration::hours(24),
         );
 
@@ -1433,6 +1493,7 @@ mod tests {
             1,
             Some(ExecutionReadinessStatus::Ready),
             Some(95),
+            aligned_runner_alignment(),
             ts(0, 0, 0) + chrono::Duration::hours(24),
         );
 
@@ -1462,9 +1523,152 @@ mod tests {
             0,
             Some(ExecutionReadinessStatus::Ready),
             Some(95),
+            aligned_runner_alignment(),
             ts(0, 0, 0) + chrono::Duration::hours(24),
         );
 
         assert_eq!(summary.risk_rejection_rate, Decimal::new(2, 1).round_dp(4));
+    }
+
+    #[test]
+    fn runner_timeframe_mismatch_detected() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            2,
+            5,
+            2,
+            0,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(90),
+            StrategyCandidateRunnerAlignment {
+                strategy_config_matches_runner: false,
+                runner_enabled: true,
+                runner_status: "RUNNING".to_string(),
+                runner_timeframe: "1m".to_string(),
+                runner_symbols: vec!["BTCUSDT".to_string()],
+                runner_strategies: vec!["momentum_v1".to_string()],
+                mismatch_reasons: vec![
+                    "runner timeframe 1m does not include candidate timeframe 15m".to_string(),
+                ],
+            },
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(
+            summary.decision,
+            StrategyCandidateObservationDecision::InsufficientData
+        );
+        assert!(summary
+            .findings
+            .iter()
+            .any(|finding| finding.code == "shadow_runner_config_mismatch"));
+        assert_eq!(
+            summary.recommendations,
+            vec!["Update shadow runner config to include momentum_v1 BTCUSDT 15m.".to_string()]
+        );
+    }
+
+    #[test]
+    fn runner_symbol_mismatch_detected() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            2,
+            5,
+            2,
+            0,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(90),
+            StrategyCandidateRunnerAlignment {
+                strategy_config_matches_runner: false,
+                runner_enabled: true,
+                runner_status: "RUNNING".to_string(),
+                runner_timeframe: "15m".to_string(),
+                runner_symbols: vec!["ETHUSDT".to_string()],
+                runner_strategies: vec!["momentum_v1".to_string()],
+                mismatch_reasons: vec![
+                    "runner symbols [ETHUSDT] do not include candidate symbol BTCUSDT".to_string(),
+                ],
+            },
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(
+            summary.decision,
+            StrategyCandidateObservationDecision::InsufficientData
+        );
+        assert_eq!(summary.runner_alignment.runner_symbols, vec!["ETHUSDT"]);
+    }
+
+    #[test]
+    fn runner_strategy_mismatch_detected() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            2,
+            5,
+            2,
+            0,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(90),
+            StrategyCandidateRunnerAlignment {
+                strategy_config_matches_runner: false,
+                runner_enabled: true,
+                runner_status: "RUNNING".to_string(),
+                runner_timeframe: "15m".to_string(),
+                runner_symbols: vec!["BTCUSDT".to_string()],
+                runner_strategies: vec!["mean_reversion_v1".to_string()],
+                mismatch_reasons: vec![
+                    "runner strategies [mean_reversion_v1] do not include candidate strategy momentum_v1"
+                        .to_string(),
+                ],
+            },
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert_eq!(
+            summary.decision,
+            StrategyCandidateObservationDecision::InsufficientData
+        );
+        assert_eq!(
+            summary.runner_alignment.runner_strategies,
+            vec!["mean_reversion_v1"]
+        );
+    }
+
+    #[test]
+    fn aligned_runner_passes_preflight() {
+        let requirement = base_observation_requirement();
+        let summary = evaluate_strategy_candidate_observation(
+            &requirement,
+            ts(0, 0, 0),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+            30,
+            4,
+            6,
+            3,
+            1,
+            Some(ExecutionReadinessStatus::Ready),
+            Some(95),
+            aligned_runner_alignment(),
+            ts(0, 0, 0) + chrono::Duration::hours(24),
+        );
+
+        assert!(summary.runner_alignment.strategy_config_matches_runner);
+        assert!(summary.recommendations.is_empty());
+        assert!(!summary
+            .findings
+            .iter()
+            .any(|finding| finding.code == "shadow_runner_config_mismatch"));
     }
 }

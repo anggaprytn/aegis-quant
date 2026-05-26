@@ -16211,17 +16211,16 @@ mod tests {
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
         build_cors_layer, cancel_exchange_testnet_order, check_execution_readiness_handler,
         evaluate_strategy_candidate_observation_handler, generate_testnet_client_order_id,
-        get_exchange_testnet_shadow_promotion_handler,
-        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
-        get_risk_decisions, get_strategy_candidate_observation_handler,
-        get_strategy_config_handler, get_strategy_list,
+        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
+        get_execution_readiness_snapshot_handler, get_risk_decisions,
+        get_strategy_candidate_observation_handler, get_strategy_config_handler, get_strategy_list,
         get_strategy_research_candidate_handler, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
         list_execution_readiness_snapshots_handler, list_strategy_candidate_observations_handler,
         list_strategy_research_candidates_handler, login, logout, metrics, normalize_route_label,
-        order_view, parse_correlation_id_filter, parse_cors_allowed_origins,
-        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline,
+        order_view, parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
+        parse_risk_check_context, preview_exchange_testnet_pipeline,
         preview_exchange_testnet_shadow_promotion_handler,
         promote_strategy_research_candidate_handler, reconcile_exchange_testnet_orders_handler,
         reconcile_testnet_orders, refresh, register_strategy_research_candidate_handler,
@@ -16253,7 +16252,8 @@ mod tests {
         StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus,
         StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
         TestnetRepairAction, TestnetShadowDecision, TestnetShadowPromotionStatus,
-        TestnetShadowPromotionSubmitRequest, TestnetShadowRunnerState, TestnetShadowRunnerStatus,
+        TestnetShadowPromotionSubmitRequest, TestnetShadowRunnerConfig,
+        TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState, TestnetShadowRunnerStatus,
         UserRole, UserStatus,
     };
     use axum::{
@@ -16283,9 +16283,10 @@ mod tests {
         list_paper_positions, list_paper_trade_journal, mark_strategy_research_candidate_promoted,
         set_kill_switch_state, test_support::TestDatabase, upsert_candle,
         upsert_exchange_private_stream_state, upsert_market_feed_status, upsert_risk_config,
-        upsert_strategy_config, upsert_testnet_shadow_runner_state,
-        ExchangePrivateStreamStateRecord, ExchangeReconciliationRunRecord,
-        ExchangeTestnetOrderRecord, OrderRecord, PgPool, StateActor, TestnetShadowRunRecord,
+        upsert_strategy_config, upsert_testnet_shadow_runner_config,
+        upsert_testnet_shadow_runner_state, ExchangePrivateStreamStateRecord,
+        ExchangeReconciliationRunRecord, ExchangeTestnetOrderRecord, OrderRecord, PgPool,
+        StateActor, TestnetShadowRunRecord,
     };
     use exchange::{
         testing::{FakeExchangeAdapter, FakeOrderStatus, FakeSubmitAck},
@@ -17870,6 +17871,29 @@ mod tests {
             take_profit_pct: None,
             holding_candles: Some(3),
             notes: Some("shadow test".to_string()),
+        }
+    }
+
+    fn shadow_runner_config(
+        strategies: Vec<&str>,
+        symbols: Vec<&str>,
+        timeframe: CandleInterval,
+    ) -> TestnetShadowRunnerConfig {
+        TestnetShadowRunnerConfig {
+            id: db::TESTNET_SHADOW_RUNNER_CONFIG_ID,
+            enabled: true,
+            interval_seconds: 60,
+            strategies: strategies
+                .into_iter()
+                .map(|value| value.to_string())
+                .collect(),
+            symbols: symbols.into_iter().map(|value| value.to_string()).collect(),
+            timeframe: timeframe.as_str().to_string(),
+            max_runs_per_tick: 10,
+            stale_feed_policy: TestnetShadowRunnerStaleFeedPolicy::Skip,
+            notes: Some("observation fixture".to_string()),
+            updated_by: None,
+            updated_at: Utc::now(),
         }
     }
 
@@ -20274,6 +20298,16 @@ mod tests {
         .await
         .expect("candidate should be promoted");
         candidate.promoted_at = Some(promoted_at);
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::OneMinute,
+            ),
+        )
+        .await
+        .expect("runner config");
 
         for offset_minutes in [45, 30, 15] {
             let mut run = sample_shadow_run_would_submit(
@@ -20315,6 +20349,14 @@ mod tests {
             1
         );
         assert_eq!(payload["observation"]["summary"]["shadow_runs"], 3);
+        assert_eq!(
+            payload["observation"]["runner_alignment"]["strategy_config_matches_runner"],
+            true
+        );
+        assert_eq!(
+            payload["observation"]["summary"]["runner_alignment"]["strategy_config_matches_runner"],
+            true
+        );
 
         let listed = app
             .clone()
@@ -20408,6 +20450,212 @@ mod tests {
         let payload = response_json::<Value>(response).await;
         assert_eq!(payload["observation"]["decision"], "INSUFFICIENT_DATA");
         assert_eq!(payload["observation"]["status"], "INSUFFICIENT_DATA");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_observation_detects_runner_timeframe_mismatch() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-observe-timeframe-mismatch@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let promoted_at = Utc::now() - chrono::Duration::hours(1);
+        mark_strategy_research_candidate_promoted(
+            &test_db.pool,
+            candidate.id,
+            None,
+            promoted_at,
+            candidate.correlation_id,
+        )
+        .await
+        .expect("candidate should be promoted");
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::OneMinute,
+            ),
+        )
+        .await
+        .expect("runner config");
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/research/candidates/{}/observe", candidate.id),
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 1
+                }),
+            ))
+            .await
+            .expect("observe response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["observation"]["decision"], "INSUFFICIENT_DATA");
+        assert_eq!(
+            payload["observation"]["summary"]["findings"][0]["message"],
+            "Shadow runner is not configured for candidate timeframe/symbol/strategy."
+        );
+        assert_eq!(
+            payload["observation"]["summary"]["recommendations"][0],
+            "Update shadow runner config to include momentum_v1 BTCUSDT 15m."
+        );
+        assert_eq!(
+            payload["observation"]["runner_alignment"]["runner_timeframe"],
+            "1m"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_observation_detects_runner_symbol_mismatch() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-observe-symbol-mismatch@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let promoted_at = Utc::now() - chrono::Duration::hours(1);
+        mark_strategy_research_candidate_promoted(
+            &test_db.pool,
+            candidate.id,
+            None,
+            promoted_at,
+            candidate.correlation_id,
+        )
+        .await
+        .expect("candidate should be promoted");
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["ETHUSDT"],
+                CandleInterval::FifteenMinutes,
+            ),
+        )
+        .await
+        .expect("runner config");
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/research/candidates/{}/observe", candidate.id),
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 1
+                }),
+            ))
+            .await
+            .expect("observe response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["observation"]["decision"], "INSUFFICIENT_DATA");
+        assert_eq!(
+            payload["observation"]["runner_alignment"]["runner_symbols"][0],
+            "ETHUSDT"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_observation_detects_runner_strategy_mismatch() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-observe-strategy-mismatch@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let promoted_at = Utc::now() - chrono::Duration::hours(1);
+        mark_strategy_research_candidate_promoted(
+            &test_db.pool,
+            candidate.id,
+            None,
+            promoted_at,
+            candidate.correlation_id,
+        )
+        .await
+        .expect("candidate should be promoted");
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["mean_reversion_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::FifteenMinutes,
+            ),
+        )
+        .await
+        .expect("runner config");
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/research/candidates/{}/observe", candidate.id),
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 1
+                }),
+            ))
+            .await
+            .expect("observe response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["observation"]["decision"], "INSUFFICIENT_DATA");
+        assert_eq!(
+            payload["observation"]["runner_alignment"]["runner_strategies"][0],
+            "mean_reversion_v1"
+        );
     }
 
     #[tokio::test]

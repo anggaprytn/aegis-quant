@@ -951,6 +951,16 @@ export type StrategyCandidateObservationFinding = {
   blocking: boolean;
 };
 
+export type StrategyCandidateRunnerAlignment = {
+  strategy_config_matches_runner: boolean;
+  runner_enabled: boolean;
+  runner_status: string;
+  runner_timeframe: string;
+  runner_symbols: string[];
+  runner_strategies: string[];
+  mismatch_reasons: string[];
+};
+
 export type StrategyCandidateObservationRequirement = {
   candidate_id: string;
   strategy_id: string;
@@ -977,8 +987,10 @@ export type StrategyCandidateObservationSummary = {
   no_signal_rate: string;
   latest_readiness_status: ExecutionReadinessStatus | null;
   latest_readiness_score: number | null;
+  runner_alignment: StrategyCandidateRunnerAlignment;
   decision: StrategyCandidateObservationDecision;
   findings: StrategyCandidateObservationFinding[];
+  recommendations: string[];
   created_at: string;
 };
 
@@ -990,6 +1002,7 @@ export type StrategyCandidateObservation = {
   timeframe: string;
   status: StrategyCandidateObservationStatus;
   requirements: StrategyCandidateObservationRequirement;
+  runner_alignment: StrategyCandidateRunnerAlignment;
   summary: StrategyCandidateObservationSummary;
   decision: StrategyCandidateObservationDecision;
   started_at: string;

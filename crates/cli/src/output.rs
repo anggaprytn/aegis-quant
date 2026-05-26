@@ -1681,6 +1681,24 @@ pub fn print_research_candidate_observation(
         "Rates: risk_rejection={} no_signal={}",
         observation.summary.risk_rejection_rate, observation.summary.no_signal_rate
     );
+    println!(
+        "Runner alignment: matches={} enabled={} status={}",
+        observation.runner_alignment.strategy_config_matches_runner,
+        observation.runner_alignment.runner_enabled,
+        observation.runner_alignment.runner_status
+    );
+    println!(
+        "Runner config: timeframe={} strategies={} symbols={}",
+        observation.runner_alignment.runner_timeframe,
+        observation.runner_alignment.runner_strategies.join(","),
+        observation.runner_alignment.runner_symbols.join(",")
+    );
+    if !observation.runner_alignment.mismatch_reasons.is_empty() {
+        println!("Runner mismatch reasons:");
+        for reason in &observation.runner_alignment.mismatch_reasons {
+            println!("- {}", reason);
+        }
+    }
     println!("Findings:");
     for finding in &observation.summary.findings {
         println!(
@@ -1689,6 +1707,12 @@ pub fn print_research_candidate_observation(
             if finding.blocking { "blocking" } else { "info" },
             finding.message
         );
+    }
+    if !observation.summary.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &observation.summary.recommendations {
+            println!("- {}", recommendation);
+        }
     }
     let next_action = match observation.decision {
         aegis_core::StrategyCandidateObservationDecision::Pass => {
