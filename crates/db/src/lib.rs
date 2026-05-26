@@ -8210,6 +8210,82 @@ pub async fn insert_signal_deduped(
     })
 }
 
+pub async fn get_signal_by_id(pool: &PgPool, signal_id: Uuid) -> Result<Option<SignalRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            side,
+            confidence,
+            timeframe,
+            reason,
+            suggested_notional,
+            stop_loss_pct,
+            take_profit_pct,
+            source_candle_open_time,
+            correlation_id,
+            created_at
+        FROM signals
+        WHERE id = $1
+        "#,
+    )
+    .bind(signal_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_signal))
+}
+
+pub async fn find_signal_by_identity(
+    pool: &PgPool,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+    side: &str,
+    reason: &str,
+    source_candle_open_time: DateTime<Utc>,
+) -> Result<Option<SignalRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            side,
+            confidence,
+            timeframe,
+            reason,
+            suggested_notional,
+            stop_loss_pct,
+            take_profit_pct,
+            source_candle_open_time,
+            correlation_id,
+            created_at
+        FROM signals
+        WHERE strategy_id = $1
+          AND symbol = $2
+          AND timeframe = $3
+          AND source_candle_open_time = $4
+          AND side = $5
+          AND reason = $6
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(strategy_id)
+    .bind(symbol)
+    .bind(timeframe)
+    .bind(source_candle_open_time)
+    .bind(side)
+    .bind(reason)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_signal))
+}
+
 pub async fn list_recent_signals(
     pool: &PgPool,
     symbol: Option<&Symbol>,

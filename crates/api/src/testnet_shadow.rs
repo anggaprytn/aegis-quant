@@ -10,18 +10,20 @@ use aegis_core::{
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use db::{
-    get_latest_market_tick, get_recent_closed_candles, get_risk_config, get_system_state,
-    insert_audit_log, insert_research_candidate_shadow_run_link, insert_risk_decision,
-    insert_signal_deduped, insert_system_event, insert_testnet_shadow_run,
-    list_market_feed_statuses, load_risk_state_snapshot,
-    resolve_promoted_research_candidate_for_shadow_run, risk_config_from_record,
-    update_strategy_state, ShadowRunCandidateMatchOutcome, StateActor, TestnetShadowRunRecord,
+    find_signal_by_identity, get_latest_market_tick, get_recent_closed_candles, get_risk_config,
+    get_signal_by_id, get_system_state, insert_audit_log,
+    insert_research_candidate_shadow_run_link, insert_risk_decision, insert_signal_deduped,
+    insert_system_event, insert_testnet_shadow_run, list_market_feed_statuses,
+    load_risk_state_snapshot, resolve_promoted_research_candidate_for_shadow_run,
+    risk_config_from_record, update_strategy_state, ShadowRunCandidateMatchOutcome, StateActor,
+    TestnetShadowRunRecord,
 };
 use risk_engine::RiskEvaluator;
 use rust_decimal::Decimal;
 use serde_json::json;
 use strategy_engine::{evaluate as evaluate_strategy, required_candle_count};
 use telemetry::telemetry;
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -57,14 +59,104 @@ struct ShadowEvaluationInput {
     approved_notional: Option<Decimal>,
 }
 
+#[derive(Debug)]
+pub enum TestnetShadowRunApiError {
+    Validation {
+        code: &'static str,
+        message: String,
+        reason: &'static str,
+        candidate_linking_result: &'static str,
+    },
+    Conflict {
+        code: &'static str,
+        message: String,
+        reason: &'static str,
+        candidate_linking_result: &'static str,
+    },
+}
+
+impl TestnetShadowRunApiError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Validation { code, .. } | Self::Conflict { code, .. } => code,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Validation { message, .. } | Self::Conflict { message, .. } => message,
+        }
+    }
+
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Validation { reason, .. } | Self::Conflict { reason, .. } => reason,
+        }
+    }
+
+    pub fn candidate_linking_result(&self) -> &'static str {
+        match self {
+            Self::Validation {
+                candidate_linking_result,
+                ..
+            }
+            | Self::Conflict {
+                candidate_linking_result,
+                ..
+            } => candidate_linking_result,
+        }
+    }
+
+    pub fn invalid_request(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Validation {
+            code,
+            message: message.into(),
+            reason: "invalid_request",
+            candidate_linking_result: "not_evaluated",
+        }
+    }
+
+    pub fn signal_conflict(candidate_linking_result: &'static str) -> Self {
+        Self::Conflict {
+            code: "shadow_signal_conflict",
+            message: "A duplicate-like signal persistence race prevented this shadow run from being recorded. Retry the request.".to_string(),
+            reason: "signal_reference_missing",
+            candidate_linking_result,
+        }
+    }
+}
+
+impl std::fmt::Display for TestnetShadowRunApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for TestnetShadowRunApiError {}
+
 pub async fn run_testnet_shadow_once(
     state: &AppState,
     actor: Option<&StateActor>,
     request: TestnetShadowRunRequest,
 ) -> Result<TestnetShadowRunResult> {
-    let strategy_id = request.strategy_id.parse().context("invalid strategy_id")?;
-    let symbol = Symbol::new(request.symbol.clone()).context("invalid symbol")?;
-    let timeframe: CandleInterval = request.timeframe.parse().context("invalid timeframe")?;
+    let strategy_id = request.strategy_id.parse().map_err(|_| {
+        TestnetShadowRunApiError::invalid_request(
+            "invalid_strategy_id",
+            "strategy_id is invalid for shadow execution.",
+        )
+    })?;
+    let symbol = Symbol::new(request.symbol.clone()).map_err(|_| {
+        TestnetShadowRunApiError::invalid_request(
+            "invalid_symbol",
+            "symbol is invalid for shadow execution.",
+        )
+    })?;
+    let timeframe: CandleInterval = request.timeframe.parse().map_err(|_| {
+        TestnetShadowRunApiError::invalid_request(
+            "invalid_timeframe",
+            "timeframe is invalid for shadow execution.",
+        )
+    })?;
     let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
     let created_at = Utc::now();
 
@@ -205,6 +297,7 @@ pub async fn run_testnet_shadow_once(
         }
     }
 
+    let shadow_signal = signal.clone();
     let plan = evaluate_shadow_outcome(ShadowEvaluationInput {
         kill_switch_active: system_state.kill_switch_enabled,
         strategy_enabled: config.enabled,
@@ -219,8 +312,16 @@ pub async fn run_testnet_shadow_once(
         approved_notional: approved_notional.or(Some(config.suggested_notional)),
     })?;
 
-    let result =
-        persist_shadow_result(state, actor, &request, correlation_id, created_at, plan).await?;
+    let result = persist_shadow_result(
+        state,
+        actor,
+        &request,
+        correlation_id,
+        created_at,
+        plan,
+        shadow_signal.as_ref(),
+    )
+    .await?;
 
     Ok(result)
 }
@@ -232,14 +333,33 @@ async fn persist_shadow_result(
     correlation_id: Uuid,
     created_at: chrono::DateTime<Utc>,
     plan: ShadowOutcomePlan,
+    signal: Option<&StrategySignal>,
 ) -> Result<TestnetShadowRunResult> {
+    let candidate_match = resolve_promoted_research_candidate_for_shadow_run(
+        &state.db_pool,
+        &request.strategy_id,
+        &request.symbol,
+        &request.timeframe,
+    )
+    .await
+    .context("failed to resolve promoted research candidate shadow link")?;
+    let candidate_linking_result = candidate_match_outcome_label(candidate_match);
+    let signal_id = stabilize_shadow_signal_id(
+        state,
+        request,
+        plan.signal_id,
+        signal,
+        candidate_linking_result,
+        correlation_id,
+    )
+    .await?;
     let run_record = TestnetShadowRunRecord {
         id: Uuid::new_v4(),
         strategy_id: request.strategy_id.clone(),
         symbol: request.symbol.clone(),
         timeframe: request.timeframe.clone(),
         decision: plan.decision.as_str().to_string(),
-        signal_id: plan.signal_id,
+        signal_id,
         risk_decision_id: plan.risk_decision_id,
         would_submit_payload: plan
             .would_submit_order
@@ -257,21 +377,16 @@ async fn persist_shadow_result(
         created_at,
         correlation_id: Some(correlation_id),
     };
-    let persisted = insert_testnet_shadow_run(&state.db_pool, &run_record)
-        .await
-        .context("failed to persist testnet shadow run")?;
+    let persisted = match insert_testnet_shadow_run(&state.db_pool, &run_record).await {
+        Ok(persisted) => persisted,
+        Err(err) if is_missing_shadow_signal_fk(&err) => {
+            return Err(TestnetShadowRunApiError::signal_conflict(candidate_linking_result).into())
+        }
+        Err(err) => return Err(err).context("failed to persist testnet shadow run"),
+    };
     let result = db::testnet_shadow_run_result_from_record(&persisted)?;
 
-    if let ShadowRunCandidateMatchOutcome::Matched(candidate_id) =
-        resolve_promoted_research_candidate_for_shadow_run(
-            &state.db_pool,
-            &request.strategy_id,
-            &request.symbol,
-            &request.timeframe,
-        )
-        .await
-        .context("failed to resolve promoted research candidate shadow link")?
-    {
+    if let ShadowRunCandidateMatchOutcome::Matched(candidate_id) = candidate_match {
         if insert_research_candidate_shadow_run_link(
             &state.db_pool,
             candidate_id,
@@ -358,6 +473,83 @@ async fn persist_shadow_result(
     }
 
     Ok(result)
+}
+
+async fn stabilize_shadow_signal_id(
+    state: &AppState,
+    request: &TestnetShadowRunRequest,
+    signal_id: Option<Uuid>,
+    signal: Option<&StrategySignal>,
+    candidate_linking_result: &'static str,
+    correlation_id: Uuid,
+) -> Result<Option<Uuid>> {
+    let Some(signal_id) = signal_id else {
+        return Ok(None);
+    };
+
+    if get_signal_by_id(&state.db_pool, signal_id)
+        .await
+        .context("failed to verify persisted signal before shadow run insert")?
+        .is_some()
+    {
+        return Ok(Some(signal_id));
+    }
+
+    let Some(signal) = signal else {
+        return Err(TestnetShadowRunApiError::signal_conflict(candidate_linking_result).into());
+    };
+
+    let repaired = find_signal_by_identity(
+        &state.db_pool,
+        signal.strategy_id.as_str(),
+        signal.symbol.as_str(),
+        signal.timeframe.as_str(),
+        signal.side.as_str(),
+        signal.reason.as_str(),
+        signal.source_candle_open_time,
+    )
+    .await
+    .context("failed to repair missing persisted signal before shadow run insert")?;
+
+    if let Some(repaired) = repaired {
+        warn!(
+            correlation_id = %correlation_id,
+            strategy_id = %request.strategy_id,
+            symbol = %request.symbol,
+            timeframe = %request.timeframe,
+            candidate_linking_result,
+            reason = "signal_reference_repaired",
+            missing_signal_id = %signal_id,
+            repaired_signal_id = %repaired.id,
+            "repaired missing persisted signal reference before shadow run insert"
+        );
+        return Ok(Some(repaired.id));
+    }
+
+    Err(TestnetShadowRunApiError::signal_conflict(candidate_linking_result).into())
+}
+
+fn candidate_match_outcome_label(outcome: ShadowRunCandidateMatchOutcome) -> &'static str {
+    match outcome {
+        ShadowRunCandidateMatchOutcome::NotFound => "not_found",
+        ShadowRunCandidateMatchOutcome::Matched(_) => "matched",
+        ShadowRunCandidateMatchOutcome::Ambiguous => "ambiguous",
+    }
+}
+
+fn is_missing_shadow_signal_fk(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() else {
+            return false;
+        };
+        match sqlx_err {
+            sqlx::Error::Database(db_err) => {
+                db_err.is_foreign_key_violation()
+                    && db_err.constraint() == Some("testnet_shadow_runs_signal_id_fkey")
+            }
+            _ => false,
+        }
+    })
 }
 
 async fn shadow_feed_block_reason(

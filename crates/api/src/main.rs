@@ -74,7 +74,7 @@ use aegis_core::{
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
-    testnet_shadow::run_testnet_shadow_once,
+    testnet_shadow::{run_testnet_shadow_once, TestnetShadowRunApiError},
     testnet_shadow_runner::{
         apply_testnet_shadow_runner_control_action, load_testnet_shadow_runner_snapshot,
         persist_testnet_shadow_runner_config, validate_testnet_shadow_runner_config,
@@ -178,7 +178,7 @@ use strategy_engine::{
 };
 use telemetry::telemetry;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::auth::{
@@ -7170,6 +7170,9 @@ async fn run_exchange_testnet_shadow_handler(
     let request = request_context(request);
     let actor = required_state_actor(actor);
     let shadow_state = shadow_runtime_state(&state);
+    let strategy_id = payload.strategy_id.clone();
+    let symbol = payload.symbol.clone();
+    let timeframe = payload.timeframe.clone();
     if payload.correlation_id.is_none() {
         payload.correlation_id = Some(parse_correlation_id(&request.correlation_id));
     }
@@ -7186,9 +7189,42 @@ async fn run_exchange_testnet_shadow_handler(
         )
             .into_response(),
         Err(err) => {
+            if let Some(api_err) = err.downcast_ref::<TestnetShadowRunApiError>() {
+                let status = match api_err {
+                    TestnetShadowRunApiError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+                    TestnetShadowRunApiError::Conflict { .. } => StatusCode::CONFLICT,
+                };
+                warn!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    strategy_id = %strategy_id,
+                    symbol = %symbol,
+                    timeframe = %timeframe,
+                    candidate_linking_result = api_err.candidate_linking_result(),
+                    reason = api_err.reason(),
+                    error = %api_err,
+                    "testnet shadow run rejected"
+                );
+                return (
+                    status,
+                    Json(ErrorResponse {
+                        error: api_err.code(),
+                        message: api_err.message().to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
             error!(
                 request_id = %request.request_id,
                 correlation_id = %request.correlation_id,
+                strategy_id = %strategy_id,
+                symbol = %symbol,
+                timeframe = %timeframe,
+                candidate_linking_result = "not_evaluated",
+                reason = "internal_error",
                 error = %err,
                 "failed to run testnet shadow"
             );
@@ -18259,11 +18295,11 @@ mod tests {
         get_strategy_research_candidate_handler, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
-        list_research_candidate_shadow_runs_handler,
-        list_execution_readiness_snapshots_handler, list_strategy_candidate_observations_handler,
-        list_strategy_research_candidates_handler, login, logout, metrics, normalize_route_label,
-        observation_rejection, order_view, parse_correlation_id_filter, parse_cors_allowed_origins,
-        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline,
+        list_execution_readiness_snapshots_handler, list_research_candidate_shadow_runs_handler,
+        list_strategy_candidate_observations_handler, list_strategy_research_candidates_handler,
+        login, logout, metrics, normalize_route_label, observation_rejection, order_view,
+        parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
+        parse_risk_check_context, preview_exchange_testnet_pipeline,
         preview_exchange_testnet_shadow_promotion_handler,
         promote_strategy_research_candidate_handler, reconcile_exchange_testnet_orders_handler,
         reconcile_testnet_orders, refresh, register_strategy_research_candidate_handler,
@@ -18321,9 +18357,9 @@ mod tests {
     use db::{
         count_users, create_research_candidate, get_exchange_testnet_order_by_client_order_id,
         get_session_by_id, get_user_by_email, insert_exchange_reconciliation_run,
-        insert_research_candidate_shadow_run_link,
         insert_exchange_testnet_order, insert_exchange_testnet_repair_action, insert_market_tick,
-        insert_paper_account, insert_strategy_experiment, insert_strategy_experiment_runs,
+        insert_paper_account, insert_research_candidate_shadow_run_link,
+        insert_strategy_experiment, insert_strategy_experiment_runs,
         insert_strategy_research_candidate, insert_strategy_walk_forward_run,
         insert_strategy_walk_forward_windows, insert_testnet_shadow_run, insert_user,
         list_exchange_reconciliation_mismatches, list_exchange_reconciliation_runs,
@@ -21200,6 +21236,201 @@ mod tests {
             .await
             .expect("testnet orders")
             .is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn rapid_repeat_shadow_run_requests_return_non_500() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let request = || {
+            bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            )
+        };
+
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(request()),
+            app.clone().oneshot(request()),
+        );
+
+        for response in [
+            first.expect("first shadow response"),
+            second.expect("second shadow response"),
+        ] {
+            assert_ne!(
+                response.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "rapid repeat shadow run should not 500"
+            );
+            assert!(matches!(
+                response.status(),
+                StatusCode::OK | StatusCode::CONFLICT
+            ));
+        }
+        assert!(count_testnet_shadow_runs(&test_db.pool).await >= 1);
+        assert!(list_exchange_testnet_orders(&test_db.pool, 20)
+            .await
+            .expect("testnet orders")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn shadow_run_with_ambiguous_candidate_linking_does_not_500_or_link() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("strategy config");
+        seed_shadow_feed(&test_db.pool, "BTCUSDT").await;
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[100_000, 101_000, 102_000, 103_000],
+        )
+        .await;
+        insert_market_tick(
+            &test_db.pool,
+            &sample_market_tick("BTCUSDT", Decimal::new(103_000, 0)),
+        )
+        .await
+        .expect("market tick");
+        let strategy = research_strategy_config(CandleInterval::OneMinute, "BTCUSDT");
+        let promoted_at = Utc::now();
+        let mut first = sample_research_candidate(
+            &strategy,
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::WalkForward,
+        );
+        first.status = StrategyResearchCandidateStatus::PromotedToShadowConfig;
+        first.promoted_at = Some(promoted_at);
+        let mut second = sample_research_candidate(
+            &strategy,
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::WalkForward,
+        );
+        second.status = StrategyResearchCandidateStatus::PromotedToShadowConfig;
+        second.promoted_at = Some(promoted_at);
+        insert_strategy_research_candidate(&test_db.pool, &first, None)
+            .await
+            .expect("first candidate should persist");
+        insert_strategy_research_candidate(&test_db.pool, &second, None)
+            .await
+            .expect("second candidate should persist");
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(count_testnet_shadow_runs(&test_db.pool).await, 1);
+
+        let linked_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM research_candidate_shadow_runs")
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("candidate shadow link count");
+        assert_eq!(linked_count, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn invalid_shadow_run_request_returns_structured_422() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "invalid"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let payload = response_json::<serde_json::Value>(response).await;
+        assert_eq!(payload["error"], "invalid_timeframe");
     }
 
     #[tokio::test]

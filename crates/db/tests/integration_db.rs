@@ -35,46 +35,45 @@ use db::{
     get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
     get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key,
-    get_research_dataset_build, get_risk_decision, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_shadow_decision_breakdown, get_system_state,
-    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
-    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_research_candidate_shadow_performance, get_research_dataset_build, get_risk_decision,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_shadow_run_by_id,
+    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
+    insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
-    insert_paper_account, insert_research_dataset_build, insert_risk_decision,
-    insert_research_candidate_shadow_run_link,
-    insert_signal_deduped, insert_strategy_candidate_observation, insert_strategy_experiment,
-    insert_strategy_experiment_runs, insert_strategy_research_candidate,
-    insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
-    insert_testnet_shadow_promotion, insert_testnet_shadow_run,
-    list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
-    list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
-    list_orders, list_recent_signals, list_research_dataset_build_steps,
+    insert_paper_account, insert_research_candidate_shadow_run_link, insert_research_dataset_build,
+    insert_risk_decision, insert_signal_deduped, insert_strategy_candidate_observation,
+    insert_strategy_experiment, insert_strategy_experiment_runs,
+    insert_strategy_research_candidate, insert_strategy_walk_forward_run,
+    insert_strategy_walk_forward_windows, insert_testnet_shadow_promotion,
+    insert_testnet_shadow_run, list_closed_candle_open_times_in_range,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
+    list_research_candidate_shadow_runs, list_research_dataset_build_steps,
     list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_performance_rankings, list_strategy_research_candidates,
-    list_research_candidate_shadow_runs,
     list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
     list_testnet_promotion_funnel_rows, list_testnet_shadow_runs,
     list_testnet_shadow_runs_in_window, mark_strategy_research_candidate_promoted,
     replace_research_dataset_build_steps, research_candidate_event_from_record,
     research_candidate_from_record, research_dataset_build_result_from_records,
-    resolve_promoted_research_candidate_for_shadow_run,
-    set_kill_switch_state, strategy_candidate_observation_result_from_record,
-    strategy_experiment_result_from_records, strategy_research_candidate_from_record,
-    strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
-    test_support::TestDatabase, testnet_shadow_runner_config_from_record,
-    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
-    update_exchange_testnet_order_status, upsert_aggregated_candles, upsert_candle,
-    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
-    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
+    strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
+    strategy_research_candidate_from_record, strategy_walk_forward_result_from_records,
+    strategy_walk_forward_window_from_record, test_support::TestDatabase,
+    testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
+    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
+    upsert_candle, upsert_candles_batch, upsert_exchange_private_stream_state,
+    upsert_paper_position, upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state,
+    CreateOrderError, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
-    ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord, StateActor,
-    StrategyResearchCandidateListFilters, TestnetShadowPromotionRecord, TestnetShadowRunRecord,
+    ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
-    ShadowRunCandidateMatchOutcome, get_research_candidate_shadow_performance,
-    TESTNET_SHADOW_RUNNER_CONFIG_ID, TESTNET_SHADOW_RUNNER_STATE_ID,
+    ShadowRunCandidateMatchOutcome, StateActor, StrategyResearchCandidateListFilters,
+    TestnetShadowPromotionRecord, TestnetShadowRunRecord, TESTNET_SHADOW_RUNNER_CONFIG_ID,
+    TESTNET_SHADOW_RUNNER_STATE_ID,
 };
 use exchange::{
     apply_testnet_transition, local_testnet_order_status_from_private_execution_report,
@@ -3470,7 +3469,11 @@ async fn promoted_candidate_links_to_shadow_runs() {
         .await
         .expect("candidate should persist");
 
-    let run = sample_shadow_run("WOULD_SUBMIT", "COMPLETED", promoted_at + chrono::Duration::minutes(5));
+    let run = sample_shadow_run(
+        "WOULD_SUBMIT",
+        "COMPLETED",
+        promoted_at + chrono::Duration::minutes(5),
+    );
     insert_testnet_shadow_run(&test_db.pool, &run)
         .await
         .expect("shadow run should persist");
@@ -3483,7 +3486,10 @@ async fn promoted_candidate_links_to_shadow_runs() {
     )
     .await
     .expect("candidate resolution should succeed");
-    assert_eq!(matched, ShadowRunCandidateMatchOutcome::Matched(candidate.id));
+    assert_eq!(
+        matched,
+        ShadowRunCandidateMatchOutcome::Matched(candidate.id)
+    );
 
     insert_research_candidate_shadow_run_link(&test_db.pool, candidate.id, run.id, run.created_at)
         .await
@@ -3560,8 +3566,16 @@ async fn shadow_performance_summary_reads_linked_runs_only() {
         .expect("candidate should persist");
 
     let lifecycle_candidate = sample_lifecycle_candidate(candidate.id, promoted_at);
-    let linked_run = sample_shadow_run("WOULD_SUBMIT", "COMPLETED", promoted_at + chrono::Duration::minutes(1));
-    let unlinked_run = sample_shadow_run("RISK_REJECTED", "REJECTED", promoted_at + chrono::Duration::minutes(2));
+    let linked_run = sample_shadow_run(
+        "WOULD_SUBMIT",
+        "COMPLETED",
+        promoted_at + chrono::Duration::minutes(1),
+    );
+    let unlinked_run = sample_shadow_run(
+        "RISK_REJECTED",
+        "REJECTED",
+        promoted_at + chrono::Duration::minutes(2),
+    );
     insert_testnet_shadow_run(&test_db.pool, &linked_run)
         .await
         .expect("linked shadow run should persist");
@@ -3640,6 +3654,52 @@ async fn ambiguous_candidate_matching_uses_latest_promoted_candidate() {
     .expect("candidate resolution should succeed");
 
     assert_eq!(matched, ShadowRunCandidateMatchOutcome::Matched(second.id));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candidate_matching_is_ambiguous_when_latest_promotions_share_timestamp() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let promoted_at = fixed_time();
+    let mut first = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        promoted_at,
+    );
+    first.promoted_at = Some(promoted_at);
+    let mut second = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        promoted_at,
+    );
+    second.promoted_at = Some(promoted_at);
+    insert_strategy_research_candidate(&test_db.pool, &first, None)
+        .await
+        .expect("first candidate should persist");
+    insert_strategy_research_candidate(&test_db.pool, &second, None)
+        .await
+        .expect("second candidate should persist");
+
+    let matched = resolve_promoted_research_candidate_for_shadow_run(
+        &test_db.pool,
+        "momentum_v1",
+        "BTCUSDT",
+        "15m",
+    )
+    .await
+    .expect("candidate resolution should succeed");
+
+    assert_eq!(matched, ShadowRunCandidateMatchOutcome::Ambiguous);
 }
 
 #[tokio::test]
