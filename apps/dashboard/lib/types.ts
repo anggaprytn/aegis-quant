@@ -1019,6 +1019,35 @@ export type StrategyCandidateObservation = {
   correlation_id: string | null;
 };
 
+export type ResearchCandidateObservationFreshnessStatus =
+  | "FRESH"
+  | "STALE"
+  | "UNKNOWN";
+
+export type ResearchCandidateObservationHistoryItem = {
+  observation: StrategyCandidateObservation;
+  freshness_status: ResearchCandidateObservationFreshnessStatus;
+  observation_age_seconds: number | null;
+  runner_config_drifted: boolean;
+  accept_for_shadow_eligible: boolean;
+};
+
+export type ResearchCandidateObservationSummary = {
+  candidate_id: string;
+  total_observations: number;
+  latest_observation_status: StrategyCandidateObservationStatus | null;
+  latest_runner_alignment: StrategyCandidateRunnerAlignment | null;
+  latest_readiness_status: ExecutionReadinessStatus | null;
+  latest_recommendations: string[];
+  stale_count: number;
+  alignment_mismatch_count: number;
+  runner_config_drift_count: number;
+  last_observed_at: string | null;
+  current_accept_for_shadow_eligible: boolean;
+  current_accept_for_shadow_blockers: string[];
+  computed_at: string;
+};
+
 export type StrategyCandidateObservationEvaluateRequest = {
   start_time?: string | null;
   min_observation_hours?: number;
@@ -1060,6 +1089,14 @@ export type StrategyCandidateObservationResponse = {
 
 export type StrategyCandidateObservationsResponse = {
   observations: StrategyCandidateObservation[];
+  history: ResearchCandidateObservationHistoryItem[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateObservationSummaryResponse = {
+  summary: ResearchCandidateObservationSummary;
   request_id: string;
   correlation_id: string;
   timestamp: string;

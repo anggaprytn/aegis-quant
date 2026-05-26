@@ -522,6 +522,26 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_events(&response.events);
                     }
                 }
+                ResearchCandidateCommands::Observations { candidate_id } => {
+                    let response = client
+                        .list_research_candidate_observations(candidate_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_observations(&response.history);
+                    }
+                }
+                ResearchCandidateCommands::ObservationSummary { candidate_id } => {
+                    let response = client
+                        .get_research_candidate_observation_summary(candidate_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_observation_summary(&response.summary);
+                    }
+                }
                 ResearchCandidateCommands::Create(args) => {
                     let config = serde_json::from_str(&args.config_json)
                         .context("failed to parse --config-json as JSON")?;

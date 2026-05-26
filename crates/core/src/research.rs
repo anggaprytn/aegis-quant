@@ -811,6 +811,50 @@ pub struct StrategyCandidateObservationResult {
     pub correlation_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateObservationFreshnessStatus {
+    Fresh,
+    Stale,
+    Unknown,
+}
+
+impl ResearchCandidateObservationFreshnessStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "FRESH",
+            Self::Stale => "STALE",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateObservationHistoryItem {
+    pub observation: StrategyCandidateObservationResult,
+    pub freshness_status: ResearchCandidateObservationFreshnessStatus,
+    pub observation_age_seconds: Option<i64>,
+    pub runner_config_drifted: bool,
+    pub accept_for_shadow_eligible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateObservationSummaryView {
+    pub candidate_id: Uuid,
+    pub total_observations: i64,
+    pub latest_observation_status: Option<StrategyCandidateObservationStatus>,
+    pub latest_runner_alignment: Option<StrategyCandidateRunnerAlignment>,
+    pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub latest_recommendations: Vec<String>,
+    pub stale_count: i64,
+    pub alignment_mismatch_count: i64,
+    pub runner_config_drift_count: i64,
+    pub last_observed_at: Option<DateTime<Utc>>,
+    pub current_accept_for_shadow_eligible: bool,
+    pub current_accept_for_shadow_blockers: Vec<String>,
+    pub computed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResearchCandidateDecisionRejection {
     pub reason_code: String,

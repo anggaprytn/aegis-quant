@@ -64,6 +64,7 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  ResearchCandidateObservationSummaryResponse,
   CreateResearchCandidateFromExperimentRunRequest,
   CreateResearchCandidateRequest,
   ResearchCandidateDecisionRequest,
@@ -378,6 +379,10 @@ export const api = {
     request<ResearchCandidateEventsResponse>(`/research/candidates/${id}/events`),
   listResearchCandidateObservations: (id: string) =>
     request<StrategyCandidateObservationsResponse>(`/research/candidates/${id}/observations`),
+  getResearchCandidateObservationSummary: (id: string) =>
+    request<ResearchCandidateObservationSummaryResponse>(
+      `/research/candidates/${id}/observation-summary`,
+    ),
   observeResearchCandidate: (id: string) =>
     request<StrategyCandidateObservationResponse>(`/research/candidates/${id}/observe`, {
       method: "POST",

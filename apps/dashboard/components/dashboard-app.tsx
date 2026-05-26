@@ -32,6 +32,8 @@ import type {
   ResearchDataCoverageResult,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
+  ResearchCandidateObservationHistoryItem,
+  ResearchCandidateObservationSummary,
   ResearchCandidate as StrategyResearchCandidate,
   ResearchCandidateLifecycleEvent,
   ResearchCandidateStatus as StrategyResearchCandidateStatus,
@@ -917,6 +919,12 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
+  const selectedResearchCandidateObservationSummaryQuery = useQuery({
+    queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidateObservationSummary(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const eventsQuery = useQuery({
     queryKey: ["events", eventTypeFilter, eventSourceFilter, eventCorrelationFilter],
     queryFn: () =>
@@ -1564,6 +1572,9 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-observations", selectedResearchCandidateId],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+      });
       setResearchCandidateDecisionReason("");
     },
   });
@@ -1585,6 +1596,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-observations", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
       });
     },
   });
@@ -1850,6 +1864,10 @@ function AuthenticatedDashboard({
     selectedResearchCandidateQuery.data?.candidate ?? null;
   const researchCandidateEvents: ResearchCandidateLifecycleEvent[] =
     selectedResearchCandidateEventsQuery.data?.events ?? [];
+  const researchCandidateObservationHistory: ResearchCandidateObservationHistoryItem[] =
+    selectedResearchCandidateObservationQuery.data?.history ?? [];
+  const researchCandidateObservationSummary: ResearchCandidateObservationSummary | null =
+    selectedResearchCandidateObservationSummaryQuery.data?.summary ?? null;
   const latestResearchCandidateObservation: StrategyCandidateObservation | null =
     observeResearchCandidateMutation.data?.observation ??
     lastResearchCandidateObservation ??
@@ -1865,6 +1883,11 @@ function AuthenticatedDashboard({
     observationAgeSeconds(latestResearchCandidateObservation);
   const acceptForShadowBlockedByStale =
     researchCandidateObservationFreshness === "STALE";
+  const latestEligibilityLabel = researchCandidateObservationSummary
+    ? researchCandidateObservationSummary.current_accept_for_shadow_eligible
+      ? "Eligible"
+      : "Not eligible"
+    : "Unknown";
   const decideResearchCandidateErrorPayload = getApiErrorPayload(
     decideResearchCandidateMutation.error,
   );
@@ -4394,6 +4417,36 @@ function AuthenticatedDashboard({
                           ? `${latestResearchCandidateRunnerAlignment.runner_status} · ${latestResearchCandidateRunnerAlignment.runner_timeframe} · ${latestResearchCandidateRunnerAlignment.strategy_config_matches_runner ? "aligned" : "mismatch"}`
                           : "UNKNOWN"}
                       </div>
+                      <div>Eligibility: {latestEligibilityLabel}</div>
+                    </div>
+                    <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
+                      <div className="font-semibold text-slate-100">Stability Summary</div>
+                      <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                        <div>
+                          Total observations:{" "}
+                          {researchCandidateObservationSummary?.total_observations ?? 0}
+                        </div>
+                        <div>
+                          Stale: {researchCandidateObservationSummary?.stale_count ?? 0}
+                        </div>
+                        <div>
+                          Alignment mismatches:{" "}
+                          {researchCandidateObservationSummary?.alignment_mismatch_count ?? 0}
+                        </div>
+                        <div>
+                          Config drift:{" "}
+                          {researchCandidateObservationSummary?.runner_config_drift_count ?? 0}
+                        </div>
+                      </div>
+                      {(researchCandidateObservationSummary?.current_accept_for_shadow_blockers
+                        ?.length ?? 0) > 0 ? (
+                        <div className="mt-2 text-amber-100/90">
+                          Blockers:{" "}
+                          {researchCandidateObservationSummary?.current_accept_for_shadow_blockers.join(
+                            ", ",
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                     {acceptForShadowBlockedByStale ? (
                       <div className="mt-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4">
@@ -4473,6 +4526,73 @@ function AuthenticatedDashboard({
                         </div>
                       </>
                     ) : null}
+                    <div className="mt-4 text-xs uppercase tracking-[0.2em] text-muted">
+                      Observation History
+                    </div>
+                    <div className="mt-2 overflow-auto rounded-2xl border border-border">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-surface/60 text-left text-slate-300">
+                          <tr>
+                            <th className="px-3 py-2">Observed</th>
+                            <th className="px-3 py-2">Status</th>
+                            <th className="px-3 py-2">Runner</th>
+                            <th className="px-3 py-2">Readiness</th>
+                            <th className="px-3 py-2">Freshness</th>
+                            <th className="px-3 py-2">Drift</th>
+                            <th className="px-3 py-2">Eligible</th>
+                            <th className="px-3 py-2">Recommendations</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {researchCandidateObservationHistory.length === 0 ? (
+                            <tr>
+                              <td className="px-3 py-3 text-slate-400" colSpan={8}>
+                                No persisted observation history yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            researchCandidateObservationHistory.map((item) => (
+                              <tr
+                                key={item.observation.observation_id}
+                                className="border-t border-border/60 text-slate-200"
+                              >
+                                <td className="px-3 py-2">
+                                  {formatDateTime(item.observation.last_observed_at)}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {item.observation.status} / {item.observation.decision}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {item.observation.runner_alignment.strategy_config_matches_runner
+                                    ? "Aligned"
+                                    : "Mismatch"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {item.observation.summary.latest_readiness_status ?? "UNKNOWN"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {item.freshness_status}
+                                  {item.observation_age_seconds !== null
+                                    ? ` (${item.observation_age_seconds}s)`
+                                    : ""}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {item.runner_config_drifted ? "Drifted" : "Stable"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {item.accept_for_shadow_eligible ? "Yes" : "No"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {item.observation.summary.recommendations.length > 0
+                                    ? item.observation.summary.recommendations.join(" | ")
+                                    : "-"}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
                 <div className="mt-4 rounded-2xl border border-border bg-surface/40 p-4">

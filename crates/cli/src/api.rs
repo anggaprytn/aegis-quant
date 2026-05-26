@@ -6,21 +6,22 @@ use aegis_core::{
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, MarketCandleCoverageSummary, OperatorReport, OperatorReportRequest,
     PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchCandidate,
-    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent, ResearchDataCoverageResult,
-    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -684,6 +685,28 @@ impl ApiClient {
     ) -> Result<ResearchCandidateEventsResponse, ApiClientError> {
         self.get(&format!("/research/candidates/{candidate_id}/events"), &[])
             .await
+    }
+
+    pub async fn list_research_candidate_observations(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateObservationsResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/observations"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_observation_summary(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateObservationSummaryResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/observation-summary"),
+            &[],
+        )
+        .await
     }
 
     pub async fn decide_research_candidate(
@@ -1930,6 +1953,23 @@ pub struct ResearchCandidateEventsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateObservationResponse {
     pub observation: StrategyCandidateObservationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateObservationsResponse {
+    pub observations: Vec<StrategyCandidateObservationResult>,
+    pub history: Vec<ResearchCandidateObservationHistoryItem>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateObservationSummaryResponse {
+    pub summary: ResearchCandidateObservationSummaryView,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -3699,7 +3739,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn research_candidate_client_uses_expected_list_get_event_observe_and_decide_paths() {
+    async fn research_candidate_client_uses_expected_list_get_event_observe_history_summary_and_decide_paths(
+    ) {
         let candidate_id =
             Uuid::parse_str("cccccccc-cccc-cccc-cccc-cccccccccccc").expect("valid uuid");
         let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
@@ -3759,6 +3800,45 @@ mod tests {
                         })),
                     ))
                 }
+                (
+                    "GET",
+                    "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/observations",
+                ) => Ok((
+                    StatusCode::OK,
+                    json_response(serde_json::json!({
+                        "observations": [],
+                        "history": [],
+                        "request_id": "req-observations",
+                        "correlation_id": "corr-observations",
+                        "timestamp": "2026-05-24T00:00:00Z"
+                    })),
+                )),
+                (
+                    "GET",
+                    "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/observation-summary",
+                ) => Ok((
+                    StatusCode::OK,
+                    json_response(serde_json::json!({
+                        "summary": {
+                            "candidate_id": candidate_id,
+                            "total_observations": 0,
+                            "latest_observation_status": null,
+                            "latest_runner_alignment": null,
+                            "latest_readiness_status": null,
+                            "latest_recommendations": [],
+                            "stale_count": 0,
+                            "alignment_mismatch_count": 0,
+                            "runner_config_drift_count": 0,
+                            "last_observed_at": null,
+                            "current_accept_for_shadow_eligible": false,
+                            "current_accept_for_shadow_blockers": ["observation_required"],
+                            "computed_at": "2026-05-24T00:00:00Z"
+                        },
+                        "request_id": "req-observation-summary",
+                        "correlation_id": "corr-observation-summary",
+                        "timestamp": "2026-05-24T00:00:00Z"
+                    })),
+                )),
                 ("POST", "/research/candidates/cccccccc-cccc-cccc-cccc-cccccccccccc/observe") => {
                     Ok((
                         StatusCode::OK,
@@ -3894,6 +3974,18 @@ mod tests {
             .await
             .expect("events should succeed");
         assert!(events.events.is_empty());
+
+        let observations = client
+            .list_research_candidate_observations(candidate_id)
+            .await
+            .expect("observations should succeed");
+        assert!(observations.history.is_empty());
+
+        let summary = client
+            .get_research_candidate_observation_summary(candidate_id)
+            .await
+            .expect("summary should succeed");
+        assert_eq!(summary.summary.candidate_id, candidate_id);
 
         let observation = client
             .observe_research_candidate(candidate_id)

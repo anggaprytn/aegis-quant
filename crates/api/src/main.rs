@@ -36,14 +36,16 @@ use aegis_core::{
     PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
     PaperTradingPipelineRequest, ResearchCandidate, ResearchCandidateDecision,
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateLifecycleEvent, ResearchCandidatePromotionReadiness, ResearchCandidateStatus,
-    ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
-    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidatePromotionReadiness, ResearchCandidateStatus, ResearchDataCoverageRequest,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
+    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side,
+    SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentGlobalRanking,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
@@ -1494,6 +1496,7 @@ struct StrategyResearchCandidatePromotionResponse {
 #[derive(Serialize)]
 struct StrategyCandidateObservationsResponse {
     observations: Vec<StrategyCandidateObservationResult>,
+    history: Vec<ResearchCandidateObservationHistoryItem>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1502,6 +1505,14 @@ struct StrategyCandidateObservationsResponse {
 #[derive(Serialize)]
 struct StrategyCandidateObservationResponse {
     observation: StrategyCandidateObservationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateObservationSummaryResponse {
+    summary: ResearchCandidateObservationSummaryView,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2296,6 +2307,10 @@ async fn main() {
         .route(
             "/research/candidates/:id/observations",
             get(list_strategy_candidate_observations_handler),
+        )
+        .route(
+            "/research/candidates/:id/observation-summary",
+            get(get_research_candidate_observation_summary_handler),
         )
         .route(
             "/research/candidate-observations/:id",
@@ -14145,6 +14160,113 @@ fn observation_age_seconds(
         .num_seconds()
 }
 
+fn observation_freshness_status(
+    observation: &StrategyCandidateObservationResult,
+    now: DateTime<Utc>,
+) -> ResearchCandidateObservationFreshnessStatus {
+    match observation.observation_max_age_seconds {
+        Some(max_age) if observation_age_seconds(observation, now) <= max_age => {
+            ResearchCandidateObservationFreshnessStatus::Fresh
+        }
+        Some(_) => ResearchCandidateObservationFreshnessStatus::Stale,
+        None => ResearchCandidateObservationFreshnessStatus::Unknown,
+    }
+}
+
+fn accept_for_shadow_eligibility(
+    observation: &StrategyCandidateObservationResult,
+    now: DateTime<Utc>,
+    runner_config_drifted: bool,
+) -> (bool, Vec<String>) {
+    let readiness = candidate_promotion_readiness(observation.candidate_id, observation, now);
+    let mut blockers = readiness.blockers;
+    if runner_config_drifted {
+        blockers.push("runner_config_changed".to_string());
+    }
+    (blockers.is_empty(), blockers)
+}
+
+fn build_observation_history_item(
+    observation: StrategyCandidateObservationResult,
+    now: DateTime<Utc>,
+    current_runner_hash: Option<&str>,
+) -> ResearchCandidateObservationHistoryItem {
+    let runner_config_drifted = observation
+        .observation_snapshot_hash
+        .as_deref()
+        .zip(current_runner_hash)
+        .map(|(observed_hash, current_hash)| observed_hash != current_hash)
+        .unwrap_or(false);
+    let (accept_for_shadow_eligible, _) =
+        accept_for_shadow_eligibility(&observation, now, runner_config_drifted);
+
+    ResearchCandidateObservationHistoryItem {
+        freshness_status: observation_freshness_status(&observation, now),
+        observation_age_seconds: Some(observation_age_seconds(&observation, now)),
+        runner_config_drifted,
+        accept_for_shadow_eligible,
+        observation,
+    }
+}
+
+async fn current_runner_config_hash(state: &AppState) -> Option<String> {
+    let shadow_state = shadow_runtime_state(state);
+    load_testnet_shadow_runner_snapshot(&shadow_state)
+        .await
+        .ok()
+        .and_then(|snapshot| serde_json::to_value(&snapshot.config).ok())
+        .and_then(|value| hash_json_value(&value).ok())
+}
+
+fn build_observation_summary(
+    candidate_id: Uuid,
+    history: &[ResearchCandidateObservationHistoryItem],
+    now: DateTime<Utc>,
+) -> ResearchCandidateObservationSummaryView {
+    let latest = history.first();
+    let stale_count = history
+        .iter()
+        .filter(|item| item.freshness_status == ResearchCandidateObservationFreshnessStatus::Stale)
+        .count() as i64;
+    let alignment_mismatch_count = history
+        .iter()
+        .filter(|item| {
+            !item
+                .observation
+                .runner_alignment
+                .strategy_config_matches_runner
+        })
+        .count() as i64;
+    let runner_config_drift_count = history
+        .iter()
+        .filter(|item| item.runner_config_drifted)
+        .count() as i64;
+    let (current_accept_for_shadow_eligible, current_accept_for_shadow_blockers) = latest
+        .map(|item| {
+            accept_for_shadow_eligibility(&item.observation, now, item.runner_config_drifted)
+        })
+        .unwrap_or_else(|| (false, vec!["observation_required".to_string()]));
+
+    ResearchCandidateObservationSummaryView {
+        candidate_id,
+        total_observations: history.len() as i64,
+        latest_observation_status: latest.map(|item| item.observation.status),
+        latest_runner_alignment: latest.map(|item| item.observation.runner_alignment.clone()),
+        latest_readiness_status: latest
+            .and_then(|item| item.observation.summary.latest_readiness_status),
+        latest_recommendations: latest
+            .map(|item| item.observation.summary.recommendations.clone())
+            .unwrap_or_default(),
+        stale_count,
+        alignment_mismatch_count,
+        runner_config_drift_count,
+        last_observed_at: latest.map(|item| item.observation.last_observed_at),
+        current_accept_for_shadow_eligible,
+        current_accept_for_shadow_blockers,
+        computed_at: now,
+    }
+}
+
 fn observation_rejection(
     reason_code: &str,
     recommendation: &str,
@@ -15349,22 +15471,38 @@ async fn list_strategy_candidate_observations_handler(
     request: Option<Extension<RequestContext>>,
 ) -> impl IntoResponse {
     let request = request_context(request);
+    let now = Utc::now();
     match list_strategy_candidate_observations(&state.db_pool, candidate_id).await {
         Ok(records) => match records
             .iter()
             .map(strategy_candidate_observation_result_from_record)
             .collect::<anyhow::Result<Vec<_>>>()
         {
-            Ok(observations) => (
-                StatusCode::OK,
-                Json(StrategyCandidateObservationsResponse {
-                    observations,
-                    request_id: request.request_id,
-                    correlation_id: request.correlation_id,
-                    timestamp: Utc::now(),
-                }),
-            )
-                .into_response(),
+            Ok(observations) => {
+                let current_runner_hash = current_runner_config_hash(&state).await;
+                let history = observations
+                    .iter()
+                    .cloned()
+                    .map(|observation| {
+                        build_observation_history_item(
+                            observation,
+                            now,
+                            current_runner_hash.as_deref(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    StatusCode::OK,
+                    Json(StrategyCandidateObservationsResponse {
+                        observations,
+                        history,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
             Err(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -15385,6 +15523,68 @@ async fn list_strategy_candidate_observations_handler(
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_observation_summary_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match list_strategy_candidate_observations(&state.db_pool, candidate_id).await {
+        Ok(records) => match records
+            .iter()
+            .map(strategy_candidate_observation_result_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(observations) => {
+                let current_runner_hash = current_runner_config_hash(&state).await;
+                let history = observations
+                    .into_iter()
+                    .map(|observation| {
+                        build_observation_history_item(
+                            observation,
+                            now,
+                            current_runner_hash.as_deref(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    StatusCode::OK,
+                    Json(ResearchCandidateObservationSummaryResponse {
+                        summary: build_observation_summary(candidate_id, &history, now),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_candidate_observations",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_summarize_candidate_observations",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
             }),
         )
             .into_response(),
@@ -17198,15 +17398,15 @@ mod tests {
         check_execution_readiness_handler, evaluate_strategy_candidate_observation_handler,
         generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
         get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
-        get_risk_decisions, get_strategy_candidate_observation_handler,
-        get_strategy_config_handler, get_strategy_list, get_strategy_research_candidate_handler,
-        is_valid_resume_confirmation, is_valid_testnet_order_confirmation,
-        list_exchange_testnet_order_repairs, list_exchange_testnet_shadow_promotions_handler,
-        list_exchange_testnet_shadow_runs_handler, list_execution_readiness_snapshots_handler,
-        list_strategy_candidate_observations_handler, list_strategy_research_candidates_handler,
-        login, logout, metrics, normalize_route_label, observation_rejection, order_view,
-        parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
-        parse_risk_check_context, preview_exchange_testnet_pipeline,
+        get_research_candidate_observation_summary_handler, get_risk_decisions,
+        get_strategy_candidate_observation_handler, get_strategy_config_handler, get_strategy_list,
+        get_strategy_research_candidate_handler, is_valid_resume_confirmation,
+        is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
+        list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
+        list_execution_readiness_snapshots_handler, list_strategy_candidate_observations_handler,
+        list_strategy_research_candidates_handler, login, logout, metrics, normalize_route_label,
+        observation_rejection, order_view, parse_correlation_id_filter, parse_cors_allowed_origins,
+        parse_order_intent, parse_risk_check_context, preview_exchange_testnet_pipeline,
         preview_exchange_testnet_shadow_promotion_handler,
         promote_strategy_research_candidate_handler, reconcile_exchange_testnet_orders_handler,
         reconcile_testnet_orders, refresh, register_strategy_research_candidate_handler,
@@ -18092,6 +18292,10 @@ mod tests {
             .route(
                 "/research/candidates/:id/observations",
                 get(list_strategy_candidate_observations_handler),
+            )
+            .route(
+                "/research/candidates/:id/observation-summary",
+                get(get_research_candidate_observation_summary_handler),
             )
             .route(
                 "/research/candidate-observations/:id",
@@ -21521,6 +21725,39 @@ mod tests {
                 .len(),
             1
         );
+        assert_eq!(
+            list_payload["history"]
+                .as_array()
+                .expect("history array")
+                .len(),
+            1
+        );
+
+        let summary = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/observation-summary",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("summary request"),
+            )
+            .await
+            .expect("summary response");
+        assert_eq!(summary.status(), StatusCode::OK);
+        let summary_payload = response_json::<Value>(summary).await;
+        assert_eq!(summary_payload["summary"]["total_observations"], 1);
+        assert_eq!(
+            summary_payload["summary"]["current_accept_for_shadow_eligible"],
+            true
+        );
 
         let fetched = app
             .oneshot(
@@ -21542,6 +21779,215 @@ mod tests {
             fetched_payload["observation"]["observation_id"],
             payload["observation"]["observation_id"]
         );
+        assert_observation_execution_unchanged(&test_db.pool, before).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_observation_summary_tracks_stale_mismatch_and_drift_counts() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let operator_email = "research-operator-observation-summary@example.com";
+        insert_test_user(
+            &test_db.pool,
+            operator_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        upsert_strategy_config(&test_db.pool, &shadow_strategy_config(true))
+            .await
+            .expect("shadow strategy config should persist");
+        upsert_risk_config(&test_db.pool, &readiness_risk_config())
+            .await
+            .expect("risk config should persist");
+        seed_readiness_market(&test_db.pool, "BTCUSDT").await;
+
+        let candidate = sample_research_candidate(
+            &research_strategy_config(CandleInterval::OneMinute, "BTCUSDT"),
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::Manual,
+        );
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        mark_strategy_research_candidate_promoted(
+            &test_db.pool,
+            candidate.id,
+            None,
+            Utc::now() - chrono::Duration::hours(1),
+            candidate.correlation_id,
+        )
+        .await
+        .expect("candidate should be promoted");
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::OneMinute,
+            ),
+        )
+        .await
+        .expect("runner config");
+
+        for offset_minutes in [45, 30, 15] {
+            let mut run = sample_shadow_run_would_submit(
+                Utc::now() - chrono::Duration::minutes(offset_minutes),
+            );
+            run.timeframe = "1m".to_string();
+            insert_testnet_shadow_run(&test_db.pool, &run)
+                .await
+                .expect("shadow run should persist");
+        }
+
+        let before = observation_mutation_counts(&test_db.pool).await;
+        let (operator_login, _) =
+            login_cli(&app, operator_email, "replace-with-a-12-char-min-password").await;
+
+        let observe_uri = format!("/research/candidates/{}/observe", candidate.id);
+        let first = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &observe_uri,
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 3,
+                    "min_would_submit_count": 1
+                }),
+            ))
+            .await
+            .expect("first observe response");
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_payload = response_json::<Value>(first).await;
+        let first_observation_id = first_payload["observation"]["observation_id"]
+            .as_str()
+            .expect("first observation id");
+
+        let second = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &observe_uri,
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 3,
+                    "min_would_submit_count": 1
+                }),
+            ))
+            .await
+            .expect("second observe response");
+        assert_eq!(second.status(), StatusCode::OK);
+
+        sqlx::query(
+            r#"
+            UPDATE strategy_candidate_observations
+            SET last_observed_at = $2,
+                observation_expires_at = $3,
+                observation_max_age_seconds = $4
+            WHERE id = $1
+            "#,
+        )
+        .bind(Uuid::parse_str(first_observation_id).expect("uuid"))
+        .bind(Utc::now() - chrono::Duration::hours(1))
+        .bind(Utc::now() - chrono::Duration::minutes(45))
+        .bind(60_i64)
+        .execute(&test_db.pool)
+        .await
+        .expect("stale first observation");
+
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::FifteenMinutes,
+            ),
+        )
+        .await
+        .expect("mismatched runner config");
+
+        let third = app
+            .clone()
+            .oneshot(bearer_request(
+                "POST",
+                &observe_uri,
+                &operator_login.access_token,
+                json!({
+                    "min_observation_hours": 0,
+                    "min_shadow_runs": 3,
+                    "min_would_submit_count": 1
+                }),
+            ))
+            .await
+            .expect("third observe response");
+        assert_eq!(third.status(), StatusCode::OK);
+        let third_payload = response_json::<Value>(third).await;
+        assert_eq!(
+            third_payload["observation"]["decision"],
+            "INSUFFICIENT_DATA"
+        );
+
+        let summary = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/observation-summary",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", operator_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("summary request"),
+            )
+            .await
+            .expect("summary response");
+        assert_eq!(summary.status(), StatusCode::OK);
+        let summary_payload = response_json::<Value>(summary).await;
+        assert_eq!(summary_payload["summary"]["total_observations"], 3);
+        assert_eq!(summary_payload["summary"]["stale_count"], 1);
+        assert_eq!(summary_payload["summary"]["alignment_mismatch_count"], 1);
+        assert_eq!(summary_payload["summary"]["runner_config_drift_count"], 2);
+        assert_eq!(
+            summary_payload["summary"]["current_accept_for_shadow_eligible"],
+            false
+        );
+
+        let history = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/observations",
+                        candidate.id
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", operator_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("history request"),
+            )
+            .await
+            .expect("history response");
+        assert_eq!(history.status(), StatusCode::OK);
+        let history_payload = response_json::<Value>(history).await;
+        let items = history_payload["history"]
+            .as_array()
+            .expect("history array");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["runner_config_drifted"], false);
+        assert_eq!(items[1]["runner_config_drifted"], true);
+        assert_eq!(items[2]["freshness_status"], "STALE");
+
         assert_observation_execution_unchanged(&test_db.pool, before).await;
     }
 

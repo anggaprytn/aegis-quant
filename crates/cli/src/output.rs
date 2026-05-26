@@ -1,5 +1,6 @@
 use aegis_core::{
-    CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection, User,
+    CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1730,6 +1731,112 @@ pub fn print_research_candidate_observation(
         }
     };
     println!("Next action: {}", next_action);
+}
+
+pub fn print_research_candidate_observations(history: &[ResearchCandidateObservationHistoryItem]) {
+    if history.is_empty() {
+        println!("No candidate observations found.");
+        return;
+    }
+
+    for item in history {
+        let observation = &item.observation;
+        println!(
+            "{}  status={} decision={} readiness={} runner={} freshness={} drifted={} eligible={}",
+            observation.last_observed_at.to_rfc3339(),
+            observation.status.as_str(),
+            observation.decision.as_str(),
+            observation
+                .summary
+                .latest_readiness_status
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| "UNKNOWN".to_string()),
+            if observation.runner_alignment.strategy_config_matches_runner {
+                "ALIGNED"
+            } else {
+                "MISMATCH"
+            },
+            item.freshness_status.as_str(),
+            item.runner_config_drifted,
+            item.accept_for_shadow_eligible
+        );
+        if !observation.summary.recommendations.is_empty() {
+            println!(
+                "Recommendations: {}",
+                observation.summary.recommendations.join(" | ")
+            );
+        }
+        if !observation.runner_alignment.mismatch_reasons.is_empty() {
+            println!(
+                "Mismatch reasons: {}",
+                observation.runner_alignment.mismatch_reasons.join(" | ")
+            );
+        }
+    }
+}
+
+pub fn print_research_candidate_observation_summary(
+    summary: &ResearchCandidateObservationSummaryView,
+) {
+    println!("Candidate ID: {}", summary.candidate_id);
+    println!("Total observations: {}", summary.total_observations);
+    println!(
+        "Latest status: {}",
+        summary
+            .latest_observation_status
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "NONE".to_string())
+    );
+    println!(
+        "Latest readiness: {}",
+        summary
+            .latest_readiness_status
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "UNKNOWN".to_string())
+    );
+    println!(
+        "Latest runner alignment: {}",
+        summary
+            .latest_runner_alignment
+            .as_ref()
+            .map(|value| if value.strategy_config_matches_runner {
+                "ALIGNED".to_string()
+            } else {
+                "MISMATCH".to_string()
+            })
+            .unwrap_or_else(|| "UNKNOWN".to_string())
+    );
+    println!(
+        "Last observed at: {}",
+        summary
+            .last_observed_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Counts: stale={} mismatch={} drift={}",
+        summary.stale_count, summary.alignment_mismatch_count, summary.runner_config_drift_count
+    );
+    println!(
+        "Current accept_for_shadow eligibility: {}",
+        if summary.current_accept_for_shadow_eligible {
+            "ELIGIBLE"
+        } else {
+            "NOT_ELIGIBLE"
+        }
+    );
+    if !summary.current_accept_for_shadow_blockers.is_empty() {
+        println!(
+            "Eligibility blockers: {}",
+            summary.current_accept_for_shadow_blockers.join(", ")
+        );
+    }
+    if !summary.latest_recommendations.is_empty() {
+        println!(
+            "Latest recommendations: {}",
+            summary.latest_recommendations.join(" | ")
+        );
+    }
 }
 
 pub fn print_research_candidate_decision_rejection(

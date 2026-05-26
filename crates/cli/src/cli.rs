@@ -705,6 +705,8 @@ pub enum ResearchCandidateCommands {
     List(ResearchCandidateListArgs),
     Get { candidate_id: Uuid },
     Events { candidate_id: Uuid },
+    Observations { candidate_id: Uuid },
+    ObservationSummary { candidate_id: Uuid },
     Create(ResearchCandidateCreateArgs),
     FromExperimentRun(ResearchCandidateFromExperimentRunArgs),
     Observe { candidate_id: Uuid },
@@ -1327,5 +1329,45 @@ mod tests {
         };
 
         assert_eq!(parsed_candidate_id, candidate_id);
+    }
+
+    #[test]
+    fn research_candidate_observations_and_summary_parse_candidate_id() {
+        let candidate_id =
+            Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid");
+
+        let observations = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "candidates",
+            "observations",
+            &candidate_id.to_string(),
+        ])
+        .expect("observations cli parses");
+        assert!(matches!(
+            observations.command,
+            Commands::Research(super::ResearchCommands::Candidates(
+                super::ResearchCandidateCommands::Observations {
+                    candidate_id: parsed_candidate_id,
+                },
+            )) if parsed_candidate_id == candidate_id
+        ));
+
+        let summary = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "candidates",
+            "observation-summary",
+            &candidate_id.to_string(),
+        ])
+        .expect("summary cli parses");
+        assert!(matches!(
+            summary.command,
+            Commands::Research(super::ResearchCommands::Candidates(
+                super::ResearchCandidateCommands::ObservationSummary {
+                    candidate_id: parsed_candidate_id,
+                },
+            )) if parsed_candidate_id == candidate_id
+        ));
     }
 }
