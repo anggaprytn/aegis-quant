@@ -15,4 +15,12 @@ Research workflow:
 1. Build the research dataset so 1m coverage gaps are backfilled and 5m/15m/1h candles are re-aggregated.
 2. Run the multi-timeframe strategy experiment on the prepared dataset.
 3. Run walk-forward validation on the same prepared window.
-4. Only then consider strategy config promotion or further operator review.
+4. Register a research candidate from the strongest experiment run, walk-forward result, or manual review package.
+5. Promote to shadow config only after operator review and exact owner confirmation.
+6. Observe the promoted config through the shadow runner.
+
+Research candidate promotion boundaries:
+- Candidate promotion does not execute trades.
+- Candidate promotion does not auto-submit anything.
+- Candidate promotion does not mutate signals, risk decisions, paper state, testnet state, or live execution state.
+- No live trading path is enabled.

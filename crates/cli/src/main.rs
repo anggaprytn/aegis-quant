@@ -1,5 +1,6 @@
 use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
+    StrategyResearchCandidatePromotionRequest, StrategyResearchCandidateSource,
     TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
@@ -10,16 +11,18 @@ use cli::api::{
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
     build_research_data_build_request, build_research_data_coverage_query,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
-    build_strategy_walk_forward_request, ApiClient, RecentEventsQuery, RiskDecisionsQuery,
+    build_strategy_walk_forward_request, ApiClient, RecentEventsQuery,
+    ResearchCandidateRegisterRequest, ResearchCandidatesQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
     BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
-    ReadinessCommands, ReportsCommands, ResearchCommands, ResearchDataCommands, RiskCommands,
-    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
-    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ReadinessCommands, ReportsCommands, ResearchCandidateCommands, ResearchCommands,
+    ResearchDataCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
+    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
+    TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -453,6 +456,82 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_dataset_build(&response.build);
+                    }
+                }
+            },
+            ResearchCommands::Candidates(command) => match command {
+                ResearchCandidateCommands::RegisterFromExperimentRun { run_id } => {
+                    let response = client
+                        .register_research_candidate(&ResearchCandidateRegisterRequest {
+                            source_type: StrategyResearchCandidateSource::ExperimentRun,
+                            source_id: Some(run_id),
+                            symbol: None,
+                            config: None,
+                            evidence: None,
+                            correlation_id: None,
+                        })
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate(&response.candidate);
+                    }
+                }
+                ResearchCandidateCommands::RegisterFromWalkForward { walk_forward_id } => {
+                    let response = client
+                        .register_research_candidate(&ResearchCandidateRegisterRequest {
+                            source_type: StrategyResearchCandidateSource::WalkForward,
+                            source_id: Some(walk_forward_id),
+                            symbol: None,
+                            config: None,
+                            evidence: None,
+                            correlation_id: None,
+                        })
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate(&response.candidate);
+                    }
+                }
+                ResearchCandidateCommands::List(args) => {
+                    let response = client
+                        .list_research_candidates(&ResearchCandidatesQuery {
+                            strategy_id: args.strategy_id,
+                            symbol: args.symbol,
+                            timeframe: args.timeframe,
+                            status: args.status,
+                            limit: args.limit,
+                        })
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidates(&response.candidates);
+                    }
+                }
+                ResearchCandidateCommands::Get { candidate_id } => {
+                    let response = client.get_research_candidate(candidate_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate(&response.candidate);
+                    }
+                }
+                ResearchCandidateCommands::PromoteShadow(args) => {
+                    let response = client
+                        .promote_research_candidate_shadow(
+                            args.candidate_id,
+                            &StrategyResearchCandidatePromotionRequest {
+                                confirmation_text: args.confirmation_text,
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_promotion(&response.promotion);
                     }
                 }
             },

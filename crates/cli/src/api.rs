@@ -12,9 +12,11 @@ use aegis_core::{
     StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
     StrategyDryRunRequest, StrategyDryRunResult, StrategyExperimentRequest,
     StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
-    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyResearchCandidate,
+    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionRequest,
+    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateSource,
+    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardWindowResult,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
     TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
     TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
@@ -632,6 +634,41 @@ impl ApiClient {
     ) -> Result<ResearchDatasetBuildResponse, ApiClientError> {
         self.get(&format!("/research/data/builds/{build_id}"), &[])
             .await
+    }
+
+    pub async fn register_research_candidate(
+        &self,
+        request: &ResearchCandidateRegisterRequest,
+    ) -> Result<ResearchCandidateResponse, ApiClientError> {
+        self.post("/research/candidates/register", request).await
+    }
+
+    pub async fn list_research_candidates(
+        &self,
+        query: &ResearchCandidatesQuery,
+    ) -> Result<ResearchCandidatesResponse, ApiClientError> {
+        self.get("/research/candidates", &query.to_query_params())
+            .await
+    }
+
+    pub async fn get_research_candidate(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateResponse, ApiClientError> {
+        self.get(&format!("/research/candidates/{candidate_id}"), &[])
+            .await
+    }
+
+    pub async fn promote_research_candidate_shadow(
+        &self,
+        candidate_id: Uuid,
+        request: &StrategyResearchCandidatePromotionRequest,
+    ) -> Result<ResearchCandidatePromotionResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidates/{candidate_id}/promote-shadow-config"),
+            request,
+        )
+        .await
     }
 
     pub async fn activate_kill_switch(
@@ -1541,6 +1578,44 @@ pub struct ResearchDataCoverageQuery {
     pub required_coverage_pct: Option<Decimal>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateRegisterRequest {
+    pub source_type: StrategyResearchCandidateSource,
+    pub source_id: Option<Uuid>,
+    pub symbol: Option<String>,
+    pub config: Option<StrategyConfigUpdateRequest>,
+    pub evidence: Option<StrategyResearchCandidateEvidence>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResearchCandidatesQuery {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub status: Option<String>,
+    pub limit: i64,
+}
+
+impl ResearchCandidatesQuery {
+    pub fn to_query_params(&self) -> Vec<(&'static str, String)> {
+        let mut params = vec![("limit", self.limit.to_string())];
+        if let Some(strategy_id) = &self.strategy_id {
+            params.push(("strategy_id", strategy_id.clone()));
+        }
+        if let Some(symbol) = &self.symbol {
+            params.push(("symbol", symbol.clone()));
+        }
+        if let Some(timeframe) = &self.timeframe {
+            params.push(("timeframe", timeframe.clone()));
+        }
+        if let Some(status) = &self.status {
+            params.push(("status", status.clone()));
+        }
+        params
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct KillSwitchRequest {
     reason: Option<String>,
@@ -1789,6 +1864,30 @@ pub struct ResearchDatasetBuildsResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ResearchDatasetBuildResponse {
     pub build: ResearchDatasetBuildResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidatesResponse {
+    pub candidates: Vec<StrategyResearchCandidate>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateResponse {
+    pub candidate: StrategyResearchCandidate,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidatePromotionResponse {
+    pub promotion: StrategyResearchCandidatePromotionResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

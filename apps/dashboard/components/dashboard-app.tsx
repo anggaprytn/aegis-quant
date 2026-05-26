@@ -49,6 +49,9 @@ import type {
   StrategyDecisionBreakdown,
   StrategyPerformanceSummary,
   StrategyPnlBreakdown,
+  StrategyResearchCandidate,
+  StrategyResearchCandidatePromotionResult,
+  StrategyResearchCandidateStatus,
   StrategyStatusView,
   SystemEventRecord,
   TestnetPromotionFunnelRow,
@@ -600,6 +603,18 @@ function AuthenticatedDashboard({
   const [lastStrategyWalkForwardResult, setLastStrategyWalkForwardResult] =
     useState<StrategyWalkForwardAcceptedResponse | null>(null);
   const [selectedWalkForwardId, setSelectedWalkForwardId] = useState<string | null>(null);
+  const [selectedResearchCandidateId, setSelectedResearchCandidateId] = useState<string | null>(
+    null,
+  );
+  const [researchCandidateStrategyFilter, setResearchCandidateStrategyFilter] =
+    useState("momentum_v1");
+  const [researchCandidateSymbolFilter, setResearchCandidateSymbolFilter] =
+    useState("BTCUSDT");
+  const [researchCandidateTimeframeFilter, setResearchCandidateTimeframeFilter] = useState("");
+  const [researchCandidateStatusFilter, setResearchCandidateStatusFilter] =
+    useState<StrategyResearchCandidateStatus | "">("REGISTERED");
+  const [researchPromotionConfirmationText, setResearchPromotionConfirmationText] =
+    useState("");
   const [backfillForm, setBackfillForm] =
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
   const [aggregationForm, setAggregationForm] =
@@ -837,6 +852,30 @@ function AuthenticatedDashboard({
     queryFn: () => api.getStrategyWalkForwards(20),
     enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
+  });
+  const researchCandidatesQuery = useQuery({
+    queryKey: [
+      "research-candidates",
+      researchCandidateStrategyFilter,
+      researchCandidateSymbolFilter,
+      researchCandidateTimeframeFilter,
+      researchCandidateStatusFilter,
+    ],
+    queryFn: () =>
+      api.listResearchCandidates({
+        strategy_id: researchCandidateStrategyFilter || undefined,
+        symbol: researchCandidateSymbolFilter || undefined,
+        timeframe: researchCandidateTimeframeFilter || undefined,
+        status: researchCandidateStatusFilter || undefined,
+        limit: 50,
+      }),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchCandidateQuery = useQuery({
+    queryKey: ["research-candidate", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidate(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
   });
   const eventsQuery = useQuery({
     queryKey: ["events", eventTypeFilter, eventSourceFilter, eventCorrelationFilter],
@@ -1228,6 +1267,12 @@ function AuthenticatedDashboard({
   }, [selectedWalkForwardId, strategyWalkForwardsQuery.data?.walk_forwards]);
 
   useEffect(() => {
+    if (!selectedResearchCandidateId && researchCandidatesQuery.data?.candidates[0]) {
+      setSelectedResearchCandidateId(researchCandidatesQuery.data.candidates[0].id);
+    }
+  }, [researchCandidatesQuery.data?.candidates, selectedResearchCandidateId]);
+
+  useEffect(() => {
     if (!selectedBackfillRunId && backfillRunsQuery.data?.runs[0]) {
       setSelectedBackfillRunId(backfillRunsQuery.data.runs[0].run_id);
     }
@@ -1454,6 +1499,28 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["strategy-walk-forward-windows", response.walk_forward.walk_forward_id],
       });
+    },
+  });
+  const promoteResearchCandidateMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedResearchCandidateId) {
+        throw new Error("Select a candidate first.");
+      }
+      return api.promoteResearchCandidateShadow(selectedResearchCandidateId, {
+        confirmation_text: researchPromotionConfirmationText,
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["research-candidates"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["strategies"] });
+      if (selectedResearchCandidateId) {
+        const refreshed = await api.getResearchCandidate(selectedResearchCandidateId);
+        setSelectedStrategyId(refreshed.candidate.strategy_id);
+      }
+      setResearchPromotionConfirmationText("");
     },
   });
   const operatorReportMutation = useMutation({
@@ -1713,6 +1780,9 @@ function AuthenticatedDashboard({
     selectedWalkForwardWindowsQuery.data?.windows ??
     lastStrategyWalkForwardResult?.windows ??
     [];
+  const researchCandidates = researchCandidatesQuery.data?.candidates ?? [];
+  const selectedResearchCandidate: StrategyResearchCandidate | null =
+    selectedResearchCandidateQuery.data?.candidate ?? null;
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
@@ -4024,6 +4094,135 @@ function AuthenticatedDashboard({
               <Panel className="xl:col-span-12" title="Walk-forward Windows">
                 <StrategyWalkForwardWindowsTable windows={selectedWalkForwardWindows} />
                 <InlineStatus error={getErrorMessage(selectedWalkForwardWindowsQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-4" title="Research Candidates">
+                <div className="mb-3 grid gap-3">
+                  <Field
+                    label="Strategy"
+                    value={researchCandidateStrategyFilter}
+                    onChange={setResearchCandidateStrategyFilter}
+                  />
+                  <Field
+                    label="Symbol"
+                    value={researchCandidateSymbolFilter}
+                    onChange={setResearchCandidateSymbolFilter}
+                  />
+                  <Field
+                    label="Timeframe"
+                    value={researchCandidateTimeframeFilter}
+                    onChange={setResearchCandidateTimeframeFilter}
+                    placeholder="15m"
+                  />
+                  <Field
+                    label="Status"
+                    value={researchCandidateStatusFilter}
+                    onChange={(value) =>
+                      setResearchCandidateStatusFilter(
+                        value as StrategyResearchCandidateStatus | "",
+                      )
+                    }
+                    placeholder="REGISTERED"
+                  />
+                </div>
+                <div className="overflow-auto rounded-2xl border border-border">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-surface/60 text-left text-slate-300">
+                      <tr>
+                        {["Candidate", "Score", "Status", "Source"].map((label) => (
+                          <th key={label} className="px-3 py-2 font-medium">{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {researchCandidates.map((candidate) => (
+                        <tr
+                          key={candidate.id}
+                          className={cn(
+                            "cursor-pointer border-t border-border",
+                            selectedResearchCandidateId === candidate.id && "bg-white/5",
+                          )}
+                          onClick={() => setSelectedResearchCandidateId(candidate.id)}
+                        >
+                          <td className="px-3 py-2">
+                            <div>{candidate.strategy_id}</div>
+                            <div className="text-xs text-muted">{shortenId(candidate.id)}</div>
+                          </td>
+                          <td className="px-3 py-2">{candidate.score.score}</td>
+                          <td className="px-3 py-2">{candidate.status}</td>
+                          <td className="px-3 py-2">{candidate.source_type}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <InlineStatus error={getErrorMessage(researchCandidatesQuery.error)} />
+              </Panel>
+              <Panel className="xl:col-span-8" title="Candidate Detail">
+                <KeyValue
+                  items={[
+                    ["Candidate", selectedResearchCandidate?.id ?? "N/A"],
+                    ["Strategy", selectedResearchCandidate?.strategy_id ?? "N/A"],
+                    ["Symbol / Timeframe", selectedResearchCandidate
+                      ? `${selectedResearchCandidate.symbol} / ${selectedResearchCandidate.timeframe}`
+                      : "N/A"],
+                    ["Score", selectedResearchCandidate?.score.score ?? "N/A"],
+                    ["Status", selectedResearchCandidate?.status ?? "N/A"],
+                    ["Warnings", selectedResearchCandidate?.score.warnings.join(", ") || "None"],
+                    ["PnL %", selectedResearchCandidate?.evidence.pnl_pct ?? "N/A"],
+                    ["Max Drawdown %", selectedResearchCandidate?.evidence.max_drawdown_pct ?? "N/A"],
+                    ["Win Rate", selectedResearchCandidate?.evidence.win_rate ?? "N/A"],
+                    ["Trade Count", String(selectedResearchCandidate?.evidence.trade_count ?? 0)],
+                    ["Robustness", selectedResearchCandidate?.evidence.robustness_score ?? "N/A"],
+                    ["Windows", selectedResearchCandidate
+                      ? `${selectedResearchCandidate.evidence.profitable_windows ?? 0} / ${selectedResearchCandidate.evidence.losing_windows ?? 0} / skipped ${selectedResearchCandidate.evidence.skipped_windows ?? 0}`
+                      : "N/A"],
+                  ]}
+                  loading={selectedResearchCandidateQuery.isLoading}
+                  error={getErrorMessage(selectedResearchCandidateQuery.error)}
+                />
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-2xl border border-border bg-surface/40 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted">Config</div>
+                    <pre className="mt-2 overflow-auto text-xs text-slate-200">
+                      {selectedResearchCandidate
+                        ? JSON.stringify(selectedResearchCandidate.config, null, 2)
+                        : "{}"}
+                    </pre>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-surface/40 p-4">
+                    <div className="text-xs uppercase tracking-[0.2em] text-muted">Promotion Gate</div>
+                    <Field
+                      label="Typed Confirmation"
+                      value={researchPromotionConfirmationText}
+                      onChange={setResearchPromotionConfirmationText}
+                      placeholder={
+                        selectedResearchCandidate
+                          ? `PROMOTE STRATEGY ${selectedResearchCandidate.strategy_id.toUpperCase()}`
+                          : "PROMOTE STRATEGY momentum_v1"
+                      }
+                    />
+                    <div className="mt-3 flex items-center gap-3">
+                      <ActionButton
+                        label="Promote To Shadow Config"
+                        onClick={() => promoteResearchCandidateMutation.mutate()}
+                        busy={promoteResearchCandidateMutation.isPending}
+                        disabled={
+                          user.role !== "OWNER" ||
+                          !selectedResearchCandidate ||
+                          selectedResearchCandidate.status !== "REGISTERED"
+                        }
+                      />
+                      <InlineStatus
+                        error={getErrorMessage(promoteResearchCandidateMutation.error)}
+                        success={
+                          promoteResearchCandidateMutation.data
+                            ? `Promoted ${shortenId(promoteResearchCandidateMutation.data.promotion.candidate_id)}`
+                            : undefined
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
               </Panel>
             </section>
           )}

@@ -64,6 +64,11 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  StrategyResearchCandidatePromotionRequest,
+  StrategyResearchCandidatePromotionResponse,
+  StrategyResearchCandidateRegisterRequest,
+  StrategyResearchCandidateResponse,
+  StrategyResearchCandidatesResponse,
   RiskActionResponse,
   RiskConfig,
   RiskConfigAuditResponse,
@@ -343,6 +348,26 @@ export const api = {
     request<ResearchDatasetBuildsResponse>("/research/data/builds", undefined, { limit }),
   getResearchDatasetBuild: (id: string) =>
     request<ResearchDatasetBuildResponse>(`/research/data/builds/${id}`),
+  registerResearchCandidate: (payload: StrategyResearchCandidateRegisterRequest) =>
+    request<StrategyResearchCandidateResponse>("/research/candidates/register", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchCandidates: (query?: Record<string, string | number | undefined>) =>
+    request<StrategyResearchCandidatesResponse>("/research/candidates", undefined, query),
+  getResearchCandidate: (id: string) =>
+    request<StrategyResearchCandidateResponse>(`/research/candidates/${id}`),
+  promoteResearchCandidateShadow: (
+    id: string,
+    payload: StrategyResearchCandidatePromotionRequest,
+  ) =>
+    request<StrategyResearchCandidatePromotionResponse>(
+      `/research/candidates/${id}/promote-shadow-config`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
   getExchangeTestnetStatus: () =>
     request<ExchangeTestnetStatusResponse>("/exchange/testnet/status"),
   getExchangeTestnetPrivateStreamStatus: () =>

@@ -687,6 +687,8 @@ pub enum MarketCommands {
 pub enum ResearchCommands {
     #[command(subcommand)]
     Data(ResearchDataCommands),
+    #[command(subcommand)]
+    Candidates(ResearchCandidateCommands),
 }
 
 #[derive(Debug, Subcommand)]
@@ -695,6 +697,36 @@ pub enum ResearchDataCommands {
     Build(ResearchDataBuildArgs),
     Builds(ResearchDataBuildsArgs),
     BuildGet { build_id: Uuid },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchCandidateCommands {
+    RegisterFromExperimentRun { run_id: Uuid },
+    RegisterFromWalkForward { walk_forward_id: Uuid },
+    List(ResearchCandidateListArgs),
+    Get { candidate_id: Uuid },
+    PromoteShadow(ResearchCandidatePromoteArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateListArgs {
+    #[arg(long = "strategy")]
+    pub strategy_id: Option<String>,
+    #[arg(long)]
+    pub symbol: Option<String>,
+    #[arg(long)]
+    pub timeframe: Option<String>,
+    #[arg(long)]
+    pub status: Option<String>,
+    #[arg(long, default_value_t = 50)]
+    pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidatePromoteArgs {
+    pub candidate_id: Uuid,
+    #[arg(long = "confirm")]
+    pub confirmation_text: String,
 }
 
 #[derive(Debug, Args)]

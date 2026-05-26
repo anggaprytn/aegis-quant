@@ -5997,6 +5997,12 @@ pub enum CoreError {
     UnsupportedStrategyExperimentStatus(String),
     #[error("unsupported strategy walk-forward status: {0}")]
     UnsupportedStrategyWalkForwardStatus(String),
+    #[error("unsupported strategy research candidate source: {0}")]
+    UnsupportedStrategyResearchCandidateSource(String),
+    #[error("unsupported strategy research candidate status: {0}")]
+    UnsupportedStrategyResearchCandidateStatus(String),
+    #[error("unsupported strategy research candidate rejection reason: {0}")]
+    UnsupportedStrategyResearchCandidateRejectionReason(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
     #[error("unsupported exchange environment: {0}")]

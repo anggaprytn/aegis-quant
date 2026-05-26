@@ -6,18 +6,18 @@ use aegis_core::{
     ExchangeOrderStatus, ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeReconciliationAction,
     ExchangeReconciliationMismatchKind, ExchangeReconciliationSummary, FeeModel, MarketDataSource,
     OrderIntent, PaperAccount, PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide,
-    PositionStatus, ReplayMode, ReplayRunStatus, RiskCheckContext, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason,
-    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildStatus,
-    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, ResearchDataReadinessStatus,
-    SignalSide, StrategyExperimentCandidate, StrategyExperimentComparison,
-    StrategyExperimentMetric, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyExperimentStatus, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategySignal, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus,
-    StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
-    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetShadowRunnerConfig,
-    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
+    PositionStatus, ReplayMode, ReplayRunStatus, ResearchDataCoverageResult,
+    ResearchDataReadinessStatus, ResearchDatasetBuildRequest, ResearchDatasetBuildStatus,
+    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
+    SignalConfidence, SignalReason, SignalSide, StrategyExperimentCandidate,
+    StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyPerformanceMode,
+    StrategyPerformanceRequest, StrategySignal, StrategyWalkForwardCandidate,
+    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary,
+    StrategyWalkForwardStatus, StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
 use db::{
@@ -26,24 +26,25 @@ use db::{
     get_aggregated_candle_coverage, get_backtest_equity_curve, get_backtest_run,
     get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
     get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
-    get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key, get_risk_decision,
-    get_research_dataset_build, insert_research_dataset_build, list_closed_candle_open_times_in_range,
-    list_research_dataset_build_steps, replace_research_dataset_build_steps,
-    research_dataset_build_result_from_records,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, insert_backtest_equity_points, insert_backtest_run,
-    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key,
+    get_research_dataset_build, get_risk_decision, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_shadow_decision_breakdown, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
+    insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
-    insert_paper_account, insert_risk_decision, insert_signal_deduped, insert_strategy_experiment,
-    insert_strategy_experiment_runs, insert_strategy_walk_forward_run,
-    insert_strategy_walk_forward_windows, insert_testnet_shadow_promotion,
-    insert_testnet_shadow_run, list_exchange_private_stream_events,
+    insert_paper_account, insert_research_dataset_build, insert_risk_decision,
+    insert_signal_deduped, insert_strategy_experiment, insert_strategy_experiment_runs,
+    insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
+    insert_testnet_shadow_promotion, insert_testnet_shadow_run,
+    list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
     list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
-    list_orders, list_recent_signals, list_strategy_experiment_runs, list_strategy_experiments,
-    list_strategy_performance_rankings, list_strategy_walk_forward_runs,
-    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows, set_kill_switch_state,
+    list_orders, list_recent_signals, list_research_dataset_build_steps,
+    list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
+    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
+    list_testnet_promotion_funnel_rows, replace_research_dataset_build_steps,
+    research_dataset_build_result_from_records, set_kill_switch_state,
     strategy_experiment_result_from_records, strategy_walk_forward_result_from_records,
     strategy_walk_forward_window_from_record, test_support::TestDatabase,
     testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
@@ -1332,7 +1333,10 @@ async fn research_coverage_reads_persisted_candles() {
     .expect("research coverage open_times should load");
 
     assert_eq!(open_times.len(), 3);
-    assert_eq!(open_times[0], Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap());
+    assert_eq!(
+        open_times[0],
+        Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -1390,9 +1394,15 @@ async fn research_dataset_build_records_round_trip() {
         .expect("build result should map");
 
     assert_eq!(build.status, ResearchDatasetBuildStatus::Started);
-    assert_eq!(build.coverage_before.status, ResearchDataReadinessStatus::Ready);
+    assert_eq!(
+        build.coverage_before.status,
+        ResearchDataReadinessStatus::Ready
+    );
     assert_eq!(build.steps.len(), 1);
-    assert_eq!(build.steps[0].status, ResearchDatasetBuildStepStatus::Completed);
+    assert_eq!(
+        build.steps[0].status,
+        ResearchDatasetBuildStepStatus::Completed
+    );
 }
 
 #[tokio::test]

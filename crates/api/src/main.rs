@@ -15,18 +15,20 @@ use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
 };
 use aegis_core::{
-    aggregate_closed_1m_candles, expected_testnet_pipeline_confirmation,
-    expected_testnet_shadow_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
-    is_valid_testnet_shadow_promotion_confirmation, validate_testnet_repair_transition,
-    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-    AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
-    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
-    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
-    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
-    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
-    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
-    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
-    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    aggregate_closed_1m_candles, expected_strategy_research_promotion_confirmation,
+    expected_testnet_pipeline_confirmation, expected_testnet_shadow_promotion_confirmation,
+    is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
+    is_valid_testnet_shadow_promotion_confirmation, score_strategy_research_candidate,
+    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
+    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
+    CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest, CandleBackfillResult,
+    CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
+    ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
+    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
+    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
+    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
+    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo,
+    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketMode, OperatorReport,
     OperatorReportRequest, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
@@ -40,13 +42,16 @@ use aegis_core::{
     StrategyDecisionBreakdown, StrategyDiagnosticCheck, StrategyDiagnosticsDecision,
     StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyEvaluationContext, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyId,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyId, StrategyMode,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyNoSignalReason, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyStatus, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
-    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyResearchCandidate,
+    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionRequest,
+    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateRejectionReason,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategyStatus,
+    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardWindowResult, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetRepairAction, TestnetRepairActionStatus,
     TestnetRepairRequest, TestnetRepairResult, TestnetRepairValidationIssue,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -81,14 +86,15 @@ use chrono::{DateTime, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, connect_pool, count_users,
-    create_paper_order, ensure_system_state, get_active_testnet_shadow_promotion_for_shadow_run,
-    get_aggregated_candle_coverage, get_backtest_equity_curve, get_backtest_run,
-    get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
-    get_default_paper_account, get_exchange_private_stream_state,
+    create_paper_order, ensure_system_state, get_active_strategy_research_candidate_promotion,
+    get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
+    get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
+    get_closed_1m_candles_range, get_default_paper_account, get_exchange_private_stream_state,
     get_exchange_testnet_order_by_client_order_id, get_latest_market_tick, get_order_by_id,
     get_paper_position_by_id, get_recent_closed_candles, get_risk_config, get_risk_decision_by_id,
     get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
-    get_strategy_experiment, get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_experiment, get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_research_candidate,
     get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
     get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
     get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
@@ -96,9 +102,10 @@ use db::{
     get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
     insert_exchange_testnet_repair_action, insert_paper_account, insert_paper_equity_snapshot,
     insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
-    insert_strategy_config_audit, insert_system_event, insert_testnet_shadow_promotion,
-    insert_user, list_backtest_runs, list_candle_backfill_runs, list_candles,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    insert_strategy_config_audit, insert_strategy_research_candidate,
+    insert_strategy_research_candidate_promotion, insert_system_event,
+    insert_testnet_shadow_promotion, insert_user, list_backtest_runs, list_candle_backfill_runs,
+    list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
@@ -106,15 +113,17 @@ use db::{
     list_recent_system_events_filtered, list_risk_config_audit, list_risk_config_versions,
     list_strategy_config_audit, list_strategy_config_versions, list_strategy_experiment_runs,
     list_strategy_experiments, list_strategy_experiments_by_group,
-    list_strategy_performance_rankings, list_strategy_status, list_strategy_walk_forward_runs,
-    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
-    list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
-    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
-    persist_risk_config_version, persist_strategy_config_version, revoke_session,
-    risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
-    rotate_session_refresh_token, set_kill_switch_state, strategy_config_audit_from_record,
-    strategy_config_from_record, strategy_config_version_from_record,
-    strategy_experiment_result_from_records, strategy_experiment_run_from_record,
+    list_strategy_performance_rankings, list_strategy_research_candidates, list_strategy_status,
+    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
+    list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
+    load_risk_state_snapshot, mark_strategy_research_candidate_promoted, paper_account_from_record,
+    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
+    persist_strategy_config_version, revoke_session, risk_config_audit_from_record,
+    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
+    set_kill_switch_state, strategy_config_audit_from_record, strategy_config_from_record,
+    strategy_config_version_from_record, strategy_experiment_result_from_records,
+    strategy_experiment_run_from_record, strategy_research_candidate_from_record,
+    strategy_research_candidate_promotion_result_from_records,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
     update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
     upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
@@ -125,8 +134,8 @@ use db::{
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
     PaperPositionRecord, PaperTradeJournalRecord, PgPool, RiskDecisionRecord, SignalRecord,
-    StateActor, StrategyStatusRecord, SystemEventRecord, SystemStateRecord,
-    TestnetShadowPromotionRecord,
+    StateActor, StrategyResearchCandidateListFilters, StrategyStatusRecord, SystemEventRecord,
+    SystemStateRecord, TestnetShadowPromotionRecord,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
@@ -1286,6 +1295,25 @@ struct ResearchDatasetBuildsQuery {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct StrategyResearchCandidatesQuery {
+    strategy_id: Option<String>,
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct StrategyResearchCandidateRegisterRequest {
+    source_type: StrategyResearchCandidateSource,
+    source_id: Option<Uuid>,
+    symbol: Option<String>,
+    config: Option<StrategyConfigUpdateRequest>,
+    evidence: Option<StrategyResearchCandidateEvidence>,
+    correlation_id: Option<Uuid>,
+}
+
 #[derive(Serialize)]
 struct CandlesResponse {
     candles: Vec<CandleRecord>,
@@ -1337,6 +1365,30 @@ struct ResearchDatasetBuildsResponse {
 #[derive(Serialize)]
 struct ResearchDatasetBuildResponse {
     build: ResearchDatasetBuildResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyResearchCandidatesResponse {
+    candidates: Vec<StrategyResearchCandidate>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyResearchCandidateResponse {
+    candidate: StrategyResearchCandidate,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyResearchCandidatePromotionResponse {
+    promotion: StrategyResearchCandidatePromotionResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2096,6 +2148,22 @@ async fn main() {
         .route("/research/data/build", post(post_research_data_build))
         .route("/research/data/builds", get(list_research_data_builds))
         .route("/research/data/builds/:id", get(get_research_data_build))
+        .route(
+            "/research/candidates/register",
+            post(register_strategy_research_candidate_handler),
+        )
+        .route(
+            "/research/candidates",
+            get(list_strategy_research_candidates_handler),
+        )
+        .route(
+            "/research/candidates/:id",
+            get(get_strategy_research_candidate_handler),
+        )
+        .route(
+            "/research/candidates/:id/promote-shadow-config",
+            post(promote_strategy_research_candidate_handler),
+        )
         .route("/strategy/list", get(get_strategy_list))
         .route("/strategy/:id/status", get(get_strategy_by_id))
         .route("/strategy/:id/config", get(get_strategy_config_handler))
@@ -2725,6 +2793,13 @@ fn bounded_recent_events_limit(limit: Option<i64>) -> i64 {
 
 fn bounded_limit(limit: Option<i64>) -> i64 {
     bounded_recent_events_limit(limit)
+}
+
+fn bounded_research_candidate_limit(limit: Option<i64>) -> i64 {
+    match limit {
+        Some(value) if value > 0 => value.min(200),
+        _ => 50,
+    }
 }
 
 fn bounded_risk_decisions_limit(limit: Option<i64>) -> i64 {
@@ -13624,6 +13699,886 @@ async fn get_research_data_build(
                 .into_response()
         }
     }
+}
+
+fn strategy_config_request_with_candidate_overrides(
+    base: &StrategyConfig,
+    symbol: &str,
+    timeframe: &str,
+    lookback_candles: u32,
+    holding_candles: Option<u32>,
+    stop_loss_pct: Option<Decimal>,
+    take_profit_pct: Option<Decimal>,
+    max_signal_age_ms: Option<i64>,
+) -> StrategyConfigUpdateRequest {
+    StrategyConfigUpdateRequest {
+        strategy_id: base.strategy_id.to_string(),
+        enabled: base.enabled,
+        mode: base.mode,
+        symbols: vec![symbol.trim().to_ascii_uppercase()],
+        timeframe: timeframe.to_string(),
+        suggested_notional: base.suggested_notional,
+        max_signal_age_ms: max_signal_age_ms.unwrap_or(base.max_signal_age_ms),
+        cooldown_seconds: base.cooldown_seconds,
+        lookback_candles,
+        confidence_floor: base.confidence_floor,
+        stop_loss_pct,
+        take_profit_pct,
+        holding_candles,
+        notes: base.notes.clone(),
+    }
+}
+
+fn normalize_candidate_config(
+    state: &AppState,
+    payload: &StrategyConfigUpdateRequest,
+) -> Result<StrategyConfig, StrategyConfigValidationResult> {
+    let validation = validate_strategy_config(payload, &strategy_validation_context(state));
+    if validation.valid {
+        Ok(validation
+            .normalized_config
+            .clone()
+            .expect("valid research candidate config should normalize"))
+    } else {
+        Err(validation)
+    }
+}
+
+async fn candidate_from_experiment_run_source(
+    state: &AppState,
+    run_id: Uuid,
+    correlation_id: Uuid,
+) -> anyhow::Result<StrategyResearchCandidate> {
+    let run_record = get_strategy_experiment_run(&state.db_pool, run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("strategy experiment run was not found"))?;
+    let experiment_record = get_strategy_experiment(&state.db_pool, run_record.experiment_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("strategy experiment was not found"))?;
+    let run = strategy_experiment_run_from_record(&run_record)?;
+    let strategy_id = experiment_record.strategy_id.parse::<StrategyId>()?;
+    let base_config = ensure_strategy_config(state, strategy_id).await?;
+    let config_request = strategy_config_request_with_candidate_overrides(
+        &base_config,
+        &experiment_record.symbol,
+        &experiment_record.timeframe,
+        run.candidate.lookback_candles,
+        run.candidate.holding_candles,
+        run.candidate.stop_loss_pct,
+        run.candidate.take_profit_pct,
+        run.candidate.max_signal_age_ms,
+    );
+    let normalized = normalize_candidate_config(state, &config_request).map_err(|validation| {
+        anyhow::anyhow!(
+            "candidate config validation failed: {:?}",
+            validation.issues
+        )
+    })?;
+    let evidence = StrategyResearchCandidateEvidence {
+        experiment_id: Some(experiment_record.id),
+        experiment_run_id: Some(run.id),
+        walk_forward_id: None,
+        pnl_pct: Some(run.pnl_pct),
+        max_drawdown_pct: Some(run.max_drawdown_pct),
+        win_rate: Some(run.win_rate),
+        trade_count: Some(run.trade_count),
+        fee_paid: Some(run.fee_paid),
+        slippage_cost: Some(run.slippage_cost),
+        robustness_score: None,
+        profitable_windows: None,
+        losing_windows: None,
+        skipped_windows: None,
+        notes: if run.warnings.is_empty() {
+            None
+        } else {
+            Some(run.warnings.join(","))
+        },
+    };
+    let score = score_strategy_research_candidate(&evidence);
+
+    Ok(StrategyResearchCandidate {
+        id: Uuid::new_v4(),
+        strategy_id: experiment_record.strategy_id.clone(),
+        symbol: experiment_record.symbol.clone(),
+        timeframe: experiment_record.timeframe.clone(),
+        config: serde_json::to_value(&normalized)?,
+        source_type: StrategyResearchCandidateSource::ExperimentRun,
+        source_id: Some(run.id),
+        evidence,
+        score,
+        status: StrategyResearchCandidateStatus::Registered,
+        created_at: Utc::now(),
+        promoted_at: None,
+        promoted_by: None,
+        correlation_id: Some(correlation_id),
+    })
+}
+
+async fn candidate_from_walk_forward_source(
+    state: &AppState,
+    walk_forward_id: Uuid,
+    correlation_id: Uuid,
+) -> anyhow::Result<StrategyResearchCandidate> {
+    let run_record = get_strategy_walk_forward_run(&state.db_pool, walk_forward_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("strategy walk-forward run was not found"))?;
+    let window_records =
+        list_strategy_walk_forward_windows(&state.db_pool, walk_forward_id).await?;
+    let walk_forward = strategy_walk_forward_result_from_records(&run_record, &window_records)?;
+    let request = serde_json::from_value::<StrategyWalkForwardRequest>(run_record.request.clone())?;
+    let strategy_id = walk_forward.strategy_id.parse::<StrategyId>()?;
+    let base_config = ensure_strategy_config(state, strategy_id).await?;
+    let config_request = strategy_config_request_with_candidate_overrides(
+        &base_config,
+        &walk_forward.symbol,
+        &walk_forward.timeframe,
+        request.candidate_config.lookback_candles,
+        request.candidate_config.holding_candles,
+        request.candidate_config.stop_loss_pct,
+        request.candidate_config.take_profit_pct,
+        request.candidate_config.max_signal_age_ms,
+    );
+    let normalized = normalize_candidate_config(state, &config_request).map_err(|validation| {
+        anyhow::anyhow!(
+            "candidate config validation failed: {:?}",
+            validation.issues
+        )
+    })?;
+
+    let completed_windows: Vec<_> = window_records
+        .iter()
+        .filter(|record| record.status == "COMPLETED")
+        .collect();
+    let total_fee_paid = completed_windows
+        .iter()
+        .fold(Decimal::ZERO, |acc, record| acc + record.fee_paid);
+    let total_slippage_cost = completed_windows
+        .iter()
+        .fold(Decimal::ZERO, |acc, record| acc + record.slippage_cost);
+    let total_trade_count = completed_windows
+        .iter()
+        .map(|record| record.trade_count)
+        .sum::<i32>();
+    let avg_win_rate = if completed_windows.is_empty() {
+        None
+    } else {
+        Some(
+            completed_windows
+                .iter()
+                .fold(Decimal::ZERO, |acc, record| acc + record.win_rate)
+                / Decimal::from(completed_windows.len() as i32),
+        )
+    };
+    let evidence = StrategyResearchCandidateEvidence {
+        experiment_id: None,
+        experiment_run_id: None,
+        walk_forward_id: Some(walk_forward.walk_forward_id),
+        pnl_pct: Some(walk_forward.avg_test_pnl_pct),
+        max_drawdown_pct: Some(walk_forward.avg_max_drawdown_pct),
+        win_rate: avg_win_rate,
+        trade_count: Some(total_trade_count),
+        fee_paid: Some(total_fee_paid),
+        slippage_cost: Some(total_slippage_cost),
+        robustness_score: Some(walk_forward.robustness_score),
+        profitable_windows: Some(walk_forward.profitable_test_windows),
+        losing_windows: Some(walk_forward.losing_test_windows),
+        skipped_windows: Some(walk_forward.skipped_windows),
+        notes: None,
+    };
+    let score = score_strategy_research_candidate(&evidence);
+
+    Ok(StrategyResearchCandidate {
+        id: Uuid::new_v4(),
+        strategy_id: walk_forward.strategy_id.clone(),
+        symbol: walk_forward.symbol.clone(),
+        timeframe: walk_forward.timeframe.clone(),
+        config: serde_json::to_value(&normalized)?,
+        source_type: StrategyResearchCandidateSource::WalkForward,
+        source_id: Some(walk_forward.walk_forward_id),
+        evidence,
+        score,
+        status: StrategyResearchCandidateStatus::Registered,
+        created_at: Utc::now(),
+        promoted_at: None,
+        promoted_by: None,
+        correlation_id: Some(correlation_id),
+    })
+}
+
+async fn register_strategy_research_candidate_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<StrategyResearchCandidateRegisterRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    let build_result = match payload.source_type {
+        StrategyResearchCandidateSource::ExperimentRun => match payload.source_id {
+            Some(run_id) => {
+                candidate_from_experiment_run_source(&state, run_id, correlation_id).await
+            }
+            None => Err(anyhow::anyhow!(
+                "source_id is required for experiment run registration"
+            )),
+        },
+        StrategyResearchCandidateSource::WalkForward => match payload.source_id {
+            Some(walk_forward_id) => {
+                candidate_from_walk_forward_source(&state, walk_forward_id, correlation_id).await
+            }
+            None => Err(anyhow::anyhow!(
+                "source_id is required for walk-forward registration"
+            )),
+        },
+        StrategyResearchCandidateSource::Manual
+        | StrategyResearchCandidateSource::MultiTimeframeExperiment => {
+            let config_request = match payload.config.clone() {
+                Some(value) => value,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "missing_candidate_config",
+                            message: "Manual candidate registration requires config.".to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+            let evidence = match payload.evidence.clone() {
+                Some(value) => value,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: "missing_candidate_evidence",
+                            message: "Manual candidate registration requires evidence.".to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+            let normalized = match normalize_candidate_config(&state, &config_request) {
+                Ok(config) => config,
+                Err(validation) => {
+                    let _ = insert_system_event(
+                        &state.db_pool,
+                        &EventEnvelope::new(
+                            "research.candidate.rejected",
+                            correlation_id,
+                            state.config.app_name.clone(),
+                            json!({
+                                "strategy_id": config_request.strategy_id,
+                                "issues": validation.issues,
+                            }),
+                        ),
+                    )
+                    .await;
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(StrategyConfigValidationResponse {
+                            validation,
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            let score = score_strategy_research_candidate(&evidence);
+            Ok(StrategyResearchCandidate {
+                id: Uuid::new_v4(),
+                strategy_id: normalized.strategy_id.to_string(),
+                symbol: normalized
+                    .symbols
+                    .first()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| payload.symbol.clone().unwrap_or_default()),
+                timeframe: normalized.timeframe.as_str().to_string(),
+                config: serde_json::to_value(&normalized).expect("manual config should serialize"),
+                source_type: payload.source_type,
+                source_id: payload.source_id,
+                evidence,
+                score,
+                status: StrategyResearchCandidateStatus::Registered,
+                created_at: Utc::now(),
+                promoted_at: None,
+                promoted_by: None,
+                correlation_id: Some(correlation_id),
+            })
+        }
+    };
+
+    let candidate = match build_result {
+        Ok(candidate) => candidate,
+        Err(err) => {
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "research.candidate.rejected",
+                    correlation_id,
+                    state.config.app_name.clone(),
+                    json!({
+                        "source_type": payload.source_type.as_str(),
+                        "source_id": payload.source_id,
+                        "reason": err.to_string(),
+                    }),
+                ),
+            )
+            .await;
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse {
+                    error: "failed_to_build_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    telemetry().inc_research_candidate(candidate.status.as_str());
+
+    match insert_strategy_research_candidate(
+        &state.db_pool,
+        &candidate,
+        actor.as_ref().map(|value| value.user_id),
+    )
+    .await
+    {
+        Ok(record) => {
+            let candidate = match strategy_research_candidate_from_record(&record) {
+                Ok(value) => value,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_research_candidate",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+            let _ = insert_system_event(
+                &state.db_pool,
+                &EventEnvelope::new(
+                    "research.candidate.registered",
+                    correlation_id,
+                    state.config.app_name.clone(),
+                    json!({
+                        "candidate_id": candidate.id,
+                        "strategy_id": candidate.strategy_id,
+                        "status": candidate.status.as_str(),
+                    }),
+                ),
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(StrategyResearchCandidateResponse {
+                    candidate,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_research_candidate",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_strategy_research_candidates_handler(
+    State(state): State<AppState>,
+    Query(query): Query<StrategyResearchCandidatesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let filters = StrategyResearchCandidateListFilters {
+        strategy_id: query.strategy_id,
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        status: query.status,
+    };
+    match list_strategy_research_candidates(
+        &state.db_pool,
+        &filters,
+        bounded_research_candidate_limit(query.limit),
+    )
+    .await
+    {
+        Ok(records) => {
+            let candidates = match records
+                .iter()
+                .map(strategy_research_candidate_from_record)
+                .collect::<anyhow::Result<Vec<_>>>()
+            {
+                Ok(values) => values,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_research_candidates",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(StrategyResearchCandidatesResponse {
+                    candidates,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_candidates",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_research_candidate_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_strategy_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match strategy_research_candidate_from_record(&record) {
+            Ok(candidate) => (
+                StatusCode::OK,
+                Json(StrategyResearchCandidateResponse {
+                    candidate,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_candidate_not_found",
+                message: "Research candidate was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_candidate",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn promote_strategy_research_candidate_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<StrategyResearchCandidatePromotionRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if value.role == UserRole::Owner => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OWNER can promote research candidates.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let candidate_record = match get_strategy_research_candidate(&state.db_pool, candidate_id).await
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let candidate = match strategy_research_candidate_from_record(&candidate_record) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    if candidate.status != StrategyResearchCandidateStatus::Registered {
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "research.candidate.promotion_rejected",
+                correlation_id,
+                state.config.app_name.clone(),
+                json!({
+                    "candidate_id": candidate.id,
+                    "reason": StrategyResearchCandidateRejectionReason::CandidateNotRegistered.as_str(),
+                }),
+            ),
+        )
+        .await;
+        telemetry().inc_research_candidate_promotion("rejected");
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "candidate_not_registered",
+                message: "Only REGISTERED candidates can be promoted.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    if !is_valid_strategy_research_promotion_confirmation(
+        &candidate.strategy_id,
+        &payload.confirmation_text,
+    ) {
+        telemetry().inc_research_candidate_promotion("rejected");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_confirmation_text",
+                message: format!(
+                    "Research candidate promotion requires confirmation_text exactly equal to {:?}.",
+                    expected_strategy_research_promotion_confirmation(&candidate.strategy_id)
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    if let Ok(Some(_)) =
+        get_active_strategy_research_candidate_promotion(&state.db_pool, candidate.id).await
+    {
+        telemetry().inc_research_candidate_promotion("rejected");
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "already_promoted",
+                message: "Candidate was already promoted to shadow config.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let strategy_id = match candidate.strategy_id.parse::<StrategyId>() {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let previous_config = ensure_strategy_config(&state, strategy_id).await.ok();
+    let mut promoted_config: StrategyConfig = match serde_json::from_value(candidate.config.clone())
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse {
+                    error: "invalid_candidate_config",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    promoted_config.mode = StrategyMode::Shadow;
+    let validation_request = strategy_update_request_from_config(&promoted_config);
+    let validation =
+        validate_strategy_config(&validation_request, &strategy_validation_context(&state));
+    if !validation.valid {
+        let _ = insert_system_event(
+            &state.db_pool,
+            &EventEnvelope::new(
+                "research.candidate.promotion_rejected",
+                correlation_id,
+                state.config.app_name.clone(),
+                json!({
+                    "candidate_id": candidate.id,
+                    "strategy_id": candidate.strategy_id,
+                    "issues": validation.issues,
+                }),
+            ),
+        )
+        .await;
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(StrategyConfigValidationResponse {
+                validation,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let promoted_config = validation
+        .normalized_config
+        .clone()
+        .expect("validated promoted research candidate config must exist");
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "research.candidate.promotion_requested",
+            correlation_id,
+            state.config.app_name.clone(),
+            json!({
+                "candidate_id": candidate.id,
+                "strategy_id": candidate.strategy_id,
+                "actor_id": actor.user_id,
+            }),
+        ),
+    )
+    .await;
+    telemetry().inc_research_candidate_promotion("requested");
+
+    if let Err(err) = persist_strategy_config_version(
+        &state.db_pool,
+        &promoted_config,
+        Some(actor.user_id),
+        correlation_id,
+    )
+    .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_update_strategy_config",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let promoted_at = Utc::now();
+    let promotion_record = match insert_strategy_research_candidate_promotion(
+        &state.db_pool,
+        Uuid::new_v4(),
+        candidate.id,
+        previous_config
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .unwrap_or(None),
+        serde_json::to_value(&promoted_config).expect("promoted config should serialize"),
+        StrategyResearchCandidateStatus::PromotedToShadowConfig.as_str(),
+        Some(actor.user_id),
+        Some(correlation_id),
+        promoted_at,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_persist_research_candidate_promotion",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let promoted_candidate = match mark_strategy_research_candidate_promoted(
+        &state.db_pool,
+        candidate.id,
+        Some(actor.user_id),
+        promoted_at,
+        Some(correlation_id),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_mark_research_candidate_promoted",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let promotion = match strategy_research_candidate_promotion_result_from_records(
+        &promoted_candidate,
+        &promotion_record,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate_promotion",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let _ = insert_system_event(
+        &state.db_pool,
+        &EventEnvelope::new(
+            "research.candidate.promoted_to_shadow_config",
+            correlation_id,
+            state.config.app_name.clone(),
+            json!({
+                "candidate_id": candidate.id,
+                "strategy_id": candidate.strategy_id,
+                "actor_id": actor.user_id,
+            }),
+        ),
+    )
+    .await;
+    telemetry().inc_research_candidate_promotion("promoted_to_shadow_config");
+    (
+        StatusCode::OK,
+        Json(StrategyResearchCandidatePromotionResponse {
+            promotion,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
 }
 
 async fn get_strategy_list(

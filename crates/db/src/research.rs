@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
@@ -8,7 +9,9 @@ use uuid::Uuid;
 use aegis_core::{
     CandleInterval, MarketDataSource, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, Symbol,
+    ResearchDatasetBuildStepStatus, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, Symbol,
 };
 
 use crate::PgPool;
@@ -40,6 +43,384 @@ pub struct ResearchDatasetBuildStepRecord {
     pub details: Option<Value>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyResearchCandidateRecord {
+    pub id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub config: Value,
+    pub source_type: String,
+    pub source_id: Option<Uuid>,
+    pub evidence: Value,
+    pub score: Decimal,
+    pub status: String,
+    pub warnings: Value,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub promoted_at: Option<DateTime<Utc>>,
+    pub promoted_by: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyResearchCandidatePromotionRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub previous_config: Option<Value>,
+    pub promoted_config: Value,
+    pub status: String,
+    pub actor_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StrategyResearchCandidateListFilters {
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub status: Option<String>,
+}
+
+pub async fn insert_strategy_research_candidate(
+    pool: &PgPool,
+    candidate: &StrategyResearchCandidate,
+    created_by: Option<Uuid>,
+) -> Result<StrategyResearchCandidateRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_research_candidates (
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            source_type,
+            source_id,
+            evidence,
+            score,
+            status,
+            warnings,
+            created_by,
+            created_at,
+            updated_at,
+            promoted_at,
+            promoted_by,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14, $15, $16
+        )
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            source_type,
+            source_id,
+            evidence,
+            score,
+            status,
+            warnings,
+            created_by,
+            created_at,
+            updated_at,
+            promoted_at,
+            promoted_by,
+            correlation_id
+        "#,
+    )
+    .bind(candidate.id)
+    .bind(&candidate.strategy_id)
+    .bind(&candidate.symbol)
+    .bind(&candidate.timeframe)
+    .bind(candidate.config.clone())
+    .bind(candidate.source_type.as_str())
+    .bind(candidate.source_id)
+    .bind(serde_json::to_value(&candidate.evidence)?)
+    .bind(candidate.score.score)
+    .bind(candidate.status.as_str())
+    .bind(serde_json::to_value(&candidate.score.warnings)?)
+    .bind(created_by)
+    .bind(candidate.created_at)
+    .bind(candidate.promoted_at)
+    .bind(candidate.promoted_by)
+    .bind(candidate.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_research_candidate(row))
+}
+
+pub async fn list_strategy_research_candidates(
+    pool: &PgPool,
+    filters: &StrategyResearchCandidateListFilters,
+    limit: i64,
+) -> Result<Vec<StrategyResearchCandidateRecord>> {
+    let mut builder = sqlx::QueryBuilder::new(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            source_type,
+            source_id,
+            evidence,
+            score,
+            status,
+            warnings,
+            created_by,
+            created_at,
+            updated_at,
+            promoted_at,
+            promoted_by,
+            correlation_id
+        FROM strategy_research_candidates
+        WHERE 1 = 1
+        "#,
+    );
+
+    if let Some(strategy_id) = &filters.strategy_id {
+        builder.push(" AND strategy_id = ");
+        builder.push_bind(strategy_id);
+    }
+    if let Some(symbol) = &filters.symbol {
+        builder.push(" AND symbol = ");
+        builder.push_bind(symbol.trim().to_ascii_uppercase());
+    }
+    if let Some(timeframe) = &filters.timeframe {
+        builder.push(" AND timeframe = ");
+        builder.push_bind(timeframe);
+    }
+    if let Some(status) = &filters.status {
+        builder.push(" AND status = ");
+        builder.push_bind(status);
+    }
+
+    builder.push(" ORDER BY created_at DESC LIMIT ");
+    builder.push_bind(limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(map_strategy_research_candidate)
+        .collect())
+}
+
+pub async fn get_strategy_research_candidate(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Option<StrategyResearchCandidateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            source_type,
+            source_id,
+            evidence,
+            score,
+            status,
+            warnings,
+            created_by,
+            created_at,
+            updated_at,
+            promoted_at,
+            promoted_by,
+            correlation_id
+        FROM strategy_research_candidates
+        WHERE id = $1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_strategy_research_candidate))
+}
+
+pub async fn get_active_strategy_research_candidate_promotion(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Option<StrategyResearchCandidatePromotionRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            previous_config,
+            promoted_config,
+            status,
+            actor_id,
+            created_at,
+            correlation_id
+        FROM strategy_research_candidate_promotions
+        WHERE candidate_id = $1
+          AND status = 'PROMOTED_TO_SHADOW_CONFIG'
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_strategy_research_candidate_promotion))
+}
+
+pub async fn insert_strategy_research_candidate_promotion(
+    pool: &PgPool,
+    promotion_id: Uuid,
+    candidate_id: Uuid,
+    previous_config: Option<Value>,
+    promoted_config: Value,
+    status: &str,
+    actor_id: Option<Uuid>,
+    correlation_id: Option<Uuid>,
+    promoted_at: DateTime<Utc>,
+) -> Result<StrategyResearchCandidatePromotionRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_research_candidate_promotions (
+            id,
+            candidate_id,
+            previous_config,
+            promoted_config,
+            status,
+            actor_id,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING
+            id,
+            candidate_id,
+            previous_config,
+            promoted_config,
+            status,
+            actor_id,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(promotion_id)
+    .bind(candidate_id)
+    .bind(previous_config)
+    .bind(promoted_config)
+    .bind(status)
+    .bind(actor_id)
+    .bind(promoted_at)
+    .bind(correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_research_candidate_promotion(row))
+}
+
+pub async fn mark_strategy_research_candidate_promoted(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    promoted_by: Option<Uuid>,
+    promoted_at: DateTime<Utc>,
+    correlation_id: Option<Uuid>,
+) -> Result<StrategyResearchCandidateRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE strategy_research_candidates
+        SET status = $2,
+            promoted_at = $3,
+            promoted_by = $4,
+            correlation_id = COALESCE($5, correlation_id),
+            updated_at = $3
+        WHERE id = $1
+        RETURNING
+            id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            source_type,
+            source_id,
+            evidence,
+            score,
+            status,
+            warnings,
+            created_by,
+            created_at,
+            updated_at,
+            promoted_at,
+            promoted_by,
+            correlation_id
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(StrategyResearchCandidateStatus::PromotedToShadowConfig.as_str())
+    .bind(promoted_at)
+    .bind(promoted_by)
+    .bind(correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_research_candidate(row))
+}
+
+pub fn strategy_research_candidate_from_record(
+    record: &StrategyResearchCandidateRecord,
+) -> Result<StrategyResearchCandidate> {
+    let evidence =
+        serde_json::from_value::<StrategyResearchCandidateEvidence>(record.evidence.clone())?;
+    let warnings = serde_json::from_value::<Vec<String>>(record.warnings.clone())?;
+
+    Ok(StrategyResearchCandidate {
+        id: record.id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        config: record.config.clone(),
+        source_type: record
+            .source_type
+            .parse::<StrategyResearchCandidateSource>()?,
+        source_id: record.source_id,
+        evidence,
+        score: StrategyResearchCandidateScore {
+            score: record.score,
+            warnings,
+            rejection_hints: Vec::new(),
+        },
+        status: record.status.parse::<StrategyResearchCandidateStatus>()?,
+        created_at: record.created_at,
+        promoted_at: record.promoted_at,
+        promoted_by: record.promoted_by,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub fn strategy_research_candidate_promotion_result_from_records(
+    candidate: &StrategyResearchCandidateRecord,
+    promotion: &StrategyResearchCandidatePromotionRecord,
+) -> Result<StrategyResearchCandidatePromotionResult> {
+    Ok(StrategyResearchCandidatePromotionResult {
+        candidate_id: candidate.id,
+        strategy_id: candidate.strategy_id.clone(),
+        previous_config: promotion.previous_config.clone(),
+        promoted_config: promotion.promoted_config.clone(),
+        status: candidate
+            .status
+            .parse::<StrategyResearchCandidateStatus>()?,
+        promoted_at: promotion.created_at,
+        promoted_by: promotion.actor_id,
+        correlation_id: promotion.correlation_id,
+    })
 }
 
 pub async fn list_closed_candle_open_times_in_range(
@@ -415,5 +796,42 @@ fn map_research_dataset_build_step(row: sqlx::postgres::PgRow) -> ResearchDatase
         details: row.get("details"),
         started_at: row.get("started_at"),
         completed_at: row.get("completed_at"),
+    }
+}
+
+fn map_strategy_research_candidate(row: sqlx::postgres::PgRow) -> StrategyResearchCandidateRecord {
+    StrategyResearchCandidateRecord {
+        id: row.get("id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        config: row.get("config"),
+        source_type: row.get("source_type"),
+        source_id: row.get("source_id"),
+        evidence: row.get("evidence"),
+        score: row.get("score"),
+        status: row.get("status"),
+        warnings: row.get("warnings"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        promoted_at: row.get("promoted_at"),
+        promoted_by: row.get("promoted_by"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_strategy_research_candidate_promotion(
+    row: sqlx::postgres::PgRow,
+) -> StrategyResearchCandidatePromotionRecord {
+    StrategyResearchCandidatePromotionRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        previous_config: row.get("previous_config"),
+        promoted_config: row.get("promoted_config"),
+        status: row.get("status"),
+        actor_id: row.get("actor_id"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
     }
 }

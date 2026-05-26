@@ -854,6 +854,105 @@ export type ResearchDatasetBuildsResponse = {
   timestamp: string;
 };
 
+export type StrategyResearchCandidateSource =
+  | "EXPERIMENT_RUN"
+  | "MULTI_TIMEFRAME_EXPERIMENT"
+  | "WALK_FORWARD"
+  | "MANUAL";
+
+export type StrategyResearchCandidateStatus =
+  | "DRAFT"
+  | "REGISTERED"
+  | "REJECTED"
+  | "PROMOTED_TO_SHADOW_CONFIG"
+  | "ARCHIVED";
+
+export type StrategyResearchCandidateEvidence = {
+  experiment_id: string | null;
+  experiment_run_id: string | null;
+  walk_forward_id: string | null;
+  pnl_pct: string | null;
+  max_drawdown_pct: string | null;
+  win_rate: string | null;
+  trade_count: number | null;
+  fee_paid: string | null;
+  slippage_cost: string | null;
+  robustness_score: string | null;
+  profitable_windows: number | null;
+  losing_windows: number | null;
+  skipped_windows: number | null;
+  notes: string | null;
+};
+
+export type StrategyResearchCandidateScore = {
+  score: string;
+  warnings: string[];
+  rejection_hints: string[];
+};
+
+export type StrategyResearchCandidate = {
+  id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  config: Record<string, unknown>;
+  source_type: StrategyResearchCandidateSource;
+  source_id: string | null;
+  evidence: StrategyResearchCandidateEvidence;
+  score: StrategyResearchCandidateScore;
+  status: StrategyResearchCandidateStatus;
+  created_at: string;
+  promoted_at: string | null;
+  promoted_by: string | null;
+  correlation_id: string | null;
+};
+
+export type StrategyResearchCandidateRegisterRequest = {
+  source_type: StrategyResearchCandidateSource;
+  source_id?: string | null;
+  symbol?: string | null;
+  config?: StrategyConfigUpdateRequest | null;
+  evidence?: StrategyResearchCandidateEvidence | null;
+  correlation_id?: string | null;
+};
+
+export type StrategyResearchCandidatePromotionRequest = {
+  confirmation_text: string;
+  correlation_id?: string | null;
+};
+
+export type StrategyResearchCandidatePromotionResult = {
+  candidate_id: string;
+  strategy_id: string;
+  previous_config: Record<string, unknown> | null;
+  promoted_config: Record<string, unknown>;
+  status: StrategyResearchCandidateStatus;
+  promoted_at: string;
+  promoted_by: string | null;
+  correlation_id: string | null;
+};
+
+export type StrategyResearchCandidatesResponse = {
+  candidates: StrategyResearchCandidate[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyResearchCandidateResponse = {
+  candidate: StrategyResearchCandidate;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyResearchCandidatePromotionResponse = {
+  promotion: StrategyResearchCandidatePromotionResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type CandleBackfillRunsResponse = {
   runs: CandleBackfillResult[];
   request_id: string;

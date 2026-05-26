@@ -49,6 +49,8 @@ pub struct Telemetry {
     backtest_trades_total: IntCounterVec,
     analytics_requests_total: IntCounterVec,
     analytics_promotion_funnel_requests_total: IntCounter,
+    research_candidates_total: IntCounterVec,
+    research_candidate_promotions_total: IntCounterVec,
     exchange_testnet_requests_total: IntCounterVec,
     exchange_testnet_orders_total: IntCounterVec,
     exchange_testnet_errors_total: IntCounterVec,
@@ -314,6 +316,20 @@ impl Telemetry {
             registry
         )
         .expect("analytics_promotion_funnel_requests_total should register");
+        let research_candidates_total = register_int_counter_vec_with_registry!(
+            "research_candidates_total",
+            "Research candidates by status.",
+            &["status"],
+            registry
+        )
+        .expect("research_candidates_total should register");
+        let research_candidate_promotions_total = register_int_counter_vec_with_registry!(
+            "research_candidate_promotions_total",
+            "Research candidate promotions by status.",
+            &["status"],
+            registry
+        )
+        .expect("research_candidate_promotions_total should register");
         let exchange_testnet_requests_total = register_int_counter_vec_with_registry!(
             "exchange_testnet_requests_total",
             "Exchange testnet adapter requests by operation and result.",
@@ -574,6 +590,8 @@ impl Telemetry {
             backtest_trades_total,
             analytics_requests_total,
             analytics_promotion_funnel_requests_total,
+            research_candidates_total,
+            research_candidate_promotions_total,
             exchange_testnet_requests_total,
             exchange_testnet_orders_total,
             exchange_testnet_errors_total,
@@ -837,6 +855,18 @@ impl Telemetry {
 
     pub fn inc_analytics_promotion_funnel_request(&self) {
         self.analytics_promotion_funnel_requests_total.inc();
+    }
+
+    pub fn inc_research_candidate(&self, status: &str) {
+        self.research_candidates_total
+            .with_label_values(&[status])
+            .inc();
+    }
+
+    pub fn inc_research_candidate_promotion(&self, status: &str) {
+        self.research_candidate_promotions_total
+            .with_label_values(&[status])
+            .inc();
     }
 
     pub fn inc_exchange_testnet_request(&self, operation: &str, result: &str) {

@@ -6228,6 +6228,41 @@ pub async fn list_strategy_experiment_runs(
     Ok(rows.iter().map(map_strategy_experiment_run).collect())
 }
 
+pub async fn get_strategy_experiment_run(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<StrategyExperimentRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            experiment_id,
+            rank,
+            candidate_config,
+            final_equity,
+            pnl,
+            pnl_pct,
+            max_drawdown_pct,
+            win_rate,
+            trade_count,
+            fee_paid,
+            slippage_cost,
+            fee_slippage_drag_pct,
+            score,
+            status,
+            warnings,
+            created_at
+        FROM strategy_experiment_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_strategy_experiment_run))
+}
+
 pub async fn get_strategy_walk_forward_run(
     pool: &PgPool,
     walk_forward_id: Uuid,

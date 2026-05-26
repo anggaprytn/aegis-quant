@@ -89,6 +89,7 @@ make verify
 - Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
 - Strategy experiments are research-only parameter sweeps on stored candles; they must not mutate live, paper, shadow, promotion, or testnet execution state.
+- Research candidate registration and promotion are review-only controls; promotion updates persisted strategy config for shadow observation only and does not execute trades or auto-submit anything.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
 
 ## Repository layout
@@ -108,6 +109,17 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 - [Architecture overview](./docs/ARCHITECTURE_OVERVIEW.md)
 - [Operator checklist](./docs/OPERATOR_CHECKLIST.md)
 - [Security checklist](./docs/SECURITY_CHECKLIST.md)
+
+## Research workflow
+
+1. Build the research dataset.
+2. Run the multi-timeframe experiment.
+3. Run walk-forward validation.
+4. Register a promising research candidate.
+5. Promote it to shadow config only after owner review and exact confirmation.
+6. Observe it through the shadow runner.
+
+This workflow does not enable live trading, does not execute trades during promotion, and does not auto-submit orders.
 
 ## Local prerequisites
 

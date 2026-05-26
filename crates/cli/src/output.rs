@@ -1555,6 +1555,71 @@ pub fn print_research_dataset_build(build: &aegis_core::ResearchDatasetBuildResu
     }
 }
 
+pub fn print_research_candidates(candidates: &[aegis_core::StrategyResearchCandidate]) {
+    for candidate in candidates {
+        println!(
+            "{}  {} {} {} score={} status={}",
+            candidate.id,
+            candidate.strategy_id,
+            candidate.symbol,
+            candidate.timeframe,
+            candidate.score.score,
+            candidate.status.as_str()
+        );
+    }
+}
+
+pub fn print_research_candidate(candidate: &aegis_core::StrategyResearchCandidate) {
+    println!("Candidate ID: {}", candidate.id);
+    println!("Strategy: {}", candidate.strategy_id);
+    println!("Symbol: {}", candidate.symbol);
+    println!("Timeframe: {}", candidate.timeframe);
+    println!("Source: {}", candidate.source_type.as_str());
+    println!("Status: {}", candidate.status.as_str());
+    println!("Score: {}", candidate.score.score);
+    println!("Warnings: {}", candidate.score.warnings.join(", "));
+    println!(
+        "Evidence: pnl_pct={:?} max_drawdown_pct={:?} win_rate={:?} trade_count={:?} fee_paid={:?} slippage_cost={:?} robustness_score={:?} profitable_windows={:?} losing_windows={:?} skipped_windows={:?}",
+        candidate.evidence.pnl_pct,
+        candidate.evidence.max_drawdown_pct,
+        candidate.evidence.win_rate,
+        candidate.evidence.trade_count,
+        candidate.evidence.fee_paid,
+        candidate.evidence.slippage_cost,
+        candidate.evidence.robustness_score,
+        candidate.evidence.profitable_windows,
+        candidate.evidence.losing_windows,
+        candidate.evidence.skipped_windows
+    );
+    if let Some(notes) = &candidate.evidence.notes {
+        println!("Evidence notes: {}", notes);
+    }
+    println!(
+        "Config: {}",
+        serde_json::to_string_pretty(&candidate.config).unwrap_or_else(|_| "{}".to_string())
+    );
+}
+
+pub fn print_research_candidate_promotion(
+    promotion: &aegis_core::StrategyResearchCandidatePromotionResult,
+) {
+    println!("Candidate ID: {}", promotion.candidate_id);
+    println!("Strategy: {}", promotion.strategy_id);
+    println!("Status: {}", promotion.status.as_str());
+    println!("Promoted At: {}", promotion.promoted_at);
+    if let Some(previous) = &promotion.previous_config {
+        println!(
+            "Previous config: {}",
+            serde_json::to_string_pretty(previous).unwrap_or_else(|_| "{}".to_string())
+        );
+    }
+    println!(
+        "Promoted config: {}",
+        serde_json::to_string_pretty(&promotion.promoted_config)
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+}
+
 pub fn print_strategy_performance_summary(response: &StrategyPerformanceSummaryResponse) {
     let summary = &response.summary;
     println!(
