@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     calculate_strategy_rejection_rate, Candle, CandleInterval, CoreError, ExecutionReadinessStatus,
-    MarketDataSource, Symbol,
+    MarketDataSource, Symbol, TestnetShadowRunnerConfig,
 };
 
 fn default_required_coverage_pct() -> Decimal {
@@ -269,6 +269,7 @@ impl std::str::FromStr for ResearchCandidateStatus {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateDecision {
     AcceptForShadow,
+    PromoteToShadowConfig,
     Reject,
     Archive,
     Reopen,
@@ -278,6 +279,7 @@ impl ResearchCandidateDecision {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AcceptForShadow => "ACCEPT_FOR_SHADOW",
+            Self::PromoteToShadowConfig => "PROMOTE_TO_SHADOW_CONFIG",
             Self::Reject => "REJECT",
             Self::Archive => "ARCHIVE",
             Self::Reopen => "REOPEN",
@@ -291,6 +293,7 @@ impl std::str::FromStr for ResearchCandidateDecision {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_uppercase().as_str() {
             "ACCEPT_FOR_SHADOW" => Ok(Self::AcceptForShadow),
+            "PROMOTE_TO_SHADOW_CONFIG" => Ok(Self::PromoteToShadowConfig),
             "REJECT" => Ok(Self::Reject),
             "ARCHIVE" => Ok(Self::Archive),
             "REOPEN" => Ok(Self::Reopen),
@@ -392,6 +395,7 @@ pub fn research_candidate_next_status(
                 decision.as_str().to_string(),
             )),
         },
+        ResearchCandidateDecision::PromoteToShadowConfig => Ok(current_status),
         ResearchCandidateDecision::Reject => match current_status {
             ResearchCandidateStatus::Discovered
             | ResearchCandidateStatus::Observing
@@ -420,6 +424,102 @@ pub fn research_candidate_next_status(
             )),
         },
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateShadowPromotionMode {
+    PreviewOnly,
+    Apply,
+}
+
+impl ResearchCandidateShadowPromotionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PreviewOnly => "PREVIEW_ONLY",
+            Self::Apply => "APPLY",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateShadowPromotionMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PREVIEW_ONLY" => Ok(Self::PreviewOnly),
+            "APPLY" => Ok(Self::Apply),
+            other => Err(CoreError::UnsupportedResearchCandidateDecision(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateShadowPromotionStatus {
+    Ready,
+    Blocked,
+    NoChanges,
+    Applied,
+}
+
+impl ResearchCandidateShadowPromotionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "READY",
+            Self::Blocked => "BLOCKED",
+            Self::NoChanges => "NO_CHANGES",
+            Self::Applied => "APPLIED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateShadowPromotionRequest {
+    pub mode: ResearchCandidateShadowPromotionMode,
+    #[serde(default)]
+    pub allow_missing_runner_alignment: bool,
+    pub confirmation_text: Option<String>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateShadowPromotionPreview {
+    pub candidate_id: Uuid,
+    pub candidate_status: ResearchCandidateStatus,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub current_runner_config: TestnetShadowRunnerConfig,
+    pub proposed_runner_config: TestnetShadowRunnerConfig,
+    pub changes: Vec<String>,
+    pub status: ResearchCandidateShadowPromotionStatus,
+    pub reasons: Vec<String>,
+    pub confirmation_required: bool,
+    pub correlation_id: Uuid,
+    pub mode: ResearchCandidateShadowPromotionMode,
+    pub allow_missing_runner_alignment: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateShadowPromotionResult {
+    pub candidate_id: Uuid,
+    pub candidate_status: ResearchCandidateStatus,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub current_runner_config: TestnetShadowRunnerConfig,
+    pub proposed_runner_config: TestnetShadowRunnerConfig,
+    pub changes: Vec<String>,
+    pub status: ResearchCandidateShadowPromotionStatus,
+    pub reasons: Vec<String>,
+    pub confirmation_required: bool,
+    pub correlation_id: Uuid,
+    pub mode: ResearchCandidateShadowPromotionMode,
+    pub allow_missing_runner_alignment: bool,
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1050,6 +1150,17 @@ pub fn expected_strategy_research_promotion_confirmation(strategy_id: &str) -> S
         "PROMOTE STRATEGY {}",
         strategy_id.trim().to_ascii_uppercase()
     )
+}
+
+pub fn expected_research_candidate_shadow_promotion_confirmation(candidate_id: Uuid) -> String {
+    format!("PROMOTE CANDIDATE {candidate_id} TO SHADOW")
+}
+
+pub fn is_valid_research_candidate_shadow_promotion_confirmation(
+    candidate_id: Uuid,
+    confirmation_text: &str,
+) -> bool {
+    confirmation_text == expected_research_candidate_shadow_promotion_confirmation(candidate_id)
 }
 
 pub fn is_valid_strategy_research_promotion_confirmation(
@@ -1952,6 +2063,17 @@ mod tests {
     }
 
     #[test]
+    fn promote_to_shadow_config_decision_keeps_status_unchanged() {
+        let next = research_candidate_next_status(
+            ResearchCandidateStatus::AcceptedForShadow,
+            ResearchCandidateDecision::PromoteToShadowConfig,
+        )
+        .expect("promotion event should keep status");
+
+        assert_eq!(next, ResearchCandidateStatus::AcceptedForShadow);
+    }
+
+    #[test]
     fn reject_transition_requires_supported_source_status() {
         let err = research_candidate_next_status(
             ResearchCandidateStatus::Archived,
@@ -2002,5 +2124,21 @@ mod tests {
             ResearchCandidateDecision::Reopen
         )
         .is_err());
+    }
+
+    #[test]
+    fn research_candidate_shadow_promotion_confirmation_must_match_exact_candidate_id() {
+        let candidate_id =
+            Uuid::parse_str("1a5e9b4b-0a5a-4bb4-907d-49f2648b2b6f").expect("valid uuid");
+        let expected = expected_research_candidate_shadow_promotion_confirmation(candidate_id);
+
+        assert!(is_valid_research_candidate_shadow_promotion_confirmation(
+            candidate_id,
+            &expected
+        ));
+        assert!(!is_valid_research_candidate_shadow_promotion_confirmation(
+            candidate_id,
+            "PROMOTE CANDIDATE 1a5e9b4b-0a5a-4bb4-907d-49f2648b2b6f TO TESTNET"
+        ));
     }
 }

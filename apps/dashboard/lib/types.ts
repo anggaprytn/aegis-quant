@@ -871,6 +871,7 @@ export type ResearchCandidateStatus =
 
 export type ResearchCandidateDecision =
   | "ACCEPT_FOR_SHADOW"
+  | "PROMOTE_TO_SHADOW_CONFIG"
   | "REJECT"
   | "ARCHIVE"
   | "REOPEN";
@@ -1097,6 +1098,70 @@ export type StrategyCandidateObservationsResponse = {
 
 export type ResearchCandidateObservationSummaryResponse = {
   summary: ResearchCandidateObservationSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateShadowPromotionMode = "PREVIEW_ONLY" | "APPLY";
+
+export type ResearchCandidateShadowPromotionStatus =
+  | "READY"
+  | "BLOCKED"
+  | "NO_CHANGES"
+  | "APPLIED";
+
+export type ResearchCandidateShadowPromotionRequest = {
+  mode: ResearchCandidateShadowPromotionMode;
+  allow_missing_runner_alignment?: boolean;
+  confirmation_text?: string | null;
+  correlation_id?: string | null;
+};
+
+export type ResearchCandidateShadowPromotionPreview = {
+  candidate_id: string;
+  candidate_status: ResearchCandidateStatus;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  current_runner_config: TestnetShadowRunnerConfig;
+  proposed_runner_config: TestnetShadowRunnerConfig;
+  changes: string[];
+  status: ResearchCandidateShadowPromotionStatus;
+  reasons: string[];
+  confirmation_required: boolean;
+  correlation_id: string;
+  mode: ResearchCandidateShadowPromotionMode;
+  allow_missing_runner_alignment: boolean;
+};
+
+export type ResearchCandidateShadowPromotionResult = {
+  candidate_id: string;
+  candidate_status: ResearchCandidateStatus;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  current_runner_config: TestnetShadowRunnerConfig;
+  proposed_runner_config: TestnetShadowRunnerConfig;
+  changes: string[];
+  status: ResearchCandidateShadowPromotionStatus;
+  reasons: string[];
+  confirmation_required: boolean;
+  correlation_id: string;
+  mode: ResearchCandidateShadowPromotionMode;
+  allow_missing_runner_alignment: boolean;
+  applied: boolean;
+};
+
+export type ResearchCandidateShadowPromotionPreviewResponse = {
+  preview: ResearchCandidateShadowPromotionPreview;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateShadowPromotionResultResponse = {
+  result: ResearchCandidateShadowPromotionResult;
   request_id: string;
   correlation_id: string;
   timestamp: string;

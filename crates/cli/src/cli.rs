@@ -2,8 +2,10 @@ use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
 use aegis_core::{
+    expected_research_candidate_shadow_promotion_confirmation,
     expected_testnet_pipeline_confirmation, ExecutionReadinessRequest, ExecutionReadinessTarget,
     OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
     TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
     TestnetShadowRunnerStaleFeedPolicy,
 };
@@ -34,6 +36,18 @@ impl Cli {
         if let Commands::Paper(PaperCommands::Close(args)) = &self.command {
             if args.confirm.is_none() {
                 anyhow::bail!("paper close requires --confirm \"CLOSE <SYMBOL>\"");
+            }
+        }
+        if let Commands::Research(ResearchCommands::Candidates(command)) = &self.command {
+            if let ResearchCandidateCommands::PromoteShadowApply(args) = command {
+                let expected =
+                    expected_research_candidate_shadow_promotion_confirmation(args.candidate_id);
+                if args.confirm.as_deref() != Some(expected.as_str()) {
+                    anyhow::bail!(
+                        "research candidates promote-shadow-apply requires --confirm {:?} exactly",
+                        expected
+                    );
+                }
             }
         }
         if let Commands::Exchange(ExchangeCommands::Testnet(command)) = &self.command {
@@ -711,6 +725,8 @@ pub enum ResearchCandidateCommands {
     FromExperimentRun(ResearchCandidateFromExperimentRunArgs),
     Observe { candidate_id: Uuid },
     Decide(ResearchCandidateDecideArgs),
+    PromoteShadowPreview(ResearchCandidatePromoteShadowPreviewArgs),
+    PromoteShadowApply(ResearchCandidatePromoteShadowApplyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -759,6 +775,44 @@ pub struct ResearchCandidateDecideArgs {
     pub notes: Option<String>,
     #[arg(long, default_value_t = false)]
     pub acknowledge_runner_mismatch: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidatePromoteShadowPreviewArgs {
+    pub candidate_id: Uuid,
+    #[arg(long, default_value_t = false)]
+    pub allow_missing_runner_alignment: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidatePromoteShadowApplyArgs {
+    pub candidate_id: Uuid,
+    #[arg(long)]
+    pub confirm: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub allow_missing_runner_alignment: bool,
+}
+
+impl From<&ResearchCandidatePromoteShadowPreviewArgs> for ResearchCandidateShadowPromotionRequest {
+    fn from(value: &ResearchCandidatePromoteShadowPreviewArgs) -> Self {
+        Self {
+            mode: ResearchCandidateShadowPromotionMode::PreviewOnly,
+            allow_missing_runner_alignment: value.allow_missing_runner_alignment,
+            confirmation_text: None,
+            correlation_id: None,
+        }
+    }
+}
+
+impl From<&ResearchCandidatePromoteShadowApplyArgs> for ResearchCandidateShadowPromotionRequest {
+    fn from(value: &ResearchCandidatePromoteShadowApplyArgs) -> Self {
+        Self {
+            mode: ResearchCandidateShadowPromotionMode::Apply,
+            allow_missing_runner_alignment: value.allow_missing_runner_alignment,
+            confirmation_text: value.confirm.clone(),
+            correlation_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Args)]

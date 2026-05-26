@@ -120,9 +120,11 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 6. Explicitly mark it as observing when shadow review begins.
 7. Re-run observation if runner configuration or readiness context changed.
 8. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
+9. Preview and, with explicit typed confirmation, apply shadow-runner config promotion for an `ACCEPTED_FOR_SHADOW` candidate.
 
 This workflow does not enable live trading, does not execute trades during candidate lifecycle operations, and does not auto-submit orders. Observation and candidate decisions do not mutate paper or testnet execution state.
 `ACCEPT_FOR_SHADOW` requires the latest persisted observation to be fresh. The default freshness window is 15 minutes.
+Shadow promotion requires a fresh observation, explicit confirmation, and only updates `testnet_shadow_runner_config` plus audit/system/research lifecycle records. It does not submit testnet orders or mutate paper/testnet/live execution tables.
 
 ## Local prerequisites
 
@@ -325,6 +327,10 @@ Research candidate lifecycle examples:
 `cargo run -p cli -- research candidates decide <candidate_id> --decision REJECT --reason "bad drawdown"`
 
 `cargo run -p cli -- research candidates decide <candidate_id> --decision ACCEPT_FOR_SHADOW --reason "aligned and ready"`
+
+`cargo run -p cli -- research candidates promote-shadow-preview <candidate_id> --allow-missing-runner-alignment`
+
+`cargo run -p cli -- research candidates promote-shadow-apply <candidate_id> --allow-missing-runner-alignment --confirm "PROMOTE CANDIDATE <candidate_id> TO SHADOW"`
 
 If `ACCEPT_FOR_SHADOW` is rejected with `OBSERVATION_STALE` or `RUNNER_CONFIG_CHANGED`, run `observe` again before retrying.
 

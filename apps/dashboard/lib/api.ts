@@ -69,6 +69,9 @@ import type {
   CreateResearchCandidateRequest,
   ResearchCandidateDecisionRequest,
   ResearchCandidateEventsResponse,
+  ResearchCandidateShadowPromotionPreviewResponse,
+  ResearchCandidateShadowPromotionRequest,
+  ResearchCandidateShadowPromotionResultResponse,
   ResearchCandidateResponse,
   ResearchCandidatesResponse,
   StrategyCandidateObservationsResponse,
@@ -394,6 +397,28 @@ export const api = {
   ) =>
     request<ResearchCandidateResponse>(
       `/research/candidates/${id}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  previewResearchCandidateShadowPromotion: (
+    id: string,
+    payload: ResearchCandidateShadowPromotionRequest,
+  ) =>
+    request<ResearchCandidateShadowPromotionPreviewResponse>(
+      `/research/candidates/${id}/promote-shadow/preview`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  applyResearchCandidateShadowPromotion: (
+    id: string,
+    payload: ResearchCandidateShadowPromotionRequest,
+  ) =>
+    request<ResearchCandidateShadowPromotionResultResponse>(
+      `/research/candidates/${id}/promote-shadow/apply`,
       {
         method: "POST",
         body: JSON.stringify(payload),

@@ -36,6 +36,8 @@ import type {
   ResearchCandidateObservationSummary,
   ResearchCandidate as StrategyResearchCandidate,
   ResearchCandidateLifecycleEvent,
+  ResearchCandidateShadowPromotionPreview,
+  ResearchCandidateShadowPromotionResult,
   ResearchCandidateStatus as StrategyResearchCandidateStatus,
   RiskConfig,
   RiskDecisionRecord,
@@ -641,6 +643,14 @@ function AuthenticatedDashboard({
   const [researchCandidateStatusFilter, setResearchCandidateStatusFilter] =
     useState<StrategyResearchCandidateStatus | "">("DISCOVERED");
   const [researchCandidateDecisionReason, setResearchCandidateDecisionReason] = useState("");
+  const [researchCandidateShadowPromotionPreview, setResearchCandidateShadowPromotionPreview] =
+    useState<ResearchCandidateShadowPromotionPreview | null>(null);
+  const [researchCandidateShadowPromotionResult, setResearchCandidateShadowPromotionResult] =
+    useState<ResearchCandidateShadowPromotionResult | null>(null);
+  const [researchCandidateShadowPromotionConfirmation, setResearchCandidateShadowPromotionConfirmation] =
+    useState("");
+  const [researchCandidateAllowMissingRunnerAlignment, setResearchCandidateAllowMissingRunnerAlignment] =
+    useState(false);
   const [backfillForm, setBackfillForm] =
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
   const [aggregationForm, setAggregationForm] =
@@ -668,6 +678,10 @@ function AuthenticatedDashboard({
 
   useEffect(() => {
     setLastResearchCandidateObservation(null);
+    setResearchCandidateShadowPromotionPreview(null);
+    setResearchCandidateShadowPromotionResult(null);
+    setResearchCandidateShadowPromotionConfirmation("");
+    setResearchCandidateAllowMissingRunnerAlignment(false);
   }, [selectedResearchCandidateId]);
 
   const healthQuery = useQuery({
@@ -1602,6 +1616,77 @@ function AuthenticatedDashboard({
       });
     },
   });
+  const previewResearchCandidateShadowPromotionMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedResearchCandidateId) {
+        throw new Error("Select a candidate first.");
+      }
+      return api.previewResearchCandidateShadowPromotion(selectedResearchCandidateId, {
+        mode: "PREVIEW_ONLY",
+        allow_missing_runner_alignment: researchCandidateAllowMissingRunnerAlignment,
+      });
+    },
+    onSuccess: async (response) => {
+      setResearchCandidateShadowPromotionPreview(response.preview);
+      setResearchCandidateShadowPromotionResult(null);
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observations", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+      });
+    },
+  });
+  const applyResearchCandidateShadowPromotionMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedResearchCandidateId) {
+        throw new Error("Select a candidate first.");
+      }
+      return api.applyResearchCandidateShadowPromotion(selectedResearchCandidateId, {
+        mode: "APPLY",
+        allow_missing_runner_alignment: researchCandidateAllowMissingRunnerAlignment,
+        confirmation_text: researchCandidateShadowPromotionConfirmation,
+      });
+    },
+    onSuccess: async (response) => {
+      setResearchCandidateShadowPromotionResult(response.result);
+      setResearchCandidateShadowPromotionPreview({
+        candidate_id: response.result.candidate_id,
+        candidate_status: response.result.candidate_status,
+        strategy_id: response.result.strategy_id,
+        symbol: response.result.symbol,
+        timeframe: response.result.timeframe,
+        current_runner_config: response.result.current_runner_config,
+        proposed_runner_config: response.result.proposed_runner_config,
+        changes: response.result.changes,
+        status: response.result.status,
+        reasons: response.result.reasons,
+        confirmation_required: response.result.confirmation_required,
+        correlation_id: response.result.correlation_id,
+        mode: response.result.mode,
+        allow_missing_runner_alignment: response.result.allow_missing_runner_alignment,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["research-candidates"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-events", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observations", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["exchange-testnet-shadow-runner-config"],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["exchange-testnet-shadow-runner-status"],
+      });
+    },
+  });
   const operatorReportMutation = useMutation({
     mutationFn: () => api.generateOperatorReport(reportForm),
     onSuccess: async (response) => {
@@ -1888,6 +1973,38 @@ function AuthenticatedDashboard({
       ? "Eligible"
       : "Not eligible"
     : "Unknown";
+  const shadowPromotionPreview =
+    researchCandidateShadowPromotionPreview ??
+    (researchCandidateShadowPromotionResult
+      ? {
+          candidate_id: researchCandidateShadowPromotionResult.candidate_id,
+          candidate_status: researchCandidateShadowPromotionResult.candidate_status,
+          strategy_id: researchCandidateShadowPromotionResult.strategy_id,
+          symbol: researchCandidateShadowPromotionResult.symbol,
+          timeframe: researchCandidateShadowPromotionResult.timeframe,
+          current_runner_config: researchCandidateShadowPromotionResult.current_runner_config,
+          proposed_runner_config: researchCandidateShadowPromotionResult.proposed_runner_config,
+          changes: researchCandidateShadowPromotionResult.changes,
+          status: researchCandidateShadowPromotionResult.status,
+          reasons: researchCandidateShadowPromotionResult.reasons,
+          confirmation_required:
+            researchCandidateShadowPromotionResult.confirmation_required,
+          correlation_id: researchCandidateShadowPromotionResult.correlation_id,
+          mode: researchCandidateShadowPromotionResult.mode,
+          allow_missing_runner_alignment:
+            researchCandidateShadowPromotionResult.allow_missing_runner_alignment,
+        }
+      : null);
+  const expectedShadowPromotionConfirmation = selectedResearchCandidate
+    ? `PROMOTE CANDIDATE ${selectedResearchCandidate.id} TO SHADOW`
+    : "";
+  const canApplyShadowPromotion =
+    user.role === "OWNER" &&
+    Boolean(selectedResearchCandidate) &&
+    shadowPromotionPreview !== null &&
+    (shadowPromotionPreview.status === "READY" || shadowPromotionPreview.status === "NO_CHANGES") &&
+    selectedResearchCandidate?.status === "ACCEPTED_FOR_SHADOW" &&
+    researchCandidateObservationFreshness === "FRESH";
   const decideResearchCandidateErrorPayload = getApiErrorPayload(
     decideResearchCandidateMutation.error,
   );
@@ -4498,6 +4615,111 @@ function AuthenticatedDashboard({
                             : undefined
                         }
                       />
+                    </div>
+                    <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="font-semibold text-slate-100">
+                          Shadow Promotion Preview
+                        </div>
+                        <ActionButton
+                          label="Preview Shadow Promotion"
+                          onClick={() => previewResearchCandidateShadowPromotionMutation.mutate()}
+                          busy={previewResearchCandidateShadowPromotionMutation.isPending}
+                          disabled={
+                            (user.role !== "OWNER" && user.role !== "OPERATOR") ||
+                            !selectedResearchCandidate
+                          }
+                        />
+                      </div>
+                      <label className="mt-3 flex items-center gap-2 rounded-xl border border-border bg-surface/50 px-3 py-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={researchCandidateAllowMissingRunnerAlignment}
+                          onChange={(event) =>
+                            setResearchCandidateAllowMissingRunnerAlignment(event.target.checked)
+                          }
+                        />
+                        Allow adding missing strategy/symbol to the existing runner config
+                      </label>
+                      <InlineStatus
+                        error={getErrorMessage(previewResearchCandidateShadowPromotionMutation.error)}
+                        success={shadowPromotionPreview?.status}
+                      />
+                      {shadowPromotionPreview ? (
+                        <>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            <div>
+                              <div className="text-[11px] uppercase tracking-[0.2em] text-muted">
+                                Current Runner Config
+                              </div>
+                              <pre className="mt-2 overflow-auto rounded-xl border border-border/70 bg-surface/40 p-3 text-[11px] text-slate-200">
+                                {JSON.stringify(
+                                  shadowPromotionPreview.current_runner_config,
+                                  null,
+                                  2,
+                                )}
+                              </pre>
+                            </div>
+                            <div>
+                              <div className="text-[11px] uppercase tracking-[0.2em] text-muted">
+                                Proposed Runner Config
+                              </div>
+                              <pre className="mt-2 overflow-auto rounded-xl border border-border/70 bg-surface/40 p-3 text-[11px] text-slate-200">
+                                {JSON.stringify(
+                                  shadowPromotionPreview.proposed_runner_config,
+                                  null,
+                                  2,
+                                )}
+                              </pre>
+                            </div>
+                          </div>
+                          <div className="mt-3 text-[11px] text-slate-300">
+                            Status: {shadowPromotionPreview.status}
+                          </div>
+                          <div className="mt-2 text-[11px] text-slate-300">
+                            Changes:{" "}
+                            {shadowPromotionPreview.changes.length > 0
+                              ? shadowPromotionPreview.changes.join(" | ")
+                              : "none"}
+                          </div>
+                          <div className="mt-2 text-[11px] text-slate-300">
+                            Reasons:{" "}
+                            {shadowPromotionPreview.reasons.length > 0
+                              ? shadowPromotionPreview.reasons.join(" | ")
+                              : "none"}
+                          </div>
+                        </>
+                      ) : null}
+                      <div className="mt-3">
+                        <Field
+                          label="Typed Confirmation"
+                          value={researchCandidateShadowPromotionConfirmation}
+                          onChange={setResearchCandidateShadowPromotionConfirmation}
+                          placeholder={expectedShadowPromotionConfirmation || "Select a candidate"}
+                        />
+                      </div>
+                      <div className="mt-3 flex items-center gap-3">
+                        <ActionButton
+                          label="Apply Shadow Promotion"
+                          onClick={() => applyResearchCandidateShadowPromotionMutation.mutate()}
+                          busy={applyResearchCandidateShadowPromotionMutation.isPending}
+                          disabled={
+                            !canApplyShadowPromotion ||
+                            researchCandidateShadowPromotionConfirmation !==
+                              expectedShadowPromotionConfirmation
+                          }
+                        />
+                        <InlineStatus
+                          error={getErrorMessage(applyResearchCandidateShadowPromotionMutation.error)}
+                          success={
+                            researchCandidateShadowPromotionResult
+                              ? researchCandidateShadowPromotionResult.applied
+                                ? "Shadow runner config updated"
+                                : researchCandidateShadowPromotionResult.status
+                              : undefined
+                          }
+                        />
+                      </div>
                     </div>
                     <div className="mt-4 text-xs uppercase tracking-[0.2em] text-muted">
                       Latest Findings

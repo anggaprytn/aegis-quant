@@ -1,6 +1,7 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView, User,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1837,6 +1838,98 @@ pub fn print_research_candidate_observation_summary(
             summary.latest_recommendations.join(" | ")
         );
     }
+}
+
+pub fn print_research_candidate_shadow_promotion_preview(
+    preview: &ResearchCandidateShadowPromotionPreview,
+) {
+    println!("Candidate ID: {}", preview.candidate_id);
+    println!(
+        "Target: {} {} {}",
+        preview.strategy_id, preview.symbol, preview.timeframe
+    );
+    println!("Candidate status: {}", preview.candidate_status.as_str());
+    println!("Mode: {}", preview.mode.as_str());
+    println!("Status: {}", preview.status.as_str());
+    println!(
+        "Confirmation required: {}",
+        if preview.confirmation_required {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!("Correlation ID: {}", preview.correlation_id);
+    println!(
+        "Allow add missing runner alignment: {}",
+        preview.allow_missing_runner_alignment
+    );
+    println!(
+        "Current runner config: {}",
+        serde_json::to_string_pretty(&preview.current_runner_config)
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+    println!(
+        "Proposed runner config: {}",
+        serde_json::to_string_pretty(&preview.proposed_runner_config)
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+    println!(
+        "Changes: {}",
+        if preview.changes.is_empty() {
+            "none".to_string()
+        } else {
+            preview.changes.join(" | ")
+        }
+    );
+    println!(
+        "Reasons: {}",
+        if preview.reasons.is_empty() {
+            "none".to_string()
+        } else {
+            preview.reasons.join(" | ")
+        }
+    );
+}
+
+pub fn print_research_candidate_shadow_promotion_result(
+    result: &ResearchCandidateShadowPromotionResult,
+) {
+    println!("Candidate ID: {}", result.candidate_id);
+    println!(
+        "Target: {} {} {}",
+        result.strategy_id, result.symbol, result.timeframe
+    );
+    println!("Candidate status: {}", result.candidate_status.as_str());
+    println!("Mode: {}", result.mode.as_str());
+    println!("Status: {}", result.status.as_str());
+    println!("Applied: {}", result.applied);
+    println!(
+        "Current runner config: {}",
+        serde_json::to_string_pretty(&result.current_runner_config)
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+    println!(
+        "Proposed runner config: {}",
+        serde_json::to_string_pretty(&result.proposed_runner_config)
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+    println!(
+        "Changes: {}",
+        if result.changes.is_empty() {
+            "none".to_string()
+        } else {
+            result.changes.join(" | ")
+        }
+    );
+    println!(
+        "Reasons: {}",
+        if result.reasons.is_empty() {
+            "none".to_string()
+        } else {
+            result.reasons.join(" | ")
+        }
+    );
 }
 
 pub fn print_research_candidate_decision_rejection(

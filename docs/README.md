@@ -20,6 +20,7 @@ Research workflow:
 6. Explicitly mark the candidate as observing when shadow review begins.
 7. Re-run observation whenever runner configuration or readiness context changes.
 8. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
+9. Preview and explicitly confirm shadow-runner config promotion only after the candidate remains fresh and eligible.
 
 Research candidate lifecycle boundaries:
 - Candidate creation, observation, decisions, and archival do not execute trades.
@@ -27,4 +28,5 @@ Research candidate lifecycle boundaries:
 - Candidate observation does not mutate paper or testnet execution state.
 - Candidate lifecycle operations do not mutate signals, risk decisions, paper state, testnet state, or live execution state.
 - `ACCEPT_FOR_SHADOW` requires a fresh persisted observation. The default freshness window is 15 minutes.
+- Shadow promotion only updates shadow-runner config/state-adjacent audit records. It does not submit testnet orders or mutate paper/testnet/live execution tables.
 - No live trading path is enabled.

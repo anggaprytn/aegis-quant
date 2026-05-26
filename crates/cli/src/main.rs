@@ -613,6 +613,30 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate(&response.candidate);
                     }
                 }
+                ResearchCandidateCommands::PromoteShadowPreview(args) => {
+                    let request = (&args).into();
+                    let response = client
+                        .preview_research_candidate_shadow_promotion(args.candidate_id, &request)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_shadow_promotion_preview(
+                            &response.preview,
+                        );
+                    }
+                }
+                ResearchCandidateCommands::PromoteShadowApply(args) => {
+                    let request = (&args).into();
+                    let response = client
+                        .apply_research_candidate_shadow_promotion(args.candidate_id, &request)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_shadow_promotion_result(&response.result);
+                    }
+                }
             },
         },
         Commands::Backtest(command) => match command {
