@@ -1229,6 +1229,13 @@ export type ResearchCandidateQualificationResult = {
   candidate_id: string;
   status: ResearchCandidateQualificationStatus;
   score: number;
+  fresh_observation: boolean;
+  runner_alignment_valid: boolean;
+  latest_readiness_status: ExecutionReadinessStatus | null;
+  readiness_penalty_points: number;
+  threshold_override_below_default: boolean;
+  threshold_override_penalty_points: number;
+  score_explanation: string[];
   checks: ResearchCandidateQualificationCheck[];
   blockers: string[];
   warnings: string[];

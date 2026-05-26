@@ -1892,6 +1892,33 @@ pub fn print_research_candidate_qualification(
         qualification.status.as_str(),
         qualification.score
     );
+    println!(
+        "Readiness: {}  Penalty: -{}",
+        qualification
+            .latest_readiness_status
+            .map(|value| value.as_str())
+            .unwrap_or("UNKNOWN"),
+        qualification.readiness_penalty_points
+    );
+    println!(
+        "Runner alignment: {}  Fresh observation: {}",
+        if qualification.runner_alignment_valid {
+            "VALID"
+        } else {
+            "INVALID"
+        },
+        if qualification.fresh_observation {
+            "YES"
+        } else {
+            "NO"
+        }
+    );
+    if qualification.threshold_override_below_default {
+        println!(
+            "Threshold override warning: Qualification threshold override is below default; treat result as exploratory. (-{} points)",
+            qualification.threshold_override_penalty_points
+        );
+    }
     if qualification.blockers.is_empty() {
         println!("Blockers: none");
     } else {
@@ -1936,6 +1963,10 @@ pub fn print_research_candidate_qualification(
         thresholds.max_risk_rejection_rate_pct,
         thresholds.max_error_or_skipped_rate_pct
     );
+    println!("Score explanation:");
+    for item in &qualification.score_explanation {
+        println!("  - {item}");
+    }
 }
 
 pub fn print_research_candidate_shadow_runs(runs: &[ResearchCandidateShadowRunLink]) {

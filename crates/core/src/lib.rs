@@ -2775,6 +2775,35 @@ pub struct OperatorReportTestnetSnapshot {
     pub private_stream_last_event_age_seconds: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperatorReportResearchQualificationTopCandidate {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub status: ResearchCandidateQualificationStatus,
+    pub score: i32,
+    pub readiness_status: Option<ExecutionReadinessStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OperatorReportResearchQualificationSnapshot {
+    pub total_candidates: i64,
+    pub accepted_for_shadow_count: i64,
+    pub qualified_count: i64,
+    pub needs_more_data_count: i64,
+    pub not_qualified_count: i64,
+    pub degraded_count: i64,
+    pub unknown_count: i64,
+    pub stale_observation_count: i64,
+    pub runner_mismatch_count: i64,
+    pub readiness_degraded_count: i64,
+    pub readiness_not_ready_count: i64,
+    pub degraded_or_not_ready_readiness_count: i64,
+    pub below_default_threshold_override_count: i64,
+    pub top_candidate: Option<OperatorReportResearchQualificationTopCandidate>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OperatorReport {
     pub report_id: Uuid,

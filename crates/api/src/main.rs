@@ -18463,8 +18463,9 @@ mod tests {
         build_cors_layer, build_shadow_promotion_proposed_runner_config,
         cancel_exchange_testnet_order, candidate_promotion_readiness,
         check_execution_readiness_handler, evaluate_strategy_candidate_observation_handler,
-        generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
-        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
+        generate_operator_report_handler, generate_testnet_client_order_id,
+        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
+        get_execution_readiness_snapshot_handler,
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
         get_research_candidate_shadow_performance_handler, get_risk_decisions,
@@ -18500,15 +18501,15 @@ mod tests {
         AuthRefreshResponse, AuthUserResponse, Candle, CandleInterval, DataFreshnessStatus,
         ExchangeEnvironment, ExchangeOrderState, ExecutionReadinessCheckSeverity,
         ExecutionReadinessRecommendation, ExecutionReadinessStatus, ExecutionReadinessTarget,
-        FeedStatus, MarketDataSource, MarketMode, MarketTick, PaperAccount, PaperAccountStatus,
-        ResearchCandidate, ResearchCandidateDecision, ResearchCandidateQualificationStatus,
-        ResearchCandidateStatus, RiskConfig, Side, StrategyCandidateObservationDecision,
-        StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-        StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-        StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
-        StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
-        StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
-        StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+        FeedStatus, MarketDataSource, MarketMode, MarketTick, OperatorReportRequest, PaperAccount,
+        PaperAccountStatus, ResearchCandidate, ResearchCandidateDecision,
+        ResearchCandidateQualificationStatus, ResearchCandidateStatus, RiskConfig, Side,
+        StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
+        StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+        StrategyCandidateObservationSummary, StrategyCandidateRunnerAlignment, StrategyConfig,
+        StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
+        StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+        StrategyMode, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
         StrategyResearchCandidateScore, StrategyResearchCandidateSource,
         StrategyResearchCandidateStatus, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
         StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus,
@@ -23859,6 +23860,20 @@ mod tests {
             qualified_payload["qualification"]["thresholds"]["min_shadow_runs"],
             5
         );
+        assert_eq!(qualified_payload["qualification"]["score"], 95);
+        assert_eq!(
+            qualified_payload["qualification"]["latest_readiness_status"],
+            "READY"
+        );
+        assert_eq!(
+            qualified_payload["qualification"]["threshold_override_below_default"],
+            true
+        );
+        assert!(qualified_payload["qualification"]["warnings"]
+            .as_array()
+            .expect("warnings array")
+            .iter()
+            .any(|item| item.as_str().unwrap_or_default().contains("below default")));
 
         let degraded = app
             .oneshot(
@@ -23888,6 +23903,152 @@ mod tests {
                 .as_str()
                 .unwrap_or_default()
                 .contains("Risk rejection rate")));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn operator_report_includes_research_candidate_qualification_section_without_execution_mutation(
+    ) {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = Router::new()
+            .route("/auth/login", post(login))
+            .route(
+                "/reports/operator/daily",
+                post(generate_operator_report_handler),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state);
+        let viewer_email = "research-viewer-operator-report@example.com";
+        insert_test_user(
+            &test_db.pool,
+            viewer_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::FifteenMinutes,
+            ),
+        )
+        .await
+        .expect("runner config should persist");
+
+        let degraded_candidate = sample_lifecycle_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::AcceptedForShadow,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &degraded_candidate,
+            None,
+            ResearchCandidateDecision::AcceptForShadow,
+            Some("fixture"),
+            Some("accepted candidate needs more data"),
+            &json!({"fixture": "report-degraded"}),
+        )
+        .await
+        .expect("degraded candidate should persist");
+
+        let mut degraded_observation = sample_observation_for_tests(
+            Utc::now(),
+            900,
+            true,
+            Some(ExecutionReadinessStatus::Degraded),
+        );
+        degraded_observation.candidate_id = degraded_candidate.id;
+        degraded_observation.strategy_id = degraded_candidate.strategy_id.clone();
+        degraded_observation.symbol = degraded_candidate.symbol.clone();
+        degraded_observation.timeframe = degraded_candidate.timeframe.clone();
+        degraded_observation.requirements.candidate_id = degraded_candidate.id;
+        degraded_observation.summary.candidate_id = degraded_candidate.id;
+        insert_strategy_candidate_observation(&test_db.pool, &degraded_observation)
+            .await
+            .expect("degraded observation should persist");
+
+        let not_ready_candidate = sample_lifecycle_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::AcceptedForShadow,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &not_ready_candidate,
+            None,
+            ResearchCandidateDecision::AcceptForShadow,
+            Some("fixture"),
+            Some("accepted candidate blocked by readiness"),
+            &json!({"fixture": "report-not-ready"}),
+        )
+        .await
+        .expect("not-ready candidate should persist");
+
+        let mut not_ready_observation = sample_observation_for_tests(
+            Utc::now(),
+            900,
+            true,
+            Some(ExecutionReadinessStatus::NotReady),
+        );
+        not_ready_observation.candidate_id = not_ready_candidate.id;
+        not_ready_observation.strategy_id = not_ready_candidate.strategy_id.clone();
+        not_ready_observation.symbol = not_ready_candidate.symbol.clone();
+        not_ready_observation.timeframe = not_ready_candidate.timeframe.clone();
+        not_ready_observation.requirements.candidate_id = not_ready_candidate.id;
+        not_ready_observation.summary.candidate_id = not_ready_candidate.id;
+        insert_strategy_candidate_observation(&test_db.pool, &not_ready_observation)
+            .await
+            .expect("not-ready observation should persist");
+
+        let before = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let (viewer_login, _) =
+            login_cli(&app, viewer_email, "replace-with-a-12-char-min-password").await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/reports/operator/daily")
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&OperatorReportRequest::default())
+                            .expect("operator report request"),
+                    ))
+                    .expect("report request"),
+            )
+            .await
+            .expect("report response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+
+        assert!(payload["report"]["sections"]
+            .as_array()
+            .expect("sections array")
+            .iter()
+            .any(|section| section["title"] == "Research Candidate Qualification"));
+        assert!(payload["report"]["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .any(|item| item["title"] == "No qualified candidates yet"));
+        assert!(payload["report"]["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .any(|item| item["title"] == "Accepted candidates still need more shadow data"));
+
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before).await;
     }
 
     #[tokio::test]

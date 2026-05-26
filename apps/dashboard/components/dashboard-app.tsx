@@ -4835,6 +4835,14 @@ function AuthenticatedDashboard({
                         <div>Status: {researchCandidateQualification?.status ?? "UNKNOWN"}</div>
                         <div>Score: {researchCandidateQualification?.score ?? "-"}</div>
                         <div>
+                          Readiness:{" "}
+                          {researchCandidateQualification?.latest_readiness_status ?? "UNKNOWN"}
+                        </div>
+                        <div>
+                          Readiness penalty: -
+                          {researchCandidateQualification?.readiness_penalty_points ?? 0}
+                        </div>
+                        <div>
                           Linked runs:{" "}
                           {researchCandidateQualification?.shadow_performance?.total_shadow_runs ??
                             0}
@@ -4845,6 +4853,23 @@ function AuthenticatedDashboard({
                             ?.would_submit_count ?? 0}
                         </div>
                       </div>
+                      {researchCandidateQualification?.latest_readiness_status === "DEGRADED" ? (
+                        <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-100">
+                          Resolve degraded readiness conditions before considering testnet
+                          promotion.
+                        </div>
+                      ) : null}
+                      {researchCandidateQualification?.latest_readiness_status === "NOT_READY" ? (
+                        <div className="mt-3 rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-rose-100">
+                          Do not consider testnet promotion until readiness blockers are cleared.
+                        </div>
+                      ) : null}
+                      {researchCandidateQualification?.threshold_override_below_default ? (
+                        <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-100">
+                          Qualification threshold override is below default; treat result as
+                          exploratory.
+                        </div>
+                      ) : null}
                       {qualificationNeedsMoreData ? (
                         <div className="mt-3 rounded-xl border border-sky-400/40 bg-sky-500/10 p-3 text-sky-100">
                           Needs more data: linked shadow runs are below the configured threshold.
@@ -4892,6 +4917,16 @@ function AuthenticatedDashboard({
                           <div className="mt-2 space-y-1 text-slate-200">
                             {researchCandidateQualification?.recommendations.map((item) => (
                               <div key={item}>{qualificationRecommendationLabel(item)}</div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {(researchCandidateQualification?.score_explanation.length ?? 0) > 0 ? (
+                        <div className="mt-3 rounded-xl border border-border/70 bg-black/10 p-3">
+                          <div className="font-semibold text-slate-100">Score Explanation</div>
+                          <div className="mt-2 space-y-1 text-slate-200">
+                            {researchCandidateQualification?.score_explanation.map((item) => (
+                              <div key={item}>{item}</div>
                             ))}
                           </div>
                         </div>

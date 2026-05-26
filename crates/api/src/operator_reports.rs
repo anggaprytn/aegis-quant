@@ -4,11 +4,14 @@ use aegis_core::{
     AuthenticatedActor, OperatorReport, OperatorReportFinding, OperatorReportFormat,
     OperatorReportHighlight, OperatorReportMarketFeedSnapshot, OperatorReportMarketSnapshot,
     OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot, OperatorReportReasonCount,
-    OperatorReportRecommendation, OperatorReportRequest, OperatorReportRiskSnapshot,
-    OperatorReportSection, OperatorReportSeverity, OperatorReportShadowSnapshot,
-    OperatorReportStatus, OperatorReportStrategySnapshot, OperatorReportSummary,
-    OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot, OperatorReportTopPairCount,
-    StrategyPerformanceMode, StrategyPerformanceRequest, TestnetPromotionFunnelRequest,
+    OperatorReportRecommendation, OperatorReportRequest,
+    OperatorReportResearchQualificationSnapshot, OperatorReportResearchQualificationTopCandidate,
+    OperatorReportRiskSnapshot, OperatorReportSection, OperatorReportSeverity,
+    OperatorReportShadowSnapshot, OperatorReportStatus, OperatorReportStrategySnapshot,
+    OperatorReportSummary, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
+    OperatorReportTopPairCount, ResearchCandidateQualificationStatus,
+    ResearchCandidateQualificationThresholds, ResearchCandidateStatus, StrategyPerformanceMode,
+    StrategyPerformanceRequest, TestnetPromotionFunnelRequest,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -19,10 +22,12 @@ use telemetry::telemetry;
 use uuid::Uuid;
 
 use crate::AppState;
+use db::{list_research_candidates, ResearchCandidateListFilters};
 
 const DEFAULT_REPORT_WINDOW_HOURS: i64 = 24;
 const REPORT_LIST_DEFAULT_LIMIT: i64 = 20;
 const REPORT_LIST_MAX_LIMIT: i64 = 100;
+const REPORT_RESEARCH_CANDIDATE_LIMIT: i64 = 250;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OperatorReportListItem {
@@ -101,6 +106,8 @@ pub async fn generate_operator_report(
     let shadow = load_shadow_snapshot(&state.db_pool, request, &window).await?;
     let promotion = load_promotion_snapshot(&state.db_pool, request, &window).await?;
     let testnet = load_testnet_snapshot(&state.db_pool, request, &window).await?;
+    let research_qualification =
+        load_research_candidate_qualification_snapshot(state, request, &window).await?;
     let backtest = load_backtest_activity(&state.db_pool, request, &window).await?;
 
     let mut findings = build_findings(
@@ -111,6 +118,7 @@ pub async fn generate_operator_report(
         &shadow,
         &promotion,
         &testnet,
+        &research_qualification,
         &backtest,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
@@ -145,6 +153,7 @@ pub async fn generate_operator_report(
             &shadow,
             &promotion,
             &testnet,
+            &research_qualification,
         )?,
         format: request.format,
         persisted: false,
@@ -856,6 +865,104 @@ async fn load_testnet_snapshot(
     })
 }
 
+async fn load_research_candidate_qualification_snapshot(
+    state: &AppState,
+    request: &OperatorReportRequest,
+    window: &ReportWindow,
+) -> Result<OperatorReportResearchQualificationSnapshot> {
+    let filters = ResearchCandidateListFilters {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: None,
+        status: None,
+    };
+    let default_thresholds = ResearchCandidateQualificationThresholds::default();
+    let records =
+        list_research_candidates(&state.db_pool, &filters, REPORT_RESEARCH_CANDIDATE_LIMIT).await?;
+
+    let mut summary = OperatorReportResearchQualificationSnapshot {
+        total_candidates: records.len() as i64,
+        accepted_for_shadow_count: 0,
+        qualified_count: 0,
+        needs_more_data_count: 0,
+        not_qualified_count: 0,
+        degraded_count: 0,
+        unknown_count: 0,
+        stale_observation_count: 0,
+        runner_mismatch_count: 0,
+        readiness_degraded_count: 0,
+        readiness_not_ready_count: 0,
+        degraded_or_not_ready_readiness_count: 0,
+        below_default_threshold_override_count: 0,
+        top_candidate: None,
+    };
+
+    for record in records {
+        let candidate = crate::research_candidate_from_record(&record)?;
+        if candidate.status == ResearchCandidateStatus::AcceptedForShadow {
+            summary.accepted_for_shadow_count += 1;
+        }
+
+        let qualification = crate::build_research_candidate_qualification(
+            state,
+            &candidate,
+            default_thresholds.clone(),
+            window.generated_at,
+        )
+        .await?;
+
+        match qualification.status {
+            ResearchCandidateQualificationStatus::Qualified => summary.qualified_count += 1,
+            ResearchCandidateQualificationStatus::NeedsMoreData => {
+                summary.needs_more_data_count += 1
+            }
+            ResearchCandidateQualificationStatus::NotQualified => summary.not_qualified_count += 1,
+            ResearchCandidateQualificationStatus::Degraded => summary.degraded_count += 1,
+            ResearchCandidateQualificationStatus::Unknown => summary.unknown_count += 1,
+        }
+
+        if !qualification.fresh_observation {
+            summary.stale_observation_count += 1;
+        }
+        if !qualification.runner_alignment_valid {
+            summary.runner_mismatch_count += 1;
+        }
+        match qualification.latest_readiness_status {
+            Some(aegis_core::ExecutionReadinessStatus::Degraded) => {
+                summary.readiness_degraded_count += 1;
+                summary.degraded_or_not_ready_readiness_count += 1;
+            }
+            Some(aegis_core::ExecutionReadinessStatus::NotReady) => {
+                summary.readiness_not_ready_count += 1;
+                summary.degraded_or_not_ready_readiness_count += 1;
+            }
+            _ => {}
+        }
+        if qualification.threshold_override_below_default {
+            summary.below_default_threshold_override_count += 1;
+        }
+
+        let replace_top = summary
+            .top_candidate
+            .as_ref()
+            .map(|current| qualification.score > current.score)
+            .unwrap_or(true);
+        if replace_top {
+            summary.top_candidate = Some(OperatorReportResearchQualificationTopCandidate {
+                candidate_id: candidate.id,
+                strategy_id: candidate.strategy_id.clone(),
+                symbol: candidate.symbol.clone(),
+                timeframe: candidate.timeframe.clone(),
+                status: qualification.status,
+                score: qualification.score,
+                readiness_status: qualification.latest_readiness_status,
+            });
+        }
+    }
+
+    Ok(summary)
+}
+
 async fn load_backtest_activity(
     pool: &PgPool,
     request: &OperatorReportRequest,
@@ -889,6 +996,7 @@ fn build_findings(
     shadow: &OperatorReportShadowSnapshot,
     promotion: &OperatorReportPromotionSnapshot,
     testnet: &OperatorReportTestnetSnapshot,
+    research_qualification: &OperatorReportResearchQualificationSnapshot,
     backtest: &BacktestActivity,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
@@ -1004,6 +1112,58 @@ fn build_findings(
         ));
     }
 
+    if research_qualification.qualified_count == 0 {
+        findings.push(finding(
+            "no_qualified_candidates",
+            OperatorReportSeverity::Low,
+            "No qualified candidates yet",
+            "No research candidates currently qualify for testnet promotion consideration under default thresholds.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.needs_more_data_count > 0
+        && research_qualification.accepted_for_shadow_count > 0
+    {
+        findings.push(finding(
+            "accepted_candidates_need_more_shadow_data",
+            OperatorReportSeverity::Medium,
+            "Accepted candidates still need more shadow data",
+            "One or more ACCEPTED_FOR_SHADOW candidates still need more linked shadow evidence before promotion review.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.below_default_threshold_override_count > 0 {
+        findings.push(finding(
+            "qualification_below_default_thresholds",
+            OperatorReportSeverity::Medium,
+            "Candidate qualification used below-default thresholds",
+            "At least one candidate qualification result used below-default thresholds and should be treated as exploratory.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.readiness_degraded_count > 0 {
+        findings.push(finding(
+            "candidate_readiness_degraded",
+            OperatorReportSeverity::Medium,
+            "Candidate qualification is DEGRADED due to readiness",
+            "At least one candidate carries DEGRADED TESTNET_SHADOW readiness and should not be treated as promotion-ready.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.readiness_not_ready_count > 0 {
+        findings.push(finding(
+            "candidate_readiness_not_ready_blocker",
+            OperatorReportSeverity::High,
+            "Candidate qualification reports NOT_READY readiness blocker",
+            "At least one candidate is blocked by NOT_READY TESTNET_SHADOW readiness.",
+            "research_candidate_qualification",
+        ));
+    }
+
     if findings.is_empty() {
         findings.push(finding(
             "low_activity_report",
@@ -1098,6 +1258,42 @@ fn build_recommendations(findings: &[OperatorReportFinding]) -> Vec<OperatorRepo
         ));
     }
 
+    if findings
+        .iter()
+        .any(|finding| finding.code == "accepted_candidates_need_more_shadow_data")
+    {
+        recommendations.push(recommendation(
+            "gather_more_shadow_evidence",
+            OperatorReportSeverity::Medium,
+            "Keep candidates in observation until linked shadow runs and WOULD_SUBMIT evidence meet default thresholds.",
+            &["accepted_candidates_need_more_shadow_data"],
+        ));
+    }
+
+    if findings
+        .iter()
+        .any(|finding| finding.code == "candidate_readiness_not_ready_blocker")
+    {
+        recommendations.push(recommendation(
+            "clear_candidate_readiness_blockers",
+            OperatorReportSeverity::High,
+            "Clear TESTNET_SHADOW readiness blockers before considering any testnet promotion.",
+            &["candidate_readiness_not_ready_blocker"],
+        ));
+    }
+
+    if findings
+        .iter()
+        .any(|finding| finding.code == "candidate_readiness_degraded")
+    {
+        recommendations.push(recommendation(
+            "resolve_candidate_readiness_degradation",
+            OperatorReportSeverity::Medium,
+            "Resolve degraded readiness conditions before considering candidate promotion.",
+            &["candidate_readiness_degraded"],
+        ));
+    }
+
     recommendations
 }
 
@@ -1110,6 +1306,7 @@ fn build_sections(
     shadow: &OperatorReportShadowSnapshot,
     promotion: &OperatorReportPromotionSnapshot,
     testnet: &OperatorReportTestnetSnapshot,
+    research_qualification: &OperatorReportResearchQualificationSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     Ok(vec![
         section(
@@ -1277,6 +1474,83 @@ fn build_sections(
                 ),
             ],
             shadow,
+        )?,
+        section(
+            "research_candidate_qualification",
+            "Research Candidate Qualification",
+            if research_qualification.readiness_not_ready_count > 0 {
+                OperatorReportStatus::Warning
+            } else if research_qualification.degraded_count > 0
+                || research_qualification.needs_more_data_count > 0
+            {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Read-only qualification summary for research candidates under default thresholds.",
+            vec![
+                highlight(
+                    "Total Candidates",
+                    research_qualification.total_candidates.to_string(),
+                ),
+                highlight(
+                    "Accepted For Shadow",
+                    research_qualification.accepted_for_shadow_count.to_string(),
+                ),
+                highlight(
+                    "Qualified",
+                    research_qualification.qualified_count.to_string(),
+                ),
+                highlight(
+                    "Needs More Data",
+                    research_qualification.needs_more_data_count.to_string(),
+                ),
+                highlight(
+                    "Not Qualified",
+                    research_qualification.not_qualified_count.to_string(),
+                ),
+                highlight(
+                    "Degraded",
+                    research_qualification.degraded_count.to_string(),
+                ),
+                highlight("Unknown", research_qualification.unknown_count.to_string()),
+                highlight(
+                    "Stale Observation",
+                    research_qualification.stale_observation_count.to_string(),
+                ),
+                highlight(
+                    "Runner Mismatch",
+                    research_qualification.runner_mismatch_count.to_string(),
+                ),
+                highlight(
+                    "Degraded/Not Ready Readiness",
+                    research_qualification
+                        .degraded_or_not_ready_readiness_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Top Candidate",
+                    research_qualification
+                        .top_candidate
+                        .as_ref()
+                        .map(|candidate| {
+                            format!(
+                                "{}:{} {} {} score={} readiness={}",
+                                candidate.strategy_id,
+                                candidate.symbol,
+                                candidate.timeframe,
+                                candidate.status.as_str(),
+                                candidate.score,
+                                candidate
+                                    .readiness_status
+                                    .map(|value| value.as_str())
+                                    .unwrap_or("UNKNOWN")
+                            )
+                        })
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+            ],
+            research_qualification,
         )?,
         section(
             "promotion_funnel",
@@ -1560,9 +1834,9 @@ mod tests {
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
-        OperatorReportReasonCount, OperatorReportRiskSnapshot, OperatorReportSeverity,
-        OperatorReportShadowSnapshot, OperatorReportStatus, OperatorReportSystemSnapshot,
-        OperatorReportTestnetSnapshot,
+        OperatorReportReasonCount, OperatorReportResearchQualificationSnapshot,
+        OperatorReportRiskSnapshot, OperatorReportSeverity, OperatorReportShadowSnapshot,
+        OperatorReportStatus, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
     };
     use rust_decimal::Decimal;
 
@@ -1665,6 +1939,25 @@ mod tests {
         }
     }
 
+    fn base_research_qualification() -> OperatorReportResearchQualificationSnapshot {
+        OperatorReportResearchQualificationSnapshot {
+            total_candidates: 0,
+            accepted_for_shadow_count: 0,
+            qualified_count: 0,
+            needs_more_data_count: 0,
+            not_qualified_count: 0,
+            degraded_count: 0,
+            unknown_count: 0,
+            stale_observation_count: 0,
+            runner_mismatch_count: 0,
+            readiness_degraded_count: 0,
+            readiness_not_ready_count: 0,
+            degraded_or_not_ready_readiness_count: 0,
+            below_default_threshold_override_count: 0,
+            top_candidate: None,
+        }
+    }
+
     #[test]
     fn finding_severity_is_critical_for_kill_switch() {
         let mut system_market = base_system_market();
@@ -1678,6 +1971,7 @@ mod tests {
             &base_shadow(),
             &base_promotion(),
             &base_testnet(),
+            &base_research_qualification(),
             &BacktestActivity { run_count: 1 },
         );
 
@@ -1705,6 +1999,7 @@ mod tests {
             &base_shadow(),
             &base_promotion(),
             &testnet,
+            &base_research_qualification(),
             &BacktestActivity { run_count: 1 },
         );
 
@@ -1727,6 +2022,7 @@ mod tests {
             &base_shadow(),
             &promotion,
             &base_testnet(),
+            &base_research_qualification(),
             &BacktestActivity { run_count: 1 },
         );
 
@@ -1749,6 +2045,7 @@ mod tests {
             &base_shadow(),
             &base_promotion(),
             &base_testnet(),
+            &base_research_qualification(),
             &BacktestActivity { run_count: 1 },
         );
 
@@ -1797,6 +2094,7 @@ mod tests {
                 private_stream_status: "CONNECTED".to_string(),
                 private_stream_last_event_age_seconds: Some(1),
             },
+            &base_research_qualification(),
             &BacktestActivity { run_count: 0 },
         );
 
@@ -1813,5 +2111,65 @@ mod tests {
         assert!(recommendations
             .iter()
             .all(|value| value.priority != OperatorReportSeverity::High));
+    }
+
+    #[test]
+    fn qualification_findings_are_emitted_when_candidates_need_more_shadow_data() {
+        let mut research = base_research_qualification();
+        research.total_candidates = 2;
+        research.accepted_for_shadow_count = 2;
+        research.needs_more_data_count = 2;
+
+        let findings = build_findings(
+            &base_system_market(),
+            &base_strategy(),
+            &base_risk(),
+            &base_paper(),
+            &base_shadow(),
+            &base_promotion(),
+            &base_testnet(),
+            &research,
+            &BacktestActivity { run_count: 1 },
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.code == "accepted_candidates_need_more_shadow_data"
+                && finding.severity == OperatorReportSeverity::Medium
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.code == "no_qualified_candidates"
+                && finding.severity == OperatorReportSeverity::Low
+        }));
+    }
+
+    #[test]
+    fn qualification_findings_are_emitted_for_readiness_blockers() {
+        let mut research = base_research_qualification();
+        research.total_candidates = 1;
+        research.not_qualified_count = 1;
+        research.readiness_degraded_count = 1;
+        research.readiness_not_ready_count = 1;
+        research.degraded_or_not_ready_readiness_count = 1;
+
+        let findings = build_findings(
+            &base_system_market(),
+            &base_strategy(),
+            &base_risk(),
+            &base_paper(),
+            &base_shadow(),
+            &base_promotion(),
+            &base_testnet(),
+            &research,
+            &BacktestActivity { run_count: 1 },
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.code == "candidate_readiness_not_ready_blocker"
+                && finding.severity == OperatorReportSeverity::High
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.code == "candidate_readiness_degraded"
+                && finding.severity == OperatorReportSeverity::Medium
+        }));
     }
 }

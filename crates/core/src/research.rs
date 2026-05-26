@@ -1283,6 +1283,13 @@ pub struct ResearchCandidateQualificationResult {
     pub candidate_id: Uuid,
     pub status: ResearchCandidateQualificationStatus,
     pub score: i32,
+    pub fresh_observation: bool,
+    pub runner_alignment_valid: bool,
+    pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub readiness_penalty_points: i32,
+    pub threshold_override_below_default: bool,
+    pub threshold_override_penalty_points: i32,
+    pub score_explanation: Vec<String>,
     pub checks: Vec<ResearchCandidateQualificationCheck>,
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
@@ -1364,9 +1371,42 @@ pub fn evaluate_research_candidate_qualification(
     request: &ResearchCandidateQualificationRequest,
 ) -> ResearchCandidateQualificationResult {
     let thresholds = request.thresholds.clone();
+    let default_thresholds = ResearchCandidateQualificationThresholds::default();
     let mut checks = Vec::new();
     let mut recommendations = BTreeSet::new();
+    let mut score_explanation = Vec::new();
     let mut score = 100;
+    let mut readiness_penalty_points = 0;
+    let mut threshold_override_penalty_points = 0;
+    let mut degraded_status_trigger = false;
+
+    let threshold_override_below_default = thresholds.min_shadow_runs
+        < default_thresholds.min_shadow_runs
+        || thresholds.min_would_submit_count < default_thresholds.min_would_submit_count;
+    if threshold_override_below_default {
+        let warning =
+            "Qualification threshold override is below default; treat result as exploratory.";
+        checks.push(qualification_check(
+            "threshold_override_below_default",
+            "Qualification thresholds are not below defaults",
+            false,
+            false,
+            ResearchCandidateQualificationSeverity::Low,
+            warning,
+            Some(serde_json::json!({
+                "min_shadow_runs": thresholds.min_shadow_runs,
+                "default_min_shadow_runs": default_thresholds.min_shadow_runs,
+                "min_would_submit_count": thresholds.min_would_submit_count,
+                "default_min_would_submit_count": default_thresholds.min_would_submit_count,
+            })),
+        ));
+        threshold_override_penalty_points = 5;
+        score -= threshold_override_penalty_points;
+        score_explanation.push(format!(
+            "{warning} (-{} points)",
+            threshold_override_penalty_points
+        ));
+    }
 
     let candidate_exists = request.candidate_status.is_some();
     checks.push(qualification_check(
@@ -1406,6 +1446,9 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !status_is_accepted {
         score -= 35;
+        score_explanation.push(
+            "Candidate is not in ACCEPTED_FOR_SHADOW, so qualification lost 35 points.".to_string(),
+        );
         recommendations
             .insert(ResearchCandidateQualificationRecommendation::ReAcceptCandidateForShadow);
     }
@@ -1427,6 +1470,9 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !fresh_observation_passed {
         score -= 25;
+        score_explanation.push(
+            "Fresh observation is missing or stale, so qualification lost 25 points.".to_string(),
+        );
         recommendations
             .insert(ResearchCandidateQualificationRecommendation::RefreshCandidateObservation);
     }
@@ -1450,6 +1496,10 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !runner_alignment_passed {
         score -= 25;
+        score_explanation.push(
+            "Runner alignment is invalid for this candidate, so qualification lost 25 points."
+                .to_string(),
+        );
         recommendations.insert(ResearchCandidateQualificationRecommendation::FixRunnerAlignment);
     }
 
@@ -1469,6 +1519,10 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !runner_coverage_passed {
         score -= 20;
+        score_explanation.push(
+            "The active shadow runner does not cover this candidate, so qualification lost 20 points."
+                .to_string(),
+        );
         recommendations
             .insert(ResearchCandidateQualificationRecommendation::ExpandShadowRunnerCoverage);
     }
@@ -1496,6 +1550,10 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !mismatch_count_passed {
         score -= 10;
+        score_explanation.push(format!(
+            "Runner mismatch count exceeded the configured limit, so qualification lost 10 points."
+        ));
+        degraded_status_trigger = true;
         recommendations.insert(ResearchCandidateQualificationRecommendation::FixRunnerAlignment);
     }
 
@@ -1541,6 +1599,9 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !enough_shadow_runs {
         score -= 20;
+        score_explanation.push(format!(
+            "Linked shadow runs are below the configured threshold, so qualification lost 20 points."
+        ));
         recommendations.insert(ResearchCandidateQualificationRecommendation::GatherMoreShadowRuns);
     }
 
@@ -1566,6 +1627,11 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !enough_would_submit {
         score -= 20;
+        score_explanation.push(
+            "WOULD_SUBMIT evidence is below the configured threshold, so qualification lost 20 points."
+                .to_string(),
+        );
+        degraded_status_trigger = true;
         recommendations
             .insert(ResearchCandidateQualificationRecommendation::GenerateMoreWouldSubmitEvidence);
     }
@@ -1592,6 +1658,11 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !risk_rejection_passed {
         score -= 15;
+        score_explanation.push(
+            "Risk rejection rate exceeded the configured threshold, so qualification lost 15 points."
+                .to_string(),
+        );
+        degraded_status_trigger = true;
         recommendations.insert(ResearchCandidateQualificationRecommendation::ReviewRiskRejections);
     }
 
@@ -1618,31 +1689,107 @@ pub fn evaluate_research_candidate_qualification(
     ));
     if !skipped_error_passed {
         score -= 15;
+        score_explanation.push(
+            "Skipped or error rate exceeded the configured threshold, so qualification lost 15 points."
+                .to_string(),
+        );
+        degraded_status_trigger = true;
         recommendations
             .insert(ResearchCandidateQualificationRecommendation::ReduceShadowErrorsOrSkips);
     }
-
-    let readiness_passed = !thresholds.require_readiness_not_not_ready
-        || request.latest_readiness_status != Some(ExecutionReadinessStatus::NotReady);
-    checks.push(qualification_check(
-        "readiness_not_not_ready",
-        "TESTNET_SHADOW readiness is not NOT_READY",
-        readiness_passed,
-        thresholds.require_readiness_not_not_ready,
-        ResearchCandidateQualificationSeverity::High,
-        if readiness_passed {
-            "Latest TESTNET_SHADOW readiness is acceptable."
-        } else {
-            "Latest TESTNET_SHADOW readiness is NOT_READY."
-        },
-        request
-            .latest_readiness_status
-            .map(|status| serde_json::json!({ "latest_readiness_status": status.as_str() })),
-    ));
-    if !readiness_passed {
-        score -= 20;
-        recommendations
-            .insert(ResearchCandidateQualificationRecommendation::RestoreTestnetShadowReadiness);
+    let readiness_status = request.latest_readiness_status;
+    match readiness_status {
+        Some(ExecutionReadinessStatus::Ready) => {
+            checks.push(qualification_check(
+                "readiness_status",
+                "TESTNET_SHADOW readiness is READY",
+                true,
+                false,
+                ResearchCandidateQualificationSeverity::Low,
+                "Latest TESTNET_SHADOW readiness is READY.",
+                Some(serde_json::json!({
+                    "latest_readiness_status": ExecutionReadinessStatus::Ready.as_str(),
+                })),
+            ));
+        }
+        Some(ExecutionReadinessStatus::Degraded) => {
+            let warning = "Latest TESTNET_SHADOW readiness is DEGRADED.";
+            checks.push(qualification_check(
+                "readiness_status",
+                "TESTNET_SHADOW readiness is READY",
+                false,
+                false,
+                ResearchCandidateQualificationSeverity::Medium,
+                warning,
+                Some(serde_json::json!({
+                    "latest_readiness_status": ExecutionReadinessStatus::Degraded.as_str(),
+                })),
+            ));
+            readiness_penalty_points = 12;
+            score -= readiness_penalty_points;
+            degraded_status_trigger = true;
+            score_explanation.push(format!("{warning} (-{} points)", readiness_penalty_points));
+            score_explanation.push(
+                "Resolve degraded readiness conditions before considering testnet promotion."
+                    .to_string(),
+            );
+            recommendations.insert(
+                ResearchCandidateQualificationRecommendation::RestoreTestnetShadowReadiness,
+            );
+        }
+        Some(ExecutionReadinessStatus::NotReady) => {
+            let warning = "Latest TESTNET_SHADOW readiness is NOT_READY.";
+            checks.push(qualification_check(
+                "readiness_status",
+                "TESTNET_SHADOW readiness is READY",
+                false,
+                true,
+                ResearchCandidateQualificationSeverity::High,
+                warning,
+                Some(serde_json::json!({
+                    "latest_readiness_status": ExecutionReadinessStatus::NotReady.as_str(),
+                })),
+            ));
+            readiness_penalty_points = 30;
+            score -= readiness_penalty_points;
+            score = score.min(40);
+            score_explanation.push(format!(
+                "{warning} (-{} points, score capped at 40)",
+                readiness_penalty_points
+            ));
+            score_explanation.push(
+                "Do not consider testnet promotion until readiness blockers are cleared."
+                    .to_string(),
+            );
+            recommendations.insert(
+                ResearchCandidateQualificationRecommendation::RestoreTestnetShadowReadiness,
+            );
+        }
+        Some(ExecutionReadinessStatus::Unknown) | None => {
+            let warning = "Latest TESTNET_SHADOW readiness is UNKNOWN.";
+            checks.push(qualification_check(
+                "readiness_status",
+                "TESTNET_SHADOW readiness is READY",
+                false,
+                false,
+                ResearchCandidateQualificationSeverity::Medium,
+                warning,
+                Some(serde_json::json!({
+                    "latest_readiness_status": readiness_status.map(|status| status.as_str()).unwrap_or("UNKNOWN"),
+                })),
+            ));
+            readiness_penalty_points = 10;
+            score -= readiness_penalty_points;
+            degraded_status_trigger = true;
+            score_explanation.push(format!("{warning} (-{} points)", readiness_penalty_points));
+            score_explanation.push(
+                "Collect a fresh readiness result before considering testnet promotion."
+                    .to_string(),
+            );
+            recommendations.insert(
+                ResearchCandidateQualificationRecommendation::RestoreTestnetShadowReadiness,
+            );
+        }
     }
 
     let blockers = checks
@@ -1662,13 +1809,23 @@ pub fn evaluate_research_candidate_qualification(
         ResearchCandidateQualificationStatus::NotQualified
     } else if !enough_shadow_runs {
         ResearchCandidateQualificationStatus::NeedsMoreData
-    } else if !warnings.is_empty() {
+    } else if degraded_status_trigger {
         ResearchCandidateQualificationStatus::Degraded
     } else {
         ResearchCandidateQualificationStatus::Qualified
     };
 
-    if status == ResearchCandidateQualificationStatus::Qualified {
+    if score_explanation.is_empty() {
+        score_explanation.push(
+            "All qualification checks passed with READY readiness and default thresholds; score remained 100."
+                .to_string(),
+        );
+    }
+
+    if status == ResearchCandidateQualificationStatus::Qualified
+        && !threshold_override_below_default
+        && readiness_status == Some(ExecutionReadinessStatus::Ready)
+    {
         recommendations.insert(
             ResearchCandidateQualificationRecommendation::ReadyForTestnetPromotionConsideration,
         );
@@ -1678,6 +1835,13 @@ pub fn evaluate_research_candidate_qualification(
         candidate_id: request.candidate_id,
         status,
         score: clamp_score(score),
+        fresh_observation: request.fresh_observation,
+        runner_alignment_valid: request.runner_alignment_valid,
+        latest_readiness_status: readiness_status,
+        readiness_penalty_points,
+        threshold_override_below_default,
+        threshold_override_penalty_points,
+        score_explanation,
         checks,
         blockers,
         warnings,
@@ -2916,6 +3080,92 @@ mod tests {
                 ResearchCandidateQualificationRecommendation::ReadyForTestnetPromotionConsideration
             ]
         );
+    }
+
+    #[test]
+    fn qualification_degraded_readiness_cannot_score_hundred() {
+        let mut request = qualification_request(Some(qualification_performance(40, 8, 8, 0, 0)));
+        request.latest_readiness_status = Some(ExecutionReadinessStatus::Degraded);
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::Degraded
+        );
+        assert!(result.score < 100);
+        assert_eq!(result.readiness_penalty_points, 12);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("DEGRADED")));
+        assert!(result.score_explanation.iter().any(|item| {
+            item.contains(
+                "Resolve degraded readiness conditions before considering testnet promotion.",
+            )
+        }));
+    }
+
+    #[test]
+    fn qualification_not_ready_blocks_promotion_and_caps_score() {
+        let mut request = qualification_request(Some(qualification_performance(40, 8, 8, 0, 0)));
+        request.latest_readiness_status = Some(ExecutionReadinessStatus::NotReady);
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NotQualified
+        );
+        assert!(result.score <= 40);
+        assert_eq!(result.readiness_penalty_points, 30);
+        assert!(result
+            .blockers
+            .iter()
+            .any(|item| item.contains("NOT_READY")));
+        assert!(result.score_explanation.iter().any(|item| {
+            item.contains("Do not consider testnet promotion until readiness blockers are cleared.")
+        }));
+    }
+
+    #[test]
+    fn qualification_unknown_readiness_does_not_score_hundred() {
+        let mut request = qualification_request(Some(qualification_performance(40, 8, 8, 0, 0)));
+        request.latest_readiness_status = Some(ExecutionReadinessStatus::Unknown);
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::Degraded
+        );
+        assert!(result.score < 100);
+        assert_eq!(result.readiness_penalty_points, 10);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("UNKNOWN")));
+    }
+
+    #[test]
+    fn qualification_override_below_default_adds_warning() {
+        let mut request = qualification_request(Some(qualification_performance(5, 3, 0, 0, 0)));
+        request.thresholds.min_shadow_runs = 5;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert!(result.threshold_override_below_default);
+        assert_eq!(result.threshold_override_penalty_points, 5);
+        assert!(result.score < 100);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("below default")));
+        assert!(result.score_explanation.iter().any(|item| {
+            item.contains(
+                "Qualification threshold override is below default; treat result as exploratory.",
+            )
+        }));
     }
 
     #[test]
