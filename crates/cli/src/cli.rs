@@ -747,7 +747,11 @@ pub struct ResearchCandidateObserveArgs {
     pub min_would_submit_count: i64,
     #[arg(long = "max-no-signal-rate")]
     pub max_no_signal_rate: Option<rust_decimal::Decimal>,
-    #[arg(long = "require-readiness-ready", default_value_t = true)]
+    #[arg(
+        long = "require-readiness-ready",
+        default_value_t = true,
+        action = clap::ArgAction::Set
+    )]
     pub require_readiness_ready: bool,
 }
 
@@ -1294,5 +1298,36 @@ mod tests {
 
         assert_eq!(value["shadow_run_id"], shadow_run_id.to_string());
         assert!(value["correlation_id"].is_null());
+    }
+
+    #[test]
+    fn research_candidate_observe_parses_explicit_false_readiness_flag() {
+        let candidate_id =
+            Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid");
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "candidates",
+            "observe",
+            &candidate_id.to_string(),
+            "--min-hours",
+            "0",
+            "--min-shadow-runs",
+            "1",
+            "--min-would-submit",
+            "0",
+            "--require-readiness-ready",
+            "false",
+        ])
+        .expect("cli parses");
+
+        let Commands::Research(super::ResearchCommands::Candidates(
+            super::ResearchCandidateCommands::Observe(args),
+        )) = cli.command
+        else {
+            panic!("expected research observe command");
+        };
+
+        assert!(!args.require_readiness_ready);
     }
 }

@@ -2265,7 +2265,6 @@ pub async fn list_testnet_shadow_runs(
         r#"
         SELECT
             id,
-            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -2299,7 +2298,6 @@ pub async fn get_testnet_shadow_run_by_id(
         r#"
         SELECT
             id,
-            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,

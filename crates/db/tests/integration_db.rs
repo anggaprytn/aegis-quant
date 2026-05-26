@@ -3332,6 +3332,47 @@ async fn candidate_observation_reads_shadow_runs() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn list_testnet_shadow_runs_supports_current_schema() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let run = TestnetShadowRunRecord {
+        id: Uuid::new_v4(),
+        strategy_id: "momentum_v1".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "1m".to_string(),
+        decision: "NO_SIGNAL".to_string(),
+        signal_id: None,
+        risk_decision_id: None,
+        would_submit_payload: None,
+        price_source: Some("local".to_string()),
+        resolved_price: Some(Decimal::new(100_000, 0)),
+        reasons: vec!["insufficient_momentum".to_string()],
+        status: "COMPLETED".to_string(),
+        created_at: fixed_time(),
+        correlation_id: Some(Uuid::new_v4()),
+    };
+    insert_testnet_shadow_run(&test_db.pool, &run)
+        .await
+        .expect("shadow run should persist");
+
+    let listed = list_testnet_shadow_runs(&test_db.pool, 10)
+        .await
+        .expect("shadow runs should list");
+    let fetched = get_testnet_shadow_run_by_id(&test_db.pool, run.id)
+        .await
+        .expect("shadow run should load")
+        .expect("shadow run should exist");
+
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, run.id);
+    assert_eq!(listed[0].reasons, vec!["insufficient_momentum"]);
+    assert_eq!(fetched.id, run.id);
+    assert_eq!(fetched.decision, "NO_SIGNAL");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
 async fn candidate_observation_list_filters_by_candidate() {
     let test_db = TestDatabase::setup()
         .await
