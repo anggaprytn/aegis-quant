@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
-import { api, getErrorMessage } from "@/lib/api";
+import { api, getApiErrorPayload, getErrorMessage } from "@/lib/api";
 import type {
   AuthUser,
   BacktestRequest,
@@ -111,6 +111,28 @@ const DEFAULT_BACKTEST_FORM: BacktestRequest = {
   slippage_bps: "5",
   holding_candles: 3,
 };
+
+function observationAgeSeconds(observation: StrategyCandidateObservation | null) {
+  if (!observation) {
+    return null;
+  }
+  return Math.max(
+    0,
+    Math.floor((Date.now() - new Date(observation.last_observed_at).getTime()) / 1000),
+  );
+}
+
+function observationFreshnessState(observation: StrategyCandidateObservation | null) {
+  if (!observation) {
+    return "NOT_OBSERVED" as const;
+  }
+  const maxAge = observation.observation_max_age_seconds;
+  const age = observationAgeSeconds(observation);
+  if (maxAge === null || age === null) {
+    return "UNKNOWN" as const;
+  }
+  return age <= maxAge ? "FRESH" as const : "STALE" as const;
+}
 
 type StrategyExperimentFormState = {
   strategy_id: string;
@@ -642,6 +664,10 @@ function AuthenticatedDashboard({
     useState<StrategyDiagnosticsResult | null>(null);
   const [riskConfigForm, setRiskConfigForm] = useState<RiskConfig>(riskConfigFormFromView());
 
+  useEffect(() => {
+    setLastResearchCandidateObservation(null);
+  }, [selectedResearchCandidateId]);
+
   const healthQuery = useQuery({
     queryKey: ["system-health"],
     queryFn: api.getSystemHealth,
@@ -882,6 +908,12 @@ function AuthenticatedDashboard({
   const selectedResearchCandidateEventsQuery = useQuery({
     queryKey: ["research-candidate-events", selectedResearchCandidateId],
     queryFn: () => api.listResearchCandidateEvents(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
+  const selectedResearchCandidateObservationQuery = useQuery({
+    queryKey: ["research-candidate-observations", selectedResearchCandidateId],
+    queryFn: () => api.listResearchCandidateObservations(selectedResearchCandidateId ?? ""),
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
@@ -1529,6 +1561,9 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-events", selectedResearchCandidateId],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observations", selectedResearchCandidateId],
+      });
       setResearchCandidateDecisionReason("");
     },
   });
@@ -1547,6 +1582,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-events", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-observations", selectedResearchCandidateId],
       });
     },
   });
@@ -1813,11 +1851,23 @@ function AuthenticatedDashboard({
   const researchCandidateEvents: ResearchCandidateLifecycleEvent[] =
     selectedResearchCandidateEventsQuery.data?.events ?? [];
   const latestResearchCandidateObservation: StrategyCandidateObservation | null =
-    observeResearchCandidateMutation.data?.observation ?? lastResearchCandidateObservation;
+    observeResearchCandidateMutation.data?.observation ??
+    lastResearchCandidateObservation ??
+    selectedResearchCandidateObservationQuery.data?.observations?.[0] ??
+    null;
   const latestResearchCandidateRunnerAlignment =
     latestResearchCandidateObservation?.runner_alignment ??
     latestResearchCandidateObservation?.summary.runner_alignment ??
     null;
+  const researchCandidateObservationFreshness =
+    observationFreshnessState(latestResearchCandidateObservation);
+  const researchCandidateObservationAgeSeconds =
+    observationAgeSeconds(latestResearchCandidateObservation);
+  const acceptForShadowBlockedByStale =
+    researchCandidateObservationFreshness === "STALE";
+  const decideResearchCandidateErrorPayload = getApiErrorPayload(
+    decideResearchCandidateMutation.error,
+  );
   const feeds = feedQuery.data?.feeds ?? [];
   const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
@@ -4241,7 +4291,8 @@ function AuthenticatedDashboard({
                         disabled={
                           (user.role !== "OWNER" && user.role !== "OPERATOR") ||
                           !selectedResearchCandidate ||
-                          selectedResearchCandidate.status === "ARCHIVED"
+                          selectedResearchCandidate.status === "ARCHIVED" ||
+                          acceptForShadowBlockedByStale
                         }
                       />
                       <ActionButton
@@ -4267,16 +4318,58 @@ function AuthenticatedDashboard({
                         success={
                           decideResearchCandidateMutation.data
                             ? decideResearchCandidateMutation.data.candidate.status
-                            : undefined
+                          : undefined
                         }
                       />
                     </div>
+                    {decideResearchCandidateErrorPayload?.rejection ? (
+                      <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-xs text-amber-50/90">
+                        <div className="font-semibold text-amber-100">
+                          {decideResearchCandidateErrorPayload.rejection.reason_code}
+                        </div>
+                        <div className="mt-1">
+                          {decideResearchCandidateErrorPayload.rejection.recommendation}
+                        </div>
+                        <div className="mt-1">
+                          Last observed:{" "}
+                          {formatDateTime(
+                            decideResearchCandidateErrorPayload.rejection.last_observed_at,
+                          )}
+                        </div>
+                        <div>
+                          Observation age:{" "}
+                          {decideResearchCandidateErrorPayload.rejection.observation_age_seconds ??
+                            "-"}
+                          s
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="rounded-2xl border border-border bg-surface/40 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted">
                       Shadow Observation
                     </div>
                     <div className="mt-2 space-y-2 text-sm text-slate-200">
+                      <div>
+                        Freshness:{" "}
+                        {researchCandidateObservationFreshness === "FRESH"
+                          ? "Fresh"
+                          : researchCandidateObservationFreshness === "STALE"
+                            ? "Stale"
+                            : researchCandidateObservationFreshness === "NOT_OBSERVED"
+                              ? "Not observed"
+                              : "Unknown"}
+                      </div>
+                      <div>
+                        Last observed:{" "}
+                        {formatDateTime(latestResearchCandidateObservation?.last_observed_at)}
+                      </div>
+                      <div>
+                        Observation age:{" "}
+                        {researchCandidateObservationAgeSeconds !== null
+                          ? `${researchCandidateObservationAgeSeconds}s`
+                          : "-"}
+                      </div>
                       <div>
                         Status: {latestResearchCandidateObservation?.status ?? "NONE"}
                       </div>
@@ -4302,6 +4395,17 @@ function AuthenticatedDashboard({
                           : "UNKNOWN"}
                       </div>
                     </div>
+                    {acceptForShadowBlockedByStale ? (
+                      <div className="mt-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4">
+                        <div className="text-sm font-semibold text-amber-100">
+                          Observe again before accept
+                        </div>
+                        <div className="mt-1 text-xs text-amber-50/80">
+                          Latest persisted observation is stale. Run candidate observation again
+                          before accepting for shadow.
+                        </div>
+                      </div>
+                    ) : null}
                     {latestResearchCandidateRunnerAlignment &&
                     !latestResearchCandidateRunnerAlignment.strategy_config_matches_runner ? (
                       <div className="mt-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-4">

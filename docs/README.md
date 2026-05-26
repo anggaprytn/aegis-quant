@@ -18,11 +18,13 @@ Research workflow:
 4. Create a research candidate from the strongest experiment run or manual review package.
 5. Review candidate details, lifecycle events, and read-only observation output.
 6. Explicitly mark the candidate as observing when shadow review begins.
-7. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
+7. Re-run observation whenever runner configuration or readiness context changes.
+8. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
 
 Research candidate lifecycle boundaries:
 - Candidate creation, observation, decisions, and archival do not execute trades.
 - Candidate lifecycle operations do not auto-submit anything.
 - Candidate observation does not mutate paper or testnet execution state.
 - Candidate lifecycle operations do not mutate signals, risk decisions, paper state, testnet state, or live execution state.
+- `ACCEPT_FOR_SHADOW` requires a fresh persisted observation. The default freshness window is 15 minutes.
 - No live trading path is enabled.

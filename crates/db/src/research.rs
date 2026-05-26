@@ -95,6 +95,12 @@ pub struct StrategyCandidateObservationRecord {
     pub decision: String,
     pub started_at: DateTime<Utc>,
     pub evaluated_at: DateTime<Utc>,
+    pub last_observed_at: DateTime<Utc>,
+    pub observation_expires_at: Option<DateTime<Utc>>,
+    pub observation_max_age_seconds: Option<i64>,
+    pub observation_snapshot_hash: Option<String>,
+    pub runner_config_snapshot: Option<Value>,
+    pub readiness_snapshot: Option<Value>,
     pub created_by: Option<Uuid>,
     pub correlation_id: Option<Uuid>,
 }
@@ -647,6 +653,12 @@ pub async fn get_latest_strategy_candidate_observation(
             decision,
             started_at,
             evaluated_at,
+            last_observed_at,
+            observation_expires_at,
+            observation_max_age_seconds,
+            observation_snapshot_hash,
+            runner_config_snapshot,
+            readiness_snapshot,
             created_by,
             correlation_id
         FROM strategy_candidate_observations
@@ -948,10 +960,19 @@ pub async fn insert_strategy_candidate_observation(
             decision,
             started_at,
             evaluated_at,
+            last_observed_at,
+            observation_expires_at,
+            observation_max_age_seconds,
+            observation_snapshot_hash,
+            runner_config_snapshot,
+            readiness_snapshot,
             created_by,
             correlation_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19
+        )
         RETURNING
             id,
             candidate_id,
@@ -964,6 +985,12 @@ pub async fn insert_strategy_candidate_observation(
             decision,
             started_at,
             evaluated_at,
+            last_observed_at,
+            observation_expires_at,
+            observation_max_age_seconds,
+            observation_snapshot_hash,
+            runner_config_snapshot,
+            readiness_snapshot,
             created_by,
             correlation_id
         "#,
@@ -979,6 +1006,12 @@ pub async fn insert_strategy_candidate_observation(
     .bind(observation.decision.as_str())
     .bind(observation.started_at)
     .bind(observation.evaluated_at)
+    .bind(observation.last_observed_at)
+    .bind(observation.observation_expires_at)
+    .bind(observation.observation_max_age_seconds)
+    .bind(&observation.observation_snapshot_hash)
+    .bind(observation.runner_config_snapshot.clone())
+    .bind(observation.readiness_snapshot.clone())
     .bind(observation.created_by)
     .bind(observation.correlation_id)
     .fetch_one(&mut *tx)
@@ -1032,6 +1065,12 @@ pub async fn get_strategy_candidate_observation(
             decision,
             started_at,
             evaluated_at,
+            last_observed_at,
+            observation_expires_at,
+            observation_max_age_seconds,
+            observation_snapshot_hash,
+            runner_config_snapshot,
+            readiness_snapshot,
             created_by,
             correlation_id
         FROM strategy_candidate_observations
@@ -1063,6 +1102,12 @@ pub async fn list_strategy_candidate_observations(
             decision,
             started_at,
             evaluated_at,
+            last_observed_at,
+            observation_expires_at,
+            observation_max_age_seconds,
+            observation_snapshot_hash,
+            runner_config_snapshot,
+            readiness_snapshot,
             created_by,
             correlation_id
         FROM strategy_candidate_observations
@@ -1391,6 +1436,12 @@ pub fn strategy_candidate_observation_result_from_record(
             .parse::<StrategyCandidateObservationDecision>()?,
         started_at: record.started_at,
         evaluated_at: record.evaluated_at,
+        last_observed_at: record.last_observed_at,
+        observation_expires_at: record.observation_expires_at,
+        observation_max_age_seconds: record.observation_max_age_seconds,
+        observation_snapshot_hash: record.observation_snapshot_hash.clone(),
+        runner_config_snapshot: record.runner_config_snapshot.clone(),
+        readiness_snapshot: record.readiness_snapshot.clone(),
         created_by: record.created_by,
         correlation_id: record.correlation_id,
     })
@@ -1864,6 +1915,12 @@ fn map_strategy_candidate_observation(
         decision: row.get("decision"),
         started_at: row.get("started_at"),
         evaluated_at: row.get("evaluated_at"),
+        last_observed_at: row.get("last_observed_at"),
+        observation_expires_at: row.get("observation_expires_at"),
+        observation_max_age_seconds: row.get("observation_max_age_seconds"),
+        observation_snapshot_hash: row.get("observation_snapshot_hash"),
+        runner_config_snapshot: row.get("runner_config_snapshot"),
+        readiness_snapshot: row.get("readiness_snapshot"),
         created_by: row.get("created_by"),
         correlation_id: row.get("correlation_id"),
     }

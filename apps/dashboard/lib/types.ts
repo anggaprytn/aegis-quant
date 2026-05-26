@@ -1,6 +1,14 @@
 export type ApiError = {
   error: string;
   message: string;
+  rejection?: {
+    reason_code: string;
+    recommendation: string;
+    last_observed_at: string | null;
+    observation_expires_at: string | null;
+    observation_age_seconds: number | null;
+    observation_max_age_seconds: number | null;
+  };
   request_id?: string;
   correlation_id?: string;
   timestamp?: string;
@@ -1001,6 +1009,12 @@ export type StrategyCandidateObservation = {
   decision: StrategyCandidateObservationDecision;
   started_at: string;
   evaluated_at: string;
+  last_observed_at: string;
+  observation_expires_at: string | null;
+  observation_max_age_seconds: number | null;
+  observation_snapshot_hash: string | null;
+  runner_config_snapshot: Record<string, unknown> | null;
+  readiness_snapshot: Record<string, unknown> | null;
   created_by: string | null;
   correlation_id: string | null;
 };
@@ -1039,6 +1053,13 @@ export type ResearchCandidateEventsResponse = {
 
 export type StrategyCandidateObservationResponse = {
   observation: StrategyCandidateObservation;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyCandidateObservationsResponse = {
+  observations: StrategyCandidateObservation[];
   request_id: string;
   correlation_id: string;
   timestamp: string;

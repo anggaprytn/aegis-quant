@@ -1,5 +1,6 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{Duration, Utc};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use aegis_core::{
@@ -92,6 +93,12 @@ fn evaluate_runner_alignment(
     }
 }
 
+fn runner_config_snapshot_hash(snapshot: &serde_json::Value) -> Result<String> {
+    let bytes = serde_json::to_vec(snapshot)?;
+    let digest = Sha256::digest(bytes);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 pub async fn evaluate_candidate_observation(
     state: &AppState,
     request: &StrategyCandidateObservationRequest,
@@ -161,6 +168,15 @@ pub async fn evaluate_candidate_observation(
         None,
     )
     .await?;
+    let runner_config_snapshot = serde_json::to_value(&runner_snapshot.config)?;
+    let observation_snapshot_hash = runner_config_snapshot_hash(&runner_config_snapshot)?;
+    let readiness_snapshot = serde_json::to_value(&readiness)?;
+    let observation_max_age_seconds =
+        Some(state.config.research_candidate_observation_max_age_seconds);
+    let observation_expires_at = Some(
+        evaluated_at
+            + Duration::seconds(state.config.research_candidate_observation_max_age_seconds),
+    );
     let summary = aegis_core::evaluate_strategy_candidate_observation(
         &requirements,
         window_start,
@@ -201,6 +217,12 @@ pub async fn evaluate_candidate_observation(
         summary,
         started_at: window_start,
         evaluated_at,
+        last_observed_at: evaluated_at,
+        observation_expires_at,
+        observation_max_age_seconds,
+        observation_snapshot_hash: Some(observation_snapshot_hash),
+        runner_config_snapshot: Some(runner_config_snapshot),
+        readiness_snapshot: Some(readiness_snapshot),
         created_by,
         correlation_id: Some(correlation_id),
     };

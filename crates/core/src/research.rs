@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -355,6 +355,11 @@ pub struct ResearchCandidatePromotionReadiness {
     pub target: String,
     pub latest_observation_id: Option<Uuid>,
     pub latest_observation_decision: Option<StrategyCandidateObservationDecision>,
+    pub last_observed_at: Option<DateTime<Utc>>,
+    pub observation_expires_at: Option<DateTime<Utc>>,
+    pub observation_age_seconds: Option<i64>,
+    pub observation_max_age_seconds: Option<i64>,
+    pub observation_snapshot_hash: Option<String>,
     pub latest_recommendation: Option<String>,
     pub readiness_status: Option<ExecutionReadinessStatus>,
     pub readiness_score: Option<i32>,
@@ -599,6 +604,12 @@ fn default_min_observation_hours() -> i64 {
     24
 }
 
+fn default_last_observed_at() -> DateTime<Utc> {
+    Utc.timestamp_opt(0, 0)
+        .single()
+        .expect("unix epoch should be valid")
+}
+
 fn default_min_shadow_runs() -> i64 {
     30
 }
@@ -784,8 +795,30 @@ pub struct StrategyCandidateObservationResult {
     pub decision: StrategyCandidateObservationDecision,
     pub started_at: DateTime<Utc>,
     pub evaluated_at: DateTime<Utc>,
+    #[serde(default = "default_last_observed_at")]
+    pub last_observed_at: DateTime<Utc>,
+    #[serde(default)]
+    pub observation_expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub observation_max_age_seconds: Option<i64>,
+    #[serde(default)]
+    pub observation_snapshot_hash: Option<String>,
+    #[serde(default)]
+    pub runner_config_snapshot: Option<Value>,
+    #[serde(default)]
+    pub readiness_snapshot: Option<Value>,
     pub created_by: Option<Uuid>,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateDecisionRejection {
+    pub reason_code: String,
+    pub recommendation: String,
+    pub last_observed_at: Option<DateTime<Utc>>,
+    pub observation_expires_at: Option<DateTime<Utc>>,
+    pub observation_age_seconds: Option<i64>,
+    pub observation_max_age_seconds: Option<i64>,
 }
 
 impl StrategyCandidateObservationRequest {

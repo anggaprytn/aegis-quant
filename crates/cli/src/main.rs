@@ -1,7 +1,7 @@
 use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
-    ResearchCandidateDecisionRequest, TestnetShadowRunnerControlAction,
-    TestnetShadowRunnerControlRequest,
+    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
+    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -11,7 +11,7 @@ use cli::api::{
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
     build_research_data_build_request, build_research_data_coverage_query,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
-    build_strategy_walk_forward_request, ApiClient,
+    build_strategy_walk_forward_request, ApiClient, ApiClientError,
     CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
     RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
 };
@@ -29,6 +29,35 @@ use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
 };
 use cli::output;
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize, Serialize)]
+struct ResearchCandidateDecisionErrorResponse {
+    message: String,
+    rejection: ResearchCandidateDecisionRejection,
+}
+
+fn try_print_research_candidate_decision_rejection(
+    error: &ApiClientError,
+    json_output: bool,
+) -> anyhow::Result<bool> {
+    let ApiClientError::Http {
+        body: Some(body), ..
+    } = error
+    else {
+        return Ok(false);
+    };
+    let parsed: ResearchCandidateDecisionErrorResponse = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    if json_output {
+        output::print_json(&parsed)?;
+    } else {
+        output::print_research_candidate_decision_rejection(&parsed.rejection, &parsed.message);
+    }
+    Ok(true)
+}
 
 fn login_required_message() -> &'static str {
     "login required: run `aegis auth login --email <EMAIL> --password <PASSWORD>` or set AEGIS_ACCESS_TOKEN"
@@ -537,7 +566,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 ResearchCandidateCommands::Decide(args) => {
-                    let response = client
+                    let response = match client
                         .decide_research_candidate(
                             args.candidate_id,
                             &ResearchCandidateDecisionRequest {
@@ -548,7 +577,16 @@ async fn main() -> anyhow::Result<()> {
                                 correlation_id: None,
                             },
                         )
-                        .await?;
+                        .await
+                    {
+                        Ok(value) => value,
+                        Err(err)
+                            if try_print_research_candidate_decision_rejection(&err, cli.json)? =>
+                        {
+                            return Ok(());
+                        }
+                        Err(err) => return Err(err.into()),
+                    };
                     if cli.json {
                         output::print_json(&response)?;
                     } else {

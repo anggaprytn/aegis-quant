@@ -3271,6 +3271,20 @@ fn sample_candidate_observation(
         decision: StrategyCandidateObservationDecision::Pass,
         started_at: fixed_time(),
         evaluated_at,
+        last_observed_at: evaluated_at,
+        observation_expires_at: Some(evaluated_at + chrono::Duration::minutes(15)),
+        observation_max_age_seconds: Some(900),
+        observation_snapshot_hash: Some("snapshot-hash".to_string()),
+        runner_config_snapshot: Some(serde_json::json!({
+            "enabled": true,
+            "timeframe": candidate.timeframe,
+            "symbols": [candidate.symbol],
+            "strategies": [candidate.strategy_id],
+        })),
+        readiness_snapshot: Some(serde_json::json!({
+            "status": "READY",
+            "score": 93,
+        })),
         created_by: None,
         correlation_id: Some(Uuid::new_v4()),
     }
@@ -3311,6 +3325,15 @@ async fn candidate_observation_persists() {
     assert_eq!(
         hydrated.status,
         StrategyCandidateObservationStatus::ReadyForReview
+    );
+    assert_eq!(hydrated.last_observed_at, observation.last_observed_at);
+    assert_eq!(
+        hydrated.observation_max_age_seconds,
+        observation.observation_max_age_seconds
+    );
+    assert_eq!(
+        hydrated.observation_snapshot_hash,
+        observation.observation_snapshot_hash
     );
 }
 

@@ -118,9 +118,11 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 4. Create a research candidate from an experiment run or manual review package.
 5. Inspect the candidate, observation output, and lifecycle events.
 6. Explicitly mark it as observing when shadow review begins.
-7. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
+7. Re-run observation if runner configuration or readiness context changed.
+8. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
 
 This workflow does not enable live trading, does not execute trades during candidate lifecycle operations, and does not auto-submit orders. Observation and candidate decisions do not mutate paper or testnet execution state.
+`ACCEPT_FOR_SHADOW` requires the latest persisted observation to be fresh. The default freshness window is 15 minutes.
 
 ## Local prerequisites
 
@@ -323,6 +325,8 @@ Research candidate lifecycle examples:
 `cargo run -p cli -- research candidates decide <candidate_id> --decision REJECT --reason "bad drawdown"`
 
 `cargo run -p cli -- research candidates decide <candidate_id> --decision ACCEPT_FOR_SHADOW --reason "aligned and ready"`
+
+If `ACCEPT_FOR_SHADOW` is rejected with `OBSERVATION_STALE` or `RUNNER_CONFIG_CHANGED`, run `observe` again before retrying.
 
 ## Strategy experiment interpretation
 

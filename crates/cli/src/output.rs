@@ -1,4 +1,6 @@
-use aegis_core::{CandleAggregationResult, MarketCandleCoverageSummary, User};
+use aegis_core::{
+    CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection, User,
+};
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
     TestnetShadowPromotionResult, TestnetShadowRunResult,
@@ -1641,6 +1643,21 @@ pub fn print_research_candidate_observation(
         observation.status.as_str()
     );
     println!(
+        "Last observed at: {}",
+        observation.last_observed_at.to_rfc3339()
+    );
+    println!(
+        "Observation freshness: max_age={}s expires_at={}",
+        observation
+            .observation_max_age_seconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        observation
+            .observation_expires_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
         "Shadow runs: {}  Would-submit: {}  No-signal: {}  Risk-rejected: {}  Skipped: {}",
         observation.summary.shadow_runs,
         observation.summary.would_submit_count,
@@ -1713,6 +1730,30 @@ pub fn print_research_candidate_observation(
         }
     };
     println!("Next action: {}", next_action);
+}
+
+pub fn print_research_candidate_decision_rejection(
+    rejection: &ResearchCandidateDecisionRejection,
+    message: &str,
+) {
+    println!("Decision: rejected");
+    println!("Reason: {}", rejection.reason_code);
+    println!("Message: {}", message);
+    println!("Recommendation: {}", rejection.recommendation);
+    println!(
+        "Last observed at: {}",
+        rejection
+            .last_observed_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Observation age: {}",
+        rejection
+            .observation_age_seconds
+            .map(|value| format!("{value}s"))
+            .unwrap_or_else(|| "-".to_string())
+    );
 }
 
 pub fn print_strategy_performance_summary(response: &StrategyPerformanceSummaryResponse) {

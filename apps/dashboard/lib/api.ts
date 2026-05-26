@@ -70,6 +70,7 @@ import type {
   ResearchCandidateEventsResponse,
   ResearchCandidateResponse,
   ResearchCandidatesResponse,
+  StrategyCandidateObservationsResponse,
   StrategyCandidateObservationResponse,
   RiskActionResponse,
   RiskConfig,
@@ -258,6 +259,13 @@ export function getErrorMessage(error: unknown) {
   return "Unknown error";
 }
 
+export function getApiErrorPayload(error: unknown): ApiError | undefined {
+  if (error instanceof HttpError) {
+    return error.payload;
+  }
+  return undefined;
+}
+
 export const api = {
   setAccessToken: (token: string | null) => {
     accessToken = token;
@@ -368,6 +376,8 @@ export const api = {
     request<ResearchCandidateResponse>(`/research/candidates/${id}`),
   listResearchCandidateEvents: (id: string) =>
     request<ResearchCandidateEventsResponse>(`/research/candidates/${id}/events`),
+  listResearchCandidateObservations: (id: string) =>
+    request<StrategyCandidateObservationsResponse>(`/research/candidates/${id}/observations`),
   observeResearchCandidate: (id: string) =>
     request<StrategyCandidateObservationResponse>(`/research/candidates/${id}/observe`, {
       method: "POST",
