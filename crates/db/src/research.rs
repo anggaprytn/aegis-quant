@@ -11,15 +11,17 @@ use aegis_core::{
     MarketDataSource, ResearchCandidate, ResearchCandidateDecision,
     ResearchCandidateLifecycleEvent, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationRecommendation, ResearchCandidateQualificationStatus,
-    ResearchCandidateQualificationThresholds, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchDataCoverageResult,
-    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, ResearchDatasetBuildStatus,
-    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
-    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
-    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
-    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, Symbol,
+    ResearchCandidateQualificationThresholds, ResearchCandidateReview,
+    ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
+    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
+    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+    StrategyCandidateObservationSummary, StrategyResearchCandidate,
+    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
+    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
+    StrategyResearchCandidateStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -184,6 +186,22 @@ pub struct ResearchCandidateQualificationEvaluationRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateReviewRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub action: String,
+    pub status: String,
+    pub previous_candidate_status: String,
+    pub next_candidate_status: Option<String>,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    pub actor_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+    pub qualification_evaluation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateWatchlistRow {
     pub candidate_id: Uuid,
     pub strategy_id: String,
@@ -302,6 +320,23 @@ fn map_research_candidate_watchlist_row(
     }
 }
 
+fn map_research_candidate_review(row: sqlx::postgres::PgRow) -> ResearchCandidateReviewRecord {
+    ResearchCandidateReviewRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        action: row.get("action"),
+        status: row.get("status"),
+        previous_candidate_status: row.get("previous_candidate_status"),
+        next_candidate_status: row.get("next_candidate_status"),
+        reason: row.get("reason"),
+        notes: row.get("notes"),
+        actor_id: row.get("actor_id"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+        qualification_evaluation_id: row.get("qualification_evaluation_id"),
+    }
+}
+
 fn parse_qualification_status(value: &str) -> Result<ResearchCandidateQualificationStatus> {
     match value.trim().to_ascii_uppercase().as_str() {
         "QUALIFIED" => Ok(ResearchCandidateQualificationStatus::Qualified),
@@ -353,6 +388,14 @@ fn parse_qualification_recommendation(
     }
 }
 
+fn parse_research_candidate_review_action(value: &str) -> Result<ResearchCandidateReviewAction> {
+    value.parse().map_err(Into::into)
+}
+
+fn parse_research_candidate_review_status(value: &str) -> Result<ResearchCandidateReviewStatus> {
+    value.parse().map_err(Into::into)
+}
+
 fn parse_execution_readiness_status(value: &str) -> Result<ExecutionReadinessStatus> {
     match value.trim().to_ascii_uppercase().as_str() {
         "READY" => Ok(ExecutionReadinessStatus::Ready),
@@ -390,6 +433,29 @@ pub fn research_candidate_qualification_evaluation_from_record(
         )?,
         evaluated_at: record.evaluated_at,
         correlation_id: record.correlation_id,
+    })
+}
+
+pub fn research_candidate_review_from_record(
+    record: &ResearchCandidateReviewRecord,
+) -> Result<ResearchCandidateReview> {
+    Ok(ResearchCandidateReview {
+        id: record.id,
+        candidate_id: record.candidate_id,
+        action: parse_research_candidate_review_action(&record.action)?,
+        status: parse_research_candidate_review_status(&record.status)?,
+        previous_candidate_status: record.previous_candidate_status.parse()?,
+        next_candidate_status: record
+            .next_candidate_status
+            .as_deref()
+            .map(str::parse)
+            .transpose()?,
+        reason: record.reason.clone(),
+        notes: record.notes.clone(),
+        actor_id: record.actor_id,
+        created_at: record.created_at,
+        correlation_id: record.correlation_id,
+        qualification_evaluation_id: record.qualification_evaluation_id,
     })
 }
 
@@ -841,6 +907,272 @@ pub async fn list_research_candidate_events(
     .await?;
 
     Ok(rows.into_iter().map(map_research_candidate_event).collect())
+}
+
+pub async fn insert_research_candidate_review(
+    pool: &PgPool,
+    review: &ResearchCandidateReview,
+) -> Result<ResearchCandidateReviewRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_reviews (
+            id,
+            candidate_id,
+            action,
+            status,
+            previous_candidate_status,
+            next_candidate_status,
+            reason,
+            notes,
+            actor_id,
+            created_at,
+            correlation_id,
+            qualification_evaluation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING
+            id,
+            candidate_id,
+            action,
+            status,
+            previous_candidate_status,
+            next_candidate_status,
+            reason,
+            notes,
+            actor_id,
+            created_at,
+            correlation_id,
+            qualification_evaluation_id
+        "#,
+    )
+    .bind(review.id)
+    .bind(review.candidate_id)
+    .bind(review.action.as_str())
+    .bind(review.status.as_str())
+    .bind(review.previous_candidate_status.as_str())
+    .bind(
+        review
+            .next_candidate_status
+            .map(|value| value.as_str().to_string()),
+    )
+    .bind(&review.reason)
+    .bind(&review.notes)
+    .bind(review.actor_id)
+    .bind(review.created_at)
+    .bind(review.correlation_id)
+    .bind(review.qualification_evaluation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_research_candidate_review(row))
+}
+
+pub async fn list_research_candidate_reviews(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Vec<ResearchCandidateReviewRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            action,
+            status,
+            previous_candidate_status,
+            next_candidate_status,
+            reason,
+            notes,
+            actor_id,
+            created_at,
+            correlation_id,
+            qualification_evaluation_id
+        FROM research_candidate_reviews
+        WHERE candidate_id = $1
+        ORDER BY created_at DESC, id DESC
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_research_candidate_review)
+        .collect())
+}
+
+pub async fn apply_research_candidate_review(
+    pool: &PgPool,
+    review: &ResearchCandidateReview,
+    lifecycle_event: Option<&ResearchCandidateLifecycleEvent>,
+) -> Result<(
+    ResearchCandidateReviewRecord,
+    Option<ResearchCandidateRecord>,
+)> {
+    let mut tx = pool.begin().await?;
+    let updated_candidate = if let Some(next_status) = review.next_candidate_status {
+        let row = sqlx::query(
+            r#"
+            UPDATE research_candidates
+            SET status = $2,
+                rejection_reason = $3,
+                notes = COALESCE($4, notes),
+                updated_at = $5,
+                correlation_id = COALESCE($6, correlation_id)
+            WHERE id = $1
+            RETURNING
+                id,
+                experiment_id,
+                experiment_run_id,
+                strategy_id,
+                symbol,
+                timeframe,
+                config,
+                score,
+                pnl_pct,
+                max_drawdown_pct,
+                trade_count,
+                win_rate,
+                fee_drag,
+                status,
+                rejection_reason,
+                notes,
+                created_at,
+                updated_at,
+                correlation_id
+            "#,
+        )
+        .bind(review.candidate_id)
+        .bind(next_status.as_str())
+        .bind(if next_status == ResearchCandidateStatus::Rejected {
+            review.reason.as_deref()
+        } else {
+            None
+        })
+        .bind(review.notes.as_deref())
+        .bind(review.created_at)
+        .bind(review.correlation_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if row.is_some() {
+            sqlx::query(
+                r#"
+                UPDATE strategy_research_candidates
+                SET status = $2,
+                    updated_at = $3,
+                    correlation_id = COALESCE($4, correlation_id),
+                    promoted_at = CASE
+                        WHEN $2 = 'PROMOTED_TO_SHADOW_CONFIG' THEN COALESCE(promoted_at, $3)
+                        ELSE promoted_at
+                    END
+                WHERE id = $1
+                "#,
+            )
+            .bind(review.candidate_id)
+            .bind(legacy_status_for_research_candidate(next_status).as_str())
+            .bind(review.created_at)
+            .bind(review.correlation_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        row.map(map_research_candidate)
+    } else {
+        None
+    };
+
+    let review_row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_reviews (
+            id,
+            candidate_id,
+            action,
+            status,
+            previous_candidate_status,
+            next_candidate_status,
+            reason,
+            notes,
+            actor_id,
+            created_at,
+            correlation_id,
+            qualification_evaluation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING
+            id,
+            candidate_id,
+            action,
+            status,
+            previous_candidate_status,
+            next_candidate_status,
+            reason,
+            notes,
+            actor_id,
+            created_at,
+            correlation_id,
+            qualification_evaluation_id
+        "#,
+    )
+    .bind(review.id)
+    .bind(review.candidate_id)
+    .bind(review.action.as_str())
+    .bind(review.status.as_str())
+    .bind(review.previous_candidate_status.as_str())
+    .bind(
+        review
+            .next_candidate_status
+            .map(|value| value.as_str().to_string()),
+    )
+    .bind(&review.reason)
+    .bind(&review.notes)
+    .bind(review.actor_id)
+    .bind(review.created_at)
+    .bind(review.correlation_id)
+    .bind(review.qualification_evaluation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if let Some(event) = lifecycle_event {
+        sqlx::query(
+            r#"
+            INSERT INTO research_candidate_events (
+                id,
+                candidate_id,
+                previous_status,
+                next_status,
+                decision,
+                reason,
+                notes,
+                actor_id,
+                payload,
+                created_at,
+                correlation_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            "#,
+        )
+        .bind(event.id)
+        .bind(event.candidate_id)
+        .bind(
+            event
+                .previous_status
+                .map(|value| value.as_str().to_string()),
+        )
+        .bind(event.next_status.as_str())
+        .bind(event.decision.as_str())
+        .bind(&event.reason)
+        .bind(&event.notes)
+        .bind(event.actor_id)
+        .bind(event.payload.clone())
+        .bind(event.created_at)
+        .bind(event.correlation_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok((map_research_candidate_review(review_row), updated_candidate))
 }
 
 pub async fn get_latest_strategy_candidate_observation(
@@ -1662,6 +1994,38 @@ pub async fn get_latest_research_candidate_qualification_evaluation(
         "#,
     )
     .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_qualification_evaluation))
+}
+
+pub async fn get_research_candidate_qualification_evaluation_by_id(
+    pool: &PgPool,
+    evaluation_id: Uuid,
+) -> Result<Option<ResearchCandidateQualificationEvaluationRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            status,
+            score,
+            latest_readiness_status,
+            total_shadow_runs::BIGINT AS total_shadow_runs,
+            would_submit_count::BIGINT AS would_submit_count,
+            risk_rejection_rate_pct,
+            warnings,
+            blockers,
+            recommendations,
+            thresholds,
+            evaluated_at,
+            correlation_id
+        FROM research_candidate_qualification_evaluations
+        WHERE id = $1
+        "#,
+    )
+    .bind(evaluation_id)
     .fetch_optional(pool)
     .await?;
 

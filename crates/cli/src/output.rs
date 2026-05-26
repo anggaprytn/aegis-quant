@@ -3,9 +3,10 @@ use aegis_core::{
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationTrend, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateWatchlistEntry, User,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
+    ResearchCandidateWatchlistEntry, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1627,6 +1628,60 @@ pub fn print_research_candidate_events(events: &[aegis_core::ResearchCandidateLi
             event.reason.clone().unwrap_or_else(|| "-".to_string())
         );
     }
+}
+
+pub fn print_research_candidate_reviews(reviews: &[ResearchCandidateReview]) {
+    if reviews.is_empty() {
+        println!("No research candidate reviews found.");
+        return;
+    }
+
+    for review in reviews {
+        println!(
+            "{}  action={} status={} before={} after={} reason={} qualification_evaluation_id={}",
+            review.created_at.to_rfc3339(),
+            review.action.as_str(),
+            review.status.as_str(),
+            review.previous_candidate_status.as_str(),
+            review
+                .next_candidate_status
+                .map(|value| value.as_str().to_string())
+                .unwrap_or_else(|| review.previous_candidate_status.as_str().to_string()),
+            review.reason.clone().unwrap_or_else(|| "-".to_string()),
+            review
+                .qualification_evaluation_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+}
+
+pub fn print_research_candidate_review_result(result: &ResearchCandidateReviewResult) {
+    println!("Action: {}", result.review.action.as_str());
+    println!("Review Status: {}", result.review.status.as_str());
+    println!(
+        "Candidate Status: {} -> {}",
+        result.candidate_status_before.as_str(),
+        result.candidate_status_after.as_str()
+    );
+    println!(
+        "Reason: {}",
+        result
+            .review
+            .reason
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("-")
+    );
+    println!(
+        "Notes: {}",
+        result
+            .review
+            .notes
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("-")
+    );
 }
 
 pub fn print_research_candidate_observation(

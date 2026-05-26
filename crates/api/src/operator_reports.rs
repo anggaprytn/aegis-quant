@@ -902,6 +902,11 @@ async fn load_research_candidate_qualification_snapshot(
         lost_qualification_count: 0,
         needs_attention_count: 0,
         stale_evaluation_count: 0,
+        reviews_in_window: 0,
+        ready_for_testnet_review_count: 0,
+        rejected_from_watchlist_count: 0,
+        archived_from_watchlist_count: 0,
+        candidates_needing_review_count: 0,
         top_candidate: None,
     };
 
@@ -972,13 +977,16 @@ async fn load_research_candidate_qualification_snapshot(
             match trend {
                 aegis_core::ResearchCandidateQualificationTrend::NewlyQualified => {
                     summary.newly_qualified_count += 1;
+                    summary.candidates_needing_review_count += 1;
                 }
                 aegis_core::ResearchCandidateQualificationTrend::LostQualification => {
                     summary.lost_qualification_count += 1;
                     summary.needs_attention_count += 1;
+                    summary.candidates_needing_review_count += 1;
                 }
                 aegis_core::ResearchCandidateQualificationTrend::NeedsAttention => {
                     summary.needs_attention_count += 1;
+                    summary.candidates_needing_review_count += 1;
                 }
                 aegis_core::ResearchCandidateQualificationTrend::Degrading => {
                     summary.needs_attention_count += 1;
@@ -1004,6 +1012,34 @@ async fn load_research_candidate_qualification_snapshot(
             });
         }
     }
+
+    let review_counts = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS reviews_in_window,
+            COUNT(*) FILTER (WHERE review.action = 'MARK_READY_FOR_TESTNET_REVIEW')::BIGINT AS ready_for_testnet_review_count,
+            COUNT(*) FILTER (WHERE review.action = 'REJECT_FROM_WATCHLIST')::BIGINT AS rejected_from_watchlist_count,
+            COUNT(*) FILTER (WHERE review.action = 'ARCHIVE_FROM_WATCHLIST')::BIGINT AS archived_from_watchlist_count
+        FROM research_candidate_reviews review
+        INNER JOIN research_candidates candidate
+            ON candidate.id = review.candidate_id
+        WHERE review.created_at >= $1
+          AND review.created_at <= $2
+          AND ($3::text IS NULL OR candidate.symbol = $3)
+          AND ($4::text IS NULL OR candidate.strategy_id = $4)
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .bind(request.symbol.as_deref())
+    .bind(request.strategy_id.as_deref())
+    .fetch_one(&state.db_pool)
+    .await?;
+
+    summary.reviews_in_window = review_counts.get("reviews_in_window");
+    summary.ready_for_testnet_review_count = review_counts.get("ready_for_testnet_review_count");
+    summary.rejected_from_watchlist_count = review_counts.get("rejected_from_watchlist_count");
+    summary.archived_from_watchlist_count = review_counts.get("archived_from_watchlist_count");
 
     Ok(summary)
 }
@@ -1225,6 +1261,26 @@ fn build_findings(
             OperatorReportSeverity::Medium,
             "Candidate lost qualification",
             "At least one persisted qualification evaluation shows a candidate lost qualified status.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.newly_qualified_count > 0 {
+        findings.push(finding(
+            "candidate_newly_qualified_awaiting_review",
+            OperatorReportSeverity::Low,
+            "Newly qualified candidates awaiting review",
+            "At least one candidate became qualified and should receive explicit operator review.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.ready_for_testnet_review_count > 0 {
+        findings.push(finding(
+            "candidate_ready_for_testnet_review",
+            OperatorReportSeverity::Low,
+            "Candidates marked ready for testnet review",
+            "One or more review actions recorded readiness for testnet review without submitting orders.",
             "research_candidate_qualification",
         ));
     }
@@ -1624,6 +1680,34 @@ fn build_sections(
                 highlight(
                     "Stale Evaluations",
                     research_qualification.stale_evaluation_count.to_string(),
+                ),
+                highlight(
+                    "Reviews In Window",
+                    research_qualification.reviews_in_window.to_string(),
+                ),
+                highlight(
+                    "Ready For Testnet Review",
+                    research_qualification
+                        .ready_for_testnet_review_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Rejected From Watchlist",
+                    research_qualification
+                        .rejected_from_watchlist_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Archived From Watchlist",
+                    research_qualification
+                        .archived_from_watchlist_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Candidates Needing Review",
+                    research_qualification
+                        .candidates_needing_review_count
+                        .to_string(),
                 ),
                 highlight(
                     "Top Candidate",
@@ -2056,6 +2140,11 @@ mod tests {
             lost_qualification_count: 0,
             needs_attention_count: 0,
             stale_evaluation_count: 0,
+            reviews_in_window: 0,
+            ready_for_testnet_review_count: 0,
+            rejected_from_watchlist_count: 0,
+            archived_from_watchlist_count: 0,
+            candidates_needing_review_count: 0,
             top_candidate: None,
         }
     }

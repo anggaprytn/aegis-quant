@@ -68,6 +68,9 @@ import type {
   ResearchCandidateQualificationEvaluateResponse,
   ResearchCandidateQualificationHistoryResponse,
   ResearchCandidateObservationSummaryResponse,
+  ResearchCandidateReviewRequest,
+  ResearchCandidateReviewResponse,
+  ResearchCandidateReviewsResponse,
   ResearchCandidateShadowPerformanceResponse,
   CreateResearchCandidateFromExperimentRunRequest,
   CreateResearchCandidateRequest,
@@ -414,6 +417,16 @@ export const api = {
       undefined,
       { limit },
     ),
+  getResearchCandidateReviews: (id: string) =>
+    request<ResearchCandidateReviewsResponse>(`/research/candidates/${id}/reviews`),
+  createResearchCandidateReview: (
+    id: string,
+    payload: ResearchCandidateReviewRequest,
+  ) =>
+    request<ResearchCandidateReviewResponse>(`/research/candidates/${id}/reviews`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getResearchCandidateShadowPerformance: (
     id: string,
     query?: { start_time?: string; end_time?: string },

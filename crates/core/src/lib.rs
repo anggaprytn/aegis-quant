@@ -2806,6 +2806,11 @@ pub struct OperatorReportResearchQualificationSnapshot {
     pub lost_qualification_count: i64,
     pub needs_attention_count: i64,
     pub stale_evaluation_count: i64,
+    pub reviews_in_window: i64,
+    pub ready_for_testnet_review_count: i64,
+    pub rejected_from_watchlist_count: i64,
+    pub archived_from_watchlist_count: i64,
+    pub candidates_needing_review_count: i64,
     pub top_candidate: Option<OperatorReportResearchQualificationTopCandidate>,
 }
 
@@ -6045,12 +6050,24 @@ pub enum CoreError {
     UnsupportedResearchCandidateStatus(String),
     #[error("unsupported research candidate decision: {0}")]
     UnsupportedResearchCandidateDecision(String),
+    #[error("unsupported research candidate review action: {0}")]
+    UnsupportedResearchCandidateReviewAction(String),
+    #[error("unsupported research candidate review status: {0}")]
+    UnsupportedResearchCandidateReviewStatus(String),
     #[error("unsupported research candidate shadow performance status: {0}")]
     UnsupportedResearchCandidateShadowPerformanceStatus(String),
     #[error("unsupported research candidate shadow performance recommendation: {0}")]
     UnsupportedResearchCandidateShadowPerformanceRecommendation(String),
     #[error("invalid research candidate transition from {0} using decision {1}")]
     InvalidResearchCandidateTransition(String, String),
+    #[error("invalid research candidate review action {1} for status {0}")]
+    InvalidResearchCandidateReviewAction(String, String),
+    #[error("research candidate review reason is required for action {0}")]
+    MissingResearchCandidateReviewReason(String),
+    #[error("research candidate review action {0} requires latest qualification status QUALIFIED")]
+    ResearchCandidateReviewRequiresQualified(String),
+    #[error("research candidate review action {0} requires lost qualification, needs attention, or not qualified context")]
+    ResearchCandidateReviewRequiresInvestigationContext(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
     #[error("unsupported exchange environment: {0}")]

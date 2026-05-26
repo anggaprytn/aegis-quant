@@ -11,6 +11,7 @@ use aegis_core::{
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
     ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewRequest, ResearchCandidateReviewResult,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateWatchlistEntry, ResearchDataCoverageResult,
@@ -777,6 +778,26 @@ impl ApiClient {
         self.get(
             "/research/candidates/watchlist",
             &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn list_research_candidate_reviews(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateReviewsResponse, ApiClientError> {
+        self.get(&format!("/research/candidates/{candidate_id}/reviews"), &[])
+            .await
+    }
+
+    pub async fn create_research_candidate_review(
+        &self,
+        candidate_id: Uuid,
+        request: &ResearchCandidateReviewRequest,
+    ) -> Result<ResearchCandidateReviewResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidates/{candidate_id}/reviews"),
+            request,
         )
         .await
     }
@@ -2082,6 +2103,22 @@ pub struct ResearchCandidateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateEventsResponse {
     pub events: Vec<ResearchCandidateLifecycleEvent>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateReviewsResponse {
+    pub reviews: Vec<ResearchCandidateReview>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateReviewResponse {
+    pub result: ResearchCandidateReviewResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -1,7 +1,8 @@
 use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
+    ResearchCandidateReviewRequest, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -530,6 +531,14 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_events(&response.events);
                     }
                 }
+                ResearchCandidateCommands::Reviews { candidate_id } => {
+                    let response = client.list_research_candidate_reviews(candidate_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_reviews(&response.reviews);
+                    }
+                }
                 ResearchCandidateCommands::Observations { candidate_id } => {
                     let response = client
                         .list_research_candidate_observations(candidate_id)
@@ -657,6 +666,25 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate_observation(&response.observation);
+                    }
+                }
+                ResearchCandidateCommands::Review(args) => {
+                    let response = client
+                        .create_research_candidate_review(
+                            args.candidate_id,
+                            &ResearchCandidateReviewRequest {
+                                action: args.action,
+                                reason: args.reason,
+                                notes: args.notes,
+                                qualification_evaluation_id: args.qualification_evaluation_id,
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_review_result(&response.result);
                     }
                 }
                 ResearchCandidateCommands::Decide(args) => {

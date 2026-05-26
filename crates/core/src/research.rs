@@ -352,6 +352,214 @@ pub struct ResearchCandidateDecisionRequest {
     pub correlation_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateReviewAction {
+    MarkReviewed,
+    MarkNeedsMoreObservation,
+    MarkReadyForTestnetReview,
+    MarkInvestigated,
+    RejectFromWatchlist,
+    ArchiveFromWatchlist,
+}
+
+impl ResearchCandidateReviewAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MarkReviewed => "MARK_REVIEWED",
+            Self::MarkNeedsMoreObservation => "MARK_NEEDS_MORE_OBSERVATION",
+            Self::MarkReadyForTestnetReview => "MARK_READY_FOR_TESTNET_REVIEW",
+            Self::MarkInvestigated => "MARK_INVESTIGATED",
+            Self::RejectFromWatchlist => "REJECT_FROM_WATCHLIST",
+            Self::ArchiveFromWatchlist => "ARCHIVE_FROM_WATCHLIST",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateReviewAction {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "MARK_REVIEWED" => Ok(Self::MarkReviewed),
+            "MARK_NEEDS_MORE_OBSERVATION" => Ok(Self::MarkNeedsMoreObservation),
+            "MARK_READY_FOR_TESTNET_REVIEW" => Ok(Self::MarkReadyForTestnetReview),
+            "MARK_INVESTIGATED" => Ok(Self::MarkInvestigated),
+            "REJECT_FROM_WATCHLIST" => Ok(Self::RejectFromWatchlist),
+            "ARCHIVE_FROM_WATCHLIST" => Ok(Self::ArchiveFromWatchlist),
+            other => Err(CoreError::UnsupportedResearchCandidateReviewAction(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateReviewStatus {
+    Recorded,
+    CandidateStatusUpdated,
+}
+
+impl ResearchCandidateReviewStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Recorded => "RECORDED",
+            Self::CandidateStatusUpdated => "CANDIDATE_STATUS_UPDATED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateReviewStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "RECORDED" => Ok(Self::Recorded),
+            "CANDIDATE_STATUS_UPDATED" => Ok(Self::CandidateStatusUpdated),
+            other => Err(CoreError::UnsupportedResearchCandidateReviewStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateReview {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub action: ResearchCandidateReviewAction,
+    pub status: ResearchCandidateReviewStatus,
+    pub previous_candidate_status: ResearchCandidateStatus,
+    pub next_candidate_status: Option<ResearchCandidateStatus>,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    pub actor_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+    pub qualification_evaluation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateReviewRequest {
+    pub action: ResearchCandidateReviewAction,
+    pub reason: Option<String>,
+    pub notes: Option<String>,
+    pub qualification_evaluation_id: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateReviewResult {
+    pub review: ResearchCandidateReview,
+    pub candidate_status_before: ResearchCandidateStatus,
+    pub candidate_status_after: ResearchCandidateStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResearchCandidateReviewContext {
+    pub latest_qualification_status: Option<ResearchCandidateQualificationStatus>,
+    pub latest_watchlist_status: Option<ResearchCandidateWatchlistStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResearchCandidateReviewOutcome {
+    pub status: ResearchCandidateReviewStatus,
+    pub next_candidate_status: Option<ResearchCandidateStatus>,
+}
+
+pub fn research_candidate_review_outcome(
+    current_status: ResearchCandidateStatus,
+    action: ResearchCandidateReviewAction,
+    context: ResearchCandidateReviewContext,
+    reason: Option<&str>,
+) -> Result<ResearchCandidateReviewOutcome, CoreError> {
+    match action {
+        ResearchCandidateReviewAction::MarkReviewed => Ok(ResearchCandidateReviewOutcome {
+            status: ResearchCandidateReviewStatus::Recorded,
+            next_candidate_status: None,
+        }),
+        ResearchCandidateReviewAction::MarkNeedsMoreObservation => match current_status {
+            ResearchCandidateStatus::Discovered => Ok(ResearchCandidateReviewOutcome {
+                status: ResearchCandidateReviewStatus::CandidateStatusUpdated,
+                next_candidate_status: Some(ResearchCandidateStatus::Observing),
+            }),
+            ResearchCandidateStatus::Observing | ResearchCandidateStatus::AcceptedForShadow => {
+                Ok(ResearchCandidateReviewOutcome {
+                    status: ResearchCandidateReviewStatus::Recorded,
+                    next_candidate_status: None,
+                })
+            }
+            _ => Err(CoreError::InvalidResearchCandidateReviewAction(
+                current_status.as_str().to_string(),
+                action.as_str().to_string(),
+            )),
+        },
+        ResearchCandidateReviewAction::MarkReadyForTestnetReview => {
+            if context.latest_qualification_status
+                != Some(ResearchCandidateQualificationStatus::Qualified)
+            {
+                return Err(CoreError::ResearchCandidateReviewRequiresQualified(
+                    action.as_str().to_string(),
+                ));
+            }
+            Ok(ResearchCandidateReviewOutcome {
+                status: ResearchCandidateReviewStatus::Recorded,
+                next_candidate_status: None,
+            })
+        }
+        ResearchCandidateReviewAction::MarkInvestigated => {
+            let investigation_allowed = matches!(
+                context.latest_watchlist_status,
+                Some(ResearchCandidateWatchlistStatus::LostQualification)
+                    | Some(ResearchCandidateWatchlistStatus::NeedsAttention)
+            ) || context.latest_qualification_status
+                == Some(ResearchCandidateQualificationStatus::NotQualified);
+            if !investigation_allowed {
+                return Err(
+                    CoreError::ResearchCandidateReviewRequiresInvestigationContext(
+                        action.as_str().to_string(),
+                    ),
+                );
+            }
+            Ok(ResearchCandidateReviewOutcome {
+                status: ResearchCandidateReviewStatus::Recorded,
+                next_candidate_status: None,
+            })
+        }
+        ResearchCandidateReviewAction::RejectFromWatchlist => {
+            if reason
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                return Err(CoreError::MissingResearchCandidateReviewReason(
+                    action.as_str().to_string(),
+                ));
+            }
+            Ok(ResearchCandidateReviewOutcome {
+                status: ResearchCandidateReviewStatus::CandidateStatusUpdated,
+                next_candidate_status: Some(ResearchCandidateStatus::Rejected),
+            })
+        }
+        ResearchCandidateReviewAction::ArchiveFromWatchlist => {
+            if reason
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                return Err(CoreError::MissingResearchCandidateReviewReason(
+                    action.as_str().to_string(),
+                ));
+            }
+            Ok(ResearchCandidateReviewOutcome {
+                status: ResearchCandidateReviewStatus::CandidateStatusUpdated,
+                next_candidate_status: Some(ResearchCandidateStatus::Archived),
+            })
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchCandidatePromotionReadiness {
     pub candidate_id: Uuid,
@@ -3894,6 +4102,120 @@ mod tests {
             ResearchCandidateDecision::Reopen
         )
         .is_err());
+    }
+
+    #[test]
+    fn review_reject_and_archive_require_reason() {
+        let reject = research_candidate_review_outcome(
+            ResearchCandidateStatus::Observing,
+            ResearchCandidateReviewAction::RejectFromWatchlist,
+            ResearchCandidateReviewContext {
+                latest_qualification_status: None,
+                latest_watchlist_status: None,
+            },
+            None,
+        );
+        let archive = research_candidate_review_outcome(
+            ResearchCandidateStatus::Observing,
+            ResearchCandidateReviewAction::ArchiveFromWatchlist,
+            ResearchCandidateReviewContext {
+                latest_qualification_status: None,
+                latest_watchlist_status: None,
+            },
+            Some(" "),
+        );
+
+        assert!(matches!(
+            reject,
+            Err(CoreError::MissingResearchCandidateReviewReason(_))
+        ));
+        assert!(matches!(
+            archive,
+            Err(CoreError::MissingResearchCandidateReviewReason(_))
+        ));
+    }
+
+    #[test]
+    fn review_ready_for_testnet_requires_latest_qualified() {
+        let result = research_candidate_review_outcome(
+            ResearchCandidateStatus::AcceptedForShadow,
+            ResearchCandidateReviewAction::MarkReadyForTestnetReview,
+            ResearchCandidateReviewContext {
+                latest_qualification_status: Some(ResearchCandidateQualificationStatus::Degraded),
+                latest_watchlist_status: Some(ResearchCandidateWatchlistStatus::NeedsAttention),
+            },
+            Some("not yet"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CoreError::ResearchCandidateReviewRequiresQualified(_))
+        ));
+    }
+
+    #[test]
+    fn review_mark_reviewed_does_not_change_candidate_status() {
+        let result = research_candidate_review_outcome(
+            ResearchCandidateStatus::AcceptedForShadow,
+            ResearchCandidateReviewAction::MarkReviewed,
+            ResearchCandidateReviewContext {
+                latest_qualification_status: Some(ResearchCandidateQualificationStatus::Qualified),
+                latest_watchlist_status: Some(ResearchCandidateWatchlistStatus::Stable),
+            },
+            Some("reviewed"),
+        )
+        .expect("review should be recorded");
+
+        assert_eq!(result.status, ResearchCandidateReviewStatus::Recorded);
+        assert_eq!(result.next_candidate_status, None);
+    }
+
+    #[test]
+    fn review_reject_moves_candidate_to_rejected() {
+        let result = research_candidate_review_outcome(
+            ResearchCandidateStatus::AcceptedForShadow,
+            ResearchCandidateReviewAction::RejectFromWatchlist,
+            ResearchCandidateReviewContext {
+                latest_qualification_status: Some(
+                    ResearchCandidateQualificationStatus::NotQualified,
+                ),
+                latest_watchlist_status: Some(ResearchCandidateWatchlistStatus::NeedsAttention),
+            },
+            Some("insufficient evidence"),
+        )
+        .expect("reject should be valid");
+
+        assert_eq!(
+            result.next_candidate_status,
+            Some(ResearchCandidateStatus::Rejected)
+        );
+        assert_eq!(
+            result.status,
+            ResearchCandidateReviewStatus::CandidateStatusUpdated
+        );
+    }
+
+    #[test]
+    fn review_archive_moves_candidate_to_archived() {
+        let result = research_candidate_review_outcome(
+            ResearchCandidateStatus::Observing,
+            ResearchCandidateReviewAction::ArchiveFromWatchlist,
+            ResearchCandidateReviewContext {
+                latest_qualification_status: Some(ResearchCandidateQualificationStatus::Unknown),
+                latest_watchlist_status: Some(ResearchCandidateWatchlistStatus::Stable),
+            },
+            Some("completed review window"),
+        )
+        .expect("archive should be valid");
+
+        assert_eq!(
+            result.next_candidate_status,
+            Some(ResearchCandidateStatus::Archived)
+        );
+        assert_eq!(
+            result.status,
+            ResearchCandidateReviewStatus::CandidateStatusUpdated
+        );
     }
 
     #[test]

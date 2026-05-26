@@ -1342,6 +1342,61 @@ export type ResearchCandidateWatchlistResponse = {
   timestamp: string;
 };
 
+export type ResearchCandidateReviewAction =
+  | "MARK_REVIEWED"
+  | "MARK_NEEDS_MORE_OBSERVATION"
+  | "MARK_READY_FOR_TESTNET_REVIEW"
+  | "MARK_INVESTIGATED"
+  | "REJECT_FROM_WATCHLIST"
+  | "ARCHIVE_FROM_WATCHLIST";
+
+export type ResearchCandidateReviewStatus =
+  | "RECORDED"
+  | "CANDIDATE_STATUS_UPDATED";
+
+export type ResearchCandidateReview = {
+  id: string;
+  candidate_id: string;
+  action: ResearchCandidateReviewAction;
+  status: ResearchCandidateReviewStatus;
+  previous_candidate_status: ResearchCandidateStatus;
+  next_candidate_status: ResearchCandidateStatus | null;
+  reason: string | null;
+  notes: string | null;
+  actor_id: string | null;
+  created_at: string;
+  correlation_id: string | null;
+  qualification_evaluation_id: string | null;
+};
+
+export type ResearchCandidateReviewRequest = {
+  action: ResearchCandidateReviewAction;
+  reason?: string | null;
+  notes?: string | null;
+  qualification_evaluation_id?: string | null;
+  correlation_id?: string | null;
+};
+
+export type ResearchCandidateReviewResult = {
+  review: ResearchCandidateReview;
+  candidate_status_before: ResearchCandidateStatus;
+  candidate_status_after: ResearchCandidateStatus;
+};
+
+export type ResearchCandidateReviewsResponse = {
+  reviews: ResearchCandidateReview[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateReviewResponse = {
+  result: ResearchCandidateReviewResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateShadowPromotionMode = "PREVIEW_ONLY" | "APPLY";
 
 export type ResearchCandidateShadowPromotionStatus =

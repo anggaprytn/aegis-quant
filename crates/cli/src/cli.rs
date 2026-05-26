@@ -5,9 +5,10 @@ use aegis_core::{
     expected_research_candidate_shadow_promotion_confirmation,
     expected_testnet_pipeline_confirmation, ExecutionReadinessRequest, ExecutionReadinessTarget,
     OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
-    ResearchCandidateQualificationThresholds, ResearchCandidateShadowPromotionMode,
-    ResearchCandidateShadowPromotionRequest, TestnetShadowPromotionRequest,
-    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
+    ResearchCandidateQualificationThresholds, ResearchCandidateReviewAction,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
+    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerStaleFeedPolicy,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -46,6 +47,24 @@ impl Cli {
                     anyhow::bail!(
                         "research candidates promote-shadow-apply requires --confirm {:?} exactly",
                         expected
+                    );
+                }
+            }
+            if let ResearchCandidateCommands::Review(args) = command {
+                if matches!(
+                    args.action,
+                    ResearchCandidateReviewAction::RejectFromWatchlist
+                        | ResearchCandidateReviewAction::ArchiveFromWatchlist
+                ) && args
+                    .reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_none()
+                {
+                    anyhow::bail!(
+                        "research candidates review requires --reason for action {}",
+                        args.action.as_str()
                     );
                 }
             }
@@ -720,6 +739,7 @@ pub enum ResearchCandidateCommands {
     Watchlist(ResearchCandidateWatchlistArgs),
     Get { candidate_id: Uuid },
     Events { candidate_id: Uuid },
+    Reviews { candidate_id: Uuid },
     Observations { candidate_id: Uuid },
     ObservationSummary { candidate_id: Uuid },
     Qualification(ResearchCandidateQualificationArgs),
@@ -730,6 +750,7 @@ pub enum ResearchCandidateCommands {
     Create(ResearchCandidateCreateArgs),
     FromExperimentRun(ResearchCandidateFromExperimentRunArgs),
     Observe { candidate_id: Uuid },
+    Review(ResearchCandidateReviewArgs),
     Decide(ResearchCandidateDecideArgs),
     PromoteShadowPreview(ResearchCandidatePromoteShadowPreviewArgs),
     PromoteShadowApply(ResearchCandidatePromoteShadowApplyArgs),
@@ -781,6 +802,19 @@ pub struct ResearchCandidateDecideArgs {
     pub notes: Option<String>,
     #[arg(long, default_value_t = false)]
     pub acknowledge_runner_mismatch: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateReviewArgs {
+    pub candidate_id: Uuid,
+    #[arg(long)]
+    pub action: ResearchCandidateReviewAction,
+    #[arg(long)]
+    pub reason: Option<String>,
+    #[arg(long)]
+    pub notes: Option<String>,
+    #[arg(long)]
+    pub qualification_evaluation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Args)]

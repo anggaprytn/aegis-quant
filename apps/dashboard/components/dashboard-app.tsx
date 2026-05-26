@@ -42,6 +42,8 @@ import type {
   ResearchCandidateQualificationTrend,
   ResearchCandidateQualificationChange,
   ResearchCandidateQualificationEvaluation,
+  ResearchCandidateReview,
+  ResearchCandidateReviewAction,
   ResearchCandidateShadowPromotionPreview,
   ResearchCandidateShadowPromotionResult,
   ResearchCandidateShadowRunLink,
@@ -703,6 +705,8 @@ function AuthenticatedDashboard({
   const [researchCandidateStatusFilter, setResearchCandidateStatusFilter] =
     useState<StrategyResearchCandidateStatus | "">("DISCOVERED");
   const [researchCandidateDecisionReason, setResearchCandidateDecisionReason] = useState("");
+  const [researchCandidateReviewReason, setResearchCandidateReviewReason] = useState("");
+  const [researchCandidateReviewNotes, setResearchCandidateReviewNotes] = useState("");
   const [researchCandidateShadowPromotionPreview, setResearchCandidateShadowPromotionPreview] =
     useState<ResearchCandidateShadowPromotionPreview | null>(null);
   const [researchCandidateShadowPromotionResult, setResearchCandidateShadowPromotionResult] =
@@ -984,6 +988,12 @@ function AuthenticatedDashboard({
   const selectedResearchCandidateEventsQuery = useQuery({
     queryKey: ["research-candidate-events", selectedResearchCandidateId],
     queryFn: () => api.listResearchCandidateEvents(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
+  const selectedResearchCandidateReviewsQuery = useQuery({
+    queryKey: ["research-candidate-reviews", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidateReviews(selectedResearchCandidateId ?? ""),
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
@@ -1693,6 +1703,41 @@ function AuthenticatedDashboard({
       setResearchCandidateDecisionReason("");
     },
   });
+  const reviewResearchCandidateMutation = useMutation({
+    mutationFn: async (action: ResearchCandidateReviewAction) => {
+      if (!selectedResearchCandidateId) {
+        throw new Error("Select a candidate first.");
+      }
+      return api.createResearchCandidateReview(selectedResearchCandidateId, {
+        action,
+        reason: researchCandidateReviewReason || undefined,
+        notes: researchCandidateReviewNotes || undefined,
+        qualification_evaluation_id: latestQualificationEvaluation?.id ?? undefined,
+      });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["research-candidates"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-candidate-watchlist"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-events", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-reviews", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification-history", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["operator-reports"] });
+      setResearchCandidateReviewReason("");
+      setResearchCandidateReviewNotes("");
+    },
+  });
   const observeResearchCandidateMutation = useMutation({
     mutationFn: async () => {
       if (!selectedResearchCandidateId) {
@@ -2095,6 +2140,8 @@ function AuthenticatedDashboard({
     selectedResearchCandidateQualificationHistoryQuery.data?.history ?? null;
   const researchCandidateWatchlist: ResearchCandidateWatchlistEntry[] =
     researchCandidateWatchlistQuery.data?.watchlist ?? [];
+  const researchCandidateReviews: ResearchCandidateReview[] =
+    selectedResearchCandidateReviewsQuery.data?.reviews ?? [];
   const researchCandidateShadowPerformance: ResearchCandidateShadowPerformance | null =
     selectedResearchCandidateShadowPerformanceQuery.data?.performance ?? null;
   const researchCandidateShadowRuns: ResearchCandidateShadowRunLink[] =
@@ -4686,6 +4733,81 @@ function AuthenticatedDashboard({
                         </div>
                       </div>
                     ) : null}
+                    <div className="mt-4 border-t border-border/70 pt-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-muted">Review Actions</div>
+                      <Field
+                        label="Reason"
+                        value={researchCandidateReviewReason}
+                        onChange={setResearchCandidateReviewReason}
+                        placeholder="required for reject/archive"
+                      />
+                      <div className="mt-3">
+                        <Field
+                          label="Notes"
+                          value={researchCandidateReviewNotes}
+                          onChange={setResearchCandidateReviewNotes}
+                          placeholder="operator context"
+                        />
+                      </div>
+                      <div className="mt-3 rounded-xl border border-sky-400/30 bg-sky-500/10 p-3 text-xs text-sky-100">
+                        Ready for testnet review records human intent only. It does not submit
+                        orders, create testnet orders, or auto-promote anything.
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        <ActionButton
+                          label="Mark Reviewed"
+                          onClick={() => reviewResearchCandidateMutation.mutate("MARK_REVIEWED")}
+                          busy={reviewResearchCandidateMutation.isPending}
+                          disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                        />
+                        <ActionButton
+                          label="Needs More Observation"
+                          onClick={() =>
+                            reviewResearchCandidateMutation.mutate("MARK_NEEDS_MORE_OBSERVATION")
+                          }
+                          busy={reviewResearchCandidateMutation.isPending}
+                          disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                        />
+                        <ActionButton
+                          label="Ready For Testnet Review"
+                          onClick={() =>
+                            reviewResearchCandidateMutation.mutate("MARK_READY_FOR_TESTNET_REVIEW")
+                          }
+                          busy={reviewResearchCandidateMutation.isPending}
+                          disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                        />
+                        <ActionButton
+                          label="Investigated"
+                          onClick={() =>
+                            reviewResearchCandidateMutation.mutate("MARK_INVESTIGATED")
+                          }
+                          busy={reviewResearchCandidateMutation.isPending}
+                          disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                        />
+                        <ActionButton
+                          label="Reject Watchlist"
+                          onClick={() =>
+                            reviewResearchCandidateMutation.mutate("REJECT_FROM_WATCHLIST")
+                          }
+                          busy={reviewResearchCandidateMutation.isPending}
+                          disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                        />
+                        <ActionButton
+                          label="Archive Watchlist"
+                          onClick={() =>
+                            reviewResearchCandidateMutation.mutate("ARCHIVE_FROM_WATCHLIST")
+                          }
+                          busy={reviewResearchCandidateMutation.isPending}
+                          disabled={(user.role !== "OWNER" && user.role !== "OPERATOR") || !selectedResearchCandidate}
+                        />
+                      </div>
+                      <div className="mt-3">
+                        <InlineStatus
+                          error={getErrorMessage(reviewResearchCandidateMutation.error)}
+                          success={reviewResearchCandidateMutation.data?.result.review.status}
+                        />
+                      </div>
+                    </div>
                   </div>
                   <div className="rounded-2xl border border-border bg-surface/40 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted">
@@ -5078,6 +5200,34 @@ function AuthenticatedDashboard({
                           </div>
                         </div>
                       ) : null}
+                      {(researchCandidateReviews.length ?? 0) > 0 ? (
+                        <div className="mt-3 rounded-xl border border-border/70 bg-black/10 p-3">
+                          <div className="font-semibold text-slate-100">Review History</div>
+                          <div className="mt-2 overflow-auto">
+                            <table className="min-w-full text-[11px]">
+                              <thead className="text-left text-slate-400">
+                                <tr>
+                                  {["Created", "Action", "Review", "Before", "After", "Reason"].map((label) => (
+                                    <th key={label} className="px-2 py-1 font-medium">{label}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {researchCandidateReviews.map((review) => (
+                                  <tr key={review.id} className="border-t border-border/60">
+                                    <td className="px-2 py-1">{formatDateTime(review.created_at)}</td>
+                                    <td className="px-2 py-1">{review.action}</td>
+                                    <td className="px-2 py-1">{review.status}</td>
+                                    <td className="px-2 py-1">{review.previous_candidate_status}</td>
+                                    <td className="px-2 py-1">{review.next_candidate_status ?? review.previous_candidate_status}</td>
+                                    <td className="px-2 py-1">{review.reason ?? "-"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ) : null}
                       <InlineStatus
                         error={getErrorMessage(selectedResearchCandidateQualificationQuery.error)}
                       />
@@ -5090,6 +5240,9 @@ function AuthenticatedDashboard({
                               )
                             : undefined
                         }
+                      />
+                      <InlineStatus
+                        error={getErrorMessage(selectedResearchCandidateReviewsQuery.error)}
                       />
                     </div>
                     <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
