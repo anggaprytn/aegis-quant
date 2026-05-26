@@ -5,9 +5,9 @@ use aegis_core::{
     expected_research_candidate_shadow_promotion_confirmation,
     expected_testnet_pipeline_confirmation, ExecutionReadinessRequest, ExecutionReadinessTarget,
     OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
-    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
-    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerStaleFeedPolicy,
+    ResearchCandidateQualificationThresholds, ResearchCandidateShadowPromotionMode,
+    ResearchCandidateShadowPromotionRequest, TestnetShadowPromotionRequest,
+    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -721,6 +721,7 @@ pub enum ResearchCandidateCommands {
     Events { candidate_id: Uuid },
     Observations { candidate_id: Uuid },
     ObservationSummary { candidate_id: Uuid },
+    Qualification(ResearchCandidateQualificationArgs),
     ShadowPerformance(ResearchCandidateShadowWindowArgs),
     ShadowRuns(ResearchCandidateShadowRunsArgs),
     Create(ResearchCandidateCreateArgs),
@@ -793,6 +794,38 @@ pub struct ResearchCandidatePromoteShadowApplyArgs {
     pub confirm: Option<String>,
     #[arg(long, default_value_t = false)]
     pub allow_missing_runner_alignment: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateQualificationArgs {
+    pub candidate_id: Uuid,
+    #[arg(long)]
+    pub min_shadow_runs: Option<i64>,
+    #[arg(long)]
+    pub min_would_submit_count: Option<i64>,
+    #[arg(long)]
+    pub max_risk_rejection_rate_pct: Option<rust_decimal::Decimal>,
+    #[arg(long)]
+    pub max_error_or_skipped_rate_pct: Option<rust_decimal::Decimal>,
+}
+
+impl ResearchCandidateQualificationArgs {
+    pub fn thresholds(&self) -> ResearchCandidateQualificationThresholds {
+        let mut thresholds = ResearchCandidateQualificationThresholds::default();
+        if let Some(value) = self.min_shadow_runs {
+            thresholds.min_shadow_runs = value.max(0);
+        }
+        if let Some(value) = self.min_would_submit_count {
+            thresholds.min_would_submit_count = value.max(0);
+        }
+        if let Some(value) = self.max_risk_rejection_rate_pct {
+            thresholds.max_risk_rejection_rate_pct = value.max(rust_decimal::Decimal::ZERO);
+        }
+        if let Some(value) = self.max_error_or_skipped_rate_pct {
+            thresholds.max_error_or_skipped_rate_pct = value.max(rust_decimal::Decimal::ZERO);
+        }
+        thresholds
+    }
 }
 
 #[derive(Debug, Args)]

@@ -1103,6 +1103,52 @@ export type ResearchCandidateObservationSummaryResponse = {
   timestamp: string;
 };
 
+export type ResearchCandidateQualificationStatus =
+  | "QUALIFIED"
+  | "NOT_QUALIFIED"
+  | "NEEDS_MORE_DATA"
+  | "DEGRADED"
+  | "UNKNOWN";
+
+export type ResearchCandidateQualificationSeverity =
+  | "LOW"
+  | "MEDIUM"
+  | "HIGH"
+  | "CRITICAL";
+
+export type ResearchCandidateQualificationRecommendation =
+  | "REFRESH_CANDIDATE_OBSERVATION"
+  | "FIX_RUNNER_ALIGNMENT"
+  | "EXPAND_SHADOW_RUNNER_COVERAGE"
+  | "GATHER_MORE_SHADOW_RUNS"
+  | "GENERATE_MORE_WOULD_SUBMIT_EVIDENCE"
+  | "REVIEW_RISK_REJECTIONS"
+  | "REDUCE_SHADOW_ERRORS_OR_SKIPS"
+  | "RESTORE_TESTNET_SHADOW_READINESS"
+  | "RE_ACCEPT_CANDIDATE_FOR_SHADOW"
+  | "READY_FOR_TESTNET_PROMOTION_CONSIDERATION";
+
+export type ResearchCandidateQualificationThresholds = {
+  min_shadow_runs: number;
+  min_would_submit_count: number;
+  max_risk_rejection_rate_pct: string;
+  max_error_or_skipped_rate_pct: string;
+  max_runner_mismatch_count: number;
+  require_fresh_observation: boolean;
+  require_runner_alignment: boolean;
+  require_readiness_not_not_ready: boolean;
+};
+
+export type ResearchCandidateQualificationCheck = {
+  code: string;
+  name: string;
+  passed: boolean;
+  blocking: boolean;
+  severity: ResearchCandidateQualificationSeverity;
+  summary: string;
+  details?: Record<string, unknown> | null;
+};
+
 export type ResearchCandidateShadowPerformanceStatus =
   | "INSUFFICIENT_DATA"
   | "HEALTHY"
@@ -1174,6 +1220,26 @@ export type ResearchCandidateShadowPerformanceResponse = {
 
 export type ResearchCandidateShadowRunsResponse = {
   runs: ResearchCandidateShadowRunLink[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateQualificationResult = {
+  candidate_id: string;
+  status: ResearchCandidateQualificationStatus;
+  score: number;
+  checks: ResearchCandidateQualificationCheck[];
+  blockers: string[];
+  warnings: string[];
+  recommendations: ResearchCandidateQualificationRecommendation[];
+  thresholds: ResearchCandidateQualificationThresholds;
+  shadow_performance: ResearchCandidateShadowPerformance | null;
+  computed_at: string;
+};
+
+export type ResearchCandidateQualificationResponse = {
+  qualification: ResearchCandidateQualificationResult;
   request_id: string;
   correlation_id: string;
   timestamp: string;

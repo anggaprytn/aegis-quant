@@ -8,6 +8,7 @@ use aegis_core::{
     PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchCandidate,
     ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -707,6 +708,32 @@ impl ApiClient {
         self.get(
             &format!("/research/candidates/{candidate_id}/observation-summary"),
             &[],
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_qualification(
+        &self,
+        candidate_id: Uuid,
+        thresholds: &ResearchCandidateQualificationThresholds,
+    ) -> Result<ResearchCandidateQualificationResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/qualification"),
+            &[
+                ("min_shadow_runs", thresholds.min_shadow_runs.to_string()),
+                (
+                    "min_would_submit_count",
+                    thresholds.min_would_submit_count.to_string(),
+                ),
+                (
+                    "max_risk_rejection_rate_pct",
+                    thresholds.max_risk_rejection_rate_pct.to_string(),
+                ),
+                (
+                    "max_error_or_skipped_rate_pct",
+                    thresholds.max_error_or_skipped_rate_pct.to_string(),
+                ),
+            ],
         )
         .await
     }
@@ -2037,6 +2064,14 @@ pub struct ResearchCandidateObservationsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateObservationSummaryResponse {
     pub summary: ResearchCandidateObservationSummaryView,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateQualificationResponse {
+    pub qualification: ResearchCandidateQualificationResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

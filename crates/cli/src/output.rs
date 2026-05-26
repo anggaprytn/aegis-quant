@@ -1,8 +1,9 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink, User,
+    ResearchCandidateQualificationResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1881,6 +1882,60 @@ pub fn print_research_candidate_shadow_performance(
     );
     println!("Status: {}", performance.status.as_str());
     println!("Recommendation: {}", performance.recommendation.as_str());
+}
+
+pub fn print_research_candidate_qualification(
+    qualification: &ResearchCandidateQualificationResult,
+) {
+    println!(
+        "Status: {}  Score: {}",
+        qualification.status.as_str(),
+        qualification.score
+    );
+    if qualification.blockers.is_empty() {
+        println!("Blockers: none");
+    } else {
+        println!("Blockers:");
+        for blocker in &qualification.blockers {
+            println!("  - {blocker}");
+        }
+    }
+    if qualification.warnings.is_empty() {
+        println!("Warnings: none");
+    } else {
+        println!("Warnings:");
+        for warning in &qualification.warnings {
+            println!("  - {warning}");
+        }
+    }
+    if qualification.recommendations.is_empty() {
+        println!("Recommendations: none");
+    } else {
+        println!("Recommendations:");
+        for recommendation in &qualification.recommendations {
+            println!("  - {}", recommendation.message());
+        }
+    }
+    if let Some(performance) = &qualification.shadow_performance {
+        println!(
+            "Shadow summary: runs={} would_submit={} risk_rejected={} skipped={} error={}",
+            performance.total_shadow_runs,
+            performance.would_submit_count,
+            performance.risk_rejected_count,
+            performance.skipped_count,
+            performance.error_count
+        );
+    } else {
+        println!("Shadow summary: none");
+    }
+    let thresholds = &qualification.thresholds;
+    println!(
+        "Thresholds: min_shadow_runs={} min_would_submit_count={} max_risk_rejection_rate_pct={} max_error_or_skipped_rate_pct={}",
+        thresholds.min_shadow_runs,
+        thresholds.min_would_submit_count,
+        thresholds.max_risk_rejection_rate_pct,
+        thresholds.max_error_or_skipped_rate_pct
+    );
 }
 
 pub fn print_research_candidate_shadow_runs(runs: &[ResearchCandidateShadowRunLink]) {

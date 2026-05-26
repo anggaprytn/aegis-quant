@@ -542,6 +542,16 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_observation_summary(&response.summary);
                     }
                 }
+                ResearchCandidateCommands::Qualification(args) => {
+                    let response = client
+                        .get_research_candidate_qualification(args.candidate_id, &args.thresholds())
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_qualification(&response.qualification);
+                    }
+                }
                 ResearchCandidateCommands::ShadowPerformance(args) => {
                     let response = client
                         .get_research_candidate_shadow_performance(

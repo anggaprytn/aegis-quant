@@ -121,11 +121,13 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 7. Re-run observation if runner configuration or readiness context changed.
 8. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
 9. Preview and, with explicit typed confirmation, apply shadow-runner config promotion for an `ACCEPTED_FOR_SHADOW` candidate.
+10. Review candidate qualification to confirm shadow evidence is sufficient for testnet promotion consideration before any owner action.
 
 This workflow does not enable live trading, does not execute trades during candidate lifecycle operations, and does not auto-submit orders. Observation and candidate decisions do not mutate paper or testnet execution state.
 `ACCEPT_FOR_SHADOW` requires the latest persisted observation to be fresh. The default freshness window is 15 minutes.
 Shadow promotion requires a fresh observation, explicit confirmation, and only updates `testnet_shadow_runner_config` plus audit/system/research lifecycle records. It does not submit testnet orders or mutate paper/testnet/live execution tables.
 After promotion, linked shadow runs can be inspected through candidate shadow-performance and shadow-runs views. The association is research-only and read-only over `testnet_shadow_runs`; it does not mutate paper, testnet submit, or live execution tables.
+Candidate qualification is also read-only decision support. It gates whether a candidate is ready for testnet promotion consideration, does not auto-promote anything, does not submit orders, and does not mutate paper/testnet/live execution tables. Default qualification thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
 
 ## Local prerequisites
 
@@ -332,6 +334,8 @@ Research candidate lifecycle examples:
 `cargo run -p cli -- research candidates promote-shadow-preview <candidate_id> --allow-missing-runner-alignment`
 
 `cargo run -p cli -- research candidates promote-shadow-apply <candidate_id> --allow-missing-runner-alignment --confirm "PROMOTE CANDIDATE <candidate_id> TO SHADOW"`
+
+`cargo run -p cli -- research candidates qualification <candidate_id>`
 
 `cargo run -p cli -- research candidates shadow-performance <candidate_id>`
 

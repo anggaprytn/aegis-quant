@@ -33,6 +33,7 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
   ResearchCandidateObservationHistoryItem,
+  ResearchCandidateQualificationResult,
   ResearchCandidateObservationSummary,
   ResearchCandidateShadowPerformance,
   ResearchCandidate as StrategyResearchCandidate,
@@ -156,6 +157,35 @@ function shadowRecommendationLabel(
       return "reject candidate";
     default:
       return "unknown";
+  }
+}
+
+function qualificationRecommendationLabel(
+  recommendation: ResearchCandidateQualificationResult["recommendations"][number],
+) {
+  switch (recommendation) {
+    case "REFRESH_CANDIDATE_OBSERVATION":
+      return "Refresh candidate observation";
+    case "FIX_RUNNER_ALIGNMENT":
+      return "Fix runner alignment";
+    case "EXPAND_SHADOW_RUNNER_COVERAGE":
+      return "Expand shadow runner coverage";
+    case "GATHER_MORE_SHADOW_RUNS":
+      return "Gather more shadow runs";
+    case "GENERATE_MORE_WOULD_SUBMIT_EVIDENCE":
+      return "Generate more WOULD_SUBMIT evidence";
+    case "REVIEW_RISK_REJECTIONS":
+      return "Review risk rejections";
+    case "REDUCE_SHADOW_ERRORS_OR_SKIPS":
+      return "Reduce shadow errors or skips";
+    case "RESTORE_TESTNET_SHADOW_READINESS":
+      return "Restore TESTNET_SHADOW readiness";
+    case "RE_ACCEPT_CANDIDATE_FOR_SHADOW":
+      return "Re-accept candidate for shadow";
+    case "READY_FOR_TESTNET_PROMOTION_CONSIDERATION":
+      return "Ready for testnet promotion consideration";
+    default:
+      return recommendation;
   }
 }
 
@@ -960,6 +990,12 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
+  const selectedResearchCandidateQualificationQuery = useQuery({
+    queryKey: ["research-candidate-qualification", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidateQualification(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const selectedResearchCandidateShadowPerformanceQuery = useQuery({
     queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
     queryFn: () => api.getResearchCandidateShadowPerformance(selectedResearchCandidateId ?? ""),
@@ -1624,6 +1660,9 @@ function AuthenticatedDashboard({
         queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
         queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({
@@ -1653,6 +1692,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
@@ -1724,6 +1766,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-observation-summary", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
@@ -2005,6 +2050,8 @@ function AuthenticatedDashboard({
     selectedResearchCandidateObservationQuery.data?.history ?? [];
   const researchCandidateObservationSummary: ResearchCandidateObservationSummary | null =
     selectedResearchCandidateObservationSummaryQuery.data?.summary ?? null;
+  const researchCandidateQualification: ResearchCandidateQualificationResult | null =
+    selectedResearchCandidateQualificationQuery.data?.qualification ?? null;
   const researchCandidateShadowPerformance: ResearchCandidateShadowPerformance | null =
     selectedResearchCandidateShadowPerformanceQuery.data?.performance ?? null;
   const researchCandidateShadowRuns: ResearchCandidateShadowRunLink[] =
@@ -2029,6 +2076,8 @@ function AuthenticatedDashboard({
       ? "Eligible"
       : "Not eligible"
     : "Unknown";
+  const qualificationNeedsMoreData =
+    researchCandidateQualification?.status === "NEEDS_MORE_DATA";
   const shadowPerformanceRecommendationLabel = shadowRecommendationLabel(
     researchCandidateShadowPerformance?.recommendation,
   );
@@ -4779,6 +4828,77 @@ function AuthenticatedDashboard({
                           }
                         />
                       </div>
+                    </div>
+                    <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
+                      <div className="font-semibold text-slate-100">Qualification</div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div>Status: {researchCandidateQualification?.status ?? "UNKNOWN"}</div>
+                        <div>Score: {researchCandidateQualification?.score ?? "-"}</div>
+                        <div>
+                          Linked runs:{" "}
+                          {researchCandidateQualification?.shadow_performance?.total_shadow_runs ??
+                            0}
+                        </div>
+                        <div>
+                          Would-submit:{" "}
+                          {researchCandidateQualification?.shadow_performance
+                            ?.would_submit_count ?? 0}
+                        </div>
+                      </div>
+                      {qualificationNeedsMoreData ? (
+                        <div className="mt-3 rounded-xl border border-sky-400/40 bg-sky-500/10 p-3 text-sky-100">
+                          Needs more data: linked shadow runs are below the configured threshold.
+                        </div>
+                      ) : null}
+                      <div className="mt-3 rounded-xl border border-border/70 bg-surface/40 p-3">
+                        Thresholds: runs ≥{" "}
+                        {researchCandidateQualification?.thresholds.min_shadow_runs ?? 30}
+                        {" · "}
+                        would-submit ≥{" "}
+                        {researchCandidateQualification?.thresholds.min_would_submit_count ?? 3}
+                        {" · "}
+                        risk rejected ≤{" "}
+                        {researchCandidateQualification?.thresholds
+                          .max_risk_rejection_rate_pct ?? "40"}
+                        %{" · "}
+                        skipped/error ≤{" "}
+                        {researchCandidateQualification?.thresholds
+                          .max_error_or_skipped_rate_pct ?? "20"}
+                        %
+                      </div>
+                      {(researchCandidateQualification?.blockers.length ?? 0) > 0 ? (
+                        <div className="mt-3 rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-rose-100">
+                          <div className="font-semibold">Blockers</div>
+                          <div className="mt-2 space-y-1">
+                            {researchCandidateQualification?.blockers.map((item) => (
+                              <div key={item}>{item}</div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {(researchCandidateQualification?.warnings.length ?? 0) > 0 ? (
+                        <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-100">
+                          <div className="font-semibold">Warnings</div>
+                          <div className="mt-2 space-y-1">
+                            {researchCandidateQualification?.warnings.map((item) => (
+                              <div key={item}>{item}</div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      {(researchCandidateQualification?.recommendations.length ?? 0) > 0 ? (
+                        <div className="mt-3 rounded-xl border border-border/70 bg-black/10 p-3">
+                          <div className="font-semibold text-slate-100">Recommendations</div>
+                          <div className="mt-2 space-y-1 text-slate-200">
+                            {researchCandidateQualification?.recommendations.map((item) => (
+                              <div key={item}>{qualificationRecommendationLabel(item)}</div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                      <InlineStatus
+                        error={getErrorMessage(selectedResearchCandidateQualificationQuery.error)}
+                      />
                     </div>
                     <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
                       <div className="font-semibold text-slate-100">Shadow Performance</div>

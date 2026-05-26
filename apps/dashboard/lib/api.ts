@@ -64,6 +64,7 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  ResearchCandidateQualificationResponse,
   ResearchCandidateObservationSummaryResponse,
   ResearchCandidateShadowPerformanceResponse,
   CreateResearchCandidateFromExperimentRunRequest,
@@ -388,6 +389,8 @@ export const api = {
     request<ResearchCandidateObservationSummaryResponse>(
       `/research/candidates/${id}/observation-summary`,
     ),
+  getResearchCandidateQualification: (id: string) =>
+    request<ResearchCandidateQualificationResponse>(`/research/candidates/${id}/qualification`),
   getResearchCandidateShadowPerformance: (
     id: string,
     query?: { start_time?: string; end_time?: string },

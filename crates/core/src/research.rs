@@ -718,7 +718,27 @@ fn default_min_would_submit_count() -> i64 {
     1
 }
 
+fn default_qualification_min_would_submit_count() -> i64 {
+    3
+}
+
 fn default_require_readiness_ready() -> bool {
+    true
+}
+
+fn default_qualification_max_risk_rejection_rate_pct() -> Decimal {
+    Decimal::new(40, 0)
+}
+
+fn default_qualification_max_error_or_skipped_rate_pct() -> Decimal {
+    Decimal::new(20, 0)
+}
+
+fn default_max_runner_mismatch_count() -> i64 {
+    0
+}
+
+fn default_true() -> bool {
     true
 }
 
@@ -1084,6 +1104,194 @@ pub struct ResearchCandidateShadowRunLink {
     pub correlation_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateQualificationStatus {
+    Qualified,
+    NotQualified,
+    NeedsMoreData,
+    Degraded,
+    Unknown,
+}
+
+impl ResearchCandidateQualificationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Qualified => "QUALIFIED",
+            Self::NotQualified => "NOT_QUALIFIED",
+            Self::NeedsMoreData => "NEEDS_MORE_DATA",
+            Self::Degraded => "DEGRADED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateQualificationSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl ResearchCandidateQualificationSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "LOW",
+            Self::Medium => "MEDIUM",
+            Self::High => "HIGH",
+            Self::Critical => "CRITICAL",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateQualificationRecommendation {
+    RefreshCandidateObservation,
+    FixRunnerAlignment,
+    ExpandShadowRunnerCoverage,
+    GatherMoreShadowRuns,
+    GenerateMoreWouldSubmitEvidence,
+    ReviewRiskRejections,
+    ReduceShadowErrorsOrSkips,
+    RestoreTestnetShadowReadiness,
+    ReAcceptCandidateForShadow,
+    ReadyForTestnetPromotionConsideration,
+}
+
+impl ResearchCandidateQualificationRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RefreshCandidateObservation => "REFRESH_CANDIDATE_OBSERVATION",
+            Self::FixRunnerAlignment => "FIX_RUNNER_ALIGNMENT",
+            Self::ExpandShadowRunnerCoverage => "EXPAND_SHADOW_RUNNER_COVERAGE",
+            Self::GatherMoreShadowRuns => "GATHER_MORE_SHADOW_RUNS",
+            Self::GenerateMoreWouldSubmitEvidence => "GENERATE_MORE_WOULD_SUBMIT_EVIDENCE",
+            Self::ReviewRiskRejections => "REVIEW_RISK_REJECTIONS",
+            Self::ReduceShadowErrorsOrSkips => "REDUCE_SHADOW_ERRORS_OR_SKIPS",
+            Self::RestoreTestnetShadowReadiness => "RESTORE_TESTNET_SHADOW_READINESS",
+            Self::ReAcceptCandidateForShadow => "RE_ACCEPT_CANDIDATE_FOR_SHADOW",
+            Self::ReadyForTestnetPromotionConsideration => {
+                "READY_FOR_TESTNET_PROMOTION_CONSIDERATION"
+            }
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::RefreshCandidateObservation => {
+                "Run a fresh candidate observation before using shadow evidence for promotion review."
+            }
+            Self::FixRunnerAlignment => {
+                "Align the shadow runner strategy, symbol, and timeframe with the candidate."
+            }
+            Self::ExpandShadowRunnerCoverage => {
+                "Ensure the active shadow runner currently covers this candidate."
+            }
+            Self::GatherMoreShadowRuns => {
+                "Accumulate more linked shadow runs before considering testnet promotion."
+            }
+            Self::GenerateMoreWouldSubmitEvidence => {
+                "Collect more WOULD_SUBMIT outcomes to show the candidate produces actionable signals."
+            }
+            Self::ReviewRiskRejections => {
+                "Review why shadow decisions are being rejected by risk before promotion."
+            }
+            Self::ReduceShadowErrorsOrSkips => {
+                "Reduce skipped or error shadow runs before promotion review."
+            }
+            Self::RestoreTestnetShadowReadiness => {
+                "Resolve TESTNET_SHADOW readiness issues before considering testnet promotion."
+            }
+            Self::ReAcceptCandidateForShadow => {
+                "Move the candidate back to ACCEPTED_FOR_SHADOW before promotion consideration."
+            }
+            Self::ReadyForTestnetPromotionConsideration => {
+                "Candidate has enough shadow evidence to be considered for testnet promotion review."
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateQualificationThresholds {
+    #[serde(default = "default_min_shadow_runs")]
+    pub min_shadow_runs: i64,
+    #[serde(default = "default_qualification_min_would_submit_count")]
+    pub min_would_submit_count: i64,
+    #[serde(default = "default_qualification_max_risk_rejection_rate_pct")]
+    pub max_risk_rejection_rate_pct: Decimal,
+    #[serde(default = "default_qualification_max_error_or_skipped_rate_pct")]
+    pub max_error_or_skipped_rate_pct: Decimal,
+    #[serde(default = "default_max_runner_mismatch_count")]
+    pub max_runner_mismatch_count: i64,
+    #[serde(default = "default_true")]
+    pub require_fresh_observation: bool,
+    #[serde(default = "default_true")]
+    pub require_runner_alignment: bool,
+    #[serde(default = "default_true")]
+    pub require_readiness_not_not_ready: bool,
+}
+
+impl Default for ResearchCandidateQualificationThresholds {
+    fn default() -> Self {
+        Self {
+            min_shadow_runs: default_min_shadow_runs(),
+            min_would_submit_count: default_qualification_min_would_submit_count(),
+            max_risk_rejection_rate_pct: default_qualification_max_risk_rejection_rate_pct(),
+            max_error_or_skipped_rate_pct: default_qualification_max_error_or_skipped_rate_pct(),
+            max_runner_mismatch_count: default_max_runner_mismatch_count(),
+            require_fresh_observation: true,
+            require_runner_alignment: true,
+            require_readiness_not_not_ready: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateQualificationCheck {
+    pub code: String,
+    pub name: String,
+    pub passed: bool,
+    pub blocking: bool,
+    pub severity: ResearchCandidateQualificationSeverity,
+    pub summary: String,
+    #[serde(default)]
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateQualificationRequest {
+    pub candidate_id: Uuid,
+    pub candidate_status: Option<ResearchCandidateStatus>,
+    pub fresh_observation: bool,
+    pub runner_alignment_valid: bool,
+    pub shadow_runner_covers_candidate: bool,
+    #[serde(default)]
+    pub runner_mismatch_count: i64,
+    pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub shadow_performance: Option<ResearchCandidateShadowPerformance>,
+    #[serde(default)]
+    pub thresholds: ResearchCandidateQualificationThresholds,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateQualificationResult {
+    pub candidate_id: Uuid,
+    pub status: ResearchCandidateQualificationStatus,
+    pub score: i32,
+    pub checks: Vec<ResearchCandidateQualificationCheck>,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub recommendations: Vec<ResearchCandidateQualificationRecommendation>,
+    pub thresholds: ResearchCandidateQualificationThresholds,
+    pub shadow_performance: Option<ResearchCandidateShadowPerformance>,
+    pub computed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResearchCandidateDecisionRejection {
     pub reason_code: String,
@@ -1126,6 +1334,358 @@ pub fn calculate_observation_rate(count: i64, total: i64) -> Decimal {
 
 pub fn calculate_percentage_rate(count: i64, total: i64) -> Decimal {
     (calculate_observation_rate(count, total) * Decimal::from(100)).round_dp(2)
+}
+
+fn qualification_check(
+    code: &str,
+    name: &str,
+    passed: bool,
+    blocking: bool,
+    severity: ResearchCandidateQualificationSeverity,
+    summary: impl Into<String>,
+    details: Option<Value>,
+) -> ResearchCandidateQualificationCheck {
+    ResearchCandidateQualificationCheck {
+        code: code.to_string(),
+        name: name.to_string(),
+        passed,
+        blocking,
+        severity,
+        summary: summary.into(),
+        details,
+    }
+}
+
+fn clamp_score(score: i32) -> i32 {
+    score.clamp(0, 100)
+}
+
+pub fn evaluate_research_candidate_qualification(
+    request: &ResearchCandidateQualificationRequest,
+) -> ResearchCandidateQualificationResult {
+    let thresholds = request.thresholds.clone();
+    let mut checks = Vec::new();
+    let mut recommendations = BTreeSet::new();
+    let mut score = 100;
+
+    let candidate_exists = request.candidate_status.is_some();
+    checks.push(qualification_check(
+        "candidate_exists",
+        "Candidate exists",
+        candidate_exists,
+        true,
+        ResearchCandidateQualificationSeverity::Critical,
+        if candidate_exists {
+            "Candidate exists."
+        } else {
+            "Candidate was not found."
+        },
+        None,
+    ));
+    if !candidate_exists {
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::ReAcceptCandidateForShadow);
+    }
+
+    let status_is_accepted =
+        request.candidate_status == Some(ResearchCandidateStatus::AcceptedForShadow);
+    checks.push(qualification_check(
+        "candidate_status_accepted_for_shadow",
+        "Candidate status is ACCEPTED_FOR_SHADOW",
+        status_is_accepted,
+        true,
+        ResearchCandidateQualificationSeverity::High,
+        if status_is_accepted {
+            "Candidate is in ACCEPTED_FOR_SHADOW."
+        } else {
+            "Candidate is not in ACCEPTED_FOR_SHADOW."
+        },
+        request
+            .candidate_status
+            .map(|status| serde_json::json!({ "candidate_status": status.as_str() })),
+    ));
+    if !status_is_accepted {
+        score -= 35;
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::ReAcceptCandidateForShadow);
+    }
+
+    let fresh_observation_passed =
+        !thresholds.require_fresh_observation || request.fresh_observation;
+    checks.push(qualification_check(
+        "fresh_observation_required",
+        "Candidate has fresh observation",
+        fresh_observation_passed,
+        thresholds.require_fresh_observation,
+        ResearchCandidateQualificationSeverity::High,
+        if fresh_observation_passed {
+            "Fresh observation is available."
+        } else {
+            "Fresh observation is required but missing or stale."
+        },
+        None,
+    ));
+    if !fresh_observation_passed {
+        score -= 25;
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::RefreshCandidateObservation);
+    }
+
+    let runner_alignment_passed =
+        !thresholds.require_runner_alignment || request.runner_alignment_valid;
+    checks.push(qualification_check(
+        "runner_alignment_valid",
+        "Runner alignment is valid",
+        runner_alignment_passed,
+        thresholds.require_runner_alignment,
+        ResearchCandidateQualificationSeverity::High,
+        if runner_alignment_passed {
+            "Runner alignment is valid."
+        } else {
+            "Runner alignment is invalid for this candidate."
+        },
+        Some(serde_json::json!({
+            "runner_alignment_valid": request.runner_alignment_valid,
+        })),
+    ));
+    if !runner_alignment_passed {
+        score -= 25;
+        recommendations.insert(ResearchCandidateQualificationRecommendation::FixRunnerAlignment);
+    }
+
+    let runner_coverage_passed = request.shadow_runner_covers_candidate;
+    checks.push(qualification_check(
+        "shadow_runner_covers_candidate",
+        "Shadow runner covers candidate strategy, symbol, and timeframe",
+        runner_coverage_passed,
+        true,
+        ResearchCandidateQualificationSeverity::High,
+        if runner_coverage_passed {
+            "Current shadow runner covers the candidate."
+        } else {
+            "Current shadow runner does not cover the candidate."
+        },
+        None,
+    ));
+    if !runner_coverage_passed {
+        score -= 20;
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::ExpandShadowRunnerCoverage);
+    }
+
+    let mismatch_count_passed =
+        request.runner_mismatch_count <= thresholds.max_runner_mismatch_count;
+    checks.push(qualification_check(
+        "runner_mismatch_count",
+        "Runner mismatch count is within threshold",
+        mismatch_count_passed,
+        thresholds.max_runner_mismatch_count == 0,
+        ResearchCandidateQualificationSeverity::Medium,
+        if mismatch_count_passed {
+            "Runner mismatch count is within threshold.".to_string()
+        } else {
+            format!(
+                "Runner mismatch count {} exceeded max {}.",
+                request.runner_mismatch_count, thresholds.max_runner_mismatch_count
+            )
+        },
+        Some(serde_json::json!({
+            "runner_mismatch_count": request.runner_mismatch_count,
+            "max_runner_mismatch_count": thresholds.max_runner_mismatch_count,
+        })),
+    ));
+    if !mismatch_count_passed {
+        score -= 10;
+        recommendations.insert(ResearchCandidateQualificationRecommendation::FixRunnerAlignment);
+    }
+
+    let shadow_performance = request.shadow_performance.clone();
+    let total_shadow_runs = shadow_performance
+        .as_ref()
+        .map(|value| value.total_shadow_runs)
+        .unwrap_or(0);
+    let would_submit_count = shadow_performance
+        .as_ref()
+        .map(|value| value.would_submit_count)
+        .unwrap_or(0);
+    let risk_rejection_rate_pct = shadow_performance
+        .as_ref()
+        .map(|value| value.risk_rejection_rate_pct)
+        .unwrap_or(Decimal::ZERO);
+    let skipped_or_error_count = shadow_performance
+        .as_ref()
+        .map(|value| value.skipped_count + value.error_count)
+        .unwrap_or(0);
+    let skipped_or_error_rate_pct =
+        calculate_percentage_rate(skipped_or_error_count, total_shadow_runs);
+
+    let enough_shadow_runs = total_shadow_runs >= thresholds.min_shadow_runs;
+    checks.push(qualification_check(
+        "enough_linked_shadow_runs",
+        "Enough linked shadow runs exist",
+        enough_shadow_runs,
+        false,
+        ResearchCandidateQualificationSeverity::Medium,
+        if enough_shadow_runs {
+            "Linked shadow run count meets threshold.".to_string()
+        } else {
+            format!(
+                "Linked shadow runs {} are below min {}.",
+                total_shadow_runs, thresholds.min_shadow_runs
+            )
+        },
+        Some(serde_json::json!({
+            "total_shadow_runs": total_shadow_runs,
+            "min_shadow_runs": thresholds.min_shadow_runs,
+        })),
+    ));
+    if !enough_shadow_runs {
+        score -= 20;
+        recommendations.insert(ResearchCandidateQualificationRecommendation::GatherMoreShadowRuns);
+    }
+
+    let enough_would_submit = would_submit_count >= thresholds.min_would_submit_count;
+    checks.push(qualification_check(
+        "would_submit_count_enough",
+        "WOULD_SUBMIT count is nonzero and meets threshold",
+        enough_would_submit,
+        enough_shadow_runs,
+        ResearchCandidateQualificationSeverity::Medium,
+        if enough_would_submit {
+            "WOULD_SUBMIT evidence meets threshold.".to_string()
+        } else {
+            format!(
+                "WOULD_SUBMIT count {} is below min {}.",
+                would_submit_count, thresholds.min_would_submit_count
+            )
+        },
+        Some(serde_json::json!({
+            "would_submit_count": would_submit_count,
+            "min_would_submit_count": thresholds.min_would_submit_count,
+        })),
+    ));
+    if !enough_would_submit {
+        score -= 20;
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::GenerateMoreWouldSubmitEvidence);
+    }
+
+    let risk_rejection_passed = risk_rejection_rate_pct <= thresholds.max_risk_rejection_rate_pct;
+    checks.push(qualification_check(
+        "risk_rejection_rate_acceptable",
+        "Risk rejection rate is within threshold",
+        risk_rejection_passed,
+        false,
+        ResearchCandidateQualificationSeverity::High,
+        if risk_rejection_passed {
+            "Risk rejection rate is within threshold.".to_string()
+        } else {
+            format!(
+                "Risk rejection rate {}% exceeded max {}%.",
+                risk_rejection_rate_pct, thresholds.max_risk_rejection_rate_pct
+            )
+        },
+        Some(serde_json::json!({
+            "risk_rejection_rate_pct": risk_rejection_rate_pct,
+            "max_risk_rejection_rate_pct": thresholds.max_risk_rejection_rate_pct,
+        })),
+    ));
+    if !risk_rejection_passed {
+        score -= 15;
+        recommendations.insert(ResearchCandidateQualificationRecommendation::ReviewRiskRejections);
+    }
+
+    let skipped_error_passed =
+        skipped_or_error_rate_pct <= thresholds.max_error_or_skipped_rate_pct;
+    checks.push(qualification_check(
+        "error_or_skipped_rate_acceptable",
+        "Skipped or error rate is within threshold",
+        skipped_error_passed,
+        false,
+        ResearchCandidateQualificationSeverity::Medium,
+        if skipped_error_passed {
+            "Skipped or error rate is within threshold.".to_string()
+        } else {
+            format!(
+                "Skipped or error rate {}% exceeded max {}%.",
+                skipped_or_error_rate_pct, thresholds.max_error_or_skipped_rate_pct
+            )
+        },
+        Some(serde_json::json!({
+            "skipped_or_error_rate_pct": skipped_or_error_rate_pct,
+            "max_error_or_skipped_rate_pct": thresholds.max_error_or_skipped_rate_pct,
+        })),
+    ));
+    if !skipped_error_passed {
+        score -= 15;
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::ReduceShadowErrorsOrSkips);
+    }
+
+    let readiness_passed = !thresholds.require_readiness_not_not_ready
+        || request.latest_readiness_status != Some(ExecutionReadinessStatus::NotReady);
+    checks.push(qualification_check(
+        "readiness_not_not_ready",
+        "TESTNET_SHADOW readiness is not NOT_READY",
+        readiness_passed,
+        thresholds.require_readiness_not_not_ready,
+        ResearchCandidateQualificationSeverity::High,
+        if readiness_passed {
+            "Latest TESTNET_SHADOW readiness is acceptable."
+        } else {
+            "Latest TESTNET_SHADOW readiness is NOT_READY."
+        },
+        request
+            .latest_readiness_status
+            .map(|status| serde_json::json!({ "latest_readiness_status": status.as_str() })),
+    ));
+    if !readiness_passed {
+        score -= 20;
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::RestoreTestnetShadowReadiness);
+    }
+
+    let blockers = checks
+        .iter()
+        .filter(|check| !check.passed && check.blocking)
+        .map(|check| check.summary.clone())
+        .collect::<Vec<_>>();
+    let warnings = checks
+        .iter()
+        .filter(|check| !check.passed && !check.blocking)
+        .map(|check| check.summary.clone())
+        .collect::<Vec<_>>();
+
+    let status = if !candidate_exists {
+        ResearchCandidateQualificationStatus::Unknown
+    } else if !blockers.is_empty() {
+        ResearchCandidateQualificationStatus::NotQualified
+    } else if !enough_shadow_runs {
+        ResearchCandidateQualificationStatus::NeedsMoreData
+    } else if !warnings.is_empty() {
+        ResearchCandidateQualificationStatus::Degraded
+    } else {
+        ResearchCandidateQualificationStatus::Qualified
+    };
+
+    if status == ResearchCandidateQualificationStatus::Qualified {
+        recommendations.insert(
+            ResearchCandidateQualificationRecommendation::ReadyForTestnetPromotionConsideration,
+        );
+    }
+
+    ResearchCandidateQualificationResult {
+        candidate_id: request.candidate_id,
+        status,
+        score: clamp_score(score),
+        checks,
+        blockers,
+        warnings,
+        recommendations: recommendations.into_iter().collect(),
+        thresholds,
+        shadow_performance,
+        computed_at: request.computed_at,
+    }
 }
 
 pub fn evaluate_research_candidate_shadow_performance(
@@ -2222,6 +2782,177 @@ mod tests {
         assert_eq!(
             performance.recommendation,
             ResearchCandidateShadowPerformanceRecommendation::RejectCandidate
+        );
+    }
+
+    fn qualification_request(
+        performance: Option<ResearchCandidateShadowPerformance>,
+    ) -> ResearchCandidateQualificationRequest {
+        ResearchCandidateQualificationRequest {
+            candidate_id: Uuid::nil(),
+            candidate_status: Some(ResearchCandidateStatus::AcceptedForShadow),
+            fresh_observation: true,
+            runner_alignment_valid: true,
+            shadow_runner_covers_candidate: true,
+            runner_mismatch_count: 0,
+            latest_readiness_status: Some(ExecutionReadinessStatus::Ready),
+            shadow_performance: performance,
+            thresholds: ResearchCandidateQualificationThresholds::default(),
+            computed_at: ts(1, 0, 0),
+        }
+    }
+
+    fn qualification_performance(
+        total_shadow_runs: i64,
+        would_submit_count: i64,
+        risk_rejected_count: i64,
+        skipped_count: i64,
+        error_count: i64,
+    ) -> ResearchCandidateShadowPerformance {
+        evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            total_shadow_runs,
+            would_submit_count,
+            0,
+            risk_rejected_count,
+            skipped_count,
+            error_count,
+            Some(ts(1, 0, 0)),
+            true,
+            ts(1, 0, 0),
+        )
+    }
+
+    #[test]
+    fn qualification_needs_more_data_when_total_shadow_runs_below_threshold() {
+        let result = evaluate_research_candidate_qualification(&qualification_request(Some(
+            qualification_performance(12, 4, 1, 0, 0),
+        )));
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NeedsMoreData
+        );
+        assert!(result
+            .recommendations
+            .contains(&ResearchCandidateQualificationRecommendation::GatherMoreShadowRuns));
+    }
+
+    #[test]
+    fn qualification_not_qualified_when_candidate_is_not_accepted_for_shadow() {
+        let mut request = qualification_request(Some(qualification_performance(40, 6, 4, 0, 0)));
+        request.candidate_status = Some(ResearchCandidateStatus::Observing);
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NotQualified
+        );
+    }
+
+    #[test]
+    fn qualification_not_qualified_without_fresh_observation() {
+        let mut request = qualification_request(Some(qualification_performance(40, 6, 4, 0, 0)));
+        request.fresh_observation = false;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NotQualified
+        );
+    }
+
+    #[test]
+    fn qualification_not_qualified_when_runner_alignment_mismatches() {
+        let mut request = qualification_request(Some(qualification_performance(40, 6, 4, 0, 0)));
+        request.runner_alignment_valid = false;
+        request.runner_mismatch_count = 1;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NotQualified
+        );
+    }
+
+    #[test]
+    fn qualification_degraded_when_risk_rejection_rate_is_high() {
+        let result = evaluate_research_candidate_qualification(&qualification_request(Some(
+            qualification_performance(40, 8, 20, 0, 0),
+        )));
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::Degraded
+        );
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Risk rejection rate")));
+    }
+
+    #[test]
+    fn qualification_is_qualified_when_thresholds_pass() {
+        let result = evaluate_research_candidate_qualification(&qualification_request(Some(
+            qualification_performance(40, 8, 8, 0, 0),
+        )));
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::Qualified
+        );
+        assert_eq!(result.score, 100);
+        assert_eq!(
+            result.recommendations,
+            vec![
+                ResearchCandidateQualificationRecommendation::ReadyForTestnetPromotionConsideration
+            ]
+        );
+    }
+
+    #[test]
+    fn qualification_score_clamps_to_zero_and_hundred() {
+        let mut request = qualification_request(Some(qualification_performance(0, 0, 0, 50, 50)));
+        request.candidate_status = Some(ResearchCandidateStatus::Rejected);
+        request.fresh_observation = false;
+        request.runner_alignment_valid = false;
+        request.shadow_runner_covers_candidate = false;
+        request.runner_mismatch_count = 10;
+        request.latest_readiness_status = Some(ExecutionReadinessStatus::NotReady);
+
+        let low = evaluate_research_candidate_qualification(&request);
+        let high = evaluate_research_candidate_qualification(&qualification_request(Some(
+            qualification_performance(40, 8, 0, 0, 0),
+        )));
+
+        assert_eq!(low.score, 0);
+        assert_eq!(high.score, 100);
+    }
+
+    #[test]
+    fn qualification_recommendations_are_deterministic() {
+        let mut request = qualification_request(Some(qualification_performance(10, 1, 5, 3, 3)));
+        request.fresh_observation = false;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.recommendations,
+            vec![
+                ResearchCandidateQualificationRecommendation::RefreshCandidateObservation,
+                ResearchCandidateQualificationRecommendation::GatherMoreShadowRuns,
+                ResearchCandidateQualificationRecommendation::GenerateMoreWouldSubmitEvidence,
+                ResearchCandidateQualificationRecommendation::ReviewRiskRejections,
+                ResearchCandidateQualificationRecommendation::ReduceShadowErrorsOrSkips,
+            ]
         );
     }
 
