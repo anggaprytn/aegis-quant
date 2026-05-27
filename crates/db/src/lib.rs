@@ -718,6 +718,13 @@ pub struct BacktestRunRecord {
     pub avg_loss: Decimal,
     pub fee_paid: Decimal,
     pub slippage_cost: Decimal,
+    pub raw_signal_count: i32,
+    pub cooldown_suppressed_count: i32,
+    pub open_position_suppressed_count: i32,
+    pub executed_trade_count: i32,
+    pub suppression_breakdown: Value,
+    pub last_signal_time: Option<DateTime<Utc>>,
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub status: String,
     pub config: Value,
     pub correlation_id: Option<Uuid>,
@@ -791,6 +798,13 @@ pub struct StrategyExperimentRunRecord {
     pub fee_paid: Decimal,
     pub slippage_cost: Decimal,
     pub fee_slippage_drag_pct: Decimal,
+    pub raw_signal_count: i32,
+    pub cooldown_suppressed_count: i32,
+    pub open_position_suppressed_count: i32,
+    pub executed_trade_count: i32,
+    pub suppression_breakdown: Value,
+    pub last_signal_time: Option<DateTime<Utc>>,
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub score: Decimal,
     pub status: String,
     pub warnings: Value,
@@ -855,6 +869,13 @@ pub struct StrategyWalkForwardWindowRecord {
     pub win_rate: Decimal,
     pub fee_paid: Decimal,
     pub slippage_cost: Decimal,
+    pub raw_signal_count: i32,
+    pub cooldown_suppressed_count: i32,
+    pub open_position_suppressed_count: i32,
+    pub executed_trade_count: i32,
+    pub suppression_breakdown: Value,
+    pub last_signal_time: Option<DateTime<Utc>>,
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub result: Value,
     pub created_at: DateTime<Utc>,
 }
@@ -5793,6 +5814,13 @@ pub async fn insert_backtest_run(
             avg_loss,
             fee_paid,
             slippage_cost,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             status,
             config,
             correlation_id,
@@ -5801,6 +5829,7 @@ pub async fn insert_backtest_run(
         VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, '[]'::jsonb, NULL, NULL,
             $8, $9, $10, $11
         )
         RETURNING
@@ -5823,6 +5852,13 @@ pub async fn insert_backtest_run(
             avg_loss,
             fee_paid,
             slippage_cost,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             status,
             config,
             correlation_id,
@@ -5867,9 +5903,16 @@ pub async fn update_backtest_run_completed(
             avg_loss = $11,
             fee_paid = $12,
             slippage_cost = $13,
-            status = $14,
-            config = $15,
-            correlation_id = $16
+            raw_signal_count = $14,
+            cooldown_suppressed_count = $15,
+            open_position_suppressed_count = $16,
+            executed_trade_count = $17,
+            suppression_breakdown = $18,
+            last_signal_time = $19,
+            last_executed_entry_time = $20,
+            status = $21,
+            config = $22,
+            correlation_id = $23
         WHERE id = $1
         RETURNING
             id,
@@ -5891,6 +5934,13 @@ pub async fn update_backtest_run_completed(
             avg_loss,
             fee_paid,
             slippage_cost,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             status,
             config,
             correlation_id,
@@ -5910,6 +5960,13 @@ pub async fn update_backtest_run_completed(
     .bind(result.avg_loss)
     .bind(result.fee_paid)
     .bind(result.slippage_cost)
+    .bind(result.raw_signal_count)
+    .bind(result.cooldown_suppressed_count)
+    .bind(result.open_position_suppressed_count)
+    .bind(result.executed_trade_count)
+    .bind(serde_json::to_value(&result.suppression_breakdown)?)
+    .bind(result.last_signal_time)
+    .bind(result.last_executed_entry_time)
     .bind(result.status.as_str())
     .bind(serde_json::to_value(config)?)
     .bind(result.correlation_id)
@@ -6047,6 +6104,13 @@ pub async fn get_backtest_run(pool: &PgPool, run_id: Uuid) -> Result<Option<Back
             avg_loss,
             fee_paid,
             slippage_cost,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             status,
             config,
             correlation_id,
@@ -6085,6 +6149,13 @@ pub async fn list_backtest_runs(pool: &PgPool, limit: i64) -> Result<Vec<Backtes
             avg_loss,
             fee_paid,
             slippage_cost,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             status,
             config,
             correlation_id,
@@ -6228,13 +6299,21 @@ pub async fn insert_strategy_experiment_runs(
                 fee_paid,
                 slippage_cost,
                 fee_slippage_drag_pct,
+                raw_signal_count,
+                cooldown_suppressed_count,
+                open_position_suppressed_count,
+                executed_trade_count,
+                suppression_breakdown,
+                last_signal_time,
+                last_executed_entry_time,
                 score,
                 status,
                 warnings,
                 created_at
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
             )
             RETURNING
                 id,
@@ -6250,6 +6329,13 @@ pub async fn insert_strategy_experiment_runs(
                 fee_paid,
                 slippage_cost,
                 fee_slippage_drag_pct,
+                raw_signal_count,
+                cooldown_suppressed_count,
+                open_position_suppressed_count,
+                executed_trade_count,
+                suppression_breakdown,
+                last_signal_time,
+                last_executed_entry_time,
                 score,
                 status,
                 warnings,
@@ -6269,6 +6355,13 @@ pub async fn insert_strategy_experiment_runs(
         .bind(run.fee_paid)
         .bind(run.slippage_cost)
         .bind(run.fee_slippage_drag_pct)
+        .bind(run.raw_signal_count)
+        .bind(run.cooldown_suppressed_count)
+        .bind(run.open_position_suppressed_count)
+        .bind(run.executed_trade_count)
+        .bind(serde_json::to_value(&run.suppression_breakdown)?)
+        .bind(run.last_signal_time)
+        .bind(run.last_executed_entry_time)
         .bind(run.score)
         .bind(run.status.as_str())
         .bind(serde_json::to_value(&run.warnings)?)
@@ -6440,13 +6533,20 @@ pub async fn insert_strategy_walk_forward_windows(
                 win_rate,
                 fee_paid,
                 slippage_cost,
+                raw_signal_count,
+                cooldown_suppressed_count,
+                open_position_suppressed_count,
+                executed_trade_count,
+                suppression_breakdown,
+                last_signal_time,
+                last_executed_entry_time,
                 result,
                 created_at
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9,
                 $10, $11, $12, $13, $14, $15, $16, $17, $18,
-                $19, $20, $21
+                $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
             )
             RETURNING
                 id,
@@ -6468,6 +6568,13 @@ pub async fn insert_strategy_walk_forward_windows(
                 win_rate,
                 fee_paid,
                 slippage_cost,
+                raw_signal_count,
+                cooldown_suppressed_count,
+                open_position_suppressed_count,
+                executed_trade_count,
+                suppression_breakdown,
+                last_signal_time,
+                last_executed_entry_time,
                 result,
                 created_at
             "#,
@@ -6491,6 +6598,13 @@ pub async fn insert_strategy_walk_forward_windows(
         .bind(window.win_rate)
         .bind(window.fee_paid)
         .bind(window.slippage_cost)
+        .bind(window.raw_signal_count)
+        .bind(window.cooldown_suppressed_count)
+        .bind(window.open_position_suppressed_count)
+        .bind(window.executed_trade_count)
+        .bind(serde_json::to_value(&window.suppression_breakdown)?)
+        .bind(window.last_signal_time)
+        .bind(window.last_executed_entry_time)
         .bind(&window.result)
         .bind(window.created_at)
         .fetch_one(pool)
@@ -6634,6 +6748,13 @@ pub async fn list_strategy_experiment_runs(
             fee_paid,
             slippage_cost,
             fee_slippage_drag_pct,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             score,
             status,
             warnings,
@@ -6670,6 +6791,13 @@ pub async fn get_strategy_experiment_run(
             fee_paid,
             slippage_cost,
             fee_slippage_drag_pct,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             score,
             status,
             warnings,
@@ -6817,6 +6945,13 @@ pub async fn list_strategy_walk_forward_windows(
             win_rate,
             fee_paid,
             slippage_cost,
+            raw_signal_count,
+            cooldown_suppressed_count,
+            open_position_suppressed_count,
+            executed_trade_count,
+            suppression_breakdown,
+            last_signal_time,
+            last_executed_entry_time,
             result,
             created_at
         FROM strategy_walk_forward_windows
@@ -10148,6 +10283,13 @@ fn map_backtest_run(row: &sqlx::postgres::PgRow) -> BacktestRunRecord {
         avg_loss: row.get("avg_loss"),
         fee_paid: row.get("fee_paid"),
         slippage_cost: row.get("slippage_cost"),
+        raw_signal_count: row.get("raw_signal_count"),
+        cooldown_suppressed_count: row.get("cooldown_suppressed_count"),
+        open_position_suppressed_count: row.get("open_position_suppressed_count"),
+        executed_trade_count: row.get("executed_trade_count"),
+        suppression_breakdown: row.get("suppression_breakdown"),
+        last_signal_time: row.get("last_signal_time"),
+        last_executed_entry_time: row.get("last_executed_entry_time"),
         status: row.get("status"),
         config: row.get("config"),
         correlation_id: row.get("correlation_id"),
@@ -10225,6 +10367,13 @@ fn map_strategy_experiment_run(row: &sqlx::postgres::PgRow) -> StrategyExperimen
         fee_paid: row.get("fee_paid"),
         slippage_cost: row.get("slippage_cost"),
         fee_slippage_drag_pct: row.get("fee_slippage_drag_pct"),
+        raw_signal_count: row.get("raw_signal_count"),
+        cooldown_suppressed_count: row.get("cooldown_suppressed_count"),
+        open_position_suppressed_count: row.get("open_position_suppressed_count"),
+        executed_trade_count: row.get("executed_trade_count"),
+        suppression_breakdown: row.get("suppression_breakdown"),
+        last_signal_time: row.get("last_signal_time"),
+        last_executed_entry_time: row.get("last_executed_entry_time"),
         score: row.get("score"),
         status: row.get("status"),
         warnings: row.get("warnings"),
@@ -10293,6 +10442,13 @@ fn map_strategy_walk_forward_window(
         win_rate: row.get("win_rate"),
         fee_paid: row.get("fee_paid"),
         slippage_cost: row.get("slippage_cost"),
+        raw_signal_count: row.get("raw_signal_count"),
+        cooldown_suppressed_count: row.get("cooldown_suppressed_count"),
+        open_position_suppressed_count: row.get("open_position_suppressed_count"),
+        executed_trade_count: row.get("executed_trade_count"),
+        suppression_breakdown: row.get("suppression_breakdown"),
+        last_signal_time: row.get("last_signal_time"),
+        last_executed_entry_time: row.get("last_executed_entry_time"),
         result: row.get("result"),
         created_at: row.get("created_at"),
     }
@@ -10465,6 +10621,13 @@ pub fn backtest_result_from_record(record: &BacktestRunRecord) -> Result<Backtes
         avg_loss: record.avg_loss,
         fee_paid: record.fee_paid,
         slippage_cost: record.slippage_cost,
+        raw_signal_count: record.raw_signal_count,
+        cooldown_suppressed_count: record.cooldown_suppressed_count,
+        open_position_suppressed_count: record.open_position_suppressed_count,
+        executed_trade_count: record.executed_trade_count,
+        suppression_breakdown: serde_json::from_value(record.suppression_breakdown.clone())?,
+        last_signal_time: record.last_signal_time,
+        last_executed_entry_time: record.last_executed_entry_time,
         status: record.status.parse()?,
         created_at: record.created_at,
         correlation_id: record.correlation_id,
@@ -10490,6 +10653,13 @@ pub fn strategy_experiment_run_from_record(
         fee_paid: record.fee_paid,
         slippage_cost: record.slippage_cost,
         fee_slippage_drag_pct: record.fee_slippage_drag_pct,
+        raw_signal_count: record.raw_signal_count,
+        cooldown_suppressed_count: record.cooldown_suppressed_count,
+        open_position_suppressed_count: record.open_position_suppressed_count,
+        executed_trade_count: record.executed_trade_count,
+        suppression_breakdown: serde_json::from_value(record.suppression_breakdown.clone())?,
+        last_signal_time: record.last_signal_time,
+        last_executed_entry_time: record.last_executed_entry_time,
         score: record.score,
         status: record.status.parse()?,
         warnings: serde_json::from_value(record.warnings.clone())?,
@@ -10562,6 +10732,13 @@ pub fn strategy_walk_forward_window_from_record(
         win_rate: record.win_rate,
         fee_paid: record.fee_paid,
         slippage_cost: record.slippage_cost,
+        raw_signal_count: record.raw_signal_count,
+        cooldown_suppressed_count: record.cooldown_suppressed_count,
+        open_position_suppressed_count: record.open_position_suppressed_count,
+        executed_trade_count: record.executed_trade_count,
+        suppression_breakdown: serde_json::from_value(record.suppression_breakdown.clone())?,
+        last_signal_time: record.last_signal_time,
+        last_executed_entry_time: record.last_executed_entry_time,
         result: record.result.clone(),
         created_at: record.created_at,
     })

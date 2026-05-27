@@ -4978,6 +4978,36 @@ function AuthenticatedDashboard({
                         selectedRunQuery.data?.run.win_rate ??
                         "N/A",
                     ],
+                    [
+                      "Signals",
+                      selectedRunQuery.data?.run
+                        ? `raw ${selectedRunQuery.data.run.raw_signal_count ?? 0} / executed ${
+                            selectedRunQuery.data.run.executed_trade_count ??
+                            selectedRunQuery.data.run.trade_count
+                          }`
+                        : lastBacktestResult
+                          ? `raw ${lastBacktestResult.raw_signal_count ?? 0} / executed ${
+                              lastBacktestResult.executed_trade_count ??
+                              lastBacktestResult.trade_count
+                            }`
+                          : "N/A",
+                    ],
+                    [
+                      "Suppressed",
+                      selectedRunQuery.data?.run
+                        ? `cooldown ${
+                            selectedRunQuery.data.run.cooldown_suppressed_count ?? 0
+                          } / open ${
+                            selectedRunQuery.data.run.open_position_suppressed_count ?? 0
+                          }`
+                        : lastBacktestResult
+                          ? `cooldown ${
+                              lastBacktestResult.cooldown_suppressed_count ?? 0
+                            } / open ${
+                              lastBacktestResult.open_position_suppressed_count ?? 0
+                            }`
+                          : "N/A",
+                    ],
                   ]}
                   loading={selectedRunQuery.isLoading}
                   error={getErrorMessage(selectedRunQuery.error)}
@@ -8955,12 +8985,19 @@ function BacktestRunsTable({
           )}
           onClick={() => onSelect(run.run_id)}
         >
-          <div className="grid gap-2 md:grid-cols-5">
+          <div className="grid gap-2 md:grid-cols-7">
             <div className="font-mono text-xs">{shortenId(run.run_id)}</div>
             <div>{run.strategy_id}</div>
             <div>{run.symbol}</div>
             <div>{run.status}</div>
             <div>PnL {run.pnl}</div>
+            <div>
+              signals {run.raw_signal_count ?? 0}/{run.executed_trade_count ?? run.trade_count}
+            </div>
+            <div>
+              suppressed c{run.cooldown_suppressed_count ?? 0}/p
+              {run.open_position_suppressed_count ?? 0}
+            </div>
           </div>
         </button>
       ))}
@@ -9410,7 +9447,9 @@ function StrategyExperimentRunsTable({ runs }: { runs: StrategyExperimentRun[] }
         "Holding",
         "PnL %",
         "Drawdown %",
+        "Signals",
         "Trades",
+        "Suppressed",
         "Win Rate",
         "Drag %",
         "Score",
@@ -9422,7 +9461,9 @@ function StrategyExperimentRunsTable({ runs }: { runs: StrategyExperimentRun[] }
         run.candidate.holding_candles ? String(run.candidate.holding_candles) : "-",
         run.pnl_pct,
         run.max_drawdown_pct,
-        String(run.trade_count),
+        `${run.raw_signal_count ?? 0}`,
+        String(run.executed_trade_count ?? run.trade_count),
+        `c${run.cooldown_suppressed_count ?? 0}/p${run.open_position_suppressed_count ?? 0}`,
         run.win_rate,
         run.fee_slippage_drag_pct,
         run.score,
@@ -9491,7 +9532,9 @@ function StrategyWalkForwardWindowsTable({
         "Status",
         "PnL %",
         "Drawdown %",
+        "Signals",
         "Trades",
+        "Suppressed",
         "Skip Reason",
       ]}
       rows={windows.map((window) => [
@@ -9501,7 +9544,9 @@ function StrategyWalkForwardWindowsTable({
         window.status,
         window.pnl_pct,
         window.max_drawdown_pct,
-        String(window.trade_count),
+        `${window.raw_signal_count ?? 0}`,
+        String(window.executed_trade_count ?? window.trade_count),
+        `c${window.cooldown_suppressed_count ?? 0}/p${window.open_position_suppressed_count ?? 0}`,
         window.skip_reason ?? "-",
       ])}
     />

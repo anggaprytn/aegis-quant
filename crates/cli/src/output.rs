@@ -1469,6 +1469,13 @@ pub fn print_backtest_accepted(response: &BacktestRunAcceptedResponse) {
     println!("Strategy: {}", response.strategy_id);
     println!("Symbol: {}", response.symbol);
     println!("Trade count: {}", response.trade_count);
+    println!(
+        "Signals: raw={} executed={} cooldown_suppressed={} open_position_suppressed={}",
+        response.raw_signal_count,
+        response.executed_trade_count,
+        response.cooldown_suppressed_count,
+        response.open_position_suppressed_count
+    );
     println!("PnL: {} ({}%)", response.pnl, response.pnl_pct);
     println!("Max drawdown %: {}", response.max_drawdown_pct);
     println!("Win rate: {}", response.win_rate);
@@ -1486,7 +1493,7 @@ pub fn print_backtest_accepted(response: &BacktestRunAcceptedResponse) {
 pub fn print_backtest_runs(runs: &[BacktestResult]) {
     for run in runs {
         println!(
-            "{}  {} {} {} status={} pnl={} pnl_pct={} trades={}",
+            "{}  {} {} {} status={} pnl={} pnl_pct={} raw_signals={} trades={} cooldown={} open_position={}",
             run.run_id,
             run.strategy_id,
             run.symbol,
@@ -1494,7 +1501,10 @@ pub fn print_backtest_runs(runs: &[BacktestResult]) {
             run.status,
             run.pnl,
             run.pnl_pct,
-            run.trade_count
+            run.raw_signal_count,
+            run.executed_trade_count,
+            run.cooldown_suppressed_count,
+            run.open_position_suppressed_count
         );
     }
 }
@@ -1518,6 +1528,13 @@ pub fn print_backtest_run(run: &BacktestResult) {
     println!(
         "Trade breakdown: total={} wins={} losses={}",
         run.trade_count, run.winning_trades, run.losing_trades
+    );
+    println!(
+        "Signal accounting: raw={} executed={} cooldown_suppressed={} open_position_suppressed={}",
+        run.raw_signal_count,
+        run.executed_trade_count,
+        run.cooldown_suppressed_count,
+        run.open_position_suppressed_count
     );
     println!("Fee paid: {}", run.fee_paid);
     println!("Slippage cost: {}", run.slippage_cost);
@@ -1583,7 +1600,7 @@ pub fn print_strategy_experiment(experiment: &aegis_core::StrategyExperimentResu
 pub fn print_strategy_experiment_runs(runs: &[aegis_core::StrategyExperimentRun]) {
     for run in runs {
         println!(
-            "{}  rank={} lookback={} holding={} pnl_pct={} drawdown={} trades={} win_rate={} drag={} score={} warnings={}",
+            "{}  rank={} lookback={} holding={} pnl_pct={} drawdown={} raw_signals={} trades={} cooldown={} open_position={} win_rate={} drag={} score={} warnings={}",
             run.id,
             run.rank,
             run.candidate.lookback_candles,
@@ -1593,7 +1610,10 @@ pub fn print_strategy_experiment_runs(runs: &[aegis_core::StrategyExperimentRun]
                 .unwrap_or_else(|| "-".to_string()),
             run.pnl_pct,
             run.max_drawdown_pct,
-            run.trade_count,
+            run.raw_signal_count,
+            run.executed_trade_count,
+            run.cooldown_suppressed_count,
+            run.open_position_suppressed_count,
             run.win_rate,
             run.fee_slippage_drag_pct,
             run.score,
@@ -1758,7 +1778,7 @@ pub fn print_strategy_walk_forward_windows(
 ) {
     for window in windows {
         println!(
-            "window={} train={}..{} test={}..{} status={} pnl_pct={} drawdown={} trades={} reason={}",
+            "window={} train={}..{} test={}..{} status={} pnl_pct={} drawdown={} raw_signals={} trades={} cooldown={} open_position={} reason={}",
             window.window.window_index,
             window.window.train_start.to_rfc3339(),
             window.window.train_end.to_rfc3339(),
@@ -1767,7 +1787,10 @@ pub fn print_strategy_walk_forward_windows(
             window.status.as_str(),
             window.pnl_pct,
             window.max_drawdown_pct,
-            window.trade_count,
+            window.raw_signal_count,
+            window.executed_trade_count,
+            window.cooldown_suppressed_count,
+            window.open_position_suppressed_count,
             window.skip_reason.as_deref().unwrap_or("-")
         );
     }

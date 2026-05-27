@@ -1930,6 +1930,13 @@ struct BacktestRunAcceptedResponse {
     win_rate: String,
     fee_paid: String,
     slippage_cost: String,
+    raw_signal_count: i32,
+    cooldown_suppressed_count: i32,
+    open_position_suppressed_count: i32,
+    executed_trade_count: i32,
+    suppression_breakdown: Vec<aegis_core::ReplaySuppressionCount>,
+    last_signal_time: Option<DateTime<Utc>>,
+    last_executed_entry_time: Option<DateTime<Utc>>,
     correlation_id: Option<Uuid>,
 }
 
@@ -2136,8 +2143,14 @@ struct StrategyOpportunityReplayConsistencyResult {
     opportunity_evaluable_windows: i64,
     opportunity_would_signal_count: i64,
     replay_signal_count: i64,
+    raw_signal_count: i32,
     backtest_trade_count: i32,
-    cooldown_suppressed_count: Option<i64>,
+    executed_trade_count: i32,
+    cooldown_suppressed_count: Option<i32>,
+    open_position_suppressed_count: Option<i32>,
+    suppression_breakdown: Vec<aegis_core::ReplaySuppressionCount>,
+    last_signal_time: Option<DateTime<Utc>>,
+    last_executed_entry_time: Option<DateTime<Utc>>,
     no_signal_reason_breakdown: Vec<StrategyNoSignalReasonCount>,
     mismatch_count: i64,
     mismatch_examples: Vec<StrategyOpportunityReplayMismatchExample>,
@@ -11034,6 +11047,13 @@ async fn run_backtest_handler(
                 win_rate: execution.result.win_rate.to_string(),
                 fee_paid: execution.result.fee_paid.to_string(),
                 slippage_cost: execution.result.slippage_cost.to_string(),
+                raw_signal_count: execution.result.raw_signal_count,
+                cooldown_suppressed_count: execution.result.cooldown_suppressed_count,
+                open_position_suppressed_count: execution.result.open_position_suppressed_count,
+                executed_trade_count: execution.result.executed_trade_count,
+                suppression_breakdown: execution.result.suppression_breakdown,
+                last_signal_time: execution.result.last_signal_time,
+                last_executed_entry_time: execution.result.last_executed_entry_time,
                 correlation_id: execution.result.correlation_id,
             }),
         )
@@ -23130,7 +23150,7 @@ async fn strategy_opportunity_replay_consistency_handler(
         .map(|(reason, count)| StrategyNoSignalReasonCount { reason, count })
         .collect::<Vec<_>>();
     let explanation = if mismatch_count == 0 {
-        "Opportunity WOULD_SIGNAL count matches direct strategy evaluator signal count for the same closed candles and config. Backtest trades can be lower because replay needs a next candle for entry and does not evaluate new entries while a simulated position is open."
+        "Opportunity WOULD_SIGNAL count matches direct strategy evaluator signal count for the same closed candles and config. Replay counts every raw strategy signal, then suppresses signals when cooldown is active, a simulated position is already open, forward entry data is unavailable, or the signal is invalid. Cooldown is anchored to the last executed entry time."
             .to_string()
     } else {
         "Opportunity analysis and direct strategy evaluator disagree on one or more windows; inspect mismatch_examples before trusting experiment evidence."
@@ -23149,8 +23169,16 @@ async fn strategy_opportunity_replay_consistency_handler(
                 opportunity_evaluable_windows: opportunity.evaluable_windows,
                 opportunity_would_signal_count: opportunity.would_signal_count,
                 replay_signal_count,
+                raw_signal_count: backtest.result.raw_signal_count,
                 backtest_trade_count: backtest.result.trade_count,
-                cooldown_suppressed_count: None,
+                executed_trade_count: backtest.result.executed_trade_count,
+                cooldown_suppressed_count: Some(backtest.result.cooldown_suppressed_count),
+                open_position_suppressed_count: Some(
+                    backtest.result.open_position_suppressed_count,
+                ),
+                suppression_breakdown: backtest.result.suppression_breakdown,
+                last_signal_time: backtest.result.last_signal_time,
+                last_executed_entry_time: backtest.result.last_executed_entry_time,
                 no_signal_reason_breakdown,
                 mismatch_count,
                 mismatch_examples,
@@ -25056,6 +25084,13 @@ mod tests {
             fee_paid: Decimal::new(500, 0),
             slippage_cost: Decimal::new(120, 0),
             fee_slippage_drag_pct: Decimal::new(10, 2),
+            raw_signal_count: 11,
+            cooldown_suppressed_count: 1,
+            open_position_suppressed_count: 1,
+            executed_trade_count: 9,
+            suppression_breakdown: Vec::new(),
+            last_signal_time: Some(Utc::now()),
+            last_executed_entry_time: Some(Utc::now()),
             score: Decimal::new(499, 2),
             status: StrategyExperimentStatus::Completed,
             warnings: Vec::new(),
@@ -25777,6 +25812,15 @@ mod tests {
                 .unwrap_or(0)
                 > 0
         );
+        assert!(payload["result"]["raw_signal_count"].as_i64().unwrap_or(0) > 0);
+        assert!(
+            payload["result"]["executed_trade_count"]
+                .as_i64()
+                .unwrap_or(0)
+                > 0
+        );
+        assert!(!payload["result"]["cooldown_suppressed_count"].is_null());
+        assert!(!payload["result"]["open_position_suppressed_count"].is_null());
         assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
         assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
         assert_eq!(count_paper_fills(&test_db.pool).await, before.2);

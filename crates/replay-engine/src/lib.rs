@@ -1,10 +1,11 @@
 use aegis_core::{
     BacktestEquityPoint, BacktestPosition, BacktestRequest, BacktestResult, BacktestTrade, Candle,
-    CandleInterval, EventEnvelope, ReplayRunStatus, Side, StrategyConfig,
-    StrategyConfigUpdateRequest, StrategyEvaluationContext, StrategyExperimentCandidate,
-    StrategyExperimentComparison, StrategyExperimentGlobalRanking,
-    StrategyExperimentGlobalRankingEntry, StrategyExperimentMetric, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+    CandleInterval, EventEnvelope, ReplayRunStatus, ReplaySuppressionCount,
+    ReplaySuppressionReason, Side, StrategyConfig, StrategyConfigUpdateRequest,
+    StrategyEvaluationContext, StrategyExperimentCandidate, StrategyExperimentComparison,
+    StrategyExperimentGlobalRanking, StrategyExperimentGlobalRankingEntry,
+    StrategyExperimentMetric, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyTimeframeCandidate, StrategyTimeframeComparison, StrategyWalkForwardCandidate,
     StrategyWalkForwardRecommendation, StrategyWalkForwardRequest, StrategyWalkForwardResult,
@@ -23,6 +24,7 @@ use db::{
 };
 use rust_decimal::Decimal;
 use serde_json::json;
+use std::collections::BTreeMap;
 use strategy_engine::{
     evaluate as evaluate_strategy, validate_strategy_config, StrategyValidationContext,
 };
@@ -71,6 +73,10 @@ struct SimulationState {
     equity_curve: Vec<BacktestEquityPoint>,
     fee_paid: Decimal,
     slippage_cost: Decimal,
+    raw_signal_count: i32,
+    suppression_counts: BTreeMap<ReplaySuppressionReason, i32>,
+    last_signal_time: Option<DateTime<Utc>>,
+    last_executed_entry_time: Option<DateTime<Utc>>,
 }
 
 impl ReplayEngine {
@@ -566,6 +572,10 @@ pub fn simulate_backtest(
         equity_curve: Vec::new(),
         fee_paid: Decimal::ZERO,
         slippage_cost: Decimal::ZERO,
+        raw_signal_count: 0,
+        suppression_counts: BTreeMap::new(),
+        last_signal_time: None,
+        last_executed_entry_time: None,
     };
 
     for index in 0..candles.len() {
@@ -584,25 +594,44 @@ pub fn simulate_backtest(
             )?;
         }
 
-        if state.position.is_none() && index + 1 < candles.len() {
-            let evaluation = evaluate_strategy(StrategyEvaluationContext {
-                correlation_id,
-                strategy_id,
-                symbol: symbol.clone(),
-                config: strategy_config.clone(),
-                candles: candles[..=index].to_vec(),
-                evaluated_at: candle.close_time,
-            })?;
+        let evaluation = evaluate_strategy(StrategyEvaluationContext {
+            correlation_id,
+            strategy_id,
+            symbol: symbol.clone(),
+            config: strategy_config.clone(),
+            candles: candles[..=index].to_vec(),
+            evaluated_at: candle.close_time,
+        })?;
 
-            if let Some(signal) = evaluation.signal {
-                if signal.side == aegis_core::SignalSide::Buy {
-                    let next_candle = &candles[index + 1];
-                    state.position = maybe_open_position(
-                        &backtest_config,
-                        strategy_config,
-                        next_candle,
-                        state.cash,
-                    )?;
+        if let Some(signal) = evaluation.signal {
+            state.raw_signal_count += 1;
+            state.last_signal_time = Some(candle.close_time);
+
+            if signal.side != aegis_core::SignalSide::Buy {
+                record_suppression(&mut state, ReplaySuppressionReason::InvalidSignal);
+            } else if cooldown_active(
+                state.last_executed_entry_time,
+                candle.close_time,
+                strategy_config.cooldown_seconds,
+            ) {
+                record_suppression(&mut state, ReplaySuppressionReason::CooldownActive);
+            } else if state.position.is_some() {
+                record_suppression(&mut state, ReplaySuppressionReason::PositionAlreadyOpen);
+            } else if index + 1 >= candles.len() {
+                record_suppression(&mut state, ReplaySuppressionReason::InsufficientForwardData);
+            } else {
+                let next_candle = &candles[index + 1];
+                state.position = maybe_open_position(
+                    &backtest_config,
+                    strategy_config,
+                    next_candle,
+                    state.cash,
+                )?;
+                if let Some(position) = state.position.as_ref() {
+                    state.last_executed_entry_time = Some(position.entry_time);
+                    record_suppression(&mut state, ReplaySuppressionReason::None);
+                } else {
+                    record_suppression(&mut state, ReplaySuppressionReason::InvalidSignal);
                 }
             }
         }
@@ -641,6 +670,10 @@ pub fn simulate_backtest(
         state.fee_paid,
         state.slippage_cost,
         state.cash,
+        state.raw_signal_count,
+        &state.suppression_counts,
+        state.last_signal_time,
+        state.last_executed_entry_time,
     );
 
     Ok(BacktestExecution {
@@ -884,6 +917,13 @@ fn strategy_experiment_run_from_backtest(
         fee_paid: result.fee_paid,
         slippage_cost: result.slippage_cost,
         fee_slippage_drag_pct,
+        raw_signal_count: result.raw_signal_count,
+        cooldown_suppressed_count: result.cooldown_suppressed_count,
+        open_position_suppressed_count: result.open_position_suppressed_count,
+        executed_trade_count: result.executed_trade_count,
+        suppression_breakdown: result.suppression_breakdown,
+        last_signal_time: result.last_signal_time,
+        last_executed_entry_time: result.last_executed_entry_time,
         score: Decimal::ZERO,
         status: match result.status {
             ReplayRunStatus::Completed => StrategyExperimentStatus::Completed,
@@ -1269,6 +1309,13 @@ fn build_strategy_walk_forward_execution(
                 win_rate: Decimal::ZERO,
                 fee_paid: Decimal::ZERO,
                 slippage_cost: Decimal::ZERO,
+                raw_signal_count: 0,
+                cooldown_suppressed_count: 0,
+                open_position_suppressed_count: 0,
+                executed_trade_count: 0,
+                suppression_breakdown: suppression_breakdown(&BTreeMap::new()),
+                last_signal_time: None,
+                last_executed_entry_time: None,
                 result: json!({ "status": "SKIPPED", "skip_reason": skip_reason }),
                 created_at,
             });
@@ -1320,6 +1367,13 @@ fn build_strategy_walk_forward_execution(
             win_rate: execution.result.win_rate,
             fee_paid: execution.result.fee_paid,
             slippage_cost: execution.result.slippage_cost,
+            raw_signal_count: execution.result.raw_signal_count,
+            cooldown_suppressed_count: execution.result.cooldown_suppressed_count,
+            open_position_suppressed_count: execution.result.open_position_suppressed_count,
+            executed_trade_count: execution.result.executed_trade_count,
+            suppression_breakdown: execution.result.suppression_breakdown,
+            last_signal_time: execution.result.last_signal_time,
+            last_executed_entry_time: execution.result.last_executed_entry_time,
             result,
             created_at,
         });
@@ -1863,6 +1917,43 @@ fn maybe_open_position(
     }))
 }
 
+fn cooldown_active(
+    last_executed_entry_time: Option<DateTime<Utc>>,
+    signal_time: DateTime<Utc>,
+    cooldown_seconds: u32,
+) -> bool {
+    let Some(last_entry) = last_executed_entry_time else {
+        return false;
+    };
+    if cooldown_seconds == 0 {
+        return false;
+    }
+
+    signal_time.signed_duration_since(last_entry) < Duration::seconds(i64::from(cooldown_seconds))
+}
+
+fn record_suppression(state: &mut SimulationState, reason: ReplaySuppressionReason) {
+    *state.suppression_counts.entry(reason).or_insert(0) += 1;
+}
+
+fn suppression_breakdown(
+    counts: &BTreeMap<ReplaySuppressionReason, i32>,
+) -> Vec<ReplaySuppressionCount> {
+    [
+        ReplaySuppressionReason::CooldownActive,
+        ReplaySuppressionReason::PositionAlreadyOpen,
+        ReplaySuppressionReason::InsufficientForwardData,
+        ReplaySuppressionReason::InvalidSignal,
+        ReplaySuppressionReason::None,
+    ]
+    .into_iter()
+    .map(|reason| ReplaySuppressionCount {
+        reason,
+        count: counts.get(&reason).copied().unwrap_or_default(),
+    })
+    .collect()
+}
+
 fn evaluate_exit(
     run_id: Uuid,
     created_at: DateTime<Utc>,
@@ -2023,6 +2114,10 @@ fn build_result(
     fee_paid: Decimal,
     slippage_cost: Decimal,
     final_equity: Decimal,
+    raw_signal_count: i32,
+    suppression_counts: &BTreeMap<ReplaySuppressionReason, i32>,
+    last_signal_time: Option<DateTime<Utc>>,
+    last_executed_entry_time: Option<DateTime<Utc>>,
 ) -> BacktestResult {
     let winning_trades = trades
         .iter()
@@ -2063,6 +2158,14 @@ fn build_result(
             .map(|trade| trade.realized_pnl),
         losing_trades,
     );
+    let cooldown_suppressed_count = suppression_counts
+        .get(&ReplaySuppressionReason::CooldownActive)
+        .copied()
+        .unwrap_or_default();
+    let open_position_suppressed_count = suppression_counts
+        .get(&ReplaySuppressionReason::PositionAlreadyOpen)
+        .copied()
+        .unwrap_or_default();
 
     BacktestResult {
         run_id,
@@ -2084,6 +2187,13 @@ fn build_result(
         avg_loss,
         fee_paid,
         slippage_cost,
+        raw_signal_count,
+        cooldown_suppressed_count,
+        open_position_suppressed_count,
+        executed_trade_count: trade_count,
+        suppression_breakdown: suppression_breakdown(suppression_counts),
+        last_signal_time,
+        last_executed_entry_time,
         status: ReplayRunStatus::Completed,
         created_at,
         correlation_id,
@@ -2116,6 +2226,13 @@ fn failure_result(
         avg_loss: Decimal::ZERO,
         fee_paid: Decimal::ZERO,
         slippage_cost: Decimal::ZERO,
+        raw_signal_count: 0,
+        cooldown_suppressed_count: 0,
+        open_position_suppressed_count: 0,
+        executed_trade_count: 0,
+        suppression_breakdown: suppression_breakdown(&BTreeMap::new()),
+        last_signal_time: None,
+        last_executed_entry_time: None,
         status: ReplayRunStatus::Failed,
         created_at,
         correlation_id,
@@ -2171,9 +2288,9 @@ mod tests {
         skipped_strategy_experiment_result, timeframe_comparison_from_result,
     };
     use aegis_core::{
-        BacktestRequest, Candle, CandleInterval, MarketDataSource, StrategyConfig,
-        StrategyExperimentRequest, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
-        StrategyMode, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
+        BacktestRequest, Candle, CandleInterval, MarketDataSource, ReplaySuppressionReason,
+        StrategyConfig, StrategyExperimentRequest, StrategyExperimentRun, StrategyExperimentStatus,
+        StrategyId, StrategyMode, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
         StrategyWalkForwardRobustnessSummary, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
@@ -2264,6 +2381,18 @@ mod tests {
         (0..count)
             .map(|index| candle(index, 100 + index, 101 + index, 99 + index, 100 + index))
             .collect()
+    }
+
+    fn suppression_count(
+        result: &aegis_core::BacktestResult,
+        reason: ReplaySuppressionReason,
+    ) -> i32 {
+        result
+            .suppression_breakdown
+            .iter()
+            .find(|item| item.reason == reason)
+            .map(|item| item.count)
+            .unwrap_or_default()
     }
 
     fn sample_experiment_request() -> StrategyExperimentRequest {
@@ -2433,6 +2562,13 @@ mod tests {
             fee_paid: Decimal::new(500, 0),
             slippage_cost: Decimal::new(250, 0),
             fee_slippage_drag_pct: Decimal::new(fee_slippage_drag_pct, 0),
+            raw_signal_count: trade_count,
+            cooldown_suppressed_count: 0,
+            open_position_suppressed_count: 0,
+            executed_trade_count: trade_count,
+            suppression_breakdown: Vec::new(),
+            last_signal_time: None,
+            last_executed_entry_time: None,
             score: Decimal::ZERO,
             status: StrategyExperimentStatus::Completed,
             warnings: Vec::new(),
@@ -2540,6 +2676,125 @@ mod tests {
 
         assert!(!execution.trades.is_empty());
         assert_eq!(execution.trades[0].side, aegis_core::Side::Buy);
+    }
+
+    #[test]
+    fn signals_inside_cooldown_are_suppressed() {
+        let mut request = sample_request();
+        request.holding_candles = Some(1);
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 900;
+        config.holding_candles = Some(1);
+
+        let execution = simulate_backtest(
+            Uuid::from_u128(0x700),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x701),
+            &request,
+            &config,
+            long_trending_candles(12),
+        )
+        .unwrap();
+
+        assert!(execution.result.raw_signal_count > execution.result.executed_trade_count);
+        assert!(execution.result.cooldown_suppressed_count > 0);
+        assert_eq!(
+            suppression_count(&execution.result, ReplaySuppressionReason::CooldownActive),
+            execution.result.cooldown_suppressed_count
+        );
+    }
+
+    #[test]
+    fn signals_after_cooldown_can_execute() {
+        let mut request = sample_request();
+        request.holding_candles = Some(1);
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 60;
+        config.holding_candles = Some(1);
+
+        let execution = simulate_backtest(
+            Uuid::from_u128(0x702),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x703),
+            &request,
+            &config,
+            long_trending_candles(12),
+        )
+        .unwrap();
+
+        assert!(execution.result.executed_trade_count >= 2);
+        assert_eq!(
+            execution.result.executed_trade_count,
+            execution.result.trade_count
+        );
+    }
+
+    #[test]
+    fn position_already_open_suppresses_separate_signal() {
+        let mut request = sample_request();
+        request.holding_candles = Some(5);
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(5);
+
+        let execution = simulate_backtest(
+            Uuid::from_u128(0x704),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x705),
+            &request,
+            &config,
+            long_trending_candles(12),
+        )
+        .unwrap();
+
+        assert!(execution.result.open_position_suppressed_count > 0);
+        assert_eq!(
+            suppression_count(
+                &execution.result,
+                ReplaySuppressionReason::PositionAlreadyOpen
+            ),
+            execution.result.open_position_suppressed_count
+        );
+    }
+
+    #[test]
+    fn raw_signal_count_is_at_least_executed_trade_count() {
+        let execution = simulate_backtest(
+            Uuid::from_u128(0x706),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x707),
+            &sample_request(),
+            &sample_strategy_config(),
+            long_trending_candles(12),
+        )
+        .unwrap();
+
+        assert!(execution.result.raw_signal_count >= execution.result.executed_trade_count);
+    }
+
+    #[test]
+    fn no_cooldown_simple_case_preserves_existing_pnl_behavior() {
+        let mut request = sample_request();
+        request.holding_candles = Some(3);
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(3);
+
+        let execution = simulate_backtest(
+            Uuid::from_u128(1),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(2),
+            &request,
+            &config,
+            trending_candles(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            execution.result.pnl,
+            "4818.0745848834044097631793".parse::<Decimal>().unwrap()
+        );
+        assert_eq!(execution.result.trade_count, 2);
     }
 
     #[test]

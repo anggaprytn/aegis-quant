@@ -2451,6 +2451,34 @@ pub struct BacktestMetricSummary {
     pub slippage_cost: Decimal,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReplaySuppressionReason {
+    CooldownActive,
+    PositionAlreadyOpen,
+    InsufficientForwardData,
+    InvalidSignal,
+    None,
+}
+
+impl ReplaySuppressionReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CooldownActive => "COOLDOWN_ACTIVE",
+            Self::PositionAlreadyOpen => "POSITION_ALREADY_OPEN",
+            Self::InsufficientForwardData => "INSUFFICIENT_FORWARD_DATA",
+            Self::InvalidSignal => "INVALID_SIGNAL",
+            Self::None => "NONE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplaySuppressionCount {
+    pub reason: ReplaySuppressionReason,
+    pub count: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BacktestResult {
     pub run_id: Uuid,
@@ -2472,6 +2500,20 @@ pub struct BacktestResult {
     pub avg_loss: Decimal,
     pub fee_paid: Decimal,
     pub slippage_cost: Decimal,
+    #[serde(default)]
+    pub raw_signal_count: i32,
+    #[serde(default)]
+    pub cooldown_suppressed_count: i32,
+    #[serde(default)]
+    pub open_position_suppressed_count: i32,
+    #[serde(default)]
+    pub executed_trade_count: i32,
+    #[serde(default)]
+    pub suppression_breakdown: Vec<ReplaySuppressionCount>,
+    #[serde(default)]
+    pub last_signal_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub status: ReplayRunStatus,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
@@ -2842,6 +2884,20 @@ pub struct StrategyWalkForwardWindowResult {
     pub win_rate: Decimal,
     pub fee_paid: Decimal,
     pub slippage_cost: Decimal,
+    #[serde(default)]
+    pub raw_signal_count: i32,
+    #[serde(default)]
+    pub cooldown_suppressed_count: i32,
+    #[serde(default)]
+    pub open_position_suppressed_count: i32,
+    #[serde(default)]
+    pub executed_trade_count: i32,
+    #[serde(default)]
+    pub suppression_breakdown: Vec<ReplaySuppressionCount>,
+    #[serde(default)]
+    pub last_signal_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub result: Value,
     pub created_at: DateTime<Utc>,
 }
@@ -3190,6 +3246,20 @@ pub struct StrategyExperimentRun {
     pub fee_paid: Decimal,
     pub slippage_cost: Decimal,
     pub fee_slippage_drag_pct: Decimal,
+    #[serde(default)]
+    pub raw_signal_count: i32,
+    #[serde(default)]
+    pub cooldown_suppressed_count: i32,
+    #[serde(default)]
+    pub open_position_suppressed_count: i32,
+    #[serde(default)]
+    pub executed_trade_count: i32,
+    #[serde(default)]
+    pub suppression_breakdown: Vec<ReplaySuppressionCount>,
+    #[serde(default)]
+    pub last_signal_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub score: Decimal,
     pub status: StrategyExperimentStatus,
     pub warnings: Vec<String>,

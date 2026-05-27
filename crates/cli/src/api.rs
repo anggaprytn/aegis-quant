@@ -8,9 +8,9 @@ use aegis_core::{
     MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
     MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
     OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
-    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
-    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
+    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
@@ -3317,6 +3317,20 @@ pub struct BacktestRunAcceptedResponse {
     pub win_rate: String,
     pub fee_paid: String,
     pub slippage_cost: String,
+    #[serde(default)]
+    pub raw_signal_count: i32,
+    #[serde(default)]
+    pub cooldown_suppressed_count: i32,
+    #[serde(default)]
+    pub open_position_suppressed_count: i32,
+    #[serde(default)]
+    pub executed_trade_count: i32,
+    #[serde(default)]
+    pub suppression_breakdown: Vec<ReplaySuppressionCount>,
+    #[serde(default)]
+    pub last_signal_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub correlation_id: Option<Uuid>,
 }
 
@@ -3341,6 +3355,20 @@ pub struct BacktestResult {
     pub avg_loss: Decimal,
     pub fee_paid: Decimal,
     pub slippage_cost: Decimal,
+    #[serde(default)]
+    pub raw_signal_count: i32,
+    #[serde(default)]
+    pub cooldown_suppressed_count: i32,
+    #[serde(default)]
+    pub open_position_suppressed_count: i32,
+    #[serde(default)]
+    pub executed_trade_count: i32,
+    #[serde(default)]
+    pub suppression_breakdown: Vec<ReplaySuppressionCount>,
+    #[serde(default)]
+    pub last_signal_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,

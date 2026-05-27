@@ -3309,7 +3309,26 @@ export type BacktestRunAcceptedResponse = {
   win_rate: string;
   fee_paid: string;
   slippage_cost: string;
+  raw_signal_count?: number;
+  cooldown_suppressed_count?: number;
+  open_position_suppressed_count?: number;
+  executed_trade_count?: number;
+  suppression_breakdown?: ReplaySuppressionCount[];
+  last_signal_time?: string | null;
+  last_executed_entry_time?: string | null;
   correlation_id: string | null;
+};
+
+export type ReplaySuppressionReason =
+  | "COOLDOWN_ACTIVE"
+  | "POSITION_ALREADY_OPEN"
+  | "INSUFFICIENT_FORWARD_DATA"
+  | "INVALID_SIGNAL"
+  | "NONE";
+
+export type ReplaySuppressionCount = {
+  reason: ReplaySuppressionReason;
+  count: number;
 };
 
 export type BacktestResult = {
@@ -3332,6 +3351,13 @@ export type BacktestResult = {
   avg_loss: string;
   fee_paid: string;
   slippage_cost: string;
+  raw_signal_count?: number;
+  cooldown_suppressed_count?: number;
+  open_position_suppressed_count?: number;
+  executed_trade_count?: number;
+  suppression_breakdown?: ReplaySuppressionCount[];
+  last_signal_time?: string | null;
+  last_executed_entry_time?: string | null;
   status: string;
   created_at: string;
   correlation_id: string | null;
@@ -3446,6 +3472,13 @@ export type StrategyExperimentRun = {
   fee_paid: string;
   slippage_cost: string;
   fee_slippage_drag_pct: string;
+  raw_signal_count?: number;
+  cooldown_suppressed_count?: number;
+  open_position_suppressed_count?: number;
+  executed_trade_count?: number;
+  suppression_breakdown?: ReplaySuppressionCount[];
+  last_signal_time?: string | null;
+  last_executed_entry_time?: string | null;
   score: string;
   status: StrategyExperimentStatus;
   warnings: string[];
@@ -3704,6 +3737,13 @@ export type StrategyWalkForwardWindowResult = {
   win_rate: string;
   fee_paid: string;
   slippage_cost: string;
+  raw_signal_count?: number;
+  cooldown_suppressed_count?: number;
+  open_position_suppressed_count?: number;
+  executed_trade_count?: number;
+  suppression_breakdown?: ReplaySuppressionCount[];
+  last_signal_time?: string | null;
+  last_executed_entry_time?: string | null;
   result: Record<string, unknown>;
   created_at: string;
 };
