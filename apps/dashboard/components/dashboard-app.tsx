@@ -53,6 +53,7 @@ import type {
   ResearchRegimeDiscoveryRequest,
   ResearchRegimeDiscoveryResult,
   ResearchRegimeStrategyLeaderboard,
+  ResearchRegimeStrategyStatus,
   ResearchRegimeWindow,
   ResearchCandidateObservationHistoryItem,
   ResearchCandidateQualificationResult,
@@ -10776,7 +10777,9 @@ function ResearchCampaignRegimeLeaderboardCard({
   loading: boolean;
   error?: string;
 }) {
-  const top = leaderboard?.overall_rankings[0];
+  const best = leaderboard?.overall_best ?? leaderboard?.overall_rankings[0];
+  const promising = leaderboard?.overall_promising ?? null;
+  const leastBad = leaderboard?.overall_least_bad ?? null;
   return (
     <div>
       <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
@@ -10784,10 +10787,27 @@ function ResearchCampaignRegimeLeaderboardCard({
       </div>
       <KeyValue
         items={[
-          ["Overall Top", top ? `${top.strategy_id} ${top.symbol} ${top.timeframe}` : "-"],
-          ["Status", top?.status ?? "-"],
-          ["Median PnL %", top?.median_pnl_pct ?? "-"],
-          ["Robustness", top ? String(top.robustness_score) : "-"],
+          [
+            "Overall Promising",
+            promising
+              ? `${promising.strategy_id} ${promising.symbol} ${promising.timeframe}`
+              : "No promising strategy found",
+          ],
+          [
+            "Promising Status",
+            promising ? `${promising.status} score=${promising.robustness_score}` : "-",
+          ],
+          [
+            "Least-bad Strategy",
+            leastBad
+              ? `${leastBad.strategy_id} ${leastBad.symbol} ${leastBad.timeframe}`
+              : "-",
+          ],
+          [
+            "Least-bad Status",
+            leastBad ? `${leastBad.status} score=${leastBad.robustness_score}` : "-",
+          ],
+          ["Overall Best", best ? `${best.strategy_id} ${best.symbol} ${best.timeframe}` : "-"],
           ["Generated", leaderboard ? formatDateTime(leaderboard.generated_at) : "-"],
         ]}
         loading={loading}
@@ -10815,7 +10835,7 @@ function ResearchCampaignRegimeLeaderboardTable({
         String(ranking.rank),
         ranking.strategy_id,
         `${ranking.symbol} ${ranking.timeframe}`,
-        ranking.status,
+        regimeStatusBadge(ranking.status),
         ranking.median_pnl_pct,
         String(ranking.robustness_score),
         `${ranking.actionable_count}/${ranking.weak_count}/${ranking.overfit_count}`,
@@ -10850,7 +10870,7 @@ function ResearchCampaignOverallLeaderboardTable({
           String(ranking.rank),
           ranking.strategy_id,
           `${ranking.symbol} ${ranking.timeframe}`,
-          ranking.status,
+          regimeStatusBadge(ranking.status),
           ranking.median_pnl_pct,
           ranking.avg_pnl_pct,
           String(ranking.candidate_count),
@@ -11661,6 +11681,22 @@ function trimJson(payload: unknown) {
 
 function badge(value: string) {
   return toTitleCase(value);
+}
+
+function regimeStatusBadge(status: ResearchRegimeStrategyStatus) {
+  const tone =
+    status === "ROBUST" || status === "PROMISING"
+      ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+      : status === "OVERFIT" || status === "NEGATIVE"
+        ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
+        : status === "WEAK"
+          ? "border-amber-400/40 bg-amber-500/10 text-amber-200"
+          : "border-slate-500/40 bg-slate-500/10 text-slate-200";
+  return (
+    <span className={cn("inline-flex rounded-md border px-2 py-0.5 text-xs font-medium", tone)}>
+      {status}
+    </span>
+  );
 }
 
 function mono(value: string) {

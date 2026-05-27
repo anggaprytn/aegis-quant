@@ -644,6 +644,7 @@ pub struct ResearchCampaignRegimePerformance {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchRegimeStrategyStatus {
+    Robust,
     Promising,
     Weak,
     Negative,
@@ -655,6 +656,7 @@ pub enum ResearchRegimeStrategyStatus {
 impl ResearchRegimeStrategyStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Robust => "ROBUST",
             Self::Promising => "PROMISING",
             Self::Weak => "WEAK",
             Self::Negative => "NEGATIVE",
@@ -717,6 +719,14 @@ pub struct ResearchRegimeStrategySelection {
     pub symbol: String,
     pub timeframe: String,
     pub status: ResearchRegimeStrategyStatus,
+    #[serde(default)]
+    pub is_promising: bool,
+    #[serde(default)]
+    pub is_least_bad: bool,
+    #[serde(default)]
+    pub score: i32,
+    #[serde(default)]
+    pub reason: String,
     pub robustness_score: i32,
     pub median_pnl_pct: Decimal,
 }
@@ -738,6 +748,12 @@ pub struct ResearchRegimeStrategyLeaderboard {
     pub generated_at: DateTime<Utc>,
     pub per_regime: Vec<ResearchRegimeStrategyCell>,
     pub overall_rankings: Vec<ResearchRegimeStrategyRanking>,
+    #[serde(default)]
+    pub overall_best: Option<ResearchRegimeStrategyRanking>,
+    #[serde(default)]
+    pub overall_promising: Option<ResearchRegimeStrategyRanking>,
+    #[serde(default)]
+    pub overall_least_bad: Option<ResearchRegimeStrategyRanking>,
     pub best_strategy_by_regime: Vec<ResearchRegimeStrategySelection>,
     pub worst_strategy_by_regime: Vec<ResearchRegimeStrategySelection>,
     pub best_symbol_timeframe_by_regime: Vec<ResearchRegimeSymbolTimeframeSelection>,
@@ -4205,6 +4221,20 @@ pub fn build_research_regime_strategy_leaderboard(
     }
     let overall_rankings =
         rank_regime_strategy_groups(overall_groups.into_values().flatten().collect());
+    let overall_best = overall_rankings.first().cloned();
+    let overall_promising = overall_rankings
+        .iter()
+        .find(|ranking| regime_strategy_ranking_is_promising(ranking))
+        .cloned();
+    let overall_least_bad = overall_promising
+        .is_none()
+        .then(|| {
+            overall_rankings
+                .iter()
+                .find(|ranking| regime_strategy_ranking_is_least_bad(ranking))
+                .cloned()
+        })
+        .flatten();
     let best_strategy_by_regime = per_regime
         .iter()
         .filter_map(|cell| {
@@ -4244,6 +4274,9 @@ pub fn build_research_regime_strategy_leaderboard(
         generated_at,
         per_regime,
         overall_rankings,
+        overall_best,
+        overall_promising,
+        overall_least_bad,
         best_strategy_by_regime,
         worst_strategy_by_regime,
         best_symbol_timeframe_by_regime,
@@ -4364,6 +4397,7 @@ fn regime_strategy_ranking_from_group(group: RegimeStrategyGroup) -> ResearchReg
         group.weak_count,
         group.actionable_count,
         group.data_quality_warning_count,
+        avg_walk_forward_score,
     );
     let robustness_score = regime_strategy_robustness_score(
         median_pnl_pct,
@@ -4410,6 +4444,7 @@ fn regime_strategy_status(
     weak_count: i32,
     actionable_count: i32,
     data_quality_warning_count: i32,
+    avg_walk_forward_score: Option<Decimal>,
 ) -> ResearchRegimeStrategyStatus {
     if data_quality_warning_count > 0 && data_quality_warning_count >= batch_count.max(1) {
         return ResearchRegimeStrategyStatus::DataQualityBlocked;
@@ -4422,6 +4457,14 @@ fn regime_strategy_status(
     }
     if overfit_count > actionable_count && overfit_count >= weak_count {
         return ResearchRegimeStrategyStatus::Overfit;
+    }
+    if actionable_count > 0
+        && weak_count == 0
+        && overfit_count == 0
+        && median_pnl_pct > Decimal::ZERO
+        && avg_walk_forward_score.is_some_and(|score| score >= Decimal::new(80, 0))
+    {
+        return ResearchRegimeStrategyStatus::Robust;
     }
     if actionable_count > 0 && median_pnl_pct > Decimal::ZERO {
         return ResearchRegimeStrategyStatus::Promising;
@@ -4505,15 +4548,66 @@ fn regime_strategy_selection(
     regime_label: ResearchRegimeLabel,
     ranking: &ResearchRegimeStrategyRanking,
 ) -> ResearchRegimeStrategySelection {
+    let is_promising = regime_strategy_ranking_is_promising(ranking);
+    let is_least_bad = !is_promising && regime_strategy_ranking_is_least_bad(ranking);
     ResearchRegimeStrategySelection {
         regime_label,
         strategy_id: ranking.strategy_id.clone(),
         symbol: ranking.symbol.clone(),
         timeframe: ranking.timeframe.clone(),
         status: ranking.status,
+        is_promising,
+        is_least_bad,
+        score: ranking.robustness_score,
+        reason: regime_strategy_selection_reason(ranking, is_promising, is_least_bad),
         robustness_score: ranking.robustness_score,
         median_pnl_pct: ranking.median_pnl_pct,
     }
+}
+
+fn regime_strategy_ranking_is_promising(ranking: &ResearchRegimeStrategyRanking) -> bool {
+    matches!(
+        ranking.status,
+        ResearchRegimeStrategyStatus::Robust | ResearchRegimeStrategyStatus::Promising
+    ) && ranking.robustness_score > 0
+}
+
+fn regime_strategy_ranking_is_least_bad(ranking: &ResearchRegimeStrategyRanking) -> bool {
+    matches!(
+        ranking.status,
+        ResearchRegimeStrategyStatus::Weak
+            | ResearchRegimeStrategyStatus::Negative
+            | ResearchRegimeStrategyStatus::Overfit
+            | ResearchRegimeStrategyStatus::InsufficientData
+    )
+}
+
+fn regime_strategy_selection_reason(
+    ranking: &ResearchRegimeStrategyRanking,
+    is_promising: bool,
+    is_least_bad: bool,
+) -> String {
+    if is_promising {
+        return format!(
+            "{} status with robustness_score={} and median_pnl_pct={}.",
+            ranking.status.as_str(),
+            ranking.robustness_score,
+            ranking.median_pnl_pct
+        );
+    }
+    if is_least_bad {
+        return format!(
+            "Least-bad {} result; not promising because status={} and robustness_score={}.",
+            ranking.status.as_str().to_ascii_lowercase(),
+            ranking.status.as_str(),
+            ranking.robustness_score
+        );
+    }
+    format!(
+        "Not promising because status={} and robustness_score={}.",
+        ranking.status.as_str(),
+        ranking.robustness_score
+    )
 }
 
 fn build_regime_strategy_leaderboard_guidance(
@@ -4528,12 +4622,12 @@ fn build_regime_strategy_leaderboard_guidance(
         let promising = cell
             .rankings
             .iter()
-            .filter(|ranking| ranking.status == ResearchRegimeStrategyStatus::Promising)
+            .filter(|ranking| regime_strategy_ranking_is_promising(ranking))
             .count();
         if let Some(top) = cell
             .rankings
             .first()
-            .filter(|ranking| ranking.status == ResearchRegimeStrategyStatus::Promising)
+            .filter(|ranking| regime_strategy_ranking_is_promising(ranking))
         {
             findings.push(regime_strategy_finding(
                 "LOW",
@@ -4546,6 +4640,24 @@ fn build_regime_strategy_leaderboard_guidance(
                     top.robustness_score
                 ),
             ));
+        }
+        if promising == 0 {
+            if let Some(top) = cell
+                .rankings
+                .first()
+                .filter(|ranking| regime_strategy_ranking_is_least_bad(ranking))
+            {
+                findings.push(regime_strategy_finding(
+                    "LOW",
+                    "regime_least_bad_strategy_identified",
+                    format!(
+                        "{} is the least-bad {} strategy in {}; it is not promising.",
+                        top.strategy_id,
+                        top.status.as_str().to_ascii_lowercase(),
+                        cell.regime_label.as_str()
+                    ),
+                ));
+            }
         }
         if promising == 0 {
             findings.push(regime_strategy_finding(
@@ -12496,6 +12608,175 @@ mod tests {
             selection.regime_label == ResearchRegimeLabel::Range
                 && selection.strategy_id == "range_strategy"
         }));
+    }
+
+    #[test]
+    fn regime_leaderboard_overfit_zero_score_is_not_promising() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "overfit_strategy",
+                "BTCUSDT",
+                "15m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::OverfitOnly,
+                Decimal::ZERO,
+                Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+            ),
+            leaderboard_batch(
+                2,
+                "overfit_strategy",
+                "BTCUSDT",
+                "15m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::OverfitOnly,
+                Decimal::ZERO,
+                Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+        let selection = &leaderboard.best_strategy_by_regime[0];
+
+        assert_eq!(selection.status, ResearchRegimeStrategyStatus::Overfit);
+        assert_eq!(selection.score, 0);
+        assert_eq!(selection.robustness_score, 0);
+        assert!(!selection.is_promising);
+        assert!(selection.is_least_bad);
+        assert!(leaderboard.overall_promising.is_none());
+        assert_eq!(
+            leaderboard
+                .overall_least_bad
+                .as_ref()
+                .map(|ranking| ranking.strategy_id.as_str()),
+            Some("overfit_strategy")
+        );
+        assert!(!leaderboard
+            .findings
+            .iter()
+            .any(|finding| finding.code == "regime_strategy_promising"));
+    }
+
+    #[test]
+    fn regime_leaderboard_reports_least_bad_separately_from_promising() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "losing_strategy",
+                "ETHUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendDown,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(-2, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Weak),
+            ),
+            leaderboard_batch(
+                2,
+                "losing_strategy",
+                "ETHUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendDown,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(-1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Weak),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+
+        assert!(leaderboard.overall_promising.is_none());
+        assert_eq!(
+            leaderboard
+                .overall_least_bad
+                .as_ref()
+                .map(|ranking| ranking.strategy_id.as_str()),
+            Some("losing_strategy")
+        );
+        assert!(leaderboard.best_strategy_by_regime[0].is_least_bad);
+        assert!(leaderboard.findings.iter().any(|finding| {
+            finding.code == "regime_least_bad_strategy_identified"
+                && finding.message.contains("not promising")
+        }));
+    }
+
+    #[test]
+    fn regime_leaderboard_promising_finding_only_for_promising_or_robust_status() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "robust_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendUp,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(3, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                2,
+                "robust_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendUp,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(3, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+
+        assert!(matches!(
+            leaderboard.best_strategy_by_regime[0].status,
+            ResearchRegimeStrategyStatus::Robust | ResearchRegimeStrategyStatus::Promising
+        ));
+        assert!(leaderboard.best_strategy_by_regime[0].is_promising);
+        assert!(leaderboard.overall_promising.is_some());
+        assert!(leaderboard
+            .findings
+            .iter()
+            .any(|finding| finding.code == "regime_strategy_promising"));
+    }
+
+    #[test]
+    fn regime_leaderboard_finding_order_is_deterministic_for_negative_results() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "overfit_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::OverfitOnly,
+                Decimal::ZERO,
+                Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+            ),
+            leaderboard_batch(
+                2,
+                "overfit_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::OverfitOnly,
+                Decimal::ZERO,
+                Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+
+        assert_eq!(
+            leaderboard
+                .findings
+                .iter()
+                .map(|finding| finding.code.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "regime_least_bad_strategy_identified",
+                "regime_no_promising_strategy",
+                "regime_overfit_heavy"
+            ]
+        );
     }
 
     #[test]

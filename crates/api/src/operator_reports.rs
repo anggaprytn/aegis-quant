@@ -99,6 +99,8 @@ struct ResearchCampaignReportSnapshot {
     data_quality_blocked_count: i64,
     top_strategy_symbol_timeframe: Option<String>,
     best_strategy_by_regime: Vec<String>,
+    promising_strategy_by_regime: Vec<String>,
+    least_bad_strategy_by_regime: Vec<String>,
     regimes_with_no_promising_strategy: Vec<String>,
     overfit_heavy_regimes: Vec<String>,
 }
@@ -1439,6 +1441,8 @@ async fn load_research_campaign_snapshot(
     .fetch_all(pool)
     .await?;
     let mut best_strategy_by_regime = Vec::new();
+    let mut promising_strategy_by_regime = Vec::new();
+    let mut least_bad_strategy_by_regime = Vec::new();
     let mut regimes_with_no_promising_strategy = Vec::new();
     let mut overfit_heavy_regimes = Vec::new();
     for campaign_id in campaign_ids {
@@ -1450,22 +1454,30 @@ async fn load_research_campaign_snapshot(
         let leaderboard =
             aegis_core::build_research_regime_strategy_leaderboard(&campaign, window.generated_at);
         for selection in leaderboard.best_strategy_by_regime {
-            best_strategy_by_regime.push(format!(
-                "{}={} {} {} median_pnl_pct={} score={}",
+            let summary = format!(
+                "{}={} {} {} status={} median_pnl_pct={} score={} reason={}",
                 selection.regime_label.as_str(),
                 selection.strategy_id,
                 selection.symbol,
                 selection.timeframe,
+                selection.status.as_str(),
                 selection.median_pnl_pct,
-                selection.robustness_score
-            ));
+                selection.score,
+                selection.reason
+            );
+            best_strategy_by_regime.push(summary.clone());
+            if selection.is_promising {
+                promising_strategy_by_regime.push(summary.clone());
+            }
+            if selection.is_least_bad {
+                least_bad_strategy_by_regime.push(summary);
+            }
         }
         for cell in leaderboard.per_regime {
-            if !cell
-                .rankings
-                .iter()
-                .any(|ranking| ranking.status.as_str() == "PROMISING")
-            {
+            if !cell.rankings.iter().any(|ranking| {
+                matches!(ranking.status.as_str(), "PROMISING" | "ROBUST")
+                    && ranking.robustness_score > 0
+            }) {
                 regimes_with_no_promising_strategy.push(cell.regime_label.as_str().to_string());
             }
             if cell
@@ -1481,6 +1493,10 @@ async fn load_research_campaign_snapshot(
     }
     best_strategy_by_regime.sort();
     best_strategy_by_regime.dedup();
+    promising_strategy_by_regime.sort();
+    promising_strategy_by_regime.dedup();
+    least_bad_strategy_by_regime.sort();
+    least_bad_strategy_by_regime.dedup();
     regimes_with_no_promising_strategy.sort();
     regimes_with_no_promising_strategy.dedup();
     overfit_heavy_regimes.sort();
@@ -1513,6 +1529,8 @@ async fn load_research_campaign_snapshot(
         data_quality_blocked_count: row.get("data_quality_blocked_count"),
         top_strategy_symbol_timeframe: row.get("top_strategy_symbol_timeframe"),
         best_strategy_by_regime,
+        promising_strategy_by_regime,
+        least_bad_strategy_by_regime,
         regimes_with_no_promising_strategy,
         overfit_heavy_regimes,
     })
@@ -2229,12 +2247,12 @@ fn build_findings(
             "research_campaigns",
         ));
     }
-    if !research_campaigns.best_strategy_by_regime.is_empty() {
+    if !research_campaigns.promising_strategy_by_regime.is_empty() {
         findings.push(finding(
             "research_regime_strategy_promising",
             OperatorReportSeverity::Low,
-            "Regime leaderboard has top strategies",
-            "Recent regime-balanced campaigns produced best strategy by regime summaries.",
+            "Regime leaderboard has promising strategies",
+            "Recent regime-balanced campaigns produced PROMISING or ROBUST strategy summaries.",
             "research_campaigns",
         ));
     }
@@ -2256,6 +2274,15 @@ fn build_findings(
             OperatorReportSeverity::Medium,
             "Regime leaderboard is overfit-heavy",
             "One or more regimes have overfit-heavy strategy rankings.",
+            "research_campaigns",
+        ));
+    }
+    if !research_campaigns.least_bad_strategy_by_regime.is_empty() {
+        findings.push(finding(
+            "research_regime_least_bad_strategy_identified",
+            OperatorReportSeverity::Low,
+            "Regime leaderboard identified least-bad strategies",
+            "Recent regime-balanced campaigns produced top-ranked non-promising strategies; treat them as least-bad research evidence only.",
             "research_campaigns",
         ));
     }
@@ -2938,6 +2965,22 @@ fn build_sections(
                         "-".to_string()
                     } else {
                         research_campaigns.best_strategy_by_regime.join(" | ")
+                    },
+                ),
+                highlight(
+                    "Promising Strategy By Regime",
+                    if research_campaigns.promising_strategy_by_regime.is_empty() {
+                        "-".to_string()
+                    } else {
+                        research_campaigns.promising_strategy_by_regime.join(" | ")
+                    },
+                ),
+                highlight(
+                    "Least-bad Strategy By Regime",
+                    if research_campaigns.least_bad_strategy_by_regime.is_empty() {
+                        "-".to_string()
+                    } else {
+                        research_campaigns.least_bad_strategy_by_regime.join(" | ")
                     },
                 ),
                 highlight(
@@ -4046,5 +4089,90 @@ mod tests {
             finding.code == "candidate_readiness_degraded"
                 && finding.severity == OperatorReportSeverity::Medium
         }));
+    }
+
+    #[test]
+    fn all_overfit_regime_leaderboard_does_not_emit_promising_finding() {
+        let research_campaigns = ResearchCampaignReportSnapshot {
+            run_count: 1,
+            best_strategy_by_regime: vec![
+                "RANGE=range_reversion_v1 BTCUSDT 15m status=OVERFIT median_pnl_pct=0 score=0 reason=Least-bad overfit result; not promising because status=OVERFIT and robustness_score=0.".to_string(),
+            ],
+            least_bad_strategy_by_regime: vec![
+                "RANGE=range_reversion_v1 BTCUSDT 15m status=OVERFIT median_pnl_pct=0 score=0 reason=Least-bad overfit result; not promising because status=OVERFIT and robustness_score=0.".to_string(),
+            ],
+            regimes_with_no_promising_strategy: vec!["RANGE".to_string()],
+            overfit_heavy_regimes: vec!["RANGE".to_string()],
+            ..ResearchCampaignReportSnapshot::default()
+        };
+
+        let findings = build_findings(
+            &base_system_market(),
+            &base_strategy(),
+            &base_risk(),
+            &base_paper(),
+            &base_shadow(),
+            &base_promotion(),
+            &base_testnet(),
+            &base_research_qualification(),
+            None,
+            &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
+            &research_campaigns,
+            &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
+            &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
+        );
+
+        assert!(!findings
+            .iter()
+            .any(|finding| finding.code == "research_regime_strategy_promising"));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.code == "research_regime_no_promising_strategy"));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.code == "research_regime_overfit_heavy"));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.code == "research_regime_least_bad_strategy_identified"));
+    }
+
+    #[test]
+    fn promising_regime_finding_requires_promising_or_robust_selection() {
+        let research_campaigns = ResearchCampaignReportSnapshot {
+            run_count: 1,
+            best_strategy_by_regime: vec![
+                "TREND_UP=trend_strategy BTCUSDT 5m status=ROBUST median_pnl_pct=3 score=76 reason=ROBUST status with robustness_score=76 and median_pnl_pct=3.".to_string(),
+            ],
+            promising_strategy_by_regime: vec![
+                "TREND_UP=trend_strategy BTCUSDT 5m status=ROBUST median_pnl_pct=3 score=76 reason=ROBUST status with robustness_score=76 and median_pnl_pct=3.".to_string(),
+            ],
+            ..ResearchCampaignReportSnapshot::default()
+        };
+
+        let findings = build_findings(
+            &base_system_market(),
+            &base_strategy(),
+            &base_risk(),
+            &base_paper(),
+            &base_shadow(),
+            &base_promotion(),
+            &base_testnet(),
+            &base_research_qualification(),
+            None,
+            &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
+            &research_campaigns,
+            &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
+            &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
+        );
+
+        assert!(findings
+            .iter()
+            .any(|finding| finding.code == "research_regime_strategy_promising"));
     }
 }

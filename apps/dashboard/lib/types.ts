@@ -1430,6 +1430,7 @@ export type ResearchCampaignFailureAttributionResponse = {
 };
 
 export type ResearchRegimeStrategyStatus =
+  | "ROBUST"
   | "PROMISING"
   | "WEAK"
   | "NEGATIVE"
@@ -1472,6 +1473,10 @@ export type ResearchRegimeStrategySelection = {
   symbol: string;
   timeframe: string;
   status: ResearchRegimeStrategyStatus;
+  is_promising: boolean;
+  is_least_bad: boolean;
+  score: number;
+  reason: string;
   robustness_score: number;
   median_pnl_pct: string;
 };
@@ -1503,6 +1508,9 @@ export type ResearchRegimeStrategyLeaderboard = {
   generated_at: string;
   per_regime: ResearchRegimeStrategyCell[];
   overall_rankings: ResearchRegimeStrategyRanking[];
+  overall_best?: ResearchRegimeStrategyRanking | null;
+  overall_promising?: ResearchRegimeStrategyRanking | null;
+  overall_least_bad?: ResearchRegimeStrategyRanking | null;
   best_strategy_by_regime: ResearchRegimeStrategySelection[];
   worst_strategy_by_regime: ResearchRegimeStrategySelection[];
   best_symbol_timeframe_by_regime: ResearchRegimeSymbolTimeframeSelection[];
