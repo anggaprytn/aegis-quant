@@ -73,6 +73,7 @@ import type {
   StrategyMultiTimeframeExperimentAcceptedResponse,
   StrategyMultiTimeframeExperimentRequest,
   StrategyMultiTimeframeExperimentResult,
+  StrategyOpportunityAnalysisResult,
   StrategyWalkForwardAcceptedResponse,
   StrategyWalkForwardRequest,
   StrategyWalkForwardResult,
@@ -440,6 +441,18 @@ function strategyDiagnosticsFormFromStatus(strategy?: StrategyStatusView) {
     symbol: strategy?.symbols[0] ?? "BTCUSDT",
     timeframe: strategy?.timeframe ?? "1m",
     limit: 20,
+  };
+}
+
+function strategyOpportunityFormFromStatus(strategy?: StrategyStatusView) {
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  return {
+    symbol: strategy?.symbols[0] ?? "BTCUSDT",
+    timeframe: strategy?.timeframe ?? "15m",
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    limit_samples: 5,
   };
 }
 
@@ -871,6 +884,11 @@ function AuthenticatedDashboard({
   );
   const [strategyDiagnosticsResult, setStrategyDiagnosticsResult] =
     useState<StrategyDiagnosticsResult | null>(null);
+  const [strategyOpportunityForm, setStrategyOpportunityForm] = useState(
+    strategyOpportunityFormFromStatus(),
+  );
+  const [strategyOpportunityResult, setStrategyOpportunityResult] =
+    useState<StrategyOpportunityAnalysisResult | null>(null);
   const [riskConfigForm, setRiskConfigForm] = useState<RiskConfig>(riskConfigFormFromView());
 
   useEffect(() => {
@@ -1578,7 +1596,11 @@ function AuthenticatedDashboard({
       setStrategyDiagnosticsForm(
         strategyDiagnosticsFormFromStatus(selectedStrategyStatusQuery.data.strategy),
       );
+      setStrategyOpportunityForm(
+        strategyOpportunityFormFromStatus(selectedStrategyStatusQuery.data.strategy),
+      );
       setStrategyDiagnosticsResult(null);
+      setStrategyOpportunityResult(null);
     }
   }, [selectedStrategyStatusQuery.data?.strategy]);
 
@@ -1823,6 +1845,21 @@ function AuthenticatedDashboard({
       }),
     onSuccess: (response) => {
       setStrategyDiagnosticsResult(response.result);
+    },
+  });
+
+  const strategyOpportunityMutation = useMutation({
+    mutationFn: () =>
+      api.getStrategyOpportunityAnalysis(selectedStrategyId, {
+        symbol: strategyOpportunityForm.symbol,
+        timeframe: strategyOpportunityForm.timeframe,
+        start_time: strategyOpportunityForm.start_time,
+        end_time: strategyOpportunityForm.end_time,
+        limit_samples: strategyOpportunityForm.limit_samples,
+        include_examples: "true",
+      }),
+    onSuccess: (response) => {
+      setStrategyOpportunityResult(response.result);
     },
   });
 
@@ -3945,6 +3982,136 @@ function AuthenticatedDashboard({
                         {close}
                       </div>
                     ))}
+                  </div>
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-12" title="Strategy Opportunity">
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-5">
+                    <Field
+                      label="Strategy"
+                      value={selectedStrategyId}
+                      as="select"
+                      options={strategies.map((strategy) => strategy.strategy_id)}
+                      onChange={setSelectedStrategyId}
+                    />
+                    <Field
+                      label="Symbol"
+                      value={strategyOpportunityForm.symbol}
+                      onChange={(value) =>
+                        setStrategyOpportunityForm((current) => ({ ...current, symbol: value }))
+                      }
+                    />
+                    <Field
+                      label="Timeframe"
+                      value={strategyOpportunityForm.timeframe}
+                      as="select"
+                      options={TIMEFRAME_OPTIONS}
+                      onChange={(value) =>
+                        setStrategyOpportunityForm((current) => ({ ...current, timeframe: value }))
+                      }
+                    />
+                    <Field
+                      label="Start"
+                      value={strategyOpportunityForm.start_time}
+                      onChange={(value) =>
+                        setStrategyOpportunityForm((current) => ({ ...current, start_time: value }))
+                      }
+                    />
+                    <Field
+                      label="End"
+                      value={strategyOpportunityForm.end_time}
+                      onChange={(value) =>
+                        setStrategyOpportunityForm((current) => ({ ...current, end_time: value }))
+                      }
+                    />
+                  </div>
+                  <ActionButton
+                    label="Analyze Opportunity"
+                    onClick={() => strategyOpportunityMutation.mutate()}
+                    busy={strategyOpportunityMutation.isPending}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(strategyOpportunityMutation.error)}
+                    success={
+                      strategyOpportunityResult
+                        ? `opportunity: ${strategyOpportunityResult.recommendation.status}`
+                        : undefined
+                    }
+                  />
+                  <KeyValue
+                    items={[
+                      ["Status", strategyOpportunityResult?.recommendation.status ?? "N/A"],
+                      ["Signal Rate", strategyOpportunityResult ? `${strategyOpportunityResult.signal_rate_pct}%` : "N/A"],
+                      [
+                        "Windows",
+                        strategyOpportunityResult
+                          ? `${strategyOpportunityResult.evaluable_windows} / candles ${strategyOpportunityResult.total_closed_candles}`
+                          : "N/A",
+                      ],
+                      ["Data Quality", strategyOpportunityResult?.data_quality_status ?? "N/A"],
+                    ]}
+                    loading={strategyOpportunityMutation.isPending}
+                    error={undefined}
+                  />
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                      <div className="font-medium text-slate-100">Top Blocking Conditions</div>
+                      {(strategyOpportunityResult?.top_blocking_conditions ?? []).map((row) => (
+                        <div key={row.condition} className="mt-2">
+                          {row.condition}: {row.failed_count} ({row.failure_rate_pct}%)
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                      <div className="font-medium text-slate-100">Recommendations</div>
+                      {(strategyOpportunityResult?.recommendation.messages ?? []).map((message) => (
+                        <div key={message} className="mt-2">
+                          {message}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-border bg-surface/40">
+                    <table className="min-w-full text-left text-xs text-slate-300">
+                      <thead className="text-slate-100">
+                        <tr>
+                          <th className="px-3 py-2">Condition</th>
+                          <th className="px-3 py-2">Passed</th>
+                          <th className="px-3 py-2">Failed</th>
+                          <th className="px-3 py-2">Pass Rate</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(strategyOpportunityResult?.condition_pass_rates ?? []).map((row) => (
+                          <tr key={row.condition} className="border-t border-border">
+                            <td className="px-3 py-2">{row.condition}</td>
+                            <td className="px-3 py-2">{row.passed_count}</td>
+                            <td className="px-3 py-2">{row.failed_count}</td>
+                            <td className="px-3 py-2">{row.pass_rate_pct}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                      <div className="font-medium text-slate-100">Sample Fail Windows</div>
+                      {(strategyOpportunityResult?.example_fail_windows ?? []).map((window) => (
+                        <div key={window.source_candle_open_time} className="mt-2">
+                          {formatDateTime(window.source_candle_open_time)} blocker=
+                          {window.blocking_condition ?? "-"}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                      <div className="font-medium text-slate-100">Sample Pass Windows</div>
+                      {(strategyOpportunityResult?.example_pass_windows ?? []).map((window) => (
+                        <div key={window.source_candle_open_time} className="mt-2">
+                          {formatDateTime(window.source_candle_open_time)}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </Panel>

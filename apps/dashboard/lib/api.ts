@@ -142,6 +142,7 @@ import type {
   StrategyConfigVersionsResponse,
   StrategyDryRunResponse,
   StrategyStatusResponse,
+  StrategyOpportunityAnalysisResponse,
   StrategyToggleResponse,
   SystemEventRecord,
   TestnetPromotionFunnelOutcomesResponse,
@@ -795,6 +796,22 @@ export const api = {
     params?: { symbol?: string; timeframe?: string; limit?: number },
   ) =>
     request<StrategyDiagnosticsResponse>(`/strategy/${id}/diagnostics`, undefined, params),
+  getStrategyOpportunityAnalysis: (
+    id: string,
+    params: {
+      symbol: string;
+      timeframe: string;
+      start_time: string;
+      end_time: string;
+      limit_samples?: number;
+      include_examples?: string;
+    },
+  ) =>
+    request<StrategyOpportunityAnalysisResponse>(
+      `/strategy/${id}/opportunity-analysis`,
+      undefined,
+      params,
+    ),
   enableStrategy: (id: string) =>
     request<StrategyToggleResponse>(`/strategy/${id}/enable`, { method: "POST" }),
   disableStrategy: (id: string) =>

@@ -29,13 +29,13 @@ use aegis_core::{
     StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    StrategyOpportunityAnalysisResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -1212,6 +1212,33 @@ impl ApiClient {
         }
         self.get(&format!("/strategy/{strategy_id}/diagnostics"), &query)
             .await
+    }
+
+    pub async fn strategy_opportunity_analysis(
+        &self,
+        strategy_id: &str,
+        symbol: String,
+        timeframe: String,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        limit_samples: Option<usize>,
+        include_examples: bool,
+    ) -> Result<StrategyOpportunityAnalysisResponse, ApiClientError> {
+        let mut query = vec![
+            ("symbol", symbol),
+            ("timeframe", timeframe),
+            ("start_time", start_time.to_rfc3339()),
+            ("end_time", end_time.to_rfc3339()),
+            ("include_examples", include_examples.to_string()),
+        ];
+        if let Some(limit_samples) = limit_samples {
+            query.push(("limit_samples", limit_samples.to_string()));
+        }
+        self.get(
+            &format!("/strategy/{strategy_id}/opportunity-analysis"),
+            &query,
+        )
+        .await
     }
 
     pub async fn enable_strategy(
@@ -2654,6 +2681,14 @@ pub struct StrategyDryRunResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyDiagnosticsResponse {
     pub result: StrategyDiagnosticsResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyOpportunityAnalysisResponse {
+    pub result: StrategyOpportunityAnalysisResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

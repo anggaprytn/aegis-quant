@@ -290,6 +290,24 @@ async fn main() -> anyhow::Result<()> {
                     output::print_strategy_diagnostics(&response);
                 }
             }
+            StrategyCommands::OpportunityAnalysis(args) => {
+                let response = client
+                    .strategy_opportunity_analysis(
+                        &args.strategy_id,
+                        args.symbol,
+                        args.timeframe,
+                        args.start_time,
+                        args.end_time,
+                        args.limit_samples,
+                        args.include_examples,
+                    )
+                    .await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_strategy_opportunity_analysis(&response);
+                }
+            }
             StrategyCommands::Enable { strategy_id } => {
                 let response = client.enable_strategy(&strategy_id).await?;
                 if cli.json {

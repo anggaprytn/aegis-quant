@@ -4,10 +4,15 @@ use aegis_core::{
     StrategyConfigValidationSeverity, StrategyDataHealth, StrategyDiagnosticCheck,
     StrategyDiagnosticSeverity, StrategyDiagnosticsDecision, StrategyDiagnosticsResult,
     StrategyEvaluationContext, StrategyEvaluationResult, StrategyId, StrategyMode,
-    StrategyNoSignalReason, StrategySignal,
+    StrategyNoSignalReason, StrategyOpportunityAnalysisRequest, StrategyOpportunityAnalysisResult,
+    StrategyOpportunityRecommendation, StrategyOpportunityStatus, StrategyOpportunityWindowExample,
+    StrategySignal,
 };
 use chrono::Utc;
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use serde_json::json;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
@@ -614,6 +619,511 @@ pub fn diagnose(
         correlation_id: context.correlation_id,
         evaluated_at: context.evaluated_at,
     })
+}
+
+pub fn analyze_opportunity(
+    request: &StrategyOpportunityAnalysisRequest,
+    config: &StrategyConfig,
+    candles: &[Candle],
+    analyzed_at: chrono::DateTime<Utc>,
+) -> Result<StrategyOpportunityAnalysisResult, CoreError> {
+    config.validate()?;
+    let strategy_id = request.strategy_id.parse::<StrategyId>()?;
+    if strategy_id != config.strategy_id {
+        return Err(CoreError::UnsupportedStrategyId(format!(
+            "strategy config does not match opportunity target: {} != {}",
+            config.strategy_id, strategy_id
+        )));
+    }
+
+    let candles = normalize_closed_candles(candles);
+    let total_closed_candles = candles.len() as i64;
+    let required = required_candle_count(config) as usize;
+    let limit_samples = request.limit_samples.unwrap_or(5);
+    let mut condition_stats = ConditionStats::default();
+    let mut pass_examples = Vec::new();
+    let mut fail_examples = Vec::new();
+    let mut would_signal_count = 0_i64;
+    let mut range_positions = Vec::new();
+    let mut range_widths = Vec::new();
+    let mut close_vs_low = Vec::new();
+    let mut close_vs_high = Vec::new();
+    let mut reversal_confirmation_count = 0_i64;
+
+    if candles.len() >= required {
+        for end in required..=candles.len() {
+            let window = &candles[end - required..end];
+            let outcome = match strategy_id {
+                StrategyId::RangeReversionV1 => analyze_range_reversion_window(
+                    config,
+                    window,
+                    &mut range_positions,
+                    &mut range_widths,
+                    &mut close_vs_low,
+                    &mut close_vs_high,
+                    &mut reversal_confirmation_count,
+                ),
+                StrategyId::TrendFilterMomentumV1 => analyze_trend_filter_window(config, window),
+                _ => analyze_generic_window(config, strategy_id, window)?,
+            };
+
+            for condition in &outcome.conditions {
+                condition_stats.record(&condition.name, condition.passed);
+            }
+            if let Some(blocker) = outcome.blocking_condition.as_ref() {
+                condition_stats.record_blocker(blocker);
+            }
+            if outcome.would_signal {
+                would_signal_count += 1;
+                if request.include_examples && pass_examples.len() < limit_samples {
+                    pass_examples.push(outcome.example());
+                }
+            } else if request.include_examples && fail_examples.len() < limit_samples {
+                fail_examples.push(outcome.example());
+            }
+        }
+    }
+
+    let evaluable_windows = if candles.len() >= required {
+        (candles.len() - required + 1) as i64
+    } else {
+        0
+    };
+    let no_signal_count = evaluable_windows - would_signal_count;
+    let signal_rate_pct = pct_i64(would_signal_count, evaluable_windows);
+    let mut condition_pass_rates = condition_stats.pass_rates(evaluable_windows);
+    condition_pass_rates.sort_by(|a, b| a.condition.cmp(&b.condition));
+    let condition_failure_breakdown = condition_stats.failure_breakdown(evaluable_windows);
+    let top_blocking_conditions = condition_stats.top_blockers(evaluable_windows);
+    let data_quality_status = if total_closed_candles < required as i64 {
+        StrategyOpportunityStatus::InsufficientData
+    } else {
+        StrategyOpportunityStatus::HealthyOpportunity
+    };
+    let recommendation = build_opportunity_recommendation(
+        strategy_id,
+        signal_rate_pct,
+        evaluable_windows,
+        &top_blocking_conditions,
+        &condition_pass_rates,
+    );
+
+    Ok(StrategyOpportunityAnalysisResult {
+        strategy_id: strategy_id.to_string(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        start_time: request.start_time,
+        end_time: request.end_time,
+        total_closed_candles,
+        evaluable_windows,
+        would_signal_count,
+        no_signal_count,
+        signal_rate_pct,
+        top_blocking_conditions,
+        condition_pass_rates,
+        condition_failure_breakdown,
+        example_pass_windows: pass_examples,
+        example_fail_windows: fail_examples,
+        distributions: json!({
+            "range_position_pct": distribution_json(&range_positions),
+            "range_width_pct": distribution_json(&range_widths),
+            "latest_close_vs_range_low_pct": distribution_json(&close_vs_low),
+            "latest_close_vs_range_high_pct": distribution_json(&close_vs_high),
+            "reversal_confirmation_count": reversal_confirmation_count,
+        }),
+        recommendation,
+        data_quality_status,
+        analyzed_at,
+    })
+}
+
+#[derive(Debug)]
+struct ConditionOutcome {
+    name: String,
+    passed: bool,
+}
+
+#[derive(Debug)]
+struct WindowOutcome {
+    open_time: chrono::DateTime<Utc>,
+    close_time: chrono::DateTime<Utc>,
+    would_signal: bool,
+    blocking_condition: Option<String>,
+    conditions: Vec<ConditionOutcome>,
+    details: serde_json::Value,
+}
+
+impl WindowOutcome {
+    fn example(&self) -> StrategyOpportunityWindowExample {
+        StrategyOpportunityWindowExample {
+            source_candle_open_time: self.open_time,
+            source_candle_close_time: self.close_time,
+            would_signal: self.would_signal,
+            blocking_condition: self.blocking_condition.clone(),
+            details: self.details.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ConditionStats {
+    passed: BTreeMap<String, i64>,
+    failed: BTreeMap<String, i64>,
+    blockers: BTreeMap<String, i64>,
+}
+
+impl ConditionStats {
+    fn record(&mut self, condition: &str, passed: bool) {
+        let target = if passed {
+            &mut self.passed
+        } else {
+            &mut self.failed
+        };
+        *target.entry(condition.to_string()).or_insert(0) += 1;
+    }
+
+    fn record_blocker(&mut self, condition: &str) {
+        *self.blockers.entry(condition.to_string()).or_insert(0) += 1;
+    }
+
+    fn pass_rates(&self, evaluable_windows: i64) -> Vec<aegis_core::StrategyConditionPassRate> {
+        self.all_conditions()
+            .into_iter()
+            .map(|condition| {
+                let passed_count = *self.passed.get(&condition).unwrap_or(&0);
+                let failed_count = *self.failed.get(&condition).unwrap_or(&0);
+                aegis_core::StrategyConditionPassRate {
+                    condition,
+                    passed_count,
+                    failed_count,
+                    pass_rate_pct: pct_i64(passed_count, evaluable_windows),
+                }
+            })
+            .collect()
+    }
+
+    fn failure_breakdown(
+        &self,
+        evaluable_windows: i64,
+    ) -> Vec<aegis_core::StrategyConditionFailureBreakdown> {
+        let mut rows = self
+            .all_conditions()
+            .into_iter()
+            .map(|condition| {
+                let failed_count = *self.failed.get(&condition).unwrap_or(&0);
+                aegis_core::StrategyConditionFailureBreakdown {
+                    condition,
+                    failed_count,
+                    failure_rate_pct: pct_i64(failed_count, evaluable_windows),
+                }
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| {
+            b.failed_count
+                .cmp(&a.failed_count)
+                .then_with(|| a.condition.cmp(&b.condition))
+        });
+        rows
+    }
+
+    fn top_blockers(
+        &self,
+        evaluable_windows: i64,
+    ) -> Vec<aegis_core::StrategyConditionFailureBreakdown> {
+        let mut rows = self
+            .blockers
+            .iter()
+            .map(
+                |(condition, failed_count)| aegis_core::StrategyConditionFailureBreakdown {
+                    condition: condition.clone(),
+                    failed_count: *failed_count,
+                    failure_rate_pct: pct_i64(*failed_count, evaluable_windows),
+                },
+            )
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| {
+            b.failed_count
+                .cmp(&a.failed_count)
+                .then_with(|| a.condition.cmp(&b.condition))
+        });
+        rows.truncate(5);
+        rows
+    }
+
+    fn all_conditions(&self) -> Vec<String> {
+        let mut conditions = self
+            .passed
+            .keys()
+            .chain(self.failed.keys())
+            .cloned()
+            .collect::<Vec<_>>();
+        conditions.sort();
+        conditions.dedup();
+        conditions
+    }
+}
+
+fn analyze_range_reversion_window(
+    config: &StrategyConfig,
+    window: &[Candle],
+    range_positions: &mut Vec<Decimal>,
+    range_widths: &mut Vec<Decimal>,
+    close_vs_low: &mut Vec<Decimal>,
+    close_vs_high: &mut Vec<Decimal>,
+    reversal_confirmation_count: &mut i64,
+) -> WindowOutcome {
+    let latest = window.last().expect("window must contain latest candle");
+    let previous = &window[window.len() - 2];
+    let lookback = config.lookback_candles as usize;
+    let range_window = &window[window.len() - lookback..];
+    let range = calculate_range_metrics(range_window);
+    let min_width = min_range_width_pct(config);
+    let max_width = max_range_width_pct(config);
+    let lower_band = lower_band_pct(config);
+    let width_within_bounds =
+        range.range_width_pct >= min_width && range.range_width_pct <= max_width;
+    let near_lower_band = range.range_position_pct <= lower_band;
+    let reversal_confirmation = latest.close > previous.close || latest.close > latest.open;
+    let latest_low_not_undercutting_previous_low = latest.low >= previous.low;
+    let final_would_signal = width_within_bounds
+        && near_lower_band
+        && reversal_confirmation
+        && latest_low_not_undercutting_previous_low;
+
+    range_positions.push(range.range_position_pct);
+    range_widths.push(range.range_width_pct);
+    close_vs_low.push(pct_ratio(latest.close - range.range_low, range.range_low));
+    close_vs_high.push(pct_ratio(range.range_high - latest.close, range.range_high));
+    if reversal_confirmation {
+        *reversal_confirmation_count += 1;
+    }
+
+    let conditions = vec![
+        condition("has_enough_data", true),
+        condition("range_width_within_bounds", width_within_bounds),
+        condition("near_lower_band", near_lower_band),
+        condition("reversal_confirmation", reversal_confirmation),
+        condition(
+            "latest_low_not_undercutting_previous_low",
+            latest_low_not_undercutting_previous_low,
+        ),
+        condition("freshness", true),
+        condition("final_would_signal", final_would_signal),
+    ];
+    WindowOutcome {
+        open_time: latest.open_time,
+        close_time: latest.close_time,
+        would_signal: final_would_signal,
+        blocking_condition: first_failed(&conditions),
+        conditions,
+        details: json!({
+            "range_position_pct": range.range_position_pct,
+            "range_width_pct": range.range_width_pct,
+            "latest_close_vs_range_low_pct": pct_ratio(latest.close - range.range_low, range.range_low),
+            "latest_close_vs_range_high_pct": pct_ratio(range.range_high - latest.close, range.range_high),
+            "range_low": range.range_low,
+            "range_high": range.range_high,
+            "latest_close": latest.close,
+            "previous_close": previous.close,
+            "latest_low": latest.low,
+            "previous_low": previous.low,
+        }),
+    }
+}
+
+fn analyze_trend_filter_window(config: &StrategyConfig, window: &[Candle]) -> WindowOutcome {
+    let latest = window.last().expect("window must contain latest candle");
+    let previous = &window[window.len() - 2];
+    let trend = trend_lookback(config) as usize;
+    let momentum = momentum_lookback(config) as usize;
+    let trend_window = &window[window.len() - trend - 1..window.len() - 1];
+    let sma = average_decimal(trend_window.iter().map(|candle| candle.close));
+    let momentum_reference = &window[window.len() - momentum - 1];
+    let close_above_sma = latest.close > sma;
+    let latest_close_above_previous_close = latest.close > previous.close;
+    let momentum_condition = latest.close > momentum_reference.close;
+    let final_would_signal =
+        close_above_sma && latest_close_above_previous_close && momentum_condition;
+    let conditions = vec![
+        condition("has_enough_data", true),
+        condition("close_above_sma", close_above_sma),
+        condition(
+            "latest_close_above_previous_close",
+            latest_close_above_previous_close,
+        ),
+        condition("momentum_condition", momentum_condition),
+        condition("freshness", true),
+        condition("final_would_signal", final_would_signal),
+    ];
+    WindowOutcome {
+        open_time: latest.open_time,
+        close_time: latest.close_time,
+        would_signal: final_would_signal,
+        blocking_condition: first_failed(&conditions),
+        conditions,
+        details: json!({
+            "latest_close": latest.close,
+            "previous_close": previous.close,
+            "sma": sma,
+            "momentum_reference_close": momentum_reference.close,
+        }),
+    }
+}
+
+fn analyze_generic_window(
+    config: &StrategyConfig,
+    strategy_id: StrategyId,
+    window: &[Candle],
+) -> Result<WindowOutcome, CoreError> {
+    let latest = window.last().expect("window must contain latest candle");
+    let result = evaluate(StrategyEvaluationContext {
+        correlation_id: Uuid::new_v4(),
+        strategy_id,
+        symbol: latest.symbol.clone(),
+        config: StrategyConfig {
+            max_signal_age_ms: i64::MAX,
+            ..config.clone()
+        },
+        candles: window.to_vec(),
+        evaluated_at: latest.close_time,
+    })?;
+    let final_would_signal = result.generated;
+    let conditions = vec![
+        condition("has_enough_data", true),
+        condition("freshness", true),
+        condition("final_would_signal", final_would_signal),
+    ];
+    Ok(WindowOutcome {
+        open_time: latest.open_time,
+        close_time: latest.close_time,
+        would_signal: final_would_signal,
+        blocking_condition: first_failed(&conditions),
+        conditions,
+        details: json!({
+            "reason": result.reason.as_str(),
+        }),
+    })
+}
+
+fn condition(name: &str, passed: bool) -> ConditionOutcome {
+    ConditionOutcome {
+        name: name.to_string(),
+        passed,
+    }
+}
+
+fn first_failed(conditions: &[ConditionOutcome]) -> Option<String> {
+    conditions
+        .iter()
+        .find(|condition| !condition.passed && condition.name != "final_would_signal")
+        .map(|condition| condition.name.clone())
+}
+
+fn pct_i64(numerator: i64, denominator: i64) -> Decimal {
+    if denominator <= 0 {
+        Decimal::ZERO
+    } else {
+        (Decimal::from(numerator) / Decimal::from(denominator)) * Decimal::new(100, 0)
+    }
+}
+
+fn distribution_json(values: &[Decimal]) -> serde_json::Value {
+    if values.is_empty() {
+        return json!({
+            "min": null,
+            "median": null,
+            "p90": null,
+        });
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort();
+    json!({
+        "min": sorted[0],
+        "median": percentile(&sorted, Decimal::new(50, 0)),
+        "p90": percentile(&sorted, Decimal::new(90, 0)),
+    })
+}
+
+fn percentile(sorted: &[Decimal], percentile: Decimal) -> Decimal {
+    if sorted.is_empty() {
+        return Decimal::ZERO;
+    }
+    let max_index = sorted.len() - 1;
+    let rank = (Decimal::from(max_index as u64) * percentile / Decimal::new(100, 0))
+        .round_dp(0)
+        .to_usize()
+        .unwrap_or(max_index)
+        .min(max_index);
+    sorted[rank]
+}
+
+fn build_opportunity_recommendation(
+    strategy_id: StrategyId,
+    signal_rate_pct: Decimal,
+    evaluable_windows: i64,
+    top_blocking_conditions: &[aegis_core::StrategyConditionFailureBreakdown],
+    pass_rates: &[aegis_core::StrategyConditionPassRate],
+) -> StrategyOpportunityRecommendation {
+    if evaluable_windows == 0 {
+        return StrategyOpportunityRecommendation {
+            status: StrategyOpportunityStatus::InsufficientData,
+            messages: vec![
+                "Not enough closed candles to evaluate strategy opportunity.".to_string(),
+            ],
+        };
+    }
+
+    let mut status = if signal_rate_pct < Decimal::new(5, 1) {
+        StrategyOpportunityStatus::TooRestrictive
+    } else if signal_rate_pct > Decimal::new(20, 0) {
+        StrategyOpportunityStatus::TooLoose
+    } else {
+        StrategyOpportunityStatus::HealthyOpportunity
+    };
+    let mut messages = Vec::new();
+    for blocker in top_blocking_conditions {
+        match blocker.condition.as_str() {
+            "near_lower_band" if strategy_id == StrategyId::RangeReversionV1 => messages.push(
+                "Strategy may be too restrictive near lower band; test lower_band_pct candidates 20,30,40."
+                    .to_string(),
+            ),
+            "range_width_within_bounds" if strategy_id == StrategyId::RangeReversionV1 => {
+                messages.push("Range width threshold may be too strict.".to_string())
+            }
+            "reversal_confirmation" if strategy_id == StrategyId::RangeReversionV1 => {
+                messages.push("Reversal confirmation may be too restrictive.".to_string())
+            }
+            "close_above_sma" if strategy_id == StrategyId::TrendFilterMomentumV1 => {
+                messages.push("SMA trend filter blocks many windows; test shorter trend lookbacks.".to_string())
+            }
+            "momentum_condition" if strategy_id == StrategyId::TrendFilterMomentumV1 => {
+                messages.push("Momentum lookback may be too strict; test shorter momentum lookbacks.".to_string())
+            }
+            _ => {}
+        }
+    }
+    if messages.is_empty() {
+        messages.push(match status {
+            StrategyOpportunityStatus::TooRestrictive => {
+                "Signal rate is below 0.5%; inspect top blocking conditions before changing parameters.".to_string()
+            }
+            StrategyOpportunityStatus::TooLoose => {
+                "Signal rate is above 20%; strategy may be too loose for execution research.".to_string()
+            }
+            _ => "Opportunity rate is within the initial review band.".to_string(),
+        });
+    }
+    if pass_rates
+        .iter()
+        .any(|rate| rate.condition == "final_would_signal" && rate.passed_count == 0)
+        && status == StrategyOpportunityStatus::HealthyOpportunity
+    {
+        status = StrategyOpportunityStatus::TooRestrictive;
+    }
+
+    messages.sort();
+    messages.dedup();
+    StrategyOpportunityRecommendation { status, messages }
 }
 
 fn evaluate_momentum(
@@ -1829,13 +2339,14 @@ fn normalize_notes(notes: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_default_strategy_configs, diagnose, evaluate, required_candle_count,
-        validate_strategy_config, StrategyValidationContext,
+        analyze_opportunity, build_default_strategy_configs, diagnose, evaluate,
+        required_candle_count, validate_strategy_config, StrategyValidationContext,
     };
     use aegis_core::{
         Candle, CandleInterval, MarketDataSource, SignalReason, StrategyConfigUpdateRequest,
         StrategyConfigValidationSeverity, StrategyDiagnosticsDecision, StrategyEvaluationContext,
-        StrategyId, StrategyMode, StrategyNoSignalReason, Symbol,
+        StrategyId, StrategyMode, StrategyNoSignalReason, StrategyOpportunityAnalysisRequest,
+        StrategyOpportunityStatus, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -1988,6 +2499,35 @@ mod tests {
             supported_symbols: vec![Symbol::new("BTCUSDT").expect("valid symbol")],
             max_position_notional: Some(Decimal::new(150_000, 0)),
         }
+    }
+
+    fn opportunity_request(strategy_id: StrategyId) -> StrategyOpportunityAnalysisRequest {
+        StrategyOpportunityAnalysisRequest {
+            strategy_id: strategy_id.to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0).unwrap(),
+            config: None,
+            limit_samples: Some(3),
+            include_examples: true,
+        }
+    }
+
+    fn default_config(
+        strategy_id: StrategyId,
+        timeframe: CandleInterval,
+    ) -> aegis_core::StrategyConfig {
+        build_default_strategy_configs(
+            vec![Symbol::new("BTCUSDT").expect("valid symbol")],
+            timeframe,
+            Decimal::new(100_000, 0),
+            3,
+            20,
+        )
+        .into_iter()
+        .find(|config| config.strategy_id == strategy_id)
+        .expect("strategy config must exist")
     }
 
     #[test]
@@ -2574,5 +3114,141 @@ mod tests {
             issue.severity == StrategyConfigValidationSeverity::Warn
                 && issue.code == "max_signal_age_ms_high_for_1h"
         }));
+    }
+
+    #[test]
+    fn range_reversion_opportunity_identifies_not_near_lower_band_blocker() {
+        let config = default_config(StrategyId::RangeReversionV1, CandleInterval::FifteenMinutes);
+        let candles = (0..30)
+            .map(|index| {
+                range_candle(
+                    index,
+                    Decimal::new(101, 0),
+                    Decimal::new(102, 0),
+                    Decimal::new(100, 0),
+                    Decimal::new(1018, 1),
+                )
+            })
+            .collect::<Vec<_>>();
+        let result = analyze_opportunity(
+            &opportunity_request(StrategyId::RangeReversionV1),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+
+        assert_eq!(result.would_signal_count, 0);
+        assert_eq!(
+            result
+                .top_blocking_conditions
+                .first()
+                .map(|row| row.condition.as_str()),
+            Some("near_lower_band")
+        );
+        assert_eq!(
+            result.recommendation.status,
+            StrategyOpportunityStatus::TooRestrictive
+        );
+    }
+
+    #[test]
+    fn trend_filter_opportunity_counts_close_above_sma_passes_and_failures() {
+        let mut config = default_config(
+            StrategyId::TrendFilterMomentumV1,
+            CandleInterval::FifteenMinutes,
+        );
+        config.trend_lookback_candles = Some(3);
+        config.momentum_lookback_candles = Some(2);
+        let closes = [100, 101, 102, 99, 103, 104, 98, 105];
+        let candles = closes
+            .iter()
+            .enumerate()
+            .map(|(index, close)| {
+                range_candle(
+                    index as i64,
+                    Decimal::new(*close - 1, 0),
+                    Decimal::new(*close + 1, 0),
+                    Decimal::new(*close - 2, 0),
+                    Decimal::new(*close, 0),
+                )
+            })
+            .collect::<Vec<_>>();
+        let result = analyze_opportunity(
+            &opportunity_request(StrategyId::TrendFilterMomentumV1),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+        let close_above_sma = result
+            .condition_pass_rates
+            .iter()
+            .find(|row| row.condition == "close_above_sma")
+            .expect("close_above_sma row");
+
+        assert!(close_above_sma.passed_count > 0);
+        assert!(close_above_sma.failed_count > 0);
+    }
+
+    #[test]
+    fn opportunity_recommendation_ordering_is_deterministic() {
+        let config = default_config(StrategyId::RangeReversionV1, CandleInterval::FifteenMinutes);
+        let candles = (0..30)
+            .map(|index| {
+                range_candle(
+                    index,
+                    Decimal::new(101, 0),
+                    Decimal::new(102, 0),
+                    Decimal::new(100, 0),
+                    Decimal::new(1018, 1),
+                )
+            })
+            .collect::<Vec<_>>();
+        let first = analyze_opportunity(
+            &opportunity_request(StrategyId::RangeReversionV1),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+        let second = analyze_opportunity(
+            &opportunity_request(StrategyId::RangeReversionV1),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+
+        assert_eq!(
+            first.top_blocking_conditions,
+            second.top_blocking_conditions
+        );
+        assert_eq!(
+            first.recommendation.messages,
+            second.recommendation.messages
+        );
+    }
+
+    #[test]
+    fn opportunity_handles_insufficient_data() {
+        let config = default_config(StrategyId::RangeReversionV1, CandleInterval::FifteenMinutes);
+        let result = analyze_opportunity(
+            &opportunity_request(StrategyId::RangeReversionV1),
+            &config,
+            &[],
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+
+        assert_eq!(result.evaluable_windows, 0);
+        assert_eq!(
+            result.data_quality_status,
+            StrategyOpportunityStatus::InsufficientData
+        );
+        assert_eq!(
+            result.recommendation.status,
+            StrategyOpportunityStatus::InsufficientData
+        );
     }
 }

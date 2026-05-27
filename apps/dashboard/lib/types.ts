@@ -2529,6 +2529,67 @@ export type StrategyDiagnosticsResponse = {
   timestamp: string;
 };
 
+export type StrategyOpportunityStatus =
+  | "HEALTHY_OPPORTUNITY"
+  | "TOO_RESTRICTIVE"
+  | "TOO_LOOSE"
+  | "INSUFFICIENT_DATA"
+  | "DATA_QUALITY_DEGRADED"
+  | "UNKNOWN";
+
+export type StrategyConditionPassRate = {
+  condition: string;
+  passed_count: number;
+  failed_count: number;
+  pass_rate_pct: string;
+};
+
+export type StrategyConditionFailureBreakdown = {
+  condition: string;
+  failed_count: number;
+  failure_rate_pct: string;
+};
+
+export type StrategyOpportunityWindowExample = {
+  source_candle_open_time: string;
+  source_candle_close_time: string;
+  would_signal: boolean;
+  blocking_condition: string | null;
+  details: unknown;
+};
+
+export type StrategyOpportunityAnalysisResult = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  total_closed_candles: number;
+  evaluable_windows: number;
+  would_signal_count: number;
+  no_signal_count: number;
+  signal_rate_pct: string;
+  top_blocking_conditions: StrategyConditionFailureBreakdown[];
+  condition_pass_rates: StrategyConditionPassRate[];
+  condition_failure_breakdown: StrategyConditionFailureBreakdown[];
+  example_pass_windows: StrategyOpportunityWindowExample[];
+  example_fail_windows: StrategyOpportunityWindowExample[];
+  distributions: unknown;
+  recommendation: {
+    status: StrategyOpportunityStatus;
+    messages: string[];
+  };
+  data_quality_status: StrategyOpportunityStatus;
+  analyzed_at: string;
+};
+
+export type StrategyOpportunityAnalysisResponse = {
+  result: StrategyOpportunityAnalysisResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type EvaluateStrategyResponse = {
   strategy_id: string;
   symbol: string;

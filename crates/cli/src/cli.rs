@@ -576,6 +576,7 @@ pub enum StrategyCommands {
     Config(StrategyConfigCommands),
     DryRun(StrategyDryRunArgs),
     Diagnostics(StrategyDiagnosticsArgs),
+    OpportunityAnalysis(StrategyOpportunityAnalysisArgs),
     Enable {
         strategy_id: String,
     },
@@ -648,6 +649,23 @@ pub struct StrategyDiagnosticsArgs {
     pub timeframe: Option<String>,
     #[arg(long, default_value_t = 20)]
     pub limit: i64,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct StrategyOpportunityAnalysisArgs {
+    pub strategy_id: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "limit-samples")]
+    pub limit_samples: Option<usize>,
+    #[arg(long = "include-examples", default_value_t = true)]
+    pub include_examples: bool,
 }
 
 #[derive(Debug, Subcommand)]

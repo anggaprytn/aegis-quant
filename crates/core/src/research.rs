@@ -1202,8 +1202,8 @@ fn build_failure_recommendations(
             ResearchCandidateFailureReason::TooFewTrades => recommendations.push(
                 failure_recommendation(
                     "LOW",
-                    "extend_research_windows",
-                    "Extend campaign windows where trade counts are too low to evaluate edge.",
+                    "run_opportunity_analysis",
+                    "Run opportunity analysis for strategies with too few trades before changing strategy logic or extending campaign windows.",
                 ),
             ),
             ResearchCandidateFailureReason::LowWinRate

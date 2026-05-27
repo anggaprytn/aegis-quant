@@ -36,11 +36,12 @@ use crate::api::{
     RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
     StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDiagnosticsResponse, StrategyDryRunResponse,
-    StrategyListResponse, StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
-    StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
-    TestnetPromotionFunnelRowsResponse, TestnetPromotionFunnelSummaryResponse,
-    TestnetShadowPromotionsResponse, TestnetShadowRunnerControlResponse,
-    TestnetShadowRunnerStatusResponse, TestnetShadowRunsResponse,
+    StrategyListResponse, StrategyOpportunityAnalysisResponse, StrategyPerformanceRankingsResponse,
+    StrategyPerformanceSummaryResponse, StrategyStatusResponse,
+    TestnetPromotionFunnelOutcomesResponse, TestnetPromotionFunnelRowsResponse,
+    TestnetPromotionFunnelSummaryResponse, TestnetShadowPromotionsResponse,
+    TestnetShadowRunnerControlResponse, TestnetShadowRunnerStatusResponse,
+    TestnetShadowRunsResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -1230,6 +1231,64 @@ pub fn print_strategy_diagnostics(response: &StrategyDiagnosticsResponse) {
         println!("Latest closes:");
         for close in &result.data_health.latest_closes {
             println!("  - {}", close);
+        }
+    }
+}
+
+pub fn print_strategy_opportunity_analysis(response: &StrategyOpportunityAnalysisResponse) {
+    let result = &response.result;
+    println!("Strategy ID: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Status: {}", result.recommendation.status.as_str());
+    println!("Data quality: {}", result.data_quality_status.as_str());
+    println!(
+        "Closed candles: {} | evaluable windows: {}",
+        result.total_closed_candles, result.evaluable_windows
+    );
+    println!(
+        "Signals: {} | no-signal: {} | signal rate: {}%",
+        result.would_signal_count,
+        result.no_signal_count,
+        result.signal_rate_pct.round_dp(4)
+    );
+    println!("Top blocking conditions:");
+    for row in &result.top_blocking_conditions {
+        println!(
+            "  - {}: {} failures ({}%)",
+            row.condition,
+            row.failed_count,
+            row.failure_rate_pct.round_dp(2)
+        );
+    }
+    println!("Condition pass rates:");
+    for row in &result.condition_pass_rates {
+        println!(
+            "  - {}: {} passed / {} failed ({}%)",
+            row.condition,
+            row.passed_count,
+            row.failed_count,
+            row.pass_rate_pct.round_dp(2)
+        );
+    }
+    println!("Recommendations:");
+    for message in &result.recommendation.messages {
+        println!("  - {}", message);
+    }
+    if !result.example_fail_windows.is_empty() {
+        println!("Sample fail windows:");
+        for window in &result.example_fail_windows {
+            println!(
+                "  - {} blocker={}",
+                window.source_candle_open_time.to_rfc3339(),
+                window.blocking_condition.as_deref().unwrap_or("-")
+            );
+        }
+    }
+    if !result.example_pass_windows.is_empty() {
+        println!("Sample pass windows:");
+        for window in &result.example_pass_windows {
+            println!("  - {}", window.source_candle_open_time.to_rfc3339());
         }
     }
 }

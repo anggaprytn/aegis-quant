@@ -75,12 +75,13 @@ use aegis_core::{
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentGlobalRanking,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
     StrategyMode, StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyNoSignalReason, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyResearchCandidate,
-    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionRequest,
-    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateRejectionReason,
-    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategyStatus,
-    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardRobustnessStatus,
+    StrategyNoSignalReason, StrategyOpportunityAnalysisRequest, StrategyOpportunityAnalysisResult,
+    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyPerformanceSummary,
+    StrategyPnlBreakdown, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    StrategyResearchCandidatePromotionRequest, StrategyResearchCandidatePromotionResult,
+    StrategyResearchCandidateRejectionReason, StrategyResearchCandidateSource,
+    StrategyResearchCandidateStatus, StrategyStatus, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardRobustnessStatus,
     StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
     TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
     TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
@@ -218,8 +219,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use strategy_engine::{
-    build_default_strategy_configs, diagnose as diagnose_strategy, evaluate as evaluate_strategy,
-    required_candle_count, validate_strategy_config, StrategyValidationContext,
+    analyze_opportunity, build_default_strategy_configs, diagnose as diagnose_strategy,
+    evaluate as evaluate_strategy, required_candle_count, validate_strategy_config,
+    StrategyValidationContext,
 };
 use telemetry::telemetry;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -2024,6 +2026,17 @@ struct StrategyDiagnosticsQuery {
     limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+struct StrategyOpportunityAnalysisQuery {
+    symbol: String,
+    timeframe: String,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    config_json: Option<String>,
+    limit_samples: Option<usize>,
+    include_examples: Option<bool>,
+}
+
 #[derive(Serialize)]
 struct RecentSignalsResponse {
     signals: Vec<SignalRecord>,
@@ -2091,6 +2104,14 @@ struct StrategyDryRunResponse {
 #[derive(Serialize)]
 struct StrategyDiagnosticsResponse {
     result: StrategyDiagnosticsResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyOpportunityAnalysisResponse {
+    result: StrategyOpportunityAnalysisResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2820,6 +2841,10 @@ async fn main() {
         .route(
             "/strategy/:id/diagnostics",
             get(strategy_diagnostics_handler),
+        )
+        .route(
+            "/strategy/:id/opportunity-analysis",
+            get(strategy_opportunity_analysis_handler),
         )
         .route("/signals/recent", get(get_recent_signals))
         .layer(middleware::from_fn_with_state(
@@ -22517,6 +22542,229 @@ async fn strategy_diagnostics_handler(
         .into_response()
 }
 
+async fn strategy_opportunity_analysis_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<StrategyOpportunityAnalysisQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if query.end_time <= query.start_time {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_time_range",
+                message: "end_time must be after start_time".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    let symbol = match Symbol::new(query.symbol.clone()) {
+        Ok(symbol) => symbol,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let timeframe = match query.timeframe.parse::<CandleInterval>() {
+        Ok(timeframe) => timeframe,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_timeframe",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let persisted = match ensure_strategy_config(&state, strategy_id).await {
+        Ok(config) => config,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_strategy_config",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let config_json = match query.config_json.as_deref() {
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_config_json",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let config = match config_json.clone() {
+        Some(value) => match serde_json::from_value::<StrategyConfigUpdateRequest>(value.clone()) {
+            Ok(mut override_request) => {
+                override_request.strategy_id = strategy_id.to_string();
+                let validation = validate_strategy_config(
+                    &override_request,
+                    &strategy_validation_context(&state),
+                );
+                match validation.normalized_config {
+                    Some(config) if validation.valid => config,
+                    _ => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: "invalid_config",
+                                message: validation
+                                    .issues
+                                    .iter()
+                                    .map(|issue| issue.message.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("; "),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_config_json",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => persisted,
+    };
+    let candles = match get_closed_candles_range(
+        &state.db_pool,
+        &symbol,
+        timeframe,
+        query.start_time,
+        query.end_time,
+    )
+    .await
+    {
+        Ok(candles) => candles,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_closed_candles",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let analysis_request = StrategyOpportunityAnalysisRequest {
+        strategy_id: strategy_id.to_string(),
+        symbol: symbol.as_str().to_string(),
+        timeframe: timeframe.as_str().to_string(),
+        start_time: query.start_time,
+        end_time: query.end_time,
+        config: config_json,
+        limit_samples: query.limit_samples,
+        include_examples: query.include_examples.unwrap_or(true),
+    };
+    let result = match analyze_opportunity(
+        &analysis_request,
+        &StrategyConfig {
+            timeframe,
+            symbols: vec![symbol.clone()],
+            ..config
+        },
+        &candles,
+        Utc::now(),
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_analyze_strategy_opportunity",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(StrategyOpportunityAnalysisResponse {
+            result,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
 async fn disable_strategy(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -23056,9 +23304,9 @@ mod tests {
         register_strategy_research_candidate_handler, repair_exchange_testnet_order,
         request_context_middleware, risk_decision_not_found_error, route_access,
         run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
-        strategy_diagnostics_handler, submit_exchange_testnet_pipeline,
-        submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
-        ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
+        strategy_diagnostics_handler, strategy_opportunity_analysis_handler,
+        submit_exchange_testnet_pipeline, submit_exchange_testnet_shadow_promotion_handler,
+        AppConfig, AppState, ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
         ExecutionReadinessSnapshotsResponse, RequestContext, StrategyRuntimeConfig,
         TestnetShadowPromotionResponse, TestnetShadowPromotionSubmitResponse,
         TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
@@ -24145,6 +24393,10 @@ mod tests {
                 "/strategy/:id/diagnostics",
                 get(strategy_diagnostics_handler),
             )
+            .route(
+                "/strategy/:id/opportunity-analysis",
+                get(strategy_opportunity_analysis_handler),
+            )
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 request_context_middleware,
@@ -24996,6 +25248,86 @@ mod tests {
             before_risk_decisions
         );
         assert_eq!(count_paper_orders(&test_db.pool).await, before_orders);
+    }
+
+    #[tokio::test]
+    async fn strategy_opportunity_endpoint_reads_candles_without_execution_mutation() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = strategy_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        seed_shadow_candles(
+            &test_db.pool,
+            "BTCUSDT",
+            &[
+                100_000, 100_100, 100_200, 100_300, 100_250, 100_350, 100_450, 100_400,
+            ],
+        )
+        .await;
+
+        let before = (
+            count_signals(&test_db.pool).await,
+            count_risk_decisions(&test_db.pool).await,
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+        let start = (Utc::now() - chrono::Duration::hours(1))
+            .to_rfc3339()
+            .replace("+00:00", "Z");
+        let end = Utc::now().to_rfc3339().replace("+00:00", "Z");
+        let path = format!(
+            "/strategy/trend_filter_momentum_v1/opportunity-analysis?symbol=BTCUSDT&timeframe=1m&start_time={start}&end_time={end}"
+        );
+
+        let response = app.oneshot(get_request(&path)).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["result"]["total_closed_candles"].as_i64(), Some(8));
+        assert!(payload["result"]["evaluable_windows"].as_i64().unwrap_or(0) > 0);
+        assert_eq!(count_signals(&test_db.pool).await, before.0);
+        assert_eq!(count_risk_decisions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.2);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.3);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.4);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.5);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.6
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.7
+        );
+    }
+
+    #[tokio::test]
+    async fn strategy_opportunity_endpoint_handles_empty_candles_safely() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = strategy_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let start = (Utc::now() - chrono::Duration::hours(1))
+            .to_rfc3339()
+            .replace("+00:00", "Z");
+        let end = Utc::now().to_rfc3339().replace("+00:00", "Z");
+        let path = format!(
+            "/strategy/range_reversion_v1/opportunity-analysis?symbol=BTCUSDT&timeframe=1m&start_time={start}&end_time={end}"
+        );
+
+        let response = app.oneshot(get_request(&path)).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload["result"]["data_quality_status"].as_str(),
+            Some("INSUFFICIENT_DATA")
+        );
+        assert_eq!(payload["result"]["evaluable_windows"].as_i64(), Some(0));
     }
 
     async fn insert_recent_closed_candle(pool: &PgPool, symbol: &str, close: Decimal) {

@@ -1707,6 +1707,100 @@ pub struct StrategyDiagnosticsRequest {
     pub correlation_id: Option<Uuid>,
 }
 
+fn default_strategy_opportunity_include_examples() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyOpportunityAnalysisRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub config: Option<Value>,
+    pub limit_samples: Option<usize>,
+    #[serde(default = "default_strategy_opportunity_include_examples")]
+    pub include_examples: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyOpportunityStatus {
+    HealthyOpportunity,
+    TooRestrictive,
+    TooLoose,
+    InsufficientData,
+    DataQualityDegraded,
+    Unknown,
+}
+
+impl StrategyOpportunityStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HealthyOpportunity => "HEALTHY_OPPORTUNITY",
+            Self::TooRestrictive => "TOO_RESTRICTIVE",
+            Self::TooLoose => "TOO_LOOSE",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::DataQualityDegraded => "DATA_QUALITY_DEGRADED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyConditionPassRate {
+    pub condition: String,
+    pub passed_count: i64,
+    pub failed_count: i64,
+    pub pass_rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyConditionFailureBreakdown {
+    pub condition: String,
+    pub failed_count: i64,
+    pub failure_rate_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyOpportunityWindowExample {
+    pub source_candle_open_time: DateTime<Utc>,
+    pub source_candle_close_time: DateTime<Utc>,
+    pub would_signal: bool,
+    pub blocking_condition: Option<String>,
+    pub details: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyOpportunityRecommendation {
+    pub status: StrategyOpportunityStatus,
+    pub messages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyOpportunityAnalysisResult {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub total_closed_candles: i64,
+    pub evaluable_windows: i64,
+    pub would_signal_count: i64,
+    pub no_signal_count: i64,
+    pub signal_rate_pct: Decimal,
+    pub top_blocking_conditions: Vec<StrategyConditionFailureBreakdown>,
+    pub condition_pass_rates: Vec<StrategyConditionPassRate>,
+    pub condition_failure_breakdown: Vec<StrategyConditionFailureBreakdown>,
+    pub example_pass_windows: Vec<StrategyOpportunityWindowExample>,
+    pub example_fail_windows: Vec<StrategyOpportunityWindowExample>,
+    pub distributions: Value,
+    pub recommendation: StrategyOpportunityRecommendation,
+    pub data_quality_status: StrategyOpportunityStatus,
+    pub analyzed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StrategyDiagnosticSeverity {
