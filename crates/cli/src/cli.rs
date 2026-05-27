@@ -722,6 +722,10 @@ pub enum MarketCommands {
     Backfill(MarketBackfillArgs),
     Backfills(MarketBackfillsArgs),
     BackfillGet { run_id: Uuid },
+    RepairPlan(MarketRepairArgs),
+    RepairRun(MarketRepairArgs),
+    RepairRuns(MarketBackfillsArgs),
+    RepairGet { run_id: Uuid },
     ProviderHealth(MarketProviderHealthArgs),
     AggregateCandles(MarketAggregateCandlesArgs),
     CandleCoverage(MarketCandleCoverageArgs),
@@ -1021,6 +1025,26 @@ pub struct MarketBackfillArgs {
 pub struct MarketBackfillsArgs {
     #[arg(long, default_value_t = 20)]
     pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct MarketRepairArgs {
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub interval: String,
+    #[arg(long = "start")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "max-ranges", default_value_t = 100)]
+    pub max_ranges: i32,
+    #[arg(long = "no-reaggregate-derived-intervals", default_value_t = false)]
+    pub no_reaggregate_derived_intervals: bool,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Args)]

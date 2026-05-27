@@ -9,8 +9,9 @@ use chrono::Utc;
 use clap::Parser;
 use cli::api::{
     build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
-    build_market_data_quality_query, build_multi_timeframe_strategy_experiment_request,
-    build_pipeline_request, build_research_data_build_request, build_research_data_coverage_query,
+    build_market_data_quality_query, build_market_data_repair_plan_request,
+    build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
+    build_research_data_build_request, build_research_data_coverage_query,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
     build_strategy_walk_forward_request, ApiClient, ApiClientError,
     CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
@@ -433,6 +434,48 @@ async fn main() -> anyhow::Result<()> {
                     output::print_json(&response)?;
                 } else {
                     output::print_backfill_run(&response);
+                }
+            }
+            MarketCommands::RepairPlan(args) => {
+                let request = build_market_data_repair_plan_request(
+                    &args,
+                    aegis_core::MarketDataRepairMode::PlanOnly,
+                )?;
+                let response = client.repair_plan(&request).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_market_data_repair_plan(&response.plan);
+                }
+            }
+            MarketCommands::RepairRun(args) => {
+                let request = build_market_data_repair_plan_request(
+                    &args,
+                    aegis_core::MarketDataRepairMode::Repair,
+                )?;
+                let response = client
+                    .repair_run(&aegis_core::MarketDataRepairRunRequest { plan: request })
+                    .await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_market_data_repair_run(&response.run);
+                }
+            }
+            MarketCommands::RepairRuns(args) => {
+                let response = client.list_repair_runs(args.limit).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_market_data_repair_runs(&response);
+                }
+            }
+            MarketCommands::RepairGet { run_id } => {
+                let response = client.get_repair_run(run_id).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_market_data_repair_run(&response.run);
                 }
             }
             MarketCommands::ProviderHealth(args) => {

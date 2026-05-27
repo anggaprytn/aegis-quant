@@ -5,32 +5,34 @@ use aegis_core::{
     CandleBackfillResult, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketProviderHealth, OperatorReport, OperatorReportRequest, PaperTradingPipelineRequest,
-    PaperTradingPipelineResult, ResearchCandidate, ResearchCandidateDecisionRequest,
-    ResearchCandidateLifecycleEvent, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewRequest,
-    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchShadowPnlAttributionResult, RiskConfig,
-    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyExperimentRequest, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
-    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
+    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
+    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
+    ResearchCandidate, ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewRequest, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
+    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
+    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
+    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -636,6 +638,39 @@ impl ApiClient {
             params.push(("max_allowed_gap_pct", value.to_string()));
         }
         self.get("/market/candles/quality", &params).await
+    }
+
+    pub async fn repair_plan(
+        &self,
+        request: &MarketDataRepairPlanRequest,
+    ) -> Result<MarketDataRepairPlanResponse, ApiClientError> {
+        self.post("/market/candles/repair/plan", request).await
+    }
+
+    pub async fn repair_run(
+        &self,
+        request: &MarketDataRepairRunRequest,
+    ) -> Result<MarketDataRepairRunResponse, ApiClientError> {
+        self.post("/market/candles/repair/run", request).await
+    }
+
+    pub async fn list_repair_runs(
+        &self,
+        limit: i64,
+    ) -> Result<MarketDataRepairRunsResponse, ApiClientError> {
+        self.get(
+            "/market/candles/repair/runs",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn get_repair_run(
+        &self,
+        run_id: Uuid,
+    ) -> Result<MarketDataRepairRunResponse, ApiClientError> {
+        self.get(&format!("/market/candles/repair/runs/{run_id}"), &[])
+            .await
     }
 
     pub async fn get_research_data_coverage(
@@ -2175,6 +2210,30 @@ pub struct CandleQualityResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MarketDataRepairPlanResponse {
+    pub plan: MarketDataRepairPlan,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MarketDataRepairRunResponse {
+    pub run: MarketDataRepairRunResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MarketDataRepairRunsResponse {
+    pub runs: Vec<MarketDataRepairRunResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ResearchDataCoverageResponse {
     pub coverage: ResearchDataCoverageResult,
@@ -3511,6 +3570,27 @@ pub fn build_market_data_quality_query(
         max_allowed_gap_count: args.max_allowed_gap_count,
         max_allowed_gap_pct: args.max_allowed_gap_pct,
     }
+}
+
+pub fn build_market_data_repair_plan_request(
+    args: &crate::cli::MarketRepairArgs,
+    repair_mode: MarketDataRepairMode,
+) -> anyhow::Result<MarketDataRepairPlanRequest> {
+    let request = MarketDataRepairPlanRequest {
+        exchange: args.exchange.parse()?,
+        symbol: args.symbol.clone(),
+        interval: args.interval.clone(),
+        start_time: args.start_time,
+        end_time: args.end_time,
+        repair_mode,
+        max_ranges: args.max_ranges,
+        reaggregate_derived_intervals: !args.no_reaggregate_derived_intervals,
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate_without_interval_support()
+        .context("invalid market data repair request")?;
+    Ok(request)
 }
 
 pub fn build_research_data_coverage_query(

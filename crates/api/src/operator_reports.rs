@@ -369,6 +369,29 @@ async fn load_system_and_market_data(
     .fetch_one(&state.db_pool)
     .await?;
 
+    let repair_row = query(
+        r#"
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'REPAIR_COMPLETED') AS completed_count,
+            COUNT(*) FILTER (WHERE status = 'REPAIR_FAILED') AS failed_count,
+            COUNT(*) FILTER (WHERE status = 'PARTIAL_REPAIR') AS partial_count,
+            COUNT(*) FILTER (
+                WHERE after_quality_status IN ('BAD', 'DEGRADED', 'INSUFFICIENT_DATA')
+            ) AS degraded_after_count
+        FROM market_data_repair_runs
+        WHERE created_at >= $1
+          AND created_at <= $2
+          AND ($3::text IS NULL OR symbol = $3)
+          AND ($4::text IS NULL OR interval = $4)
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .bind(request.symbol.as_deref())
+    .bind(request.interval.as_deref())
+    .fetch_one(&state.db_pool)
+    .await?;
+
     let candle_count_in_window: i64 = query_scalar(
         r#"
         SELECT COUNT(*)
@@ -424,6 +447,10 @@ async fn load_system_and_market_data(
             backfill_failed_count: backfill_row.get::<i64, _>("failed_count"),
             candle_count_in_window,
             data_quality,
+            repair_completed_count: repair_row.get::<i64, _>("completed_count"),
+            repair_failed_count: repair_row.get::<i64, _>("failed_count"),
+            repair_partial_count: repair_row.get::<i64, _>("partial_count"),
+            repair_degraded_after_count: repair_row.get::<i64, _>("degraded_after_count"),
         },
         stale_threshold_seconds,
     })
@@ -1287,6 +1314,48 @@ fn build_findings(
             )),
             _ => {}
         }
+    }
+    if system_market.market.repair_failed_count > 0 {
+        findings.push(finding(
+            "market_data_repair_failed",
+            OperatorReportSeverity::High,
+            "Market data repair failed",
+            &format!(
+                "{} market data repair runs failed in the selected window.",
+                system_market.market.repair_failed_count
+            ),
+            "market_data_repair",
+        ));
+    }
+    if system_market.market.repair_partial_count > 0
+        || system_market.market.repair_degraded_after_count > 0
+    {
+        findings.push(finding(
+            "market_data_remains_degraded_after_repair",
+            OperatorReportSeverity::Medium,
+            "Market data remains degraded after repair",
+            &format!(
+                "partial_repairs={}, degraded_after_repair={}",
+                system_market.market.repair_partial_count,
+                system_market.market.repair_degraded_after_count
+            ),
+            "market_data_repair",
+        ));
+    }
+    if system_market.market.repair_completed_count > 0
+        && system_market.market.repair_failed_count == 0
+        && system_market.market.repair_partial_count == 0
+    {
+        findings.push(finding(
+            "market_data_repair_completed",
+            OperatorReportSeverity::Low,
+            "Market data repair completed",
+            &format!(
+                "{} market data repair runs completed in the selected window.",
+                system_market.market.repair_completed_count
+            ),
+            "market_data_repair",
+        ));
     }
 
     if system_market.system.kill_switch_active {
@@ -2461,6 +2530,10 @@ mod tests {
                 backfill_failed_count: 0,
                 candle_count_in_window: 0,
                 data_quality: None,
+                repair_completed_count: 0,
+                repair_failed_count: 0,
+                repair_partial_count: 0,
+                repair_degraded_after_count: 0,
             },
             stale_threshold_seconds: 10,
         }

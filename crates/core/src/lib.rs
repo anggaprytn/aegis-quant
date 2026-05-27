@@ -553,6 +553,23 @@ impl MarketDataQualityStatus {
     }
 }
 
+impl std::str::FromStr for MarketDataQualityStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "GOOD" => Ok(Self::Good),
+            "DEGRADED" => Ok(Self::Degraded),
+            "BAD" => Ok(Self::Bad),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "UNKNOWN" => Ok(Self::Unknown),
+            other => Err(CoreError::UnsupportedMarketDataQualityStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketDataGap {
     pub start_time: DateTime<Utc>,
@@ -605,6 +622,391 @@ pub struct MarketDataQualityReport {
     pub status: MarketDataQualityStatus,
     pub findings: Vec<MarketDataQualityFinding>,
     pub recommendations: Vec<MarketDataQualityRecommendation>,
+}
+
+fn default_market_data_repair_max_ranges() -> i32 {
+    100
+}
+
+fn default_market_data_repair_reaggregate() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MarketDataRepairMode {
+    PlanOnly,
+    Repair,
+}
+
+impl MarketDataRepairMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PlanOnly => "PLAN_ONLY",
+            Self::Repair => "REPAIR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MarketDataRepairStatus {
+    NoRepairNeeded,
+    RepairPlanned,
+    RepairCompleted,
+    PartialRepair,
+    RepairFailed,
+    InsufficientData,
+    UnsupportedInterval,
+}
+
+impl MarketDataRepairStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoRepairNeeded => "NO_REPAIR_NEEDED",
+            Self::RepairPlanned => "REPAIR_PLANNED",
+            Self::RepairCompleted => "REPAIR_COMPLETED",
+            Self::PartialRepair => "PARTIAL_REPAIR",
+            Self::RepairFailed => "REPAIR_FAILED",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::UnsupportedInterval => "UNSUPPORTED_INTERVAL",
+        }
+    }
+}
+
+impl std::str::FromStr for MarketDataRepairStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "NO_REPAIR_NEEDED" => Ok(Self::NoRepairNeeded),
+            "REPAIR_PLANNED" => Ok(Self::RepairPlanned),
+            "REPAIR_COMPLETED" => Ok(Self::RepairCompleted),
+            "PARTIAL_REPAIR" => Ok(Self::PartialRepair),
+            "REPAIR_FAILED" => Ok(Self::RepairFailed),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "UNSUPPORTED_INTERVAL" => Ok(Self::UnsupportedInterval),
+            other => Err(CoreError::UnsupportedMarketDataRepairStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataRepairPlanRequest {
+    #[serde(default = "default_market_data_quality_exchange")]
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    #[serde(default = "default_market_data_repair_mode")]
+    pub repair_mode: MarketDataRepairMode,
+    #[serde(default = "default_market_data_repair_max_ranges")]
+    pub max_ranges: i32,
+    #[serde(default = "default_market_data_repair_reaggregate")]
+    pub reaggregate_derived_intervals: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+fn default_market_data_repair_mode() -> MarketDataRepairMode {
+    MarketDataRepairMode::PlanOnly
+}
+
+impl MarketDataRepairPlanRequest {
+    pub fn validate_without_interval_support(&self) -> Result<(), CoreError> {
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyCandleBackfillSymbol);
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidCandleBackfillTimeRange);
+        }
+        if self.max_ranges <= 0 {
+            return Err(CoreError::InvalidMarketDataRepairMaxRanges);
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), CoreError> {
+        self.validate_without_interval_support()?;
+        self.parsed_interval()?;
+        Ok(())
+    }
+
+    pub fn normalized_symbol(&self) -> Result<Symbol, CoreError> {
+        Symbol::new(self.symbol.clone())
+    }
+
+    pub fn parsed_interval(&self) -> Result<CandleInterval, CoreError> {
+        self.interval.parse::<CandleInterval>()
+    }
+
+    pub fn quality_request(&self) -> MarketDataQualityRequest {
+        MarketDataQualityRequest {
+            exchange: self.exchange,
+            symbol: self.symbol.clone(),
+            interval: self.interval.clone(),
+            start_time: self.start_time,
+            end_time: self.end_time,
+            expected_interval_seconds: None,
+            max_allowed_gap_count: None,
+            max_allowed_gap_pct: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataRepairRunRequest {
+    pub plan: MarketDataRepairPlanRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataRepairRange {
+    pub source_interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub missing_candle_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketDataRepairFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketDataRepairRecommendation {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataRepairPlan {
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub status: MarketDataRepairStatus,
+    pub initial_quality_status: MarketDataQualityStatus,
+    pub gap_count: i64,
+    pub repair_ranges: Vec<MarketDataRepairRange>,
+    pub estimated_source_interval: Option<String>,
+    pub requires_source_interval: bool,
+    pub reaggregate_derived_intervals: bool,
+    pub findings: Vec<MarketDataRepairFinding>,
+    pub recommendations: Vec<MarketDataRepairRecommendation>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataRepairRunResult {
+    pub run_id: Uuid,
+    pub plan: MarketDataRepairPlan,
+    pub status: MarketDataRepairStatus,
+    pub before_quality_status: MarketDataQualityStatus,
+    pub after_quality_status: MarketDataQualityStatus,
+    pub gap_count_before: i64,
+    pub gap_count_after: i64,
+    pub attempted_ranges: Vec<MarketDataRepairRange>,
+    pub inserted_candles: i32,
+    pub updated_candles: i32,
+    pub skipped_candles: i32,
+    pub failed_ranges: i32,
+    pub provider_attempts: Vec<MarketProviderAttempt>,
+    pub selected_provider: Option<String>,
+    pub aggregation_result: Option<CandleAggregationResult>,
+    pub recommendations: Vec<MarketDataRepairRecommendation>,
+    pub correlation_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+pub fn plan_market_data_repair(
+    request: &MarketDataRepairPlanRequest,
+    quality_report: &MarketDataQualityReport,
+) -> Result<MarketDataRepairPlan, CoreError> {
+    request.validate_without_interval_support()?;
+    let symbol = request.normalized_symbol()?;
+    let interval = match request.parsed_interval() {
+        Ok(interval) => interval,
+        Err(_) => {
+            return Ok(MarketDataRepairPlan {
+                exchange: request.exchange,
+                symbol: symbol.as_str().to_string(),
+                interval: request.interval.clone(),
+                start_time: request.start_time,
+                end_time: request.end_time,
+                status: MarketDataRepairStatus::UnsupportedInterval,
+                initial_quality_status: quality_report.status,
+                gap_count: quality_report.gap_count,
+                repair_ranges: Vec::new(),
+                estimated_source_interval: None,
+                requires_source_interval: false,
+                reaggregate_derived_intervals: false,
+                findings: vec![MarketDataRepairFinding {
+                    severity: "MEDIUM".to_string(),
+                    code: "unsupported_interval".to_string(),
+                    message: format!("Interval {} is not supported for repair.", request.interval),
+                }],
+                recommendations: vec![MarketDataRepairRecommendation {
+                    code: "use_supported_interval".to_string(),
+                    message: "Use one of 1m, 5m, 15m, or 1h.".to_string(),
+                }],
+                correlation_id: request.correlation_id,
+            });
+        }
+    };
+
+    let requires_source_interval = interval.is_aggregated_from_one_minute();
+    let estimated_source_interval = requires_source_interval
+        .then(|| CandleInterval::OneMinute.as_str().to_string())
+        .or_else(|| Some(interval.as_str().to_string()));
+
+    if quality_report.status == MarketDataQualityStatus::InsufficientData {
+        return Ok(MarketDataRepairPlan {
+            exchange: request.exchange,
+            symbol: symbol.as_str().to_string(),
+            interval: interval.as_str().to_string(),
+            start_time: request.start_time,
+            end_time: request.end_time,
+            status: MarketDataRepairStatus::InsufficientData,
+            initial_quality_status: quality_report.status,
+            gap_count: quality_report.gap_count,
+            repair_ranges: vec![MarketDataRepairRange {
+                source_interval: estimated_source_interval
+                    .clone()
+                    .unwrap_or_else(|| "1m".to_string()),
+                start_time: request.start_time,
+                end_time: request.end_time,
+                missing_candle_count: CandleInterval::OneMinute
+                    .candles_between(request.start_time, request.end_time)
+                    .unwrap_or(0) as i64,
+            }],
+            estimated_source_interval,
+            requires_source_interval,
+            reaggregate_derived_intervals: requires_source_interval
+                && request.reaggregate_derived_intervals,
+            findings: vec![MarketDataRepairFinding {
+                severity: "HIGH".to_string(),
+                code: "insufficient_market_data".to_string(),
+                message: "No candles exist for the requested repair window.".to_string(),
+            }],
+            recommendations: vec![MarketDataRepairRecommendation {
+                code: "backfill_full_window".to_string(),
+                message: "Backfill the requested window before using it for research.".to_string(),
+            }],
+            correlation_id: request.correlation_id,
+        });
+    }
+
+    let mut repair_ranges = merge_repair_gaps(
+        &quality_report.gaps,
+        if requires_source_interval {
+            CandleInterval::OneMinute
+        } else {
+            interval
+        },
+        request.max_ranges as usize,
+    );
+
+    let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
+    let status = if quality_report.gap_count == 0 || repair_ranges.is_empty() {
+        findings.push(MarketDataRepairFinding {
+            severity: "INFO".to_string(),
+            code: "no_repair_needed".to_string(),
+            message: "No candle gaps were detected in the requested window.".to_string(),
+        });
+        MarketDataRepairStatus::NoRepairNeeded
+    } else {
+        if i64::try_from(repair_ranges.len()).unwrap_or(i64::MAX) < quality_report.gap_count {
+            findings.push(MarketDataRepairFinding {
+                severity: "MEDIUM".to_string(),
+                code: "repair_ranges_truncated".to_string(),
+                message: format!(
+                    "Repair ranges were limited to max_ranges={}.",
+                    request.max_ranges
+                ),
+            });
+            recommendations.push(MarketDataRepairRecommendation {
+                code: "increase_max_ranges".to_string(),
+                message: "Increase max_ranges or repair a narrower window.".to_string(),
+            });
+        }
+        if requires_source_interval {
+            recommendations.push(MarketDataRepairRecommendation {
+                code: "repair_source_then_reaggregate".to_string(),
+                message:
+                    "Repair missing 1m source candles, then re-aggregate the requested interval."
+                        .to_string(),
+            });
+            for range in &mut repair_ranges {
+                range.source_interval = CandleInterval::OneMinute.as_str().to_string();
+            }
+        } else {
+            recommendations.push(MarketDataRepairRecommendation {
+                code: "backfill_missing_ranges".to_string(),
+                message: "Backfill only the missing public market-data ranges.".to_string(),
+            });
+        }
+        MarketDataRepairStatus::RepairPlanned
+    };
+
+    Ok(MarketDataRepairPlan {
+        exchange: request.exchange,
+        symbol: symbol.as_str().to_string(),
+        interval: interval.as_str().to_string(),
+        start_time: request.start_time,
+        end_time: request.end_time,
+        status,
+        initial_quality_status: quality_report.status,
+        gap_count: quality_report.gap_count,
+        repair_ranges,
+        estimated_source_interval,
+        requires_source_interval,
+        reaggregate_derived_intervals: requires_source_interval
+            && request.reaggregate_derived_intervals,
+        findings,
+        recommendations,
+        correlation_id: request.correlation_id,
+    })
+}
+
+fn merge_repair_gaps(
+    gaps: &[MarketDataGap],
+    source_interval: CandleInterval,
+    max_ranges: usize,
+) -> Vec<MarketDataRepairRange> {
+    let mut ranges = Vec::<MarketDataRepairRange>::new();
+    let source_interval_seconds = source_interval.duration().num_seconds();
+    for gap in gaps {
+        let missing = count_expected_candles_for_window(
+            source_interval_seconds,
+            gap.start_time,
+            gap.end_time,
+        )
+        .max(gap.missing_candle_count);
+        if let Some(last) = ranges.last_mut() {
+            if last.end_time >= gap.start_time {
+                last.end_time = last.end_time.max(gap.end_time);
+                last.missing_candle_count += missing;
+                continue;
+            }
+        }
+        if ranges.len() >= max_ranges {
+            break;
+        }
+        ranges.push(MarketDataRepairRange {
+            source_interval: source_interval.as_str().to_string(),
+            start_time: gap.start_time,
+            end_time: gap.end_time,
+            missing_candle_count: missing,
+        });
+    }
+    ranges
 }
 
 pub fn count_expected_candles_for_window(
@@ -3307,6 +3709,10 @@ pub struct OperatorReportMarketSnapshot {
     pub backfill_failed_count: i64,
     pub candle_count_in_window: i64,
     pub data_quality: Option<MarketDataQualityReport>,
+    pub repair_completed_count: i64,
+    pub repair_failed_count: i64,
+    pub repair_partial_count: i64,
+    pub repair_degraded_after_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6733,6 +7139,10 @@ pub enum CoreError {
     UnsupportedCandleBackfillStatus(String),
     #[error("unsupported candle backfill source: {0}")]
     UnsupportedCandleBackfillSource(String),
+    #[error("unsupported market data quality status: {0}")]
+    UnsupportedMarketDataQualityStatus(String),
+    #[error("unsupported market data repair status: {0}")]
+    UnsupportedMarketDataRepairStatus(String),
     #[error("unsupported user role: {0}")]
     UnsupportedUserRole(String),
     #[error("unsupported user status: {0}")]
@@ -6803,6 +7213,8 @@ pub enum CoreError {
     InvalidStrategyWalkForwardStepSize,
     #[error("candle backfill request limit must be greater than zero")]
     InvalidCandleBackfillLimit,
+    #[error("market data repair max_ranges must be greater than zero")]
+    InvalidMarketDataRepairMaxRanges,
     #[error("candle backfill request limit exceeds Binance maximum: {0}")]
     CandleBackfillLimitTooHigh(u16),
     #[error("exchange reconciliation request limit must be greater than zero: {0}")]
@@ -6887,14 +7299,16 @@ mod tests {
         calculate_strategy_average_pnl, calculate_strategy_rejection_rate,
         calculate_strategy_win_rate, calculate_testnet_promotion_rate,
         combine_strategy_performance_summaries, execution_readiness_status_from_checks,
-        score_execution_readiness, validate_password_length, validate_testnet_repair_transition,
-        Candle, CandleInterval, ExchangeEnvironment, ExchangeExecutionReport,
-        ExchangeExecutionReportType, ExchangeExecutionStatus, ExchangeName, ExchangeOrderRequest,
-        ExchangeOrderSide, ExchangeOrderState, ExchangeOrderType, ExchangePrivateStreamEvent,
+        plan_market_data_repair, score_execution_readiness, summarize_candle_continuity,
+        validate_password_length, validate_testnet_repair_transition, Candle, CandleInterval,
+        ExchangeEnvironment, ExchangeExecutionReport, ExchangeExecutionReportType,
+        ExchangeExecutionStatus, ExchangeName, ExchangeOrderRequest, ExchangeOrderSide,
+        ExchangeOrderState, ExchangeOrderType, ExchangePrivateStreamEvent,
         ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
         ExecutionReadinessCheck, ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
         ExecutionReadinessStatus, ExecutionState, MarketDataQualityRequest,
-        MarketDataQualityStatus, MarketDataSource, OperatorReport, OperatorReportFinding,
+        MarketDataQualityStatus, MarketDataRepairMode, MarketDataRepairPlanRequest,
+        MarketDataRepairStatus, MarketDataSource, OperatorReport, OperatorReportFinding,
         OperatorReportFormat, OperatorReportRecommendation, OperatorReportRequest,
         OperatorReportSection, OperatorReportSeverity, OperatorReportStatus, OperatorReportSummary,
         OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
@@ -7846,5 +8260,178 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == "open_candles_in_historical_window"));
+    }
+
+    fn repair_request(
+        interval: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> MarketDataRepairPlanRequest {
+        MarketDataRepairPlanRequest {
+            exchange: MarketDataSource::Binance,
+            symbol: "BTCUSDT".to_string(),
+            interval: interval.to_string(),
+            start_time: start,
+            end_time: end,
+            repair_mode: MarketDataRepairMode::PlanOnly,
+            max_ranges: 100,
+            reaggregate_derived_intervals: true,
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn repair_plan_one_missing_candle_creates_one_range() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(3);
+        let report = summarize_candle_continuity(
+            &quality_request(start, end),
+            &[
+                quality_candle(start, true),
+                quality_candle(start + Duration::minutes(2), true),
+            ],
+            100,
+        )
+        .unwrap();
+
+        let plan = plan_market_data_repair(&repair_request("1m", start, end), &report).unwrap();
+
+        assert_eq!(plan.status, MarketDataRepairStatus::RepairPlanned);
+        assert_eq!(plan.repair_ranges.len(), 1);
+        assert_eq!(
+            plan.repair_ranges[0].start_time,
+            start + Duration::minutes(1)
+        );
+        assert_eq!(plan.repair_ranges[0].end_time, start + Duration::minutes(2));
+    }
+
+    #[test]
+    fn repair_plan_adjacent_gaps_merge_into_one_range() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(4);
+        let report = summarize_candle_continuity(
+            &quality_request(start, end),
+            &[
+                quality_candle(start, true),
+                quality_candle(start + Duration::minutes(3), true),
+            ],
+            100,
+        )
+        .unwrap();
+
+        let plan = plan_market_data_repair(&repair_request("1m", start, end), &report).unwrap();
+
+        assert_eq!(plan.repair_ranges.len(), 1);
+        assert_eq!(plan.repair_ranges[0].missing_candle_count, 2);
+        assert_eq!(plan.repair_ranges[0].end_time, start + Duration::minutes(3));
+    }
+
+    #[test]
+    fn repair_plan_separated_gaps_create_multiple_ranges() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(6);
+        let report = summarize_candle_continuity(
+            &quality_request(start, end),
+            &[
+                quality_candle(start, true),
+                quality_candle(start + Duration::minutes(2), true),
+                quality_candle(start + Duration::minutes(5), true),
+            ],
+            100,
+        )
+        .unwrap();
+
+        let plan = plan_market_data_repair(&repair_request("1m", start, end), &report).unwrap();
+
+        assert_eq!(plan.repair_ranges.len(), 2);
+        assert_eq!(
+            plan.repair_ranges[0].start_time,
+            start + Duration::minutes(1)
+        );
+        assert_eq!(
+            plan.repair_ranges[1].start_time,
+            start + Duration::minutes(3)
+        );
+    }
+
+    #[test]
+    fn repair_plan_no_gaps_returns_no_repair_needed() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(3);
+        let candles = (0..3)
+            .map(|minute| quality_candle(start + Duration::minutes(minute), true))
+            .collect::<Vec<_>>();
+        let report =
+            summarize_candle_continuity(&quality_request(start, end), &candles, 100).unwrap();
+
+        let plan = plan_market_data_repair(&repair_request("1m", start, end), &report).unwrap();
+
+        assert_eq!(plan.status, MarketDataRepairStatus::NoRepairNeeded);
+        assert!(plan.repair_ranges.is_empty());
+    }
+
+    #[test]
+    fn repair_plan_derived_15m_uses_source_1m_and_reaggregation() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(45);
+        let request = MarketDataQualityRequest {
+            interval: "15m".to_string(),
+            ..quality_request(start, end)
+        };
+        let report = summarize_candle_continuity(
+            &request,
+            &[
+                quality_candle(start, true),
+                quality_candle(start + Duration::minutes(30), true),
+            ],
+            100,
+        )
+        .unwrap();
+
+        let plan = plan_market_data_repair(&repair_request("15m", start, end), &report).unwrap();
+
+        assert_eq!(plan.status, MarketDataRepairStatus::RepairPlanned);
+        assert!(plan.requires_source_interval);
+        assert!(plan.reaggregate_derived_intervals);
+        assert_eq!(plan.repair_ranges[0].source_interval, "1m");
+    }
+
+    #[test]
+    fn repair_plan_max_ranges_is_enforced() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(8);
+        let report = summarize_candle_continuity(
+            &quality_request(start, end),
+            &[
+                quality_candle(start, true),
+                quality_candle(start + Duration::minutes(2), true),
+                quality_candle(start + Duration::minutes(4), true),
+                quality_candle(start + Duration::minutes(6), true),
+            ],
+            100,
+        )
+        .unwrap();
+        let mut request = repair_request("1m", start, end);
+        request.max_ranges = 2;
+
+        let plan = plan_market_data_repair(&request, &report).unwrap();
+
+        assert_eq!(plan.repair_ranges.len(), 2);
+        assert!(plan
+            .findings
+            .iter()
+            .any(|finding| finding.code == "repair_ranges_truncated"));
+    }
+
+    #[test]
+    fn repair_plan_unsupported_interval_is_structured() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(8);
+        let report = summarize_candle_continuity(&quality_request(start, end), &[], 100).unwrap();
+
+        let plan = plan_market_data_repair(&repair_request("2m", start, end), &report).unwrap();
+
+        assert_eq!(plan.status, MarketDataRepairStatus::UnsupportedInterval);
+        assert!(plan.repair_ranges.is_empty());
     }
 }

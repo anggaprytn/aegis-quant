@@ -21,36 +21,40 @@ use aegis_core::{
     expected_testnet_shadow_promotion_confirmation,
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
-    is_valid_testnet_shadow_promotion_confirmation, research_candidate_next_status,
-    score_strategy_research_candidate, validate_testnet_repair_transition, AuthLoginRequest,
-    AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-    AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
-    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
-    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
-    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
-    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
-    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
-    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
-    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
+    research_candidate_next_status, score_strategy_research_candidate,
+    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
+    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
+    CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest, CandleBackfillResult,
+    CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
+    ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
+    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
+    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
+    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
+    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo,
+    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
-    MarketDataQualityReport, MarketDataQualityRequest, MarketDataSource, MarketMode,
-    MarketProviderHealth, OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode,
-    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, ResearchCandidate,
-    ResearchCandidateDecision, ResearchCandidateDecisionRejection,
-    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
-    ResearchCandidateObservationFreshnessStatus, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidatePromotionReadiness,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationRequest,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
-    ResearchCandidateReviewContext, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
-    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    MarketDataQualityReport, MarketDataQualityRequest, MarketDataRepairPlan,
+    MarketDataRepairPlanRequest, MarketDataRepairRange, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketDataRepairStatus, MarketDataSource, MarketMode,
+    MarketProviderAttempt, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
+    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, ResearchCandidate, ResearchCandidateDecision,
+    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
+    ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidatePromotionReadiness, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewContext,
+    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
+    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -109,8 +113,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
     apply_research_candidate_review, backtest_result_from_record,
-    candle_backfill_result_from_record, check_health, connect_pool, count_users,
-    create_paper_order, create_research_candidate, ensure_system_state,
+    candle_backfill_result_from_record, check_health, complete_market_data_repair_run,
+    connect_pool, count_users, create_paper_order, create_research_candidate, ensure_system_state,
     get_active_strategy_research_candidate_promotion,
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
@@ -118,7 +122,8 @@ use db::{
     get_exchange_testnet_order_by_client_order_id, get_latest_market_tick,
     get_latest_research_candidate_qualification_evaluation,
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
-    get_order_by_id, get_paper_position_by_id, get_recent_closed_candles, get_research_candidate,
+    get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
+    get_recent_closed_candles, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
@@ -129,7 +134,8 @@ use db::{
     get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
     get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
     get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
-    insert_exchange_testnet_order, insert_exchange_testnet_repair_action, insert_paper_account,
+    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
+    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
     insert_paper_equity_snapshot, insert_research_candidate_qualification_evaluation,
     insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
     insert_strategy_config_audit, insert_strategy_research_candidate,
@@ -138,24 +144,25 @@ use db::{
     list_backtest_runs, list_candle_backfill_runs, list_candles,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
-    list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
-    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
-    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
-    list_recent_system_events_filtered, list_research_candidate_events,
-    list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
-    list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
-    list_research_candidate_watchlist_rows, list_research_candidates, list_risk_config_audit,
-    list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
+    list_exchange_testnet_orders, list_exchange_testnet_repair_actions,
+    list_market_data_repair_runs, list_market_feed_statuses, list_open_paper_positions,
+    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
+    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
+    list_research_candidate_events, list_research_candidate_qualification_evaluations,
+    list_research_candidate_reviews, list_research_candidate_shadow_runs,
+    list_research_candidate_walk_forward_evidence, list_research_candidate_watchlist_rows,
+    list_research_candidates, list_risk_config_audit, list_risk_config_versions,
+    list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
     list_strategy_research_candidates, list_strategy_status, list_strategy_walk_forward_runs,
     list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
     list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
-    mark_strategy_research_candidate_promoted, paper_account_from_record,
-    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, research_candidate_event_from_record,
-    research_candidate_from_record, research_candidate_qualification_evaluation_from_record,
-    research_candidate_review_from_record,
+    mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
+    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
+    persist_risk_config_version, persist_strategy_config_version,
+    research_candidate_event_from_record, research_candidate_from_record,
+    research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row, revoke_session,
     risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
     rotate_session_refresh_token, set_kill_switch_state,
@@ -1607,6 +1614,30 @@ struct CandleQualityResponse {
 }
 
 #[derive(Serialize)]
+struct MarketDataRepairPlanResponse {
+    plan: MarketDataRepairPlan,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct MarketDataRepairRunResponse {
+    run: MarketDataRepairRunResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct MarketDataRepairRunsResponse {
+    runs: Vec<MarketDataRepairRunResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchDataCoverageResponse {
     coverage: ResearchDataCoverageResult,
     request_id: String,
@@ -2507,6 +2538,22 @@ async fn main() {
         .route("/market/candles/coverage", get(get_market_candle_coverage))
         .route("/market/candles/quality", get(get_market_candle_quality))
         .route(
+            "/market/candles/repair/plan",
+            post(post_market_candles_repair_plan),
+        )
+        .route(
+            "/market/candles/repair/run",
+            post(post_market_candles_repair_run),
+        )
+        .route(
+            "/market/candles/repair/runs",
+            get(get_market_candles_repair_runs),
+        )
+        .route(
+            "/market/candles/repair/runs/:id",
+            get(get_market_candles_repair_run),
+        )
+        .route(
             "/market/candles/aggregate",
             post(post_market_aggregate_candles),
         )
@@ -3004,6 +3051,18 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     }
     if method == axum::http::Method::POST && path == "/market/candles/aggregate" {
         return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/market/candles/repair/run" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST && path == "/market/candles/repair/plan" {
+        return RouteAccess::Authenticated;
+    }
+    if method == axum::http::Method::GET
+        && (path == "/market/candles/repair/runs"
+            || path.starts_with("/market/candles/repair/runs/"))
+    {
+        return RouteAccess::Authenticated;
     }
     if method == axum::http::Method::POST
         && path.starts_with("/research/candidates/")
@@ -14306,6 +14365,513 @@ async fn get_market_candle_quality(
             )
                 .into_response()
         }
+    }
+}
+
+async fn build_market_data_repair_plan(
+    state: &AppState,
+    payload: &MarketDataRepairPlanRequest,
+) -> Result<MarketDataRepairPlan, anyhow::Error> {
+    if payload.parsed_interval().is_err() {
+        let quality_report = MarketDataQualityReport {
+            exchange: payload.exchange,
+            symbol: payload.symbol.clone(),
+            interval: payload.interval.clone(),
+            window_start: payload.start_time,
+            window_end: payload.end_time,
+            expected_candle_count: 0,
+            actual_candle_count: 0,
+            closed_candle_count: 0,
+            open_candle_count: 0,
+            missing_candle_count: 0,
+            coverage_pct: Decimal::ZERO,
+            gap_count: 0,
+            largest_gap_seconds: 0,
+            gaps: Vec::new(),
+            first_candle_time: None,
+            last_candle_time: None,
+            status: aegis_core::MarketDataQualityStatus::Unknown,
+            findings: Vec::new(),
+            recommendations: Vec::new(),
+        };
+        return Ok(plan_market_data_repair(payload, &quality_report)?);
+    }
+    let quality_request = payload.quality_request();
+    let report = summarize_candle_continuity_report(&state.db_pool, &quality_request).await?;
+    Ok(plan_market_data_repair(payload, &report)?)
+}
+
+async fn post_market_candles_repair_plan(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(mut payload): Json<MarketDataRepairPlanRequest>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Uuid::parse_str(&request_context.correlation_id).ok();
+    }
+    if let Err(err) = payload.validate_without_interval_support() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_market_data_repair_plan_request",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match build_market_data_repair_plan(&state, &payload).await {
+        Ok(plan) => (
+            StatusCode::OK,
+            Json(MarketDataRepairPlanResponse {
+                plan,
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request_context.request_id,
+                correlation_id = %request_context.correlation_id,
+                error = %err,
+                "failed to plan market data repair"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_plan_market_data_repair",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn post_market_candles_repair_run(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<MarketDataRepairRunRequest>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    if payload.plan.correlation_id.is_none() {
+        payload.plan.correlation_id = Uuid::parse_str(&request_context.correlation_id).ok();
+    }
+    if let Err(err) = payload.plan.validate_without_interval_support() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_market_data_repair_run_request",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match run_market_data_repair(&state, payload.plan).await {
+        Ok(result) => {
+            if let Some(actor) = current_actor(actor).as_ref() {
+                let state_actor = state_actor_from_authenticated(actor);
+                let _ = insert_audit_log(
+                    &state.db_pool,
+                    result.correlation_id.unwrap_or_else(Uuid::new_v4),
+                    &state_actor,
+                    "market.candles.repair.run",
+                    "market/candles/repair/run",
+                    &json!({
+                        "actor_id": actor.user_id,
+                        "run_id": result.run_id,
+                        "symbol": result.plan.symbol,
+                        "interval": result.plan.interval,
+                        "status": result.status.as_str(),
+                        "inserted_candles": result.inserted_candles,
+                        "updated_candles": result.updated_candles,
+                        "failed_ranges": result.failed_ranges
+                    }),
+                )
+                .await;
+            }
+            (
+                StatusCode::OK,
+                Json(MarketDataRepairRunResponse {
+                    run: result,
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                request_id = %request_context.request_id,
+                correlation_id = %request_context.correlation_id,
+                error = %err,
+                "failed to run market data repair"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_run_market_data_repair",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn run_market_data_repair(
+    state: &AppState,
+    mut request: MarketDataRepairPlanRequest,
+) -> Result<MarketDataRepairRunResult, anyhow::Error> {
+    request.repair_mode = aegis_core::MarketDataRepairMode::Repair;
+    let plan = build_market_data_repair_plan(state, &request).await?;
+    let run_id = Uuid::new_v4();
+    let created_at = Utc::now();
+    insert_market_data_repair_run(&state.db_pool, run_id, &plan, created_at).await?;
+
+    if !matches!(
+        plan.status,
+        MarketDataRepairStatus::RepairPlanned | MarketDataRepairStatus::InsufficientData
+    ) {
+        let completed_at = Some(Utc::now());
+        let result = MarketDataRepairRunResult {
+            run_id,
+            before_quality_status: plan.initial_quality_status,
+            after_quality_status: plan.initial_quality_status,
+            gap_count_before: plan.gap_count,
+            gap_count_after: plan.gap_count,
+            attempted_ranges: Vec::new(),
+            inserted_candles: 0,
+            updated_candles: 0,
+            skipped_candles: 0,
+            failed_ranges: 0,
+            provider_attempts: Vec::new(),
+            selected_provider: None,
+            aggregation_result: None,
+            recommendations: plan.recommendations.clone(),
+            correlation_id: plan.correlation_id,
+            created_at,
+            completed_at,
+            status: plan.status,
+            plan,
+        };
+        complete_market_data_repair_run(&state.db_pool, run_id, &result).await?;
+        return Ok(result);
+    }
+
+    let service = HistoricalCandleBackfillService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        &state.market_config.binance_rest_base_url,
+    )?
+    .with_fallback_base_urls(state.market_config.binance_rest_fallback_base_urls.clone());
+
+    let mut inserted_candles = 0;
+    let mut updated_candles = 0;
+    let mut skipped_candles = 0;
+    let mut failed_ranges = 0;
+    let mut provider_attempts = Vec::<MarketProviderAttempt>::new();
+    let mut selected_provider = None;
+    let mut attempted_ranges = Vec::<MarketDataRepairRange>::new();
+
+    for range in &plan.repair_ranges {
+        attempted_ranges.push(range.clone());
+        if plan.requires_source_interval && source_range_is_complete(state, &plan, range).await? {
+            insert_market_data_repair_range(
+                &state.db_pool,
+                run_id,
+                range,
+                MarketDataRepairStatus::RepairCompleted,
+                0,
+                0,
+                0,
+                None,
+                &[],
+                Some(Utc::now()),
+            )
+            .await?;
+            continue;
+        }
+        let backfill = service
+            .run(CandleBackfillRequest {
+                exchange: plan.exchange,
+                symbol: plan.symbol.clone(),
+                interval: range.source_interval.clone(),
+                start_time: range.start_time,
+                end_time: range.end_time,
+                limit_per_request: Some(1000),
+                correlation_id: plan.correlation_id,
+            })
+            .await?;
+        provider_attempts.extend(backfill.provider_attempts.clone());
+        selected_provider = backfill.selected_provider.clone().or(selected_provider);
+        if backfill.status == aegis_core::CandleBackfillStatus::Failed {
+            failed_ranges += 1;
+            insert_market_data_repair_range(
+                &state.db_pool,
+                run_id,
+                range,
+                MarketDataRepairStatus::RepairFailed,
+                0,
+                0,
+                0,
+                backfill.failed_reason.as_deref(),
+                &backfill.provider_attempts,
+                backfill.completed_at,
+            )
+            .await?;
+            continue;
+        }
+        inserted_candles += backfill.inserted_candles;
+        updated_candles += backfill.updated_candles;
+        skipped_candles += backfill.skipped_candles;
+        insert_market_data_repair_range(
+            &state.db_pool,
+            run_id,
+            range,
+            MarketDataRepairStatus::RepairCompleted,
+            backfill.inserted_candles,
+            backfill.updated_candles,
+            backfill.skipped_candles,
+            None,
+            &backfill.provider_attempts,
+            backfill.completed_at,
+        )
+        .await?;
+    }
+
+    let aggregation_result = if plan.reaggregate_derived_intervals {
+        Some(reaggregate_repair_window(state, &plan).await?)
+    } else {
+        None
+    };
+
+    let after_request = MarketDataQualityRequest {
+        exchange: plan.exchange,
+        symbol: plan.symbol.clone(),
+        interval: plan.interval.clone(),
+        start_time: plan.start_time,
+        end_time: plan.end_time,
+        expected_interval_seconds: None,
+        max_allowed_gap_count: None,
+        max_allowed_gap_pct: None,
+    };
+    let after_report = summarize_candle_continuity_report(&state.db_pool, &after_request).await?;
+    let status = if failed_ranges > 0 && after_report.gap_count < plan.gap_count {
+        if after_report.status == aegis_core::MarketDataQualityStatus::Good {
+            MarketDataRepairStatus::RepairCompleted
+        } else {
+            MarketDataRepairStatus::PartialRepair
+        }
+    } else if failed_ranges > 0 {
+        MarketDataRepairStatus::RepairFailed
+    } else if after_report.status == aegis_core::MarketDataQualityStatus::Good
+        || after_report.gap_count < plan.gap_count
+    {
+        MarketDataRepairStatus::RepairCompleted
+    } else {
+        MarketDataRepairStatus::PartialRepair
+    };
+    let completed_at = Some(Utc::now());
+    let result = MarketDataRepairRunResult {
+        run_id,
+        before_quality_status: plan.initial_quality_status,
+        after_quality_status: after_report.status,
+        gap_count_before: plan.gap_count,
+        gap_count_after: after_report.gap_count,
+        attempted_ranges,
+        inserted_candles,
+        updated_candles,
+        skipped_candles,
+        failed_ranges,
+        provider_attempts,
+        selected_provider,
+        aggregation_result,
+        recommendations: plan.recommendations.clone(),
+        correlation_id: plan.correlation_id,
+        created_at,
+        completed_at,
+        status,
+        plan,
+    };
+    complete_market_data_repair_run(&state.db_pool, run_id, &result).await?;
+    Ok(result)
+}
+
+async fn source_range_is_complete(
+    state: &AppState,
+    plan: &MarketDataRepairPlan,
+    range: &MarketDataRepairRange,
+) -> Result<bool, anyhow::Error> {
+    let source_quality = MarketDataQualityRequest {
+        exchange: plan.exchange,
+        symbol: plan.symbol.clone(),
+        interval: range.source_interval.clone(),
+        start_time: range.start_time,
+        end_time: range.end_time,
+        expected_interval_seconds: None,
+        max_allowed_gap_count: None,
+        max_allowed_gap_pct: None,
+    };
+    let report = summarize_candle_continuity_report(&state.db_pool, &source_quality).await?;
+    Ok(report.status == aegis_core::MarketDataQualityStatus::Good && report.gap_count == 0)
+}
+
+async fn reaggregate_repair_window(
+    state: &AppState,
+    plan: &MarketDataRepairPlan,
+) -> Result<CandleAggregationResult, anyhow::Error> {
+    let symbol = Symbol::new(plan.symbol.clone())?;
+    let target_interval: CandleInterval = plan.interval.parse()?;
+    let source_candles = db::get_closed_1m_candles_range(
+        &state.db_pool,
+        plan.exchange,
+        &symbol,
+        plan.start_time,
+        plan.end_time,
+    )
+    .await?;
+    let aggregated = aggregate_closed_1m_candles(&source_candles, target_interval);
+    let upsert = upsert_aggregated_candles(&state.db_pool, &aggregated.candles).await?;
+    Ok(CandleAggregationResult {
+        exchange: plan.exchange,
+        symbol: plan.symbol.clone(),
+        source_interval: CandleInterval::OneMinute.as_str().to_string(),
+        target_interval: plan.interval.clone(),
+        start_time: plan.start_time,
+        end_time: plan.end_time,
+        source_candles: i32::try_from(source_candles.len()).unwrap_or(i32::MAX),
+        aggregated_candles: i32::try_from(aggregated.candles.len()).unwrap_or(i32::MAX),
+        inserted: upsert.inserted_candles,
+        updated: upsert.updated_candles,
+        skipped_incomplete: aggregated.skipped_incomplete_buckets,
+        correlation_id: plan.correlation_id,
+    })
+}
+
+async fn get_market_candles_repair_runs(
+    State(state): State<AppState>,
+    Query(query): Query<BackfillRunsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    match list_market_data_repair_runs(&state.db_pool, bounded_backfill_runs_limit(query.limit))
+        .await
+    {
+        Ok(records) => match records
+            .iter()
+            .map(market_data_repair_result_from_record)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(runs) => (
+                StatusCode::OK,
+                Json(MarketDataRepairRunsResponse {
+                    runs,
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_market_data_repair_runs",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => {
+            error!(error = %err, "failed to list market data repair runs");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_list_market_data_repair_runs",
+                    message: "Failed to list market data repair runs.".to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_market_candles_repair_run(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    match get_market_data_repair_run(&state.db_pool, id).await {
+        Ok(Some(record)) => match market_data_repair_result_from_record(&record) {
+            Ok(run) => (
+                StatusCode::OK,
+                Json(MarketDataRepairRunResponse {
+                    run,
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_market_data_repair_run",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "market_data_repair_run_not_found",
+                message: "Market data repair run not found.".to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_market_data_repair_run",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
     }
 }
 

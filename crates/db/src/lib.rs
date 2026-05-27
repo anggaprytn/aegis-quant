@@ -9,11 +9,12 @@ use aegis_core::{
     ExecutionReadinessRecommendation, ExecutionReadinessSnapshot, ExecutionReadinessStatus,
     ExecutionReadinessTarget, ExecutionState, FeedStatus, MarketCandleCoverageSummary,
     MarketCandleIntervalCoverage, MarketDataQualityReport, MarketDataQualityRequest,
-    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus,
-    PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder,
-    PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
+    MarketDataRepairPlan, MarketDataRepairRange, MarketDataRepairRunResult, MarketDataRepairStatus,
+    MarketDataSource, MarketProviderAttempt, MarketTick, OrderIntent, OrderStatus, PaperAccount,
+    PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill,
+    PaperOrder, PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter,
+    PaperPriceStatus, PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus,
+    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
     RiskEvaluationResult, Session, Side, SignalReason, StrategyComparisonSummary, StrategyConfig,
     StrategyConfigAuditEntry, StrategyConfigVersion, StrategyDecisionBreakdown,
     StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentResult,
@@ -503,6 +504,49 @@ pub struct CandleBackfillRunRecord {
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub config: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketDataRepairRunRecord {
+    pub id: Uuid,
+    pub exchange: String,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub status: String,
+    pub before_quality_status: String,
+    pub after_quality_status: Option<String>,
+    pub gap_count_before: i64,
+    pub gap_count_after: i64,
+    pub inserted_candles: i32,
+    pub updated_candles: i32,
+    pub skipped_candles: i32,
+    pub failed_ranges: i32,
+    pub provider_attempts: Value,
+    pub plan: Value,
+    pub result: Value,
+    pub correlation_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketDataRepairRangeRecord {
+    pub id: Uuid,
+    pub repair_run_id: Uuid,
+    pub source_interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub missing_candle_count: i64,
+    pub status: String,
+    pub inserted_candles: i32,
+    pub updated_candles: i32,
+    pub skipped_candles: i32,
+    pub failed_reason: Option<String>,
+    pub provider_attempts: Value,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -5520,6 +5564,200 @@ pub async fn get_candle_backfill_run(
     Ok(row.as_ref().map(map_candle_backfill_run))
 }
 
+pub async fn insert_market_data_repair_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    plan: &MarketDataRepairPlan,
+    created_at: DateTime<Utc>,
+) -> Result<MarketDataRepairRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO market_data_repair_runs (
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            before_quality_status,
+            gap_count_before,
+            provider_attempts,
+            plan,
+            result,
+            correlation_id,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '[]'::JSONB, $10, '{}'::JSONB, $11, $12)
+        RETURNING
+            id, exchange, symbol, interval, start_time, end_time, status,
+            before_quality_status, after_quality_status, gap_count_before, gap_count_after,
+            inserted_candles, updated_candles, skipped_candles, failed_ranges,
+            provider_attempts, plan, result, correlation_id, created_at, completed_at
+        "#,
+    )
+    .bind(run_id)
+    .bind(plan.exchange.as_str())
+    .bind(&plan.symbol)
+    .bind(&plan.interval)
+    .bind(plan.start_time)
+    .bind(plan.end_time)
+    .bind(MarketDataRepairStatus::RepairPlanned.as_str())
+    .bind(plan.initial_quality_status.as_str())
+    .bind(plan.gap_count)
+    .bind(serde_json::to_value(plan)?)
+    .bind(plan.correlation_id)
+    .bind(created_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_market_data_repair_run(&row))
+}
+
+pub async fn insert_market_data_repair_range(
+    pool: &PgPool,
+    repair_run_id: Uuid,
+    range: &MarketDataRepairRange,
+    status: MarketDataRepairStatus,
+    inserted_candles: i32,
+    updated_candles: i32,
+    skipped_candles: i32,
+    failed_reason: Option<&str>,
+    provider_attempts: &[MarketProviderAttempt],
+    completed_at: Option<DateTime<Utc>>,
+) -> Result<MarketDataRepairRangeRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO market_data_repair_ranges (
+            id,
+            repair_run_id,
+            source_interval,
+            start_time,
+            end_time,
+            missing_candle_count,
+            status,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            provider_attempts,
+            completed_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING
+            id, repair_run_id, source_interval, start_time, end_time, missing_candle_count,
+            status, inserted_candles, updated_candles, skipped_candles, failed_reason,
+            provider_attempts, created_at, completed_at
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(repair_run_id)
+    .bind(&range.source_interval)
+    .bind(range.start_time)
+    .bind(range.end_time)
+    .bind(range.missing_candle_count)
+    .bind(status.as_str())
+    .bind(inserted_candles)
+    .bind(updated_candles)
+    .bind(skipped_candles)
+    .bind(failed_reason)
+    .bind(serde_json::to_value(provider_attempts)?)
+    .bind(completed_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_market_data_repair_range(&row))
+}
+
+pub async fn complete_market_data_repair_run(
+    pool: &PgPool,
+    run_id: Uuid,
+    result: &MarketDataRepairRunResult,
+) -> Result<MarketDataRepairRunRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE market_data_repair_runs
+        SET
+            status = $2,
+            after_quality_status = $3,
+            gap_count_after = $4,
+            inserted_candles = $5,
+            updated_candles = $6,
+            skipped_candles = $7,
+            failed_ranges = $8,
+            provider_attempts = $9,
+            result = $10,
+            completed_at = $11
+        WHERE id = $1
+        RETURNING
+            id, exchange, symbol, interval, start_time, end_time, status,
+            before_quality_status, after_quality_status, gap_count_before, gap_count_after,
+            inserted_candles, updated_candles, skipped_candles, failed_ranges,
+            provider_attempts, plan, result, correlation_id, created_at, completed_at
+        "#,
+    )
+    .bind(run_id)
+    .bind(result.status.as_str())
+    .bind(result.after_quality_status.as_str())
+    .bind(result.gap_count_after)
+    .bind(result.inserted_candles)
+    .bind(result.updated_candles)
+    .bind(result.skipped_candles)
+    .bind(result.failed_ranges)
+    .bind(serde_json::to_value(&result.provider_attempts)?)
+    .bind(serde_json::to_value(result)?)
+    .bind(result.completed_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_market_data_repair_run(&row))
+}
+
+pub async fn list_market_data_repair_runs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<MarketDataRepairRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id, exchange, symbol, interval, start_time, end_time, status,
+            before_quality_status, after_quality_status, gap_count_before, gap_count_after,
+            inserted_candles, updated_candles, skipped_candles, failed_ranges,
+            provider_attempts, plan, result, correlation_id, created_at, completed_at
+        FROM market_data_repair_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_market_data_repair_run).collect())
+}
+
+pub async fn get_market_data_repair_run(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<MarketDataRepairRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id, exchange, symbol, interval, start_time, end_time, status,
+            before_quality_status, after_quality_status, gap_count_before, gap_count_after,
+            inserted_candles, updated_candles, skipped_candles, failed_ranges,
+            provider_attempts, plan, result, correlation_id, created_at, completed_at
+        FROM market_data_repair_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_market_data_repair_run))
+}
+
 pub async fn insert_backtest_run(
     pool: &PgPool,
     run_id: Uuid,
@@ -9635,6 +9873,51 @@ fn map_candle_backfill_run(row: &sqlx::postgres::PgRow) -> CandleBackfillRunReco
     }
 }
 
+fn map_market_data_repair_run(row: &sqlx::postgres::PgRow) -> MarketDataRepairRunRecord {
+    MarketDataRepairRunRecord {
+        id: row.get("id"),
+        exchange: row.get("exchange"),
+        symbol: row.get("symbol"),
+        interval: row.get("interval"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        status: row.get("status"),
+        before_quality_status: row.get("before_quality_status"),
+        after_quality_status: row.get("after_quality_status"),
+        gap_count_before: row.get("gap_count_before"),
+        gap_count_after: row.get("gap_count_after"),
+        inserted_candles: row.get("inserted_candles"),
+        updated_candles: row.get("updated_candles"),
+        skipped_candles: row.get("skipped_candles"),
+        failed_ranges: row.get("failed_ranges"),
+        provider_attempts: row.get("provider_attempts"),
+        plan: row.get("plan"),
+        result: row.get("result"),
+        correlation_id: row.get("correlation_id"),
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+    }
+}
+
+fn map_market_data_repair_range(row: &sqlx::postgres::PgRow) -> MarketDataRepairRangeRecord {
+    MarketDataRepairRangeRecord {
+        id: row.get("id"),
+        repair_run_id: row.get("repair_run_id"),
+        source_interval: row.get("source_interval"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        missing_candle_count: row.get("missing_candle_count"),
+        status: row.get("status"),
+        inserted_candles: row.get("inserted_candles"),
+        updated_candles: row.get("updated_candles"),
+        skipped_candles: row.get("skipped_candles"),
+        failed_reason: row.get("failed_reason"),
+        provider_attempts: row.get("provider_attempts"),
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+    }
+}
+
 fn map_candle_domain(row: &sqlx::postgres::PgRow) -> Candle {
     Candle {
         id: row.get("id"),
@@ -10337,6 +10620,48 @@ pub fn candle_backfill_result_from_record(
         correlation_id: record.correlation_id,
         created_at: record.created_at,
         completed_at: record.completed_at,
+    })
+}
+
+pub fn market_data_repair_result_from_record(
+    record: &MarketDataRepairRunRecord,
+) -> Result<MarketDataRepairRunResult> {
+    if !record
+        .result
+        .as_object()
+        .map(|value| value.is_empty())
+        .unwrap_or(false)
+    {
+        return Ok(serde_json::from_value(record.result.clone())?);
+    }
+
+    let plan: MarketDataRepairPlan = serde_json::from_value(record.plan.clone())?;
+    let provider_attempts: Vec<MarketProviderAttempt> =
+        serde_json::from_value(record.provider_attempts.clone()).unwrap_or_default();
+    Ok(MarketDataRepairRunResult {
+        run_id: record.id,
+        before_quality_status: record.before_quality_status.parse()?,
+        after_quality_status: record
+            .after_quality_status
+            .as_deref()
+            .unwrap_or(record.before_quality_status.as_str())
+            .parse()?,
+        gap_count_before: record.gap_count_before,
+        gap_count_after: record.gap_count_after,
+        attempted_ranges: plan.repair_ranges.clone(),
+        inserted_candles: record.inserted_candles,
+        updated_candles: record.updated_candles,
+        skipped_candles: record.skipped_candles,
+        failed_ranges: record.failed_ranges,
+        provider_attempts,
+        selected_provider: None,
+        aggregation_result: None,
+        recommendations: plan.recommendations.clone(),
+        correlation_id: record.correlation_id,
+        created_at: record.created_at,
+        completed_at: record.completed_at,
+        status: record.status.parse()?,
+        plan,
     })
 }
 

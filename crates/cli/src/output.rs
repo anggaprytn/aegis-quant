@@ -1,14 +1,14 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, MarketDataQualityReport,
-    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
-    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
-    ResearchShadowPnlAttributionResult, User,
+    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchCandidateDecisionRejection,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -26,12 +26,13 @@ use crate::api::{
     ExchangeTestnetPipelineSubmitResponse, ExchangeTestnetRepairActionRecord,
     ExchangeTestnetRepairResponse, ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse,
     ExecutionReadinessResponse, ExecutionReadinessSnapshotsResponse, FeedStatusResponse,
-    HealthResponse, OperatorReportResponse, OperatorReportsListResponse, OrderRecord,
-    PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse,
-    PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse,
-    RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
-    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
-    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
+    HealthResponse, MarketDataRepairRunsResponse, OperatorReportResponse,
+    OperatorReportsListResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
+    PaperEquityResponse, PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse,
+    PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse, RiskConfigAuditResponse,
+    RiskConfigResponse, RiskConfigValidationResponse, RiskConfigVersionsResponse,
+    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
+    StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDiagnosticsResponse, StrategyDryRunResponse,
     StrategyListResponse, StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
     StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
@@ -1613,6 +1614,90 @@ pub fn print_market_data_quality_report(report: &MarketDataQualityReport) {
         for recommendation in &report.recommendations {
             println!("- {}: {}", recommendation.code, recommendation.message);
         }
+    }
+}
+
+pub fn print_market_data_repair_plan(plan: &MarketDataRepairPlan) {
+    println!("Status: {}", plan.status.as_str());
+    println!("Before quality: {}", plan.initial_quality_status.as_str());
+    println!("Exchange: {}", plan.exchange.as_str());
+    println!("Symbol: {}", plan.symbol);
+    println!("Interval: {}", plan.interval);
+    println!("Window: {} -> {}", plan.start_time, plan.end_time);
+    println!("Gap count: {}", plan.gap_count);
+    println!(
+        "Source interval: {}  Reaggregate: {}",
+        plan.estimated_source_interval.as_deref().unwrap_or("-"),
+        plan.reaggregate_derived_intervals
+    );
+    println!("Repair ranges: {}", plan.repair_ranges.len());
+    for range in &plan.repair_ranges {
+        println!(
+            "- {} {} -> {} missing={}",
+            range.source_interval, range.start_time, range.end_time, range.missing_candle_count
+        );
+    }
+    if !plan.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &plan.recommendations {
+            println!("- {}: {}", recommendation.code, recommendation.message);
+        }
+    }
+}
+
+pub fn print_market_data_repair_run(run: &MarketDataRepairRunResult) {
+    println!("Run ID: {}", run.run_id);
+    println!("Status: {}", run.status.as_str());
+    println!(
+        "Quality: {} -> {}",
+        run.before_quality_status.as_str(),
+        run.after_quality_status.as_str()
+    );
+    println!("Gaps: {} -> {}", run.gap_count_before, run.gap_count_after);
+    println!("Ranges repaired: {}", run.attempted_ranges.len());
+    println!(
+        "Candles: inserted={} updated={} skipped={} failed_ranges={}",
+        run.inserted_candles, run.updated_candles, run.skipped_candles, run.failed_ranges
+    );
+    println!(
+        "Provider: {}",
+        run.selected_provider.as_deref().unwrap_or("-")
+    );
+    if let Some(aggregation) = &run.aggregation_result {
+        println!(
+            "Aggregation: source={} aggregated={} inserted={} updated={} skipped_incomplete={}",
+            aggregation.source_candles,
+            aggregation.aggregated_candles,
+            aggregation.inserted,
+            aggregation.updated,
+            aggregation.skipped_incomplete
+        );
+    }
+    if !run.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &run.recommendations {
+            println!("- {}: {}", recommendation.code, recommendation.message);
+        }
+    }
+}
+
+pub fn print_market_data_repair_runs(response: &MarketDataRepairRunsResponse) {
+    for run in &response.runs {
+        println!(
+            "{}  {} {} {} status={} quality={}->{} gaps={}->{} inserted={} updated={} failed_ranges={}",
+            run.run_id,
+            run.plan.symbol,
+            run.plan.interval,
+            run.plan.start_time,
+            run.status.as_str(),
+            run.before_quality_status.as_str(),
+            run.after_quality_status.as_str(),
+            run.gap_count_before,
+            run.gap_count_after,
+            run.inserted_candles,
+            run.updated_candles,
+            run.failed_ranges
+        );
     }
 }
 

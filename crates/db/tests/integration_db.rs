@@ -5,14 +5,15 @@ use aegis_core::{
     ExchangeExecutionStatus, ExchangeName, ExchangeOrderSide, ExchangeOrderState,
     ExchangeOrderStatus, ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeReconciliationAction,
     ExchangeReconciliationMismatchKind, ExchangeReconciliationSummary, ExecutionReadinessStatus,
-    FeeModel, MarketDataQualityRequest, MarketDataQualityStatus, MarketDataSource, OrderIntent,
-    PaperAccount, PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide,
-    PositionStatus, ReplayMode, ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision,
-    ResearchCandidateLifecycleEvent, ResearchCandidateStatus, ResearchDataCoverageResult,
-    ResearchDataReadinessStatus, ResearchDatasetBuildRequest, ResearchDatasetBuildStatus,
-    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
+    FeeModel, MarketDataQualityRequest, MarketDataQualityStatus, MarketDataRepairPlan,
+    MarketDataRepairRunResult, MarketDataRepairStatus, MarketDataSource, OrderIntent, PaperAccount,
+    PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide, PositionStatus, ReplayMode,
+    ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
+    ResearchCandidateStatus, ResearchDataCoverageResult, ResearchDataReadinessStatus,
+    ResearchDatasetBuildRequest, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
+    ResearchDatasetBuildStepStatus, ResearchShadowPnlAttributionRequest, ResearchShadowPnlStatus,
+    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
+    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
     StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
     StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
@@ -31,9 +32,10 @@ use aegis_core::{
 use chrono::{TimeZone, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
-    count_candles_by_interval, count_candles_range, create_paper_order, create_research_candidate,
-    fail_exchange_reconciliation_run, get_aggregated_candle_coverage, get_backtest_equity_curve,
-    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_candles_for_quality_report,
+    complete_market_data_repair_run, count_candles_by_interval, count_candles_range,
+    create_paper_order, create_research_candidate, fail_exchange_reconciliation_run,
+    get_aggregated_candle_coverage, get_backtest_equity_curve, get_backtest_run,
+    get_backtest_trades, get_candle_backfill_run, get_candles_for_quality_report,
     get_closed_1m_candles_range, get_closed_candles_range, get_exchange_private_stream_state,
     get_exchange_reconciliation_run, get_exchange_testnet_order_by_client_order_id,
     get_order_by_idempotency_key, get_research_candidate_shadow_performance,
@@ -45,20 +47,21 @@ use db::{
     insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
-    insert_paper_account, insert_research_candidate_shadow_run_link, insert_research_dataset_build,
-    insert_risk_decision, insert_signal_deduped, insert_strategy_candidate_observation,
-    insert_strategy_experiment, insert_strategy_experiment_runs,
-    insert_strategy_research_candidate, insert_strategy_walk_forward_run,
-    insert_strategy_walk_forward_windows, insert_testnet_shadow_promotion,
-    insert_testnet_shadow_run, list_closed_candle_open_times_in_range,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
-    list_exchange_testnet_order_lifecycle_events, list_orders, list_recent_signals,
-    list_research_candidate_shadow_runs, list_research_dataset_build_steps,
-    list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
-    list_strategy_performance_rankings, list_strategy_research_candidates,
-    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
-    list_testnet_promotion_funnel_rows, list_testnet_shadow_runs,
-    list_testnet_shadow_runs_in_window, mark_strategy_research_candidate_promoted,
+    insert_market_data_repair_run, insert_paper_account, insert_research_candidate_shadow_run_link,
+    insert_research_dataset_build, insert_risk_decision, insert_signal_deduped,
+    insert_strategy_candidate_observation, insert_strategy_experiment,
+    insert_strategy_experiment_runs, insert_strategy_research_candidate,
+    insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
+    insert_testnet_shadow_promotion, insert_testnet_shadow_run,
+    list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
+    list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
+    list_orders, list_recent_signals, list_research_candidate_shadow_runs,
+    list_research_dataset_build_steps, list_strategy_candidate_observations,
+    list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
+    list_strategy_research_candidates, list_strategy_walk_forward_runs,
+    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
+    list_testnet_shadow_runs, list_testnet_shadow_runs_in_window,
+    mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
     replace_research_dataset_build_steps, research_candidate_event_from_record,
     research_candidate_from_record, research_dataset_build_result_from_records,
     resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
@@ -1328,6 +1331,75 @@ async fn candle_backfill_run_persists() {
         .expect("query should work")
         .expect("backfill run should exist");
     assert_eq!(loaded.id, run_id);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn market_data_repair_run_persists() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let run_id = Uuid::new_v4();
+    let start = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let end = start + chrono::Duration::minutes(5);
+    let plan = MarketDataRepairPlan {
+        exchange: MarketDataSource::Binance,
+        symbol: "BTCUSDT".to_string(),
+        interval: "1m".to_string(),
+        start_time: start,
+        end_time: end,
+        status: MarketDataRepairStatus::RepairPlanned,
+        initial_quality_status: MarketDataQualityStatus::Degraded,
+        gap_count: 1,
+        repair_ranges: vec![aegis_core::MarketDataRepairRange {
+            source_interval: "1m".to_string(),
+            start_time: start + chrono::Duration::minutes(2),
+            end_time: start + chrono::Duration::minutes(3),
+            missing_candle_count: 1,
+        }],
+        estimated_source_interval: Some("1m".to_string()),
+        requires_source_interval: false,
+        reaggregate_derived_intervals: false,
+        findings: Vec::new(),
+        recommendations: Vec::new(),
+        correlation_id: Some(Uuid::new_v4()),
+    };
+
+    insert_market_data_repair_run(&test_db.pool, run_id, &plan, fixed_time())
+        .await
+        .expect("repair run should persist");
+
+    let result = MarketDataRepairRunResult {
+        run_id,
+        plan: plan.clone(),
+        status: MarketDataRepairStatus::RepairCompleted,
+        before_quality_status: MarketDataQualityStatus::Degraded,
+        after_quality_status: MarketDataQualityStatus::Good,
+        gap_count_before: 1,
+        gap_count_after: 0,
+        attempted_ranges: plan.repair_ranges.clone(),
+        inserted_candles: 1,
+        updated_candles: 0,
+        skipped_candles: 0,
+        failed_ranges: 0,
+        provider_attempts: Vec::new(),
+        selected_provider: Some("https://api.binance.com".to_string()),
+        aggregation_result: None,
+        recommendations: Vec::new(),
+        correlation_id: plan.correlation_id,
+        created_at: fixed_time(),
+        completed_at: Some(fixed_time()),
+    };
+    let completed = complete_market_data_repair_run(&test_db.pool, run_id, &result)
+        .await
+        .expect("repair run should complete");
+    let loaded = market_data_repair_result_from_record(&completed)
+        .expect("repair result should map from record");
+
+    assert_eq!(loaded.run_id, run_id);
+    assert_eq!(loaded.status, MarketDataRepairStatus::RepairCompleted);
+    assert_eq!(loaded.after_quality_status, MarketDataQualityStatus::Good);
+    assert_eq!(loaded.inserted_candles, 1);
 }
 
 #[tokio::test]

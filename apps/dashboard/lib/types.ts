@@ -882,6 +882,95 @@ export type MarketDataQualityResponse = {
   timestamp: string;
 };
 
+export type MarketDataRepairStatus =
+  | "NO_REPAIR_NEEDED"
+  | "REPAIR_PLANNED"
+  | "REPAIR_COMPLETED"
+  | "PARTIAL_REPAIR"
+  | "REPAIR_FAILED"
+  | "INSUFFICIENT_DATA"
+  | "UNSUPPORTED_INTERVAL";
+
+export type MarketDataRepairRange = {
+  source_interval: string;
+  start_time: string;
+  end_time: string;
+  missing_candle_count: number;
+};
+
+export type MarketDataRepairRecommendation = {
+  code: string;
+  message: string;
+};
+
+export type MarketDataRepairPlanRequest = {
+  exchange?: string;
+  symbol: string;
+  interval: string;
+  start_time: string;
+  end_time: string;
+  repair_mode: "PLAN_ONLY" | "REPAIR";
+  max_ranges?: number;
+  reaggregate_derived_intervals?: boolean;
+  correlation_id?: string | null;
+};
+
+export type MarketDataRepairPlan = {
+  exchange: string;
+  symbol: string;
+  interval: string;
+  start_time: string;
+  end_time: string;
+  status: MarketDataRepairStatus;
+  initial_quality_status: MarketDataQualityStatus;
+  gap_count: number;
+  repair_ranges: MarketDataRepairRange[];
+  estimated_source_interval: string | null;
+  requires_source_interval: boolean;
+  reaggregate_derived_intervals: boolean;
+  recommendations: MarketDataRepairRecommendation[];
+};
+
+export type MarketDataRepairRunResult = {
+  run_id: string;
+  plan: MarketDataRepairPlan;
+  status: MarketDataRepairStatus;
+  before_quality_status: MarketDataQualityStatus;
+  after_quality_status: MarketDataQualityStatus;
+  gap_count_before: number;
+  gap_count_after: number;
+  attempted_ranges: MarketDataRepairRange[];
+  inserted_candles: number;
+  updated_candles: number;
+  skipped_candles: number;
+  failed_ranges: number;
+  selected_provider: string | null;
+  recommendations: MarketDataRepairRecommendation[];
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type MarketDataRepairPlanResponse = {
+  plan: MarketDataRepairPlan;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type MarketDataRepairRunResponse = {
+  run: MarketDataRepairRunResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type MarketDataRepairRunsResponse = {
+  runs: MarketDataRepairRunResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchDataReadinessStatus = "READY" | "DEGRADED" | "INSUFFICIENT";
 
 export type ResearchDataGap = {

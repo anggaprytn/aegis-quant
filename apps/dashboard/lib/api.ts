@@ -21,6 +21,10 @@ import type {
   CandlesResponse,
   MarketDataQualityRequest,
   MarketDataQualityResponse,
+  MarketDataRepairPlanRequest,
+  MarketDataRepairPlanResponse,
+  MarketDataRepairRunResponse,
+  MarketDataRepairRunsResponse,
   EvaluateStrategyResponse,
   ExchangeReconciliationMismatchesResponse,
   ExchangePrivateStreamEventsResponse,
@@ -396,6 +400,18 @@ export const api = {
         : {}),
       ...(query.max_allowed_gap_pct ? { max_allowed_gap_pct: query.max_allowed_gap_pct } : {}),
     }),
+  planMarketDataRepair: (payload: MarketDataRepairPlanRequest) =>
+    request<MarketDataRepairPlanResponse>("/market/candles/repair/plan", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  runMarketDataRepair: (payload: MarketDataRepairPlanRequest) =>
+    request<MarketDataRepairRunResponse>("/market/candles/repair/run", {
+      method: "POST",
+      body: JSON.stringify({ plan: payload }),
+    }),
+  getMarketDataRepairRuns: (limit = 20) =>
+    request<MarketDataRepairRunsResponse>("/market/candles/repair/runs", undefined, { limit }),
   getResearchDataCoverage: (query: {
     exchange?: string;
     symbol: string;

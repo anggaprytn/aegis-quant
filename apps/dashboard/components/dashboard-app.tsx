@@ -21,6 +21,8 @@ import type {
   CandleCoverageSummary,
   MarketDataQualityReport,
   MarketDataQualityRequest,
+  MarketDataRepairPlan,
+  MarketDataRepairRunResult,
   ExecutionReadinessRequest,
   ExecutionReadinessResult,
   ExecutionReadinessSnapshot,
@@ -772,6 +774,10 @@ function AuthenticatedDashboard({
     useState<CandleAggregationResult | null>(null);
   const [lastMarketDataQualityReport, setLastMarketDataQualityReport] =
     useState<MarketDataQualityReport | null>(null);
+  const [lastMarketDataRepairPlan, setLastMarketDataRepairPlan] =
+    useState<MarketDataRepairPlan | null>(null);
+  const [lastMarketDataRepairRun, setLastMarketDataRepairRun] =
+    useState<MarketDataRepairRunResult | null>(null);
   const [researchDataForm, setResearchDataForm] =
     useState<ResearchDatasetBuildRequest>(DEFAULT_RESEARCH_DATA_FORM);
   const [selectedResearchBuildId, setSelectedResearchBuildId] = useState<string | null>(null);
@@ -1167,6 +1173,12 @@ function AuthenticatedDashboard({
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
     queryFn: () => api.getMarketBackfillRuns(20),
+    refetchInterval: 15_000,
+  });
+  const repairRunsQuery = useQuery({
+    queryKey: ["market-data-repair-runs"],
+    queryFn: () => api.getMarketDataRepairRuns(10),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
   });
   const selectedBackfillRunQuery = useQuery({
@@ -2032,6 +2044,34 @@ function AuthenticatedDashboard({
     mutationFn: () => api.getMarketCandleQuality(marketDataQualityForm),
     onSuccess: (response) => {
       setLastMarketDataQualityReport(response.report);
+    },
+  });
+  const marketDataRepairPlanMutation = useMutation({
+    mutationFn: () =>
+      api.planMarketDataRepair({
+        ...marketDataQualityForm,
+        repair_mode: "PLAN_ONLY",
+        max_ranges: 100,
+        reaggregate_derived_intervals: true,
+      }),
+    onSuccess: (response) => {
+      setLastMarketDataRepairPlan(response.plan);
+    },
+  });
+  const marketDataRepairRunMutation = useMutation({
+    mutationFn: () =>
+      api.runMarketDataRepair({
+        ...marketDataQualityForm,
+        repair_mode: "REPAIR",
+        max_ranges: 100,
+        reaggregate_derived_intervals: true,
+      }),
+    onSuccess: async (response) => {
+      setLastMarketDataRepairRun(response.run);
+      setLastMarketDataRepairPlan(response.run.plan);
+      await queryClient.invalidateQueries({ queryKey: ["market-data-repair-runs"] });
+      await queryClient.invalidateQueries({ queryKey: ["candles"] });
+      await queryClient.invalidateQueries({ queryKey: ["candle-coverage"] });
     },
   });
   const researchCoverageMutation = useMutation({
@@ -2989,9 +3029,35 @@ function AuthenticatedDashboard({
                     onClick={() => marketDataQualityMutation.mutate()}
                     busy={marketDataQualityMutation.isPending}
                   />
-                  <InlineStatus error={getErrorMessage(marketDataQualityMutation.error)} />
+                  <ActionButton
+                    label="Plan Repair"
+                    onClick={() => marketDataRepairPlanMutation.mutate()}
+                    busy={marketDataRepairPlanMutation.isPending}
+                  />
+                  <ActionButton
+                    label="Run Repair"
+                    onClick={() => marketDataRepairRunMutation.mutate()}
+                    busy={marketDataRepairRunMutation.isPending}
+                  />
+                  <InlineStatus
+                    error={
+                      getErrorMessage(marketDataQualityMutation.error) ||
+                      getErrorMessage(marketDataRepairPlanMutation.error) ||
+                      getErrorMessage(marketDataRepairRunMutation.error)
+                    }
+                    success={
+                      lastMarketDataRepairRun
+                        ? `${lastMarketDataRepairRun.status} gaps ${lastMarketDataRepairRun.gap_count_before}->${lastMarketDataRepairRun.gap_count_after}`
+                        : undefined
+                    }
+                  />
                 </div>
                 <MarketDataQualityPanel report={lastMarketDataQualityReport} />
+                <MarketDataRepairPanel
+                  plan={lastMarketDataRepairPlan}
+                  run={lastMarketDataRepairRun}
+                  recentRuns={repairRunsQuery.data?.runs ?? []}
+                />
               </Panel>
               <Panel className="xl:col-span-7" title="Research Data">
                 <div className="grid gap-3 md:grid-cols-2">
@@ -7662,6 +7728,85 @@ function MarketDataQualityPanel({ report }: { report: MarketDataQualityReport | 
             <EmptyState label="No recommendations." />
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function MarketDataRepairPanel({
+  plan,
+  run,
+  recentRuns,
+}: {
+  plan: MarketDataRepairPlan | null;
+  run: MarketDataRepairRunResult | null;
+  recentRuns: MarketDataRepairRunResult[];
+}) {
+  return (
+    <div className="mt-4 space-y-4">
+      <div>
+        <h4 className="mb-2 text-sm font-semibold text-foreground">Repair Plan</h4>
+        {plan ? (
+          <div className="space-y-3">
+            <KeyValue
+              items={[
+                ["Status", plan.status],
+                ["Before Quality", plan.initial_quality_status],
+                ["Gaps", formatNumber(plan.gap_count)],
+                ["Ranges", formatNumber(plan.repair_ranges.length)],
+                ["Source", plan.estimated_source_interval ?? "-"],
+                ["Reaggregate", plan.reaggregate_derived_intervals ? "yes" : "no"],
+              ]}
+            />
+            <Table
+              headers={["Source", "Start", "End", "Missing"]}
+              rows={plan.repair_ranges.map((range) => [
+                range.source_interval,
+                formatDateTime(range.start_time),
+                formatDateTime(range.end_time),
+                formatNumber(range.missing_candle_count),
+              ])}
+            />
+          </div>
+        ) : (
+          <EmptyState label="No repair plan yet." />
+        )}
+      </div>
+      {run ? (
+        <div>
+          <h4 className="mb-2 text-sm font-semibold text-foreground">Repair Result</h4>
+          <KeyValue
+            items={[
+              ["Status", run.status],
+              ["Quality", `${run.before_quality_status} -> ${run.after_quality_status}`],
+              ["Gaps", `${run.gap_count_before} -> ${run.gap_count_after}`],
+              ["Inserted", formatNumber(run.inserted_candles)],
+              ["Updated", formatNumber(run.updated_candles)],
+              ["Skipped", formatNumber(run.skipped_candles)],
+              ["Failed Ranges", formatNumber(run.failed_ranges)],
+              ["Provider", run.selected_provider ?? "-"],
+            ]}
+          />
+        </div>
+      ) : null}
+      <div>
+        <h4 className="mb-2 text-sm font-semibold text-foreground">Recent Repair Runs</h4>
+        {recentRuns.length ? (
+          <Table
+            headers={["Created", "Symbol", "Interval", "Status", "Quality", "Gaps", "Candles"]}
+            rows={recentRuns.map((item) => [
+              formatDateTime(item.created_at),
+              item.plan.symbol,
+              item.plan.interval,
+              item.status,
+              `${item.before_quality_status}->${item.after_quality_status}`,
+              `${item.gap_count_before}->${item.gap_count_after}`,
+              `${item.inserted_candles}/${item.updated_candles}/${item.skipped_candles}`,
+            ])}
+          />
+        ) : (
+          <EmptyState label="No repair runs yet." />
+        )}
       </div>
     </div>
   );
