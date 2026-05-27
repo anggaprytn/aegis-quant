@@ -161,6 +161,9 @@ struct ResearchExperimentPlanReportSnapshot {
     invalid_count: i64,
     stale_draft_count: i64,
     run_count: i64,
+    completed_run_count: i64,
+    failed_run_count: i64,
+    artifacts_created_count: i64,
     accepted_without_plan_count: i64,
 }
 
@@ -1816,12 +1819,25 @@ async fn load_research_experiment_plan_snapshot(
             COUNT(*) FILTER (WHERE p.validation_status IN ('READY', 'RUNNABLE') AND p.created_at >= $1 AND p.created_at <= $2) AS ready_count,
             COUNT(*) FILTER (WHERE p.validation_status = 'INVALID' AND p.created_at >= $1 AND p.created_at <= $2) AS invalid_count,
             COUNT(*) FILTER (WHERE p.status = 'DRAFT' AND p.created_at < $1) AS stale_draft_count,
-            0::BIGINT AS run_count,
+            COALESCE(r.run_count, 0)::BIGINT AS run_count,
+            COALESCE(r.completed_run_count, 0)::BIGINT AS completed_run_count,
+            COALESCE(r.failed_run_count, 0)::BIGINT AS failed_run_count,
+            COALESCE(r.artifacts_created_count, 0)::BIGINT AS artifacts_created_count,
             COUNT(DISTINCT h.id) FILTER (WHERE p.id IS NULL) AS accepted_without_plan_count
         FROM research_hypotheses h
         LEFT JOIN research_experiment_plans p ON p.hypothesis_id = h.id
+        CROSS JOIN (
+            SELECT
+                COUNT(*) FILTER (WHERE mode = 'RUN') AS run_count,
+                COUNT(*) FILTER (WHERE status = 'COMPLETED') AS completed_run_count,
+                COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_run_count,
+                COUNT(*) FILTER (WHERE artifact_id IS NOT NULL) AS artifacts_created_count
+            FROM research_experiment_plan_runs
+            WHERE created_at >= $1 AND created_at <= $2
+        ) r
         WHERE h.status = 'ACCEPTED_FOR_EXPERIMENT'
            OR (p.created_at >= $1 AND p.created_at <= $2)
+        GROUP BY r.run_count, r.completed_run_count, r.failed_run_count, r.artifacts_created_count
         "#,
     )
     .bind(window.start)
@@ -1834,6 +1850,9 @@ async fn load_research_experiment_plan_snapshot(
         invalid_count: row.get("invalid_count"),
         stale_draft_count: row.get("stale_draft_count"),
         run_count: row.get("run_count"),
+        completed_run_count: row.get("completed_run_count"),
+        failed_run_count: row.get("failed_run_count"),
+        artifacts_created_count: row.get("artifacts_created_count"),
         accepted_without_plan_count: row.get("accepted_without_plan_count"),
     })
 }
@@ -2444,6 +2463,42 @@ fn build_findings(
             &format!(
                 "{} research experiment plans are invalid and need operator review.",
                 research_experiment_plans.invalid_count
+            ),
+            "research_experiment_plans",
+        ));
+    }
+    if research_experiment_plans.completed_run_count > 0 {
+        findings.push(finding(
+            "research_plan_run_completed",
+            OperatorReportSeverity::Low,
+            "Research plan run completed",
+            &format!(
+                "{} research experiment plan runs completed.",
+                research_experiment_plans.completed_run_count
+            ),
+            "research_experiment_plans",
+        ));
+    }
+    if research_experiment_plans.failed_run_count > 0 {
+        findings.push(finding(
+            "research_plan_run_failed",
+            OperatorReportSeverity::Medium,
+            "Research plan run failed",
+            &format!(
+                "{} research experiment plan runs failed.",
+                research_experiment_plans.failed_run_count
+            ),
+            "research_experiment_plans",
+        ));
+    }
+    if research_experiment_plans.artifacts_created_count > 0 {
+        findings.push(finding(
+            "research_plan_artifacts_created",
+            OperatorReportSeverity::Low,
+            "Research plan created new research artifacts",
+            &format!(
+                "{} research artifacts were created by experiment plan runs.",
+                research_experiment_plans.artifacts_created_count
             ),
             "research_experiment_plans",
         ));
@@ -3259,6 +3314,9 @@ fn build_sections(
                 highlight("Invalid", research_experiment_plans.invalid_count.to_string()),
                 highlight("Stale Drafts", research_experiment_plans.stale_draft_count.to_string()),
                 highlight("Plans Run", research_experiment_plans.run_count.to_string()),
+                highlight("Completed Runs", research_experiment_plans.completed_run_count.to_string()),
+                highlight("Failed Runs", research_experiment_plans.failed_run_count.to_string()),
+                highlight("Artifacts Created", research_experiment_plans.artifacts_created_count.to_string()),
                 highlight(
                     "Accepted Without Plan",
                     research_experiment_plans.accepted_without_plan_count.to_string(),

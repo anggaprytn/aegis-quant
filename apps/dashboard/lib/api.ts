@@ -83,6 +83,7 @@ import type {
   ResearchHypothesesResponse,
   ResearchHypothesisResponse,
   ResearchExperimentPlanResponse,
+  ResearchExperimentPlanRunResponse,
   ResearchExperimentPlansResponse,
   ResearchRegimeStrategyLeaderboardResponse,
   ResearchCampaignSummaryResponse,
@@ -572,6 +573,16 @@ export const api = {
     request<ResearchExperimentPlanResponse>(`/research/experiment-plans/${id}/validate`, {
       method: "POST",
       body: JSON.stringify({}),
+    }),
+  previewResearchExperimentPlanRun: (id: string) =>
+    request<ResearchExperimentPlanRunResponse>(`/research/experiment-plans/${id}/run-preview`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  runResearchExperimentPlan: (id: string, confirmation: string) =>
+    request<ResearchExperimentPlanRunResponse>(`/research/experiment-plans/${id}/run`, {
+      method: "POST",
+      body: JSON.stringify({ mode: "RUN", confirmation }),
     }),
   archiveResearchExperimentPlan: (id: string, reason?: string) =>
     request<ResearchExperimentPlanResponse>(`/research/experiment-plans/${id}/archive`, {

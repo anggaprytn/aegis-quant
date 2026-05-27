@@ -1269,6 +1269,7 @@ export type ResearchCampaignRequest = {
   target_regimes?: ResearchRegimeLabel[] | null;
   max_windows_per_regime?: number | null;
   max_candidates_per_batch?: number;
+  create_candidates?: boolean;
   repair_degraded_data?: boolean;
   walk_forward_top_n?: number;
   base_interval?: string;
@@ -1630,6 +1631,39 @@ export type ResearchExperimentPlan = {
   correlation_id: string | null;
 };
 
+export type ResearchExperimentPlanRunStatus =
+  | "READY"
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED"
+  | "BLOCKED"
+  | "INVALID_PLAN";
+
+export type ResearchExperimentPlanRunMode = "PREVIEW" | "RUN";
+
+export type ResearchExperimentPlanRunArtifact = {
+  strategy_experiment_id: string | null;
+  research_batch_id: string | null;
+  research_campaign_id: string | null;
+  robustness_matrix_run_id: string | null;
+  walk_forward_run_id: string | null;
+};
+
+export type ResearchExperimentPlanRunResult = {
+  plan_id: string;
+  hypothesis_id: string;
+  plan_type: ResearchExperimentPlanType;
+  status: ResearchExperimentPlanRunStatus;
+  mode: ResearchExperimentPlanRunMode;
+  validation_status: ResearchExperimentPlanStatus;
+  created_artifacts: ResearchExperimentPlanRunArtifact[];
+  artifact_ids: string[];
+  warnings: string[];
+  blockers: string[];
+  recommendation: string;
+  correlation_id: string | null;
+};
+
 export type ResearchExperimentPlansResponse = {
   plans: ResearchExperimentPlan[];
   request_id: string;
@@ -1639,6 +1673,13 @@ export type ResearchExperimentPlansResponse = {
 
 export type ResearchExperimentPlanResponse = {
   plan: ResearchExperimentPlan;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchExperimentPlanRunResponse = {
+  result: ResearchExperimentPlanRunResult;
   request_id: string;
   correlation_id: string;
   timestamp: string;

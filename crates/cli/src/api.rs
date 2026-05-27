@@ -22,20 +22,20 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchExperimentPlan, ResearchHypothesis, ResearchHypothesisGenerationRequest,
-    ResearchHypothesisGenerationResult, ResearchHypothesisStatus,
-    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
-    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
-    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
-    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeStrategyLeaderboard,
-    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExitAttributionResult, StrategyExperimentRequest, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    ResearchExperimentPlan, ResearchExperimentPlanRunRequest, ResearchExperimentPlanRunResult,
+    ResearchHypothesis, ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
+    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
+    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
+    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyExitAttributionResult, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
     StrategyMultiTimeframeExperimentResult, StrategyOpportunityAnalysisResult,
     StrategyPerformanceSummary, StrategyRobustnessMatrixCell, StrategyRobustnessMatrixRequest,
     StrategyRobustnessMatrixResult, StrategySignalFeatureAttributionResult,
@@ -903,6 +903,29 @@ impl ApiClient {
         self.post(
             &format!("/research/experiment-plans/{plan_id}/validate"),
             &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn preview_research_experiment_plan_run(
+        &self,
+        plan_id: Uuid,
+    ) -> Result<ResearchExperimentPlanRunResponse, ApiClientError> {
+        self.post(
+            &format!("/research/experiment-plans/{plan_id}/run-preview"),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn run_research_experiment_plan(
+        &self,
+        plan_id: Uuid,
+        request: &ResearchExperimentPlanRunRequest,
+    ) -> Result<ResearchExperimentPlanRunResponse, ApiClientError> {
+        self.post(
+            &format!("/research/experiment-plans/{plan_id}/run"),
+            request,
         )
         .await
     }
@@ -2834,6 +2857,14 @@ pub struct ResearchExperimentPlanResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ResearchExperimentPlanRunResponse {
+    pub result: ResearchExperimentPlanRunResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchRegimeDatasetResponse {
     pub dataset: ResearchRegimeDatasetResult,
@@ -4279,6 +4310,7 @@ pub fn build_research_campaign_request(
         target_regimes,
         max_windows_per_regime: args.max_windows_per_regime,
         max_candidates_per_batch: args.max_candidates_per_batch,
+        create_candidates: true,
         repair_degraded_data: !args.no_repair_degraded_data,
         walk_forward_top_n: args.walk_forward_top_n,
         base_interval: args.base_interval.clone(),

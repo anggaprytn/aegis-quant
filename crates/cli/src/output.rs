@@ -10,12 +10,13 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchExperimentPlan, ResearchHypothesis,
-    ResearchHypothesisGenerationResult, ResearchRegimeCalibrationCandidateResult,
-    ResearchRegimeCalibrationResult, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult,
-    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
-    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, User,
+    ResearchCandidateWatchlistEntry, ResearchExperimentPlan, ResearchExperimentPlanRunResult,
+    ResearchHypothesis, ResearchHypothesisGenerationResult,
+    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationResult,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
+    ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
+    StrategyRobustnessMatrixResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -848,6 +849,45 @@ pub fn print_research_experiment_plan(plan: &ResearchExperimentPlan) {
         "  proposed request: {}",
         serde_json::to_string(&plan.proposed_request).unwrap_or_else(|_| "{}".to_string())
     );
+}
+
+pub fn print_research_experiment_plan_run(result: &ResearchExperimentPlanRunResult) {
+    println!(
+        "Experiment plan run plan={} status={} mode={} type={} validation={}",
+        result.plan_id,
+        result.status.as_str(),
+        result.mode.as_str(),
+        result.plan_type.as_str(),
+        result.validation_status.as_str()
+    );
+    println!("  hypothesis: {}", result.hypothesis_id);
+    println!("  recommendation: {}", result.recommendation);
+    if result.artifact_ids.is_empty() {
+        println!("  artifacts created: none");
+    } else {
+        println!(
+            "  artifacts created: {}",
+            result
+                .artifact_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    for artifact in &result.created_artifacts {
+        if let (Some(kind), Some(id)) = (artifact.artifact_type(), artifact.artifact_id()) {
+            println!("  {}: {}", kind, id);
+        } else if let Some(kind) = artifact.artifact_type() {
+            println!("  would create: {}", kind);
+        }
+    }
+    if !result.warnings.is_empty() {
+        println!("  warnings: {}", result.warnings.join("; "));
+    }
+    if !result.blockers.is_empty() {
+        println!("  blockers: {}", result.blockers.join("; "));
+    }
 }
 
 pub fn print_status(

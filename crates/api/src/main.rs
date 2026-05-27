@@ -64,21 +64,24 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchExperimentPlan, ResearchHypothesis,
-    ResearchHypothesisGenerationEvidence, ResearchHypothesisGenerationRequest,
-    ResearchHypothesisGenerationResult, ResearchHypothesisStatus,
-    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
-    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
-    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
-    ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
-    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
-    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchDatasetBuildResult, ResearchExperimentPlan, ResearchExperimentPlanRunArtifact,
+    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunRequest,
+    ResearchExperimentPlanRunResult, ResearchExperimentPlanRunStatus, ResearchExperimentPlanStatus,
+    ResearchExperimentPlanType, ResearchHypothesis, ResearchHypothesisGenerationEvidence,
+    ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
+    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
+    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult,
+    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
+    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExitAttributionRequest,
     StrategyExitAttributionResult, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
@@ -129,7 +132,8 @@ use axum::{
 use chrono::{DateTime, TimeZone, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
-    apply_research_candidate_review, archive_research_experiment_plan, backtest_result_from_record,
+    append_research_experiment_plan_run_event, apply_research_candidate_review,
+    archive_research_experiment_plan, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, complete_market_data_repair_run,
     complete_research_batch_step, connect_pool, count_users, create_paper_order,
     create_research_candidate, decide_research_hypothesis, ensure_system_state,
@@ -159,8 +163,8 @@ use db::{
     insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
     insert_research_batch, insert_research_batch_step, insert_research_campaign,
     insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
-    insert_research_experiment_plan, insert_research_hypothesis,
-    insert_research_regime_calibration, insert_research_regime_dataset,
+    insert_research_experiment_plan, insert_research_experiment_plan_run,
+    insert_research_hypothesis, insert_research_regime_calibration, insert_research_regime_dataset,
     insert_research_regime_discovery, insert_risk_config_audit, insert_risk_evaluation,
     insert_session, insert_signal_deduped, insert_strategy_config_audit,
     insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
@@ -188,13 +192,14 @@ use db::{
     list_strategy_robustness_matrix_runs, list_strategy_status, list_strategy_walk_forward_runs,
     list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
     list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
-    mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
-    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
-    persist_risk_config_version, persist_strategy_config_version,
-    research_batch_result_from_records, research_batch_step_from_record,
-    research_campaign_batch_result_from_record, research_campaign_result_from_records,
-    research_candidate_event_from_record, research_candidate_from_record,
-    research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
+    mark_research_experiment_plan_completed, mark_strategy_research_candidate_promoted,
+    market_data_repair_result_from_record, paper_account_from_record,
+    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
+    persist_strategy_config_version, research_batch_result_from_records,
+    research_batch_step_from_record, research_campaign_batch_result_from_record,
+    research_campaign_result_from_records, research_candidate_event_from_record,
+    research_candidate_from_record, research_candidate_qualification_evaluation_from_record,
+    research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row,
     research_regime_calibration_candidate_from_record,
     research_regime_calibration_result_from_records, research_regime_dataset_result_from_records,
@@ -1703,6 +1708,14 @@ struct ResearchExperimentPlanResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Serialize)]
+struct ResearchExperimentPlanRunResponse {
+    result: ResearchExperimentPlanRunResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ResearchHypothesesListQuery {
     limit: Option<i64>,
@@ -3093,6 +3106,14 @@ async fn main() {
         .route(
             "/research/experiment-plans/:id/validate",
             post(validate_research_experiment_plan_handler),
+        )
+        .route(
+            "/research/experiment-plans/:id/run-preview",
+            post(run_preview_research_experiment_plan_handler),
+        )
+        .route(
+            "/research/experiment-plans/:id/run",
+            post(run_research_experiment_plan_handler),
         )
         .route(
             "/research/experiment-plans/:id/archive",
@@ -18753,6 +18774,904 @@ async fn archive_research_experiment_plan_handler(
             err.to_string(),
         ),
     }
+}
+
+async fn run_preview_research_experiment_plan_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    run_research_experiment_plan_action(
+        state,
+        id,
+        ResearchExperimentPlanRunRequest {
+            mode: ResearchExperimentPlanRunMode::Preview,
+            confirmation: None,
+        },
+        request,
+        actor,
+    )
+    .await
+}
+
+async fn run_research_experiment_plan_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    payload: Option<Json<ResearchExperimentPlanRunRequest>>,
+) -> impl IntoResponse {
+    let payload =
+        payload
+            .map(|Json(payload)| payload)
+            .unwrap_or(ResearchExperimentPlanRunRequest {
+                mode: ResearchExperimentPlanRunMode::Run,
+                confirmation: None,
+            });
+    run_research_experiment_plan_action(
+        state,
+        id,
+        ResearchExperimentPlanRunRequest {
+            mode: ResearchExperimentPlanRunMode::Run,
+            confirmation: payload.confirmation,
+        },
+        request,
+        actor,
+    )
+    .await
+}
+
+async fn run_research_experiment_plan_action(
+    state: AppState,
+    plan_id: Uuid,
+    payload: ResearchExperimentPlanRunRequest,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> Response {
+    let request = request_context(request);
+    let Some(actor) = actor else {
+        return unauthorized_response(request, "unauthorized", "Authentication is required.");
+    };
+    if !matches!(actor.role, UserRole::Owner | UserRole::Operator) {
+        return research_forbidden_response(
+            &request,
+            "Only OPERATOR or OWNER can run research experiment plans.",
+        );
+    }
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let request_value = serde_json::to_value(&payload).unwrap_or_else(|_| json!({}));
+    let plan = match get_research_experiment_plan(&state.db_pool, plan_id).await {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return research_experiment_plan_not_found_response(&request),
+        Err(err) => {
+            return research_internal_error_response(
+                "failed_to_get_research_experiment_plan",
+                &request,
+                err.to_string(),
+            );
+        }
+    };
+    let hypothesis = match get_research_hypothesis(&state.db_pool, plan.hypothesis_id).await {
+        Ok(Some(hypothesis)) => hypothesis,
+        Ok(None) => {
+            return research_internal_error_response(
+                "failed_to_get_research_hypothesis",
+                &request,
+                "Source research hypothesis was not found.".to_string(),
+            );
+        }
+        Err(err) => {
+            return research_internal_error_response(
+                "failed_to_get_research_hypothesis",
+                &request,
+                err.to_string(),
+            );
+        }
+    };
+
+    let mut result = build_research_experiment_plan_run_result(
+        &state,
+        &plan,
+        &hypothesis,
+        payload.mode,
+        Some(correlation_id),
+    )
+    .await;
+    if payload.mode == ResearchExperimentPlanRunMode::Run {
+        let expected = format!("RUN RESEARCH PLAN {plan_id}");
+        if payload.confirmation.as_deref() != Some(expected.as_str()) {
+            result.status = ResearchExperimentPlanRunStatus::Blocked;
+            result
+                .blockers
+                .push(format!("confirmation must equal '{expected}'"));
+        }
+    }
+
+    if payload.mode == ResearchExperimentPlanRunMode::Preview || !result.blockers.is_empty() {
+        let status = if result.blockers.is_empty() {
+            StatusCode::OK
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        let _ = insert_research_experiment_plan_run(
+            &state.db_pool,
+            &plan,
+            payload.mode,
+            &result,
+            &request_value,
+            result.blockers.first().map(String::as_str),
+        )
+        .await;
+        return (
+            status,
+            Json(ResearchExperimentPlanRunResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let _ = append_research_experiment_plan_run_event(
+        &state.db_pool,
+        &plan,
+        "RUN_STARTED",
+        None,
+        Some(actor.user_id),
+        &json!({ "mode": payload.mode.as_str(), "research_only": true }),
+        Some(correlation_id),
+    )
+    .await;
+    let state_actor = state_actor_from_authenticated(&actor);
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &state_actor,
+        "research.experiment_plan.run",
+        "research/experiment-plans/run",
+        &json!({ "plan_id": plan_id, "actor_id": actor.user_id, "research_only": true }),
+    )
+    .await;
+
+    result.status = ResearchExperimentPlanRunStatus::Running;
+    let execution =
+        execute_research_experiment_plan_run(&state, &plan, correlation_id, actor.user_id).await;
+    match execution {
+        Ok(artifact) => {
+            result.status = ResearchExperimentPlanRunStatus::Completed;
+            result.artifact_ids = artifact.artifact_id().into_iter().collect();
+            result.created_artifacts = vec![artifact];
+            result.recommendation =
+                "Review the created research artifact before any candidate or execution workflow."
+                    .to_string();
+            let _ = append_research_experiment_plan_run_event(
+                &state.db_pool,
+                &plan,
+                "RUN_COMPLETED",
+                None,
+                Some(actor.user_id),
+                &serde_json::to_value(&result).unwrap_or_else(|_| json!({})),
+                Some(correlation_id),
+            )
+            .await;
+            let _ = mark_research_experiment_plan_completed(
+                &state.db_pool,
+                &plan,
+                Some(actor.user_id),
+                Some(correlation_id),
+            )
+            .await;
+            let _ = insert_research_experiment_plan_run(
+                &state.db_pool,
+                &plan,
+                payload.mode,
+                &result,
+                &request_value,
+                None,
+            )
+            .await;
+            (
+                StatusCode::OK,
+                Json(ResearchExperimentPlanRunResponse {
+                    result,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            result.status = ResearchExperimentPlanRunStatus::Failed;
+            result.blockers.push(err.to_string());
+            let _ = append_research_experiment_plan_run_event(
+                &state.db_pool,
+                &plan,
+                "RUN_FAILED",
+                Some(&err.to_string()),
+                Some(actor.user_id),
+                &serde_json::to_value(&result).unwrap_or_else(|_| json!({})),
+                Some(correlation_id),
+            )
+            .await;
+            let _ = insert_research_experiment_plan_run(
+                &state.db_pool,
+                &plan,
+                payload.mode,
+                &result,
+                &request_value,
+                Some(&err.to_string()),
+            )
+            .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ResearchExperimentPlanRunResponse {
+                    result,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn build_research_experiment_plan_run_result(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+    hypothesis: &ResearchHypothesis,
+    mode: ResearchExperimentPlanRunMode,
+    correlation_id: Option<Uuid>,
+) -> ResearchExperimentPlanRunResult {
+    let plan_id = plan.id.expect("loaded research experiment plan has id");
+    let mut blockers = Vec::new();
+    if plan.status == ResearchExperimentPlanStatus::Archived {
+        blockers.push("plan archived".to_string());
+    }
+    if matches!(
+        plan.validation_status,
+        ResearchExperimentPlanStatus::Invalid
+    ) {
+        blockers.push("plan invalid".to_string());
+    }
+    if !matches!(
+        plan.validation_status,
+        ResearchExperimentPlanStatus::Ready | ResearchExperimentPlanStatus::Runnable
+    ) {
+        blockers.push("plan validation is not READY/RUNNABLE".to_string());
+    }
+    if matches!(
+        hypothesis.status,
+        ResearchHypothesisStatus::Rejected | ResearchHypothesisStatus::Archived
+    ) {
+        blockers.push("source hypothesis rejected/archived".to_string());
+    }
+    if plan.strategy_id.trim().is_empty() {
+        blockers.push("plan missing strategy".to_string());
+    }
+    if plan
+        .symbol
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        blockers.push("plan missing symbol".to_string());
+    }
+    if plan
+        .timeframe
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        blockers.push("plan missing timeframe".to_string());
+    }
+    if !plan.validation_issues.is_empty() {
+        blockers.extend(
+            plan.validation_issues
+                .iter()
+                .map(|issue| format!("validation issue unresolved: {issue}")),
+        );
+    }
+    if research_plan_window_bounds(state, plan).await.is_none() {
+        blockers.push("plan missing research window".to_string());
+    }
+    let mut warnings = vec![
+        "Research-only. This does not create paper, testnet, or live orders.".to_string(),
+        "No candidate promotion is performed by this runner.".to_string(),
+    ];
+    if matches!(
+        plan.plan_type,
+        ResearchExperimentPlanType::ResearchBatch | ResearchExperimentPlanType::ResearchCampaign
+    ) {
+        warnings.push(
+            "Plan runner disables research candidate creation for batch-derived requests."
+                .to_string(),
+        );
+    }
+    let artifact = preview_artifact_for_plan(plan.plan_type);
+    let status = if blockers.is_empty() {
+        ResearchExperimentPlanRunStatus::Ready
+    } else if plan.validation_status == ResearchExperimentPlanStatus::Invalid {
+        ResearchExperimentPlanRunStatus::InvalidPlan
+    } else {
+        ResearchExperimentPlanRunStatus::Blocked
+    };
+    ResearchExperimentPlanRunResult {
+        plan_id,
+        hypothesis_id: plan.hypothesis_id,
+        plan_type: plan.plan_type,
+        status,
+        mode,
+        validation_status: plan.validation_status,
+        created_artifacts: if blockers.is_empty() {
+            vec![artifact]
+        } else {
+            Vec::new()
+        },
+        artifact_ids: Vec::new(),
+        warnings,
+        blockers,
+        recommendation: if mode == ResearchExperimentPlanRunMode::Preview {
+            "Preview only. Use the run endpoint with exact confirmation to create research artifacts.".to_string()
+        } else {
+            "Run only after reviewing blockers and the proposed research artifact.".to_string()
+        },
+        correlation_id,
+    }
+}
+
+fn preview_artifact_for_plan(
+    plan_type: ResearchExperimentPlanType,
+) -> ResearchExperimentPlanRunArtifact {
+    match plan_type {
+        ResearchExperimentPlanType::StrategyExperiment => ResearchExperimentPlanRunArtifact {
+            strategy_experiment_id: None,
+            ..Default::default()
+        },
+        ResearchExperimentPlanType::ResearchBatch => ResearchExperimentPlanRunArtifact {
+            research_batch_id: None,
+            ..Default::default()
+        },
+        ResearchExperimentPlanType::ResearchCampaign => ResearchExperimentPlanRunArtifact {
+            research_campaign_id: None,
+            ..Default::default()
+        },
+        ResearchExperimentPlanType::RobustnessMatrix => ResearchExperimentPlanRunArtifact {
+            robustness_matrix_run_id: None,
+            ..Default::default()
+        },
+        ResearchExperimentPlanType::WalkForward => ResearchExperimentPlanRunArtifact {
+            walk_forward_run_id: None,
+            ..Default::default()
+        },
+    }
+}
+
+async fn execute_research_experiment_plan_run(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+    correlation_id: Uuid,
+    actor_id: Uuid,
+) -> anyhow::Result<ResearchExperimentPlanRunArtifact> {
+    match plan.plan_type {
+        ResearchExperimentPlanType::RobustnessMatrix => {
+            let request = robustness_matrix_request_from_plan(state, plan, correlation_id).await?;
+            for strategy in &request.strategy_ids {
+                ensure_strategy_config(state, parse_strategy_id(strategy)?).await?;
+            }
+            let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+            let execution = engine.run_strategy_robustness_matrix(request).await?;
+            Ok(ResearchExperimentPlanRunArtifact {
+                robustness_matrix_run_id: Some(execution.result.run_id),
+                ..Default::default()
+            })
+        }
+        ResearchExperimentPlanType::ResearchBatch => {
+            let mut request = research_batch_request_from_plan(state, plan, correlation_id).await?;
+            request.create_candidates = false;
+            let result =
+                execute_research_batch(state, request, Some(actor_id), correlation_id).await?;
+            Ok(ResearchExperimentPlanRunArtifact {
+                research_batch_id: Some(result.batch_id),
+                ..Default::default()
+            })
+        }
+        ResearchExperimentPlanType::ResearchCampaign => {
+            let mut request =
+                research_campaign_request_from_plan(state, plan, correlation_id).await?;
+            request.max_candidates_per_batch = 1;
+            request.create_candidates = false;
+            let result =
+                execute_research_campaign(state, request, Some(actor_id), correlation_id).await?;
+            Ok(ResearchExperimentPlanRunArtifact {
+                research_campaign_id: Some(result.campaign_id),
+                ..Default::default()
+            })
+        }
+        ResearchExperimentPlanType::StrategyExperiment => {
+            let request =
+                strategy_experiment_request_from_plan(state, plan, correlation_id).await?;
+            ensure_strategy_config(state, parse_strategy_id(&request.strategy_id)?).await?;
+            let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+            let execution = engine.run_strategy_experiment(request).await?;
+            Ok(ResearchExperimentPlanRunArtifact {
+                strategy_experiment_id: Some(execution.result.experiment_id),
+                ..Default::default()
+            })
+        }
+        ResearchExperimentPlanType::WalkForward => {
+            let request =
+                strategy_walk_forward_request_from_plan(state, plan, correlation_id).await?;
+            ensure_strategy_config(state, parse_strategy_id(&request.strategy_id)?).await?;
+            let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+            let execution = engine.run_strategy_walk_forward(request).await?;
+            Ok(ResearchExperimentPlanRunArtifact {
+                walk_forward_run_id: Some(execution.result.walk_forward_id),
+                ..Default::default()
+            })
+        }
+    }
+}
+
+async fn research_plan_window_bounds(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    if let (Some(start), Some(end)) = (
+        json_datetime(&plan.proposed_request, "start_time"),
+        json_datetime(&plan.proposed_request, "end_time"),
+    ) {
+        return Some((start, end));
+    }
+    let campaign_id = plan.source_campaign_id?;
+    let record = get_research_campaign(&state.db_pool, campaign_id)
+        .await
+        .ok()??;
+    let request = serde_json::from_value::<ResearchCampaignRequest>(record.request).ok()?;
+    campaign_request_bounds(&request)
+}
+
+fn campaign_request_bounds(
+    request: &ResearchCampaignRequest,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    if let (Some(start), Some(end)) = (request.campaign_start, request.campaign_end) {
+        return Some((start, end));
+    }
+    let start = request
+        .windows
+        .iter()
+        .map(|window| window.start_time)
+        .min()?;
+    let end = request.windows.iter().map(|window| window.end_time).max()?;
+    Some((start, end))
+}
+
+fn json_datetime(value: &Value, key: &str) -> Option<DateTime<Utc>> {
+    serde_json::from_value(value.get(key)?.clone()).ok()
+}
+
+fn json_decimal(value: &Value, key: &str, default: Decimal) -> Decimal {
+    value
+        .get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Decimal>(value).ok())
+        .unwrap_or(default)
+}
+
+fn json_u32_vec(value: &Value, key: &str, default: Vec<u32>) -> Vec<u32> {
+    value
+        .get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<u32>>(value).ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+}
+
+fn json_string_vec(value: &Value, key: &str, fallback: String) -> Vec<String> {
+    value
+        .get(key)
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| vec![fallback])
+}
+
+async fn source_campaign_request(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+) -> anyhow::Result<Option<ResearchCampaignRequest>> {
+    let Some(campaign_id) = plan.source_campaign_id else {
+        return Ok(None);
+    };
+    let Some(record) = get_research_campaign(&state.db_pool, campaign_id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_value::<ResearchCampaignRequest>(
+        record.request,
+    )?))
+}
+
+async fn research_batch_request_from_plan(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+    correlation_id: Uuid,
+) -> anyhow::Result<ResearchBatchRequest> {
+    if let Ok(mut request) =
+        serde_json::from_value::<ResearchBatchRequest>(plan.proposed_request.clone())
+    {
+        request.correlation_id = Some(correlation_id);
+        request.create_candidates = false;
+        return Ok(request);
+    }
+    let (start_time, end_time) = research_plan_window_bounds(state, plan)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("plan missing research window"))?;
+    let source = source_campaign_request(state, plan).await?;
+    Ok(ResearchBatchRequest {
+        strategy_id: plan.strategy_id.clone(),
+        symbol: plan
+            .symbol
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("plan missing symbol"))?,
+        base_interval: "1m".to_string(),
+        target_intervals: vec![plan
+            .timeframe
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("plan missing timeframe"))?],
+        start_time,
+        end_time,
+        initial_capital: source
+            .as_ref()
+            .map(|request| request.initial_capital)
+            .unwrap_or_else(|| {
+                json_decimal(
+                    &plan.proposed_request,
+                    "initial_capital",
+                    Decimal::new(10000, 0),
+                )
+            }),
+        fee_bps: source
+            .as_ref()
+            .map(|request| request.fee_bps)
+            .unwrap_or_else(|| {
+                json_decimal(&plan.proposed_request, "fee_bps", Decimal::new(10, 0))
+            }),
+        slippage_bps: source
+            .as_ref()
+            .map(|request| request.slippage_bps)
+            .unwrap_or_else(|| {
+                json_decimal(&plan.proposed_request, "slippage_bps", Decimal::new(5, 0))
+            }),
+        experiment_timeframes: vec![plan
+            .timeframe
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("plan missing timeframe"))?],
+        lookback_candidates: source
+            .as_ref()
+            .map(|request| request.lookback_candidates.clone())
+            .unwrap_or_else(|| {
+                json_u32_vec(
+                    &plan.proposed_request,
+                    "lookback_candidates",
+                    vec![10, 20, 50],
+                )
+            }),
+        trend_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.trend_lookback_candidates.clone()),
+        momentum_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.momentum_lookback_candidates.clone()),
+        breakout_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.breakout_lookback_candidates.clone()),
+        lower_band_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.lower_band_pct_candidates.clone()),
+        upper_band_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.upper_band_pct_candidates.clone()),
+        min_range_width_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_range_width_pct_candidates.clone()),
+        max_range_width_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.max_range_width_pct_candidates.clone()),
+        min_close_above_sma_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_close_above_sma_pct_candidates.clone()),
+        max_close_above_sma_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.max_close_above_sma_pct_candidates.clone()),
+        min_momentum_return_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_momentum_return_pct_candidates.clone()),
+        holding_candles_candidates: source
+            .as_ref()
+            .and_then(|request| request.holding_candles_candidates.clone()),
+        walk_forward_top_n: 1,
+        repair_degraded_data: false,
+        create_candidates: false,
+        max_candidates: 1,
+        correlation_id: Some(correlation_id),
+    })
+}
+
+async fn research_campaign_request_from_plan(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+    correlation_id: Uuid,
+) -> anyhow::Result<ResearchCampaignRequest> {
+    if let Ok(mut request) =
+        serde_json::from_value::<ResearchCampaignRequest>(plan.proposed_request.clone())
+    {
+        request.correlation_id = Some(correlation_id);
+        return Ok(request);
+    }
+    let source = source_campaign_request(state, plan).await?;
+    let (start, end) = research_plan_window_bounds(state, plan)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("plan missing research window"))?;
+    Ok(ResearchCampaignRequest {
+        strategies: json_string_vec(
+            &plan.proposed_request,
+            "strategies",
+            plan.strategy_id.clone(),
+        ),
+        symbols: json_string_vec(
+            &plan.proposed_request,
+            "symbols",
+            plan.symbol
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("plan missing symbol"))?,
+        ),
+        experiment_timeframes: json_string_vec(
+            &plan.proposed_request,
+            "experiment_timeframes",
+            plan.timeframe
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("plan missing timeframe"))?,
+        ),
+        windows: Vec::new(),
+        campaign_start: Some(start),
+        campaign_end: Some(end),
+        window_hours: source
+            .as_ref()
+            .and_then(|request| request.window_hours)
+            .or(Some(24)),
+        step_hours: source
+            .as_ref()
+            .and_then(|request| request.step_hours)
+            .or(Some(24)),
+        initial_capital: source
+            .as_ref()
+            .map(|request| request.initial_capital)
+            .unwrap_or_else(|| Decimal::new(10000, 0)),
+        fee_bps: source
+            .as_ref()
+            .map(|request| request.fee_bps)
+            .unwrap_or_else(|| Decimal::new(10, 0)),
+        slippage_bps: source
+            .as_ref()
+            .map(|request| request.slippage_bps)
+            .unwrap_or_else(|| Decimal::new(5, 0)),
+        max_batches: Some(1),
+        regime_dataset_id: None,
+        target_regimes: None,
+        max_windows_per_regime: None,
+        max_candidates_per_batch: 1,
+        create_candidates: false,
+        repair_degraded_data: false,
+        walk_forward_top_n: 1,
+        base_interval: "1m".to_string(),
+        lookback_candidates: source
+            .as_ref()
+            .map(|request| request.lookback_candidates.clone())
+            .unwrap_or_else(|| vec![10, 20, 50]),
+        trend_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.trend_lookback_candidates.clone()),
+        momentum_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.momentum_lookback_candidates.clone()),
+        breakout_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.breakout_lookback_candidates.clone()),
+        lower_band_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.lower_band_pct_candidates.clone()),
+        upper_band_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.upper_band_pct_candidates.clone()),
+        min_range_width_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_range_width_pct_candidates.clone()),
+        max_range_width_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.max_range_width_pct_candidates.clone()),
+        min_close_above_sma_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_close_above_sma_pct_candidates.clone()),
+        max_close_above_sma_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.max_close_above_sma_pct_candidates.clone()),
+        min_momentum_return_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_momentum_return_pct_candidates.clone()),
+        holding_candles_candidates: source
+            .as_ref()
+            .and_then(|request| request.holding_candles_candidates.clone()),
+        correlation_id: Some(correlation_id),
+    })
+}
+
+async fn robustness_matrix_request_from_plan(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+    correlation_id: Uuid,
+) -> anyhow::Result<StrategyRobustnessMatrixRequest> {
+    if let Ok(mut request) =
+        serde_json::from_value::<StrategyRobustnessMatrixRequest>(plan.proposed_request.clone())
+    {
+        request.experiment_run_id = Some(correlation_id);
+        return Ok(request);
+    }
+    let (start_time, end_time) = research_plan_window_bounds(state, plan)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("plan missing research window"))?;
+    let span_hours = end_time
+        .signed_duration_since(start_time)
+        .num_hours()
+        .max(3);
+    Ok(StrategyRobustnessMatrixRequest {
+        strategy_ids: json_string_vec(
+            &plan.proposed_request,
+            "strategy_ids",
+            plan.strategy_id.clone(),
+        ),
+        symbols: json_string_vec(
+            &plan.proposed_request,
+            "symbols",
+            plan.symbol
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("plan missing symbol"))?,
+        ),
+        timeframes: json_string_vec(
+            &plan.proposed_request,
+            "timeframes",
+            plan.timeframe
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("plan missing timeframe"))?,
+        ),
+        windows: Vec::new(),
+        start_time: Some(start_time),
+        end_time: Some(end_time),
+        window_hours: Some((span_hours / 3).max(1)),
+        step_hours: Some((span_hours / 3).max(1)),
+        config_json_by_strategy: None,
+        experiment_run_id: Some(correlation_id),
+        initial_capital: json_decimal(
+            &plan.proposed_request,
+            "initial_capital",
+            Decimal::new(10000, 0),
+        ),
+        fee_bps: json_decimal(&plan.proposed_request, "fee_bps", Decimal::new(10, 0)),
+        slippage_bps: json_decimal(&plan.proposed_request, "slippage_bps", Decimal::new(5, 0)),
+        holding_candles: None,
+        min_trades_per_cell: 0,
+        min_profitable_window_ratio: Decimal::ZERO,
+    })
+}
+
+async fn strategy_experiment_request_from_plan(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+    correlation_id: Uuid,
+) -> anyhow::Result<StrategyExperimentRequest> {
+    if let Ok(mut request) =
+        serde_json::from_value::<StrategyExperimentRequest>(plan.proposed_request.clone())
+    {
+        request.correlation_id = Some(correlation_id);
+        return Ok(request);
+    }
+    let batch = research_batch_request_from_plan(state, plan, correlation_id).await?;
+    Ok(StrategyExperimentRequest {
+        strategy_id: batch.strategy_id,
+        symbol: batch.symbol,
+        timeframe: plan
+            .timeframe
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("plan missing timeframe"))?,
+        start_time: batch.start_time,
+        end_time: batch.end_time,
+        initial_capital: batch.initial_capital,
+        fee_bps: batch.fee_bps,
+        slippage_bps: batch.slippage_bps,
+        lookback_candidates: batch.lookback_candidates,
+        trend_lookback_candidates: batch.trend_lookback_candidates,
+        momentum_lookback_candidates: batch.momentum_lookback_candidates,
+        breakout_lookback_candidates: batch.breakout_lookback_candidates,
+        lower_band_pct_candidates: batch.lower_band_pct_candidates,
+        upper_band_pct_candidates: batch.upper_band_pct_candidates,
+        min_range_width_pct_candidates: batch.min_range_width_pct_candidates,
+        max_range_width_pct_candidates: batch.max_range_width_pct_candidates,
+        min_close_above_sma_pct_candidates: batch.min_close_above_sma_pct_candidates,
+        max_close_above_sma_pct_candidates: batch.max_close_above_sma_pct_candidates,
+        min_momentum_return_pct_candidates: batch.min_momentum_return_pct_candidates,
+        holding_candles_candidates: batch.holding_candles_candidates,
+        stop_loss_pct_candidates: None,
+        take_profit_pct_candidates: None,
+        max_signal_age_ms: None,
+        max_runs: Some(10),
+        correlation_id: Some(correlation_id),
+    })
+}
+
+async fn strategy_walk_forward_request_from_plan(
+    state: &AppState,
+    plan: &ResearchExperimentPlan,
+    correlation_id: Uuid,
+) -> anyhow::Result<StrategyWalkForwardRequest> {
+    if let Ok(mut request) =
+        serde_json::from_value::<StrategyWalkForwardRequest>(plan.proposed_request.clone())
+    {
+        request.correlation_id = Some(correlation_id);
+        return Ok(request);
+    }
+    let (start_time, end_time) = research_plan_window_bounds(state, plan)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("plan missing research window"))?;
+    let span_hours = end_time
+        .signed_duration_since(start_time)
+        .num_hours()
+        .max(3);
+    Ok(StrategyWalkForwardRequest {
+        strategy_id: plan.strategy_id.clone(),
+        symbol: plan
+            .symbol
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("plan missing symbol"))?,
+        timeframe: plan
+            .timeframe
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("plan missing timeframe"))?,
+        config: None,
+        experiment_run_id: None,
+        start_time,
+        end_time,
+        window_train_size_hours: 0,
+        window_test_size_hours: (span_hours / 3).max(1),
+        step_size_hours: (span_hours / 3).max(1),
+        initial_capital: json_decimal(
+            &plan.proposed_request,
+            "initial_capital",
+            Decimal::new(10000, 0),
+        ),
+        fee_bps: json_decimal(&plan.proposed_request, "fee_bps", Decimal::new(10, 0)),
+        slippage_bps: json_decimal(&plan.proposed_request, "slippage_bps", Decimal::new(5, 0)),
+        candidate_config: aegis_core::StrategyWalkForwardCandidate {
+            lookback_candles: json_u32_vec(&plan.proposed_request, "lookback_candidates", vec![20])
+                [0],
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
+            holding_candles: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            max_signal_age_ms: None,
+        },
+        min_required_test_windows: Some(1),
+        correlation_id: Some(correlation_id),
+    })
 }
 
 fn research_internal_error_response(

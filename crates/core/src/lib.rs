@@ -7787,6 +7787,10 @@ pub enum CoreError {
     UnsupportedResearchExperimentPlanSource(String),
     #[error("unsupported research experiment plan type: {0}")]
     UnsupportedResearchExperimentPlanType(String),
+    #[error("unsupported research experiment plan run status: {0}")]
+    UnsupportedResearchExperimentPlanRunStatus(String),
+    #[error("unsupported research experiment plan run mode: {0}")]
+    UnsupportedResearchExperimentPlanRunMode(String),
     #[error("unsupported strategy robustness matrix status: {0}")]
     UnsupportedStrategyRobustnessMatrixStatus(String),
     #[error("research campaign requires at least one strategy")]

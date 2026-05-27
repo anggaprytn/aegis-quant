@@ -842,9 +842,25 @@ pub enum ResearchHypothesisCommands {
 #[derive(Debug, Subcommand)]
 pub enum ResearchExperimentPlanCommands {
     List(ResearchBatchListArgs),
-    Get { plan_id: Uuid },
-    Validate { plan_id: Uuid },
+    Get {
+        plan_id: Uuid,
+    },
+    Validate {
+        plan_id: Uuid,
+    },
+    #[command(name = "run-preview")]
+    RunPreview {
+        plan_id: Uuid,
+    },
+    Run(ResearchExperimentPlanRunArgs),
     Archive(ResearchExperimentPlanArchiveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchExperimentPlanRunArgs {
+    pub plan_id: Uuid,
+    #[arg(long)]
+    pub confirm: String,
 }
 
 #[derive(Debug, Args)]

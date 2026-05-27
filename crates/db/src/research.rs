@@ -19,10 +19,11 @@ use aegis_core::{
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
     ResearchDatasetBuildStepStatus, ResearchExperimentPlan, ResearchExperimentPlanRecommendation,
-    ResearchExperimentPlanSource, ResearchExperimentPlanStatus, ResearchExperimentPlanStep,
-    ResearchExperimentPlanType, ResearchHypothesis, ResearchHypothesisEvidence,
-    ResearchHypothesisPriority, ResearchHypothesisRecommendation, ResearchHypothesisSource,
-    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunResult,
+    ResearchExperimentPlanRunStatus, ResearchExperimentPlanSource, ResearchExperimentPlanStatus,
+    ResearchExperimentPlanStep, ResearchExperimentPlanType, ResearchHypothesis,
+    ResearchHypothesisEvidence, ResearchHypothesisPriority, ResearchHypothesisRecommendation,
+    ResearchHypothesisSource, ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
     ResearchRegimeCalibrationResult, ResearchRegimeClassifierConfig, ResearchRegimeDatasetRequest,
     ResearchRegimeDatasetResult, ResearchRegimeDatasetStatus,
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
@@ -122,6 +123,22 @@ pub struct ResearchCampaignBatchRecord {
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchExperimentPlanRunRecord {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub mode: String,
+    pub status: String,
+    pub artifact_type: Option<String>,
+    pub artifact_id: Option<Uuid>,
+    pub request: Value,
+    pub result: Value,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1813,6 +1830,99 @@ async fn append_research_experiment_plan_event(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn insert_research_experiment_plan_run(
+    pool: &PgPool,
+    plan: &ResearchExperimentPlan,
+    mode: ResearchExperimentPlanRunMode,
+    result: &ResearchExperimentPlanRunResult,
+    request: &Value,
+    error: Option<&str>,
+) -> Result<ResearchExperimentPlanRunRecord> {
+    let plan_id = plan
+        .id
+        .context("research experiment plan run requires plan id")?;
+    let id = Uuid::new_v4();
+    let artifact = result.created_artifacts.first();
+    let artifact_type = artifact.and_then(|artifact| artifact.artifact_type());
+    let artifact_id = artifact.and_then(|artifact| artifact.artifact_id());
+    let completed_at = match result.status {
+        ResearchExperimentPlanRunStatus::Running => None,
+        _ => Some(Utc::now()),
+    };
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_experiment_plan_runs (
+            id, plan_id, mode, status, artifact_type, artifact_id, request, result,
+            error, created_at, completed_at, correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING
+            id, plan_id, mode, status, artifact_type, artifact_id, request, result,
+            error, created_at, completed_at, correlation_id
+        "#,
+    )
+    .bind(id)
+    .bind(plan_id)
+    .bind(mode.as_str())
+    .bind(result.status.as_str())
+    .bind(artifact_type)
+    .bind(artifact_id)
+    .bind(request)
+    .bind(serde_json::to_value(result)?)
+    .bind(error)
+    .bind(Utc::now())
+    .bind(completed_at)
+    .bind(result.correlation_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(map_research_experiment_plan_run(row))
+}
+
+pub async fn append_research_experiment_plan_run_event(
+    pool: &PgPool,
+    plan: &ResearchExperimentPlan,
+    event_type: &str,
+    reason: Option<&str>,
+    actor_id: Option<Uuid>,
+    payload: &Value,
+    correlation_id: Option<Uuid>,
+) -> Result<()> {
+    append_research_experiment_plan_event(
+        pool,
+        plan.id
+            .context("research experiment plan event requires plan id")?,
+        Some(plan.status),
+        plan.status,
+        event_type,
+        reason,
+        actor_id,
+        payload,
+        correlation_id,
+    )
+    .await
+}
+
+pub async fn mark_research_experiment_plan_completed(
+    pool: &PgPool,
+    plan: &ResearchExperimentPlan,
+    actor_id: Option<Uuid>,
+    correlation_id: Option<Uuid>,
+) -> Result<Option<ResearchExperimentPlan>> {
+    if plan.status != ResearchExperimentPlanStatus::Runnable {
+        return Ok(Some(plan.clone()));
+    }
+    update_research_experiment_plan_validation(
+        pool,
+        plan,
+        ResearchExperimentPlanStatus::Ready,
+        plan.validation_status,
+        &plan.validation_issues,
+        actor_id,
+        correlation_id,
+    )
+    .await
 }
 
 pub async fn insert_research_campaign_batch(
@@ -5469,6 +5579,23 @@ fn map_research_experiment_plan(row: sqlx::postgres::PgRow) -> Result<ResearchEx
         updated_at: row.get("updated_at"),
         correlation_id: row.get("correlation_id"),
     })
+}
+
+fn map_research_experiment_plan_run(row: sqlx::postgres::PgRow) -> ResearchExperimentPlanRunRecord {
+    ResearchExperimentPlanRunRecord {
+        id: row.get("id"),
+        plan_id: row.get("plan_id"),
+        mode: row.get("mode"),
+        status: row.get("status"),
+        artifact_type: row.get("artifact_type"),
+        artifact_id: row.get("artifact_id"),
+        request: row.get("request"),
+        result: row.get("result"),
+        error: row.get("error"),
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+        correlation_id: row.get("correlation_id"),
+    }
 }
 
 fn parse_research_regime_label(value: &str) -> Result<ResearchRegimeLabel> {

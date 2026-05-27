@@ -43,6 +43,7 @@ import type {
   ResearchCampaignRequest,
   ResearchCampaignResult,
   ResearchExperimentPlan,
+  ResearchExperimentPlanRunResult,
   ResearchHypothesis,
   ResearchHypothesisPriority,
   ResearchHypothesisStatus,
@@ -411,6 +412,7 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   fee_bps: "10",
   slippage_bps: "5",
   max_candidates_per_batch: 2,
+  create_candidates: true,
   repair_degraded_data: true,
   walk_forward_top_n: 3,
   base_interval: "1m",
@@ -1007,6 +1009,10 @@ function AuthenticatedDashboard({
   const [selectedResearchHypothesisId, setSelectedResearchHypothesisId] = useState<string | null>(null);
   const [selectedResearchExperimentPlanId, setSelectedResearchExperimentPlanId] =
     useState<string | null>(null);
+  const [lastResearchExperimentPlanRun, setLastResearchExperimentPlanRun] =
+    useState<ResearchExperimentPlanRunResult | null>(null);
+  const [researchExperimentPlanRunConfirmation, setResearchExperimentPlanRunConfirmation] =
+    useState("");
   const [researchHypothesisPriorityFilter, setResearchHypothesisPriorityFilter] =
     useState<ResearchHypothesisPriority | "ALL">("ALL");
   const [researchHypothesisStatusFilter, setResearchHypothesisStatusFilter] =
@@ -1537,6 +1543,21 @@ function AuthenticatedDashboard({
     mutationFn: (id: string) => api.validateResearchExperimentPlan(id),
     onSuccess: async (response) => {
       setSelectedResearchExperimentPlanId(response.plan.id);
+      await queryClient.invalidateQueries({ queryKey: ["research-experiment-plans"] });
+    },
+  });
+  const previewResearchExperimentPlanRunMutation = useMutation({
+    mutationFn: (id: string) => api.previewResearchExperimentPlanRun(id),
+    onSuccess: (response) => {
+      setLastResearchExperimentPlanRun(response.result);
+    },
+  });
+  const runResearchExperimentPlanMutation = useMutation({
+    mutationFn: ({ id, confirmation }: { id: string; confirmation: string }) =>
+      api.runResearchExperimentPlan(id, confirmation),
+    onSuccess: async (response) => {
+      setLastResearchExperimentPlanRun(response.result);
+      setResearchExperimentPlanRunConfirmation("");
       await queryClient.invalidateQueries({ queryKey: ["research-experiment-plans"] });
     },
   });
@@ -6473,11 +6494,20 @@ function AuthenticatedDashboard({
                     error={getErrorMessage(researchExperimentPlansQuery.error)}
                     busy={
                       validateResearchExperimentPlanMutation.isPending ||
-                      archiveResearchExperimentPlanMutation.isPending
+                      archiveResearchExperimentPlanMutation.isPending ||
+                      previewResearchExperimentPlanRunMutation.isPending ||
+                      runResearchExperimentPlanMutation.isPending
                     }
+                    lastRun={lastResearchExperimentPlanRun}
+                    confirmation={researchExperimentPlanRunConfirmation}
                     canMutate={user.role === "OWNER" || user.role === "OPERATOR"}
                     onSelect={setSelectedResearchExperimentPlanId}
                     onValidate={(id) => validateResearchExperimentPlanMutation.mutate(id)}
+                    onPreviewRun={(id) => previewResearchExperimentPlanRunMutation.mutate(id)}
+                    onRun={(id, confirmation) =>
+                      runResearchExperimentPlanMutation.mutate({ id, confirmation })
+                    }
+                    onConfirmationChange={setResearchExperimentPlanRunConfirmation}
                     onArchive={(id) => archiveResearchExperimentPlanMutation.mutate(id)}
                   />
                 </div>
@@ -11228,9 +11258,14 @@ function ResearchExperimentPlansPanel({
   loading,
   error,
   busy,
+  lastRun,
+  confirmation,
   canMutate,
   onSelect,
   onValidate,
+  onPreviewRun,
+  onRun,
+  onConfirmationChange,
   onArchive,
 }: {
   plans: ResearchExperimentPlan[];
@@ -11238,11 +11273,17 @@ function ResearchExperimentPlansPanel({
   loading?: boolean;
   error?: string;
   busy?: boolean;
+  lastRun: ResearchExperimentPlanRunResult | null;
+  confirmation: string;
   canMutate: boolean;
   onSelect: (id: string | null) => void;
   onValidate: (id: string) => void;
+  onPreviewRun: (id: string) => void;
+  onRun: (id: string, confirmation: string) => void;
+  onConfirmationChange: (value: string) => void;
   onArchive: (id: string) => void;
 }) {
+  const expectedConfirmation = selectedPlan?.id ? `RUN RESEARCH PLAN ${selectedPlan.id}` : "";
   return (
     <Panel title="Research Experiment Plans">
       {loading ? <EmptyState label="Loading experiment plans." /> : null}
@@ -11287,12 +11328,62 @@ function ResearchExperimentPlansPanel({
               <pre className="max-h-64 overflow-auto rounded-md bg-background p-3 text-xs">
                 {JSON.stringify(selectedPlan.proposed_request, null, 2)}
               </pre>
+              <div className="rounded-md border border-border bg-background p-3">
+                <div className="text-xs text-muted">
+                  Research-only. This does not create paper, testnet, or live orders.
+                </div>
+                <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
+                  <input
+                    className="rounded-md border border-border bg-panel px-3 py-2 font-mono text-xs"
+                    value={confirmation}
+                    onChange={(event) => onConfirmationChange(event.target.value)}
+                    placeholder={expectedConfirmation}
+                  />
+                  <ActionButton
+                    label="Run"
+                    onClick={() =>
+                      selectedPlan.id && onRun(selectedPlan.id, confirmation)
+                    }
+                    busy={busy}
+                    disabled={
+                      !canMutate ||
+                      !selectedPlan.id ||
+                      selectedPlan.status === "ARCHIVED" ||
+                      confirmation !== expectedConfirmation
+                    }
+                  />
+                </div>
+              </div>
+              {lastRun && lastRun.plan_id === selectedPlan.id ? (
+                <div className="rounded-md border border-border bg-background p-3">
+                  <KeyValue
+                    items={[
+                      ["Run Status", lastRun.status],
+                      ["Mode", lastRun.mode],
+                      ["Recommendation", lastRun.recommendation],
+                      ["Artifacts", lastRun.artifact_ids.length ? lastRun.artifact_ids.map(shortenId).join(", ") : "-"],
+                    ]}
+                  />
+                  <SimpleList
+                    items={[
+                      ...lastRun.warnings.map((warning) => `Warning: ${warning}`),
+                      ...lastRun.blockers.map((blocker) => `Blocker: ${blocker}`),
+                    ]}
+                  />
+                </div>
+              ) : null}
               <div className="flex flex-wrap gap-2">
                 <ActionButton
                   label="Validate"
                   onClick={() => selectedPlan.id && onValidate(selectedPlan.id)}
                   busy={busy}
                   disabled={!canMutate || !selectedPlan.id}
+                />
+                <ActionButton
+                  label="Preview Run"
+                  onClick={() => selectedPlan.id && onPreviewRun(selectedPlan.id)}
+                  busy={busy}
+                  disabled={!canMutate || !selectedPlan.id || selectedPlan.status === "ARCHIVED"}
                 />
                 <ActionButton
                   label="Archive"

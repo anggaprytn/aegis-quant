@@ -1,7 +1,8 @@
 use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateReviewRequest, ResearchHypothesisGenerationRequest,
+    ResearchCandidateReviewRequest, ResearchExperimentPlanRunMode,
+    ResearchExperimentPlanRunRequest, ResearchHypothesisGenerationRequest,
     ResearchHypothesisIncludedSource, ResearchHypothesisStatus, TestnetShadowRunnerControlAction,
     TestnetShadowRunnerControlRequest,
 };
@@ -1267,6 +1268,30 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_experiment_plan(&response.plan);
+                    }
+                }
+                ResearchExperimentPlanCommands::RunPreview { plan_id } => {
+                    let response = client.preview_research_experiment_plan_run(plan_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_experiment_plan_run(&response.result);
+                    }
+                }
+                ResearchExperimentPlanCommands::Run(args) => {
+                    let response = client
+                        .run_research_experiment_plan(
+                            args.plan_id,
+                            &ResearchExperimentPlanRunRequest {
+                                mode: ResearchExperimentPlanRunMode::Run,
+                                confirmation: Some(args.confirm),
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_experiment_plan_run(&response.result);
                     }
                 }
                 ResearchExperimentPlanCommands::Archive(args) => {

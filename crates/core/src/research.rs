@@ -472,6 +472,8 @@ pub struct ResearchCampaignRequest {
     pub max_windows_per_regime: Option<u32>,
     #[serde(default = "default_research_campaign_max_candidates_per_batch")]
     pub max_candidates_per_batch: u32,
+    #[serde(default = "default_research_batch_create_candidates")]
+    pub create_candidates: bool,
     #[serde(default = "default_research_campaign_repair_degraded_data")]
     pub repair_degraded_data: bool,
     #[serde(default = "default_research_campaign_walk_forward_top_n")]
@@ -579,7 +581,7 @@ impl ResearchCampaignBatchPlan {
             holding_candles_candidates: campaign.holding_candles_candidates.clone(),
             walk_forward_top_n: campaign.walk_forward_top_n,
             repair_degraded_data: campaign.repair_degraded_data,
-            create_candidates: true,
+            create_candidates: campaign.create_candidates,
             max_candidates: campaign.max_candidates_per_batch,
             correlation_id: campaign.correlation_id,
         }
@@ -2389,6 +2391,135 @@ pub struct ResearchExperimentPlan {
     pub recommendation: ResearchExperimentPlanRecommendation,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchExperimentPlanRunMode {
+    Preview,
+    Run,
+}
+
+impl ResearchExperimentPlanRunMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Preview => "PREVIEW",
+            Self::Run => "RUN",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchExperimentPlanRunMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PREVIEW" => Ok(Self::Preview),
+            "RUN" => Ok(Self::Run),
+            other => Err(CoreError::UnsupportedResearchExperimentPlanRunMode(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchExperimentPlanRunStatus {
+    Ready,
+    Running,
+    Completed,
+    Failed,
+    Blocked,
+    InvalidPlan,
+}
+
+impl ResearchExperimentPlanRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "READY",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+            Self::Blocked => "BLOCKED",
+            Self::InvalidPlan => "INVALID_PLAN",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchExperimentPlanRunStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "READY" => Ok(Self::Ready),
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            "BLOCKED" => Ok(Self::Blocked),
+            "INVALID_PLAN" => Ok(Self::InvalidPlan),
+            other => Err(CoreError::UnsupportedResearchExperimentPlanRunStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ResearchExperimentPlanRunArtifact {
+    pub strategy_experiment_id: Option<Uuid>,
+    pub research_batch_id: Option<Uuid>,
+    pub research_campaign_id: Option<Uuid>,
+    pub robustness_matrix_run_id: Option<Uuid>,
+    pub walk_forward_run_id: Option<Uuid>,
+}
+
+impl ResearchExperimentPlanRunArtifact {
+    pub fn artifact_type(&self) -> Option<&'static str> {
+        if self.strategy_experiment_id.is_some() {
+            Some("strategy_experiment_id")
+        } else if self.research_batch_id.is_some() {
+            Some("research_batch_id")
+        } else if self.research_campaign_id.is_some() {
+            Some("research_campaign_id")
+        } else if self.robustness_matrix_run_id.is_some() {
+            Some("robustness_matrix_run_id")
+        } else if self.walk_forward_run_id.is_some() {
+            Some("walk_forward_run_id")
+        } else {
+            None
+        }
+    }
+
+    pub fn artifact_id(&self) -> Option<Uuid> {
+        self.strategy_experiment_id
+            .or(self.research_batch_id)
+            .or(self.research_campaign_id)
+            .or(self.robustness_matrix_run_id)
+            .or(self.walk_forward_run_id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchExperimentPlanRunRequest {
+    pub mode: ResearchExperimentPlanRunMode,
+    pub confirmation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchExperimentPlanRunResult {
+    pub plan_id: Uuid,
+    pub hypothesis_id: Uuid,
+    pub plan_type: ResearchExperimentPlanType,
+    pub status: ResearchExperimentPlanRunStatus,
+    pub mode: ResearchExperimentPlanRunMode,
+    pub validation_status: ResearchExperimentPlanStatus,
+    pub created_artifacts: Vec<ResearchExperimentPlanRunArtifact>,
+    pub artifact_ids: Vec<Uuid>,
+    pub warnings: Vec<String>,
+    pub blockers: Vec<String>,
+    pub recommendation: String,
     pub correlation_id: Option<Uuid>,
 }
 
@@ -13127,6 +13258,7 @@ mod tests {
             target_regimes: None,
             max_windows_per_regime: None,
             max_candidates_per_batch: 2,
+            create_candidates: true,
             repair_degraded_data: true,
             walk_forward_top_n: 3,
             base_interval: "1m".to_string(),
@@ -15135,5 +15267,33 @@ mod tests {
         );
         assert_eq!(first.hypotheses, second.hypotheses);
         assert_eq!(first.hypotheses.len(), 1);
+    }
+
+    #[test]
+    fn research_experiment_plan_run_status_and_mode_parse_wire_values() {
+        assert_eq!(
+            "PREVIEW".parse::<ResearchExperimentPlanRunMode>().unwrap(),
+            ResearchExperimentPlanRunMode::Preview
+        );
+        assert_eq!(
+            "INVALID_PLAN"
+                .parse::<ResearchExperimentPlanRunStatus>()
+                .unwrap(),
+            ResearchExperimentPlanRunStatus::InvalidPlan
+        );
+        assert!("unsupported"
+            .parse::<ResearchExperimentPlanRunStatus>()
+            .is_err());
+    }
+
+    #[test]
+    fn research_experiment_plan_run_artifact_reports_single_created_id() {
+        let run_id = Uuid::from_u128(42);
+        let artifact = ResearchExperimentPlanRunArtifact {
+            robustness_matrix_run_id: Some(run_id),
+            ..Default::default()
+        };
+        assert_eq!(artifact.artifact_type(), Some("robustness_matrix_run_id"));
+        assert_eq!(artifact.artifact_id(), Some(run_id));
     }
 }
