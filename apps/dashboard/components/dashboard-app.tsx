@@ -44,6 +44,7 @@ import type {
   ResearchCandidateQualificationEvaluation,
   ResearchCandidateReview,
   ResearchCandidateReviewAction,
+  ResearchCandidateTestnetReviewDossier,
   ResearchCandidateShadowPromotionPreview,
   ResearchCandidateShadowPromotionResult,
   ResearchCandidateShadowRunLink,
@@ -1028,6 +1029,12 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
+  const selectedResearchCandidateTestnetReviewDossierQuery = useQuery({
+    queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidateTestnetReviewDossier(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const selectedResearchCandidateShadowPerformanceQuery = useQuery({
     queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
     queryFn: () => api.getResearchCandidateShadowPerformance(selectedResearchCandidateId ?? ""),
@@ -1700,6 +1707,9 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-shadow-runs", selectedResearchCandidateId],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
+      });
       setResearchCandidateDecisionReason("");
     },
   });
@@ -1732,6 +1742,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-qualification-history", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({ queryKey: ["operator-reports"] });
       setResearchCandidateReviewReason("");
@@ -1769,6 +1782,9 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-shadow-runs", selectedResearchCandidateId],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
+      });
     },
   });
   const evaluateResearchCandidateQualificationMutation = useMutation({
@@ -1784,6 +1800,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-qualification-history", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({ queryKey: ["research-candidate-watchlist"] });
     },
@@ -2138,6 +2157,8 @@ function AuthenticatedDashboard({
     selectedResearchCandidateQualificationQuery.data?.qualification ?? null;
   const researchCandidateQualificationHistory: ResearchCandidateQualificationHistory | null =
     selectedResearchCandidateQualificationHistoryQuery.data?.history ?? null;
+  const researchCandidateTestnetReviewDossier: ResearchCandidateTestnetReviewDossier | null =
+    selectedResearchCandidateTestnetReviewDossierQuery.data?.dossier ?? null;
   const researchCandidateWatchlist: ResearchCandidateWatchlistEntry[] =
     researchCandidateWatchlistQuery.data?.watchlist ?? [];
   const researchCandidateReviews: ResearchCandidateReview[] =
@@ -5172,6 +5193,63 @@ function AuthenticatedDashboard({
                           </div>
                         </div>
                       ) : null}
+                      {researchCandidateTestnetReviewDossier ? (
+                        <div className="mt-3 rounded-xl border border-border/70 bg-black/10 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="font-semibold text-slate-100">
+                              Testnet Review Dossier
+                            </div>
+                            <div className="rounded-full border border-border/70 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-slate-200">
+                              {researchCandidateTestnetReviewDossier.status}
+                            </div>
+                          </div>
+                          <div className="mt-2 text-xs text-slate-300">
+                            This does not submit orders.
+                          </div>
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <div>
+                              Latest review:{" "}
+                              {researchCandidateTestnetReviewDossier.evidence.latest_review_action
+                                ?.action ?? "NONE"}
+                            </div>
+                            <div>
+                              Recommendation:{" "}
+                              {researchCandidateTestnetReviewDossier.recommendations[0] ??
+                                "NONE"}
+                            </div>
+                          </div>
+                          <div className="mt-3 rounded-xl border border-border/70 bg-surface/40 p-3">
+                            <div className="font-semibold text-slate-100">Checklist</div>
+                            <div className="mt-2 space-y-1 text-slate-200">
+                              {researchCandidateTestnetReviewDossier.checklist.map((item) => (
+                                <div key={item.code}>
+                                  {item.passed ? "PASS" : "PENDING"} · {item.name}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          {(researchCandidateTestnetReviewDossier.blockers.length ?? 0) > 0 ? (
+                            <div className="mt-3 rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-rose-100">
+                              <div className="font-semibold">Blockers</div>
+                              <div className="mt-2 space-y-1">
+                                {researchCandidateTestnetReviewDossier.blockers.map((item) => (
+                                  <div key={item}>{item}</div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+                          {(researchCandidateTestnetReviewDossier.warnings.length ?? 0) > 0 ? (
+                            <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-100">
+                              <div className="font-semibold">Warnings</div>
+                              <div className="mt-2 space-y-1">
+                                {researchCandidateTestnetReviewDossier.warnings.map((item) => (
+                                  <div key={item}>{item}</div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {(researchCandidateQualificationHistory?.evaluations.length ?? 0) > 0 ? (
                         <div className="mt-3 rounded-xl border border-border/70 bg-black/10 p-3">
                           <div className="font-semibold text-slate-100">Qualification History</div>
@@ -5240,6 +5318,9 @@ function AuthenticatedDashboard({
                               )
                             : undefined
                         }
+                      />
+                      <InlineStatus
+                        error={getErrorMessage(selectedResearchCandidateTestnetReviewDossierQuery.error)}
                       />
                       <InlineStatus
                         error={getErrorMessage(selectedResearchCandidateReviewsQuery.error)}

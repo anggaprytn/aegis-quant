@@ -745,6 +745,7 @@ pub enum ResearchCandidateCommands {
     Qualification(ResearchCandidateQualificationArgs),
     QualificationEvaluate(ResearchCandidateQualificationArgs),
     QualificationHistory(ResearchCandidateQualificationHistoryArgs),
+    TestnetReviewDossier { candidate_id: Uuid },
     ShadowPerformance(ResearchCandidateShadowWindowArgs),
     ShadowRuns(ResearchCandidateShadowRunsArgs),
     Create(ResearchCandidateCreateArgs),

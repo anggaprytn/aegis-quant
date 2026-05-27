@@ -10,8 +10,9 @@ use aegis_core::{
     OperatorReportShadowSnapshot, OperatorReportStatus, OperatorReportStrategySnapshot,
     OperatorReportSummary, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
     OperatorReportTopPairCount, ResearchCandidateQualificationStatus,
-    ResearchCandidateQualificationThresholds, ResearchCandidateStatus, StrategyPerformanceMode,
-    StrategyPerformanceRequest, TestnetPromotionFunnelRequest,
+    ResearchCandidateQualificationThresholds, ResearchCandidateStatus,
+    ResearchCandidateTestnetReviewStatus, StrategyPerformanceMode, StrategyPerformanceRequest,
+    TestnetPromotionFunnelRequest,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -23,8 +24,9 @@ use uuid::Uuid;
 
 use crate::AppState;
 use db::{
-    list_research_candidate_qualification_evaluations, list_research_candidates,
-    research_candidate_qualification_evaluation_from_record, ResearchCandidateListFilters,
+    list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
+    list_research_candidates, research_candidate_qualification_evaluation_from_record,
+    research_candidate_review_from_record, ResearchCandidateListFilters,
 };
 
 const DEFAULT_REPORT_WINDOW_HOURS: i64 = 24;
@@ -904,6 +906,10 @@ async fn load_research_candidate_qualification_snapshot(
         stale_evaluation_count: 0,
         reviews_in_window: 0,
         ready_for_testnet_review_count: 0,
+        ready_for_testnet_review_dossier_count: 0,
+        blocked_testnet_review_dossier_count: 0,
+        marked_ready_but_dossier_not_ready_count: 0,
+        dossier_needs_more_shadow_data_count: 0,
         rejected_from_watchlist_count: 0,
         archived_from_watchlist_count: 0,
         candidates_needing_review_count: 0,
@@ -993,6 +999,40 @@ async fn load_research_candidate_qualification_snapshot(
                 }
                 _ => {}
             }
+        }
+
+        let candidate_reviews = list_research_candidate_reviews(&state.db_pool, candidate.id)
+            .await?
+            .iter()
+            .map(research_candidate_review_from_record)
+            .collect::<Result<Vec<_>>>()?;
+        let ready_review_marked = candidate_reviews.iter().any(|review| {
+            review.action == aegis_core::ResearchCandidateReviewAction::MarkReadyForTestnetReview
+        });
+
+        let dossier = crate::build_research_candidate_testnet_review_dossier(
+            state,
+            &candidate,
+            window.generated_at,
+            Uuid::new_v4(),
+        )
+        .await?;
+        match dossier.status {
+            ResearchCandidateTestnetReviewStatus::ReadyForReview => {
+                summary.ready_for_testnet_review_dossier_count += 1;
+            }
+            ResearchCandidateTestnetReviewStatus::NeedsMoreShadowData => {
+                summary.dossier_needs_more_shadow_data_count += 1;
+            }
+            ResearchCandidateTestnetReviewStatus::Blocked => {
+                summary.blocked_testnet_review_dossier_count += 1;
+            }
+            _ => {}
+        }
+        if ready_review_marked
+            && dossier.status != ResearchCandidateTestnetReviewStatus::ReadyForReview
+        {
+            summary.marked_ready_but_dossier_not_ready_count += 1;
         }
 
         let replace_top = summary
@@ -1281,6 +1321,36 @@ fn build_findings(
             OperatorReportSeverity::Low,
             "Candidates marked ready for testnet review",
             "One or more review actions recorded readiness for testnet review without submitting orders.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.blocked_testnet_review_dossier_count > 0 {
+        findings.push(finding(
+            "candidate_marked_ready_but_dossier_blocked",
+            OperatorReportSeverity::Medium,
+            "Candidate marked ready for testnet review but dossier is blocked",
+            "At least one candidate has review readiness recorded while the read-only dossier remains blocked.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.ready_for_testnet_review_dossier_count > 0 {
+        findings.push(finding(
+            "candidate_ready_for_testnet_review_dossier",
+            OperatorReportSeverity::Low,
+            "Candidate ready for testnet review dossier",
+            "At least one research candidate has a ready-for-review dossier without submitting orders.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.dossier_needs_more_shadow_data_count > 0 {
+        findings.push(finding(
+            "candidate_testnet_review_dossier_needs_more_shadow_data",
+            OperatorReportSeverity::Medium,
+            "Candidate needs more shadow data before testnet review",
+            "At least one research candidate dossier still needs more linked shadow evidence before controlled testnet review.",
             "research_candidate_qualification",
         ));
     }
@@ -1689,6 +1759,30 @@ fn build_sections(
                     "Ready For Testnet Review",
                     research_qualification
                         .ready_for_testnet_review_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Ready Review Dossiers",
+                    research_qualification
+                        .ready_for_testnet_review_dossier_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Blocked Review Dossiers",
+                    research_qualification
+                        .blocked_testnet_review_dossier_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Marked Ready But Dossier Not Ready",
+                    research_qualification
+                        .marked_ready_but_dossier_not_ready_count
+                        .to_string(),
+                ),
+                highlight(
+                    "Dossiers Need More Shadow Data",
+                    research_qualification
+                        .dossier_needs_more_shadow_data_count
                         .to_string(),
                 ),
                 highlight(
@@ -2142,6 +2236,10 @@ mod tests {
             stale_evaluation_count: 0,
             reviews_in_window: 0,
             ready_for_testnet_review_count: 0,
+            ready_for_testnet_review_dossier_count: 0,
+            blocked_testnet_review_dossier_count: 0,
+            marked_ready_but_dossier_not_ready_count: 0,
+            dossier_needs_more_shadow_data_count: 0,
             rejected_from_watchlist_count: 0,
             archived_from_watchlist_count: 0,
             candidates_needing_review_count: 0,

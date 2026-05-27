@@ -1677,6 +1677,218 @@ pub struct ResearchCandidateQualificationHistory {
     pub latest_trend: ResearchCandidateQualificationTrend,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateTestnetReviewStatus {
+    ReadyForReview,
+    NotReady,
+    NeedsMoreShadowData,
+    NeedsOperatorReview,
+    Blocked,
+}
+
+impl ResearchCandidateTestnetReviewStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadyForReview => "READY_FOR_REVIEW",
+            Self::NotReady => "NOT_READY",
+            Self::NeedsMoreShadowData => "NEEDS_MORE_SHADOW_DATA",
+            Self::NeedsOperatorReview => "NEEDS_OPERATOR_REVIEW",
+            Self::Blocked => "BLOCKED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateTestnetReviewSection {
+    Identity,
+    Qualification,
+    ShadowPerformance,
+    Observation,
+    RunnerAlignment,
+    Readiness,
+    Provenance,
+    OperatorReview,
+    Controls,
+}
+
+impl ResearchCandidateTestnetReviewSection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "IDENTITY",
+            Self::Qualification => "QUALIFICATION",
+            Self::ShadowPerformance => "SHADOW_PERFORMANCE",
+            Self::Observation => "OBSERVATION",
+            Self::RunnerAlignment => "RUNNER_ALIGNMENT",
+            Self::Readiness => "READINESS",
+            Self::Provenance => "PROVENANCE",
+            Self::OperatorReview => "OPERATOR_REVIEW",
+            Self::Controls => "CONTROLS",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateTestnetReviewRecommendation {
+    RefreshObservation,
+    GatherMoreShadowData,
+    ReevaluateQualification,
+    FixRunnerAlignment,
+    ClearReadinessBlockers,
+    RecordReadyForTestnetReview,
+    ReviewPrivateStreamFreshness,
+    VerifyExperimentProvenance,
+    ManualOperatorReview,
+}
+
+impl ResearchCandidateTestnetReviewRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RefreshObservation => "REFRESH_OBSERVATION",
+            Self::GatherMoreShadowData => "GATHER_MORE_SHADOW_DATA",
+            Self::ReevaluateQualification => "RE_EVALUATE_QUALIFICATION",
+            Self::FixRunnerAlignment => "FIX_RUNNER_ALIGNMENT",
+            Self::ClearReadinessBlockers => "CLEAR_READINESS_BLOCKERS",
+            Self::RecordReadyForTestnetReview => "RECORD_READY_FOR_TESTNET_REVIEW",
+            Self::ReviewPrivateStreamFreshness => "REVIEW_PRIVATE_STREAM_FRESHNESS",
+            Self::VerifyExperimentProvenance => "VERIFY_EXPERIMENT_PROVENANCE",
+            Self::ManualOperatorReview => "MANUAL_OPERATOR_REVIEW",
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::RefreshObservation => {
+                "Run a fresh candidate observation before considering a controlled testnet review."
+            }
+            Self::GatherMoreShadowData => {
+                "Collect more linked shadow evidence before testnet review."
+            }
+            Self::ReevaluateQualification => {
+                "Record a fresh qualification evaluation for the candidate."
+            }
+            Self::FixRunnerAlignment => {
+                "Align the active shadow runner with the candidate strategy, symbol, and timeframe."
+            }
+            Self::ClearReadinessBlockers => {
+                "Resolve TESTNET_SHADOW readiness blockers before testnet review."
+            }
+            Self::RecordReadyForTestnetReview => {
+                "Record MARK_READY_FOR_TESTNET_REVIEW before using this dossier for operator review."
+            }
+            Self::ReviewPrivateStreamFreshness => {
+                "Check the private stream freshness before using this dossier for submit decisions."
+            }
+            Self::VerifyExperimentProvenance => {
+                "Verify experiment provenance before promoting beyond research review."
+            }
+            Self::ManualOperatorReview => {
+                "Operator review is required before any controlled testnet promotion preview."
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateTestnetReviewFinding {
+    pub section: ResearchCandidateTestnetReviewSection,
+    pub code: String,
+    pub summary: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateTestnetReviewChecklist {
+    pub code: String,
+    pub name: String,
+    pub passed: bool,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateTestnetReviewEvidence {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub candidate_status: Option<ResearchCandidateStatus>,
+    pub latest_review_action: Option<ResearchCandidateReview>,
+    pub latest_qualification_evaluation: Option<ResearchCandidateQualificationEvaluation>,
+    pub qualification_trend: ResearchCandidateQualificationTrend,
+    pub shadow_performance_summary: Option<ResearchCandidateShadowPerformance>,
+    pub latest_observation: Option<StrategyCandidateObservationResult>,
+    pub observation_summary: Option<ResearchCandidateObservationSummaryView>,
+    pub observation_freshness: ResearchCandidateObservationFreshnessStatus,
+    pub observation_age_seconds: Option<i64>,
+    pub observation_expires_at: Option<DateTime<Utc>>,
+    pub runner_alignment: Option<StrategyCandidateRunnerAlignment>,
+    pub readiness_snapshot: Option<ResearchCandidatePromotionReadiness>,
+    pub source_label: String,
+    pub provenance_available: bool,
+    #[serde(default)]
+    pub provenance_notes: Vec<String>,
+    pub candidate_score: Option<Decimal>,
+    pub candidate_pnl_pct: Option<Decimal>,
+    pub candidate_max_drawdown_pct: Option<Decimal>,
+    pub candidate_trade_count: Option<i32>,
+    pub candidate_win_rate: Option<Decimal>,
+    pub candidate_fee_drag: Option<Decimal>,
+    pub experiment_id: Option<Uuid>,
+    pub experiment_run_id: Option<Uuid>,
+    #[serde(default)]
+    pub operator_report_findings: Vec<ResearchCandidateTestnetReviewFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateTestnetReviewDossier {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub candidate_status: Option<ResearchCandidateStatus>,
+    pub status: ResearchCandidateTestnetReviewStatus,
+    pub evidence: ResearchCandidateTestnetReviewEvidence,
+    #[serde(default)]
+    pub checklist: Vec<ResearchCandidateTestnetReviewChecklist>,
+    #[serde(default)]
+    pub findings: Vec<ResearchCandidateTestnetReviewFinding>,
+    #[serde(default)]
+    pub blockers: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub recommendations: Vec<ResearchCandidateTestnetReviewRecommendation>,
+    pub generated_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchCandidateTestnetReviewRequest {
+    pub candidate: Option<ResearchCandidate>,
+    pub latest_review_action: Option<ResearchCandidateReview>,
+    pub ready_review_action_recorded: bool,
+    pub latest_qualification_evaluation: Option<ResearchCandidateQualificationEvaluation>,
+    pub qualification_trend: ResearchCandidateQualificationTrend,
+    pub qualification_evaluation_recent: bool,
+    pub shadow_performance_summary: Option<ResearchCandidateShadowPerformance>,
+    pub latest_observation: Option<StrategyCandidateObservationResult>,
+    pub observation_summary: Option<ResearchCandidateObservationSummaryView>,
+    pub observation_freshness: ResearchCandidateObservationFreshnessStatus,
+    pub observation_age_seconds: Option<i64>,
+    pub runner_alignment: Option<StrategyCandidateRunnerAlignment>,
+    pub readiness_snapshot: Option<ResearchCandidatePromotionReadiness>,
+    pub private_stream_stale_warning: bool,
+    pub require_ready_review_action: bool,
+    pub no_execution_table_mutation: bool,
+    pub generated_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+    pub operator_report_findings: Vec<ResearchCandidateTestnetReviewFinding>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchCandidateWatchlistEntry {
     pub candidate_id: Uuid,
@@ -1789,6 +2001,555 @@ pub fn is_research_candidate_evaluation_stale(
     stale_after: Duration,
 ) -> bool {
     now - evaluation.evaluated_at > stale_after
+}
+
+fn testnet_review_checklist_item(
+    code: &str,
+    name: &str,
+    passed: bool,
+    summary: impl Into<String>,
+) -> ResearchCandidateTestnetReviewChecklist {
+    ResearchCandidateTestnetReviewChecklist {
+        code: code.to_string(),
+        name: name.to_string(),
+        passed,
+        summary: summary.into(),
+    }
+}
+
+fn testnet_review_finding(
+    section: ResearchCandidateTestnetReviewSection,
+    code: &str,
+    summary: impl Into<String>,
+    detail: Option<String>,
+    blocking: bool,
+) -> ResearchCandidateTestnetReviewFinding {
+    ResearchCandidateTestnetReviewFinding {
+        section,
+        code: code.to_string(),
+        summary: summary.into(),
+        detail,
+        blocking,
+    }
+}
+
+fn near_observation_expiry(age_seconds: Option<i64>, max_age_seconds: Option<i64>) -> bool {
+    match (age_seconds, max_age_seconds) {
+        (Some(age), Some(max_age)) if max_age > 0 => age.saturating_mul(5) >= max_age * 4,
+        _ => false,
+    }
+}
+
+fn checklist_summary(passed: bool, success: &'static str, failure: &'static str) -> String {
+    if passed {
+        success.to_string()
+    } else {
+        failure.to_string()
+    }
+}
+
+fn provenance_label(candidate: Option<&ResearchCandidate>) -> String {
+    match candidate {
+        Some(value) if value.experiment_run_id.is_some() => "EXPERIMENT_RUN".to_string(),
+        Some(_) => "MANUAL".to_string(),
+        None => "UNKNOWN".to_string(),
+    }
+}
+
+pub fn evaluate_research_candidate_testnet_review_dossier(
+    request: &ResearchCandidateTestnetReviewRequest,
+) -> ResearchCandidateTestnetReviewDossier {
+    let candidate = request.candidate.as_ref();
+    let candidate_id = candidate
+        .map(|value| value.id)
+        .or_else(|| {
+            request
+                .latest_observation
+                .as_ref()
+                .map(|value| value.candidate_id)
+                .or_else(|| {
+                    request
+                        .latest_qualification_evaluation
+                        .as_ref()
+                        .map(|value| value.candidate_id)
+                })
+        })
+        .unwrap_or(request.correlation_id);
+    let strategy_id = candidate
+        .map(|value| value.strategy_id.clone())
+        .or_else(|| {
+            request
+                .latest_observation
+                .as_ref()
+                .map(|value| value.strategy_id.clone())
+        })
+        .or_else(|| {
+            request
+                .shadow_performance_summary
+                .as_ref()
+                .map(|value| value.strategy_id.clone())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let symbol = candidate
+        .map(|value| value.symbol.clone())
+        .or_else(|| {
+            request
+                .latest_observation
+                .as_ref()
+                .map(|value| value.symbol.clone())
+        })
+        .or_else(|| {
+            request
+                .shadow_performance_summary
+                .as_ref()
+                .map(|value| value.symbol.clone())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let timeframe = candidate
+        .map(|value| value.timeframe.clone())
+        .or_else(|| {
+            request
+                .latest_observation
+                .as_ref()
+                .map(|value| value.timeframe.clone())
+        })
+        .or_else(|| {
+            request
+                .shadow_performance_summary
+                .as_ref()
+                .map(|value| value.timeframe.clone())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let latest_qualification = request.latest_qualification_evaluation.as_ref();
+    let latest_review = request.latest_review_action.as_ref();
+    let shadow_performance = request.shadow_performance_summary.as_ref();
+    let latest_observation = request.latest_observation.as_ref();
+    let readiness = request.readiness_snapshot.as_ref();
+    let runner_alignment = request.runner_alignment.as_ref();
+    let default_thresholds = ResearchCandidateQualificationThresholds::default();
+    let total_shadow_runs = shadow_performance
+        .map(|value| value.total_shadow_runs)
+        .or_else(|| latest_qualification.map(|value| value.total_shadow_runs))
+        .unwrap_or(0);
+    let current_status = candidate.map(|value| value.status);
+    let fresh_observation =
+        request.observation_freshness == ResearchCandidateObservationFreshnessStatus::Fresh;
+    let runner_matches = runner_alignment
+        .map(|value| value.strategy_config_matches_runner)
+        .unwrap_or(false);
+    let readiness_status = readiness.and_then(|value| value.readiness_status);
+    let latest_qualification_status = latest_qualification.map(|value| value.status);
+    let threshold_override_below_default = latest_qualification
+        .map(|value| {
+            value.thresholds.min_shadow_runs < default_thresholds.min_shadow_runs
+                || value.thresholds.min_would_submit_count
+                    < default_thresholds.min_would_submit_count
+        })
+        .unwrap_or(false);
+
+    let mut findings = Vec::new();
+    let mut recommendations = BTreeSet::new();
+
+    if candidate.is_none() {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Identity,
+            "candidate_missing",
+            "Research candidate was not found.",
+            None,
+            true,
+        ));
+    }
+
+    if matches!(
+        current_status,
+        Some(ResearchCandidateStatus::Rejected | ResearchCandidateStatus::Archived)
+    ) {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Identity,
+            "candidate_inactive",
+            format!(
+                "Candidate status {} is blocked for testnet review.",
+                current_status
+                    .expect("status should exist for inactive candidate")
+                    .as_str()
+            ),
+            None,
+            true,
+        ));
+    }
+
+    if matches!(
+        current_status,
+        Some(ResearchCandidateStatus::Discovered | ResearchCandidateStatus::Observing)
+    ) {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Identity,
+            "candidate_not_accepted_for_shadow",
+            "Candidate is not yet accepted for shadow review promotion staging.",
+            None,
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+    }
+
+    if !fresh_observation {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Observation,
+            "fresh_observation_missing",
+            "Fresh observation is missing or stale.",
+            latest_observation
+                .and_then(|value| value.observation_expires_at)
+                .map(|value| format!("observation expires at {}", value.to_rfc3339())),
+            true,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::RefreshObservation);
+    } else if near_observation_expiry(
+        request.observation_age_seconds,
+        latest_observation.and_then(|value| value.observation_max_age_seconds),
+    ) {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Observation,
+            "observation_near_expiry",
+            "Fresh observation is close to expiry.",
+            None,
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::RefreshObservation);
+    }
+
+    if latest_qualification_status == Some(ResearchCandidateQualificationStatus::NotQualified) {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Qualification,
+            "qualification_not_qualified",
+            "Latest qualification evaluation is NOT_QUALIFIED.",
+            None,
+            true,
+        ));
+        recommendations
+            .insert(ResearchCandidateTestnetReviewRecommendation::ReevaluateQualification);
+    } else if latest_qualification_status == Some(ResearchCandidateQualificationStatus::Degraded) {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Qualification,
+            "qualification_degraded",
+            "Latest qualification evaluation is DEGRADED.",
+            None,
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+    } else if latest_qualification.is_none() || !request.qualification_evaluation_recent {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Qualification,
+            "qualification_not_recent",
+            "No recent qualification evaluation is available.",
+            latest_qualification
+                .map(|value| format!("latest evaluation at {}", value.evaluated_at.to_rfc3339())),
+            false,
+        ));
+        recommendations
+            .insert(ResearchCandidateTestnetReviewRecommendation::ReevaluateQualification);
+    }
+
+    if threshold_override_below_default {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Qualification,
+            "threshold_override_below_default",
+            "Qualification used a threshold override below defaults.",
+            None,
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+    }
+
+    if !runner_matches {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::RunnerAlignment,
+            "runner_mismatch",
+            "Current runner alignment does not match the candidate.",
+            runner_alignment
+                .map(|value| value.mismatch_reasons.join(" | "))
+                .filter(|value| !value.is_empty()),
+            true,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::FixRunnerAlignment);
+    }
+
+    if readiness_status == Some(ExecutionReadinessStatus::NotReady)
+        || readiness.map(|value| !value.is_ready).unwrap_or(false)
+    {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Readiness,
+            "readiness_not_ready",
+            "Latest readiness snapshot is NOT_READY for testnet review purposes.",
+            readiness
+                .map(|value| value.blockers.join(" | "))
+                .filter(|value| !value.is_empty()),
+            true,
+        ));
+        recommendations
+            .insert(ResearchCandidateTestnetReviewRecommendation::ClearReadinessBlockers);
+    } else if matches!(
+        readiness_status,
+        Some(ExecutionReadinessStatus::Degraded | ExecutionReadinessStatus::Unknown) | None
+    ) {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Readiness,
+            "readiness_requires_review",
+            "Latest readiness snapshot is degraded, unknown, or missing.",
+            readiness_status.map(|value| value.as_str().to_string()),
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+    }
+
+    if total_shadow_runs <= 0 {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::ShadowPerformance,
+            "shadow_runs_missing",
+            "No linked shadow runs are available for review.",
+            None,
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
+    } else if total_shadow_runs < default_thresholds.min_shadow_runs {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::ShadowPerformance,
+            "shadow_runs_below_default",
+            format!(
+                "Linked shadow runs {} are below the default minimum {}.",
+                total_shadow_runs, default_thresholds.min_shadow_runs
+            ),
+            None,
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
+    }
+
+    if request.require_ready_review_action && !request.ready_review_action_recorded {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::OperatorReview,
+            "ready_review_action_missing",
+            "MARK_READY_FOR_TESTNET_REVIEW has not been recorded.",
+            latest_review.map(|value| format!("latest review action is {}", value.action.as_str())),
+            true,
+        ));
+        recommendations
+            .insert(ResearchCandidateTestnetReviewRecommendation::RecordReadyForTestnetReview);
+    }
+
+    if request.private_stream_stale_warning {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Controls,
+            "private_stream_stale",
+            "Exchange private stream freshness is stale for review context.",
+            None,
+            false,
+        ));
+        recommendations
+            .insert(ResearchCandidateTestnetReviewRecommendation::ReviewPrivateStreamFreshness);
+    }
+
+    let provenance_available = candidate
+        .map(|value| value.experiment_id.is_some() || value.experiment_run_id.is_some())
+        .unwrap_or(false);
+    if !provenance_available {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Provenance,
+            "experiment_provenance_missing",
+            "Experiment provenance is missing; manual verification is required.",
+            None,
+            false,
+        ));
+        recommendations
+            .insert(ResearchCandidateTestnetReviewRecommendation::VerifyExperimentProvenance);
+    }
+
+    findings.extend(request.operator_report_findings.iter().cloned());
+
+    let blockers = findings
+        .iter()
+        .filter(|item| item.blocking)
+        .map(|item| item.summary.clone())
+        .collect::<Vec<_>>();
+    let warnings = findings
+        .iter()
+        .filter(|item| !item.blocking)
+        .map(|item| item.summary.clone())
+        .collect::<Vec<_>>();
+
+    let status = if !blockers.is_empty() {
+        ResearchCandidateTestnetReviewStatus::Blocked
+    } else if total_shadow_runs <= 0 || total_shadow_runs < default_thresholds.min_shadow_runs {
+        ResearchCandidateTestnetReviewStatus::NeedsMoreShadowData
+    } else if latest_qualification_status == Some(ResearchCandidateQualificationStatus::Degraded)
+        || !request.qualification_evaluation_recent
+        || request.private_stream_stale_warning
+        || matches!(readiness_status, Some(ExecutionReadinessStatus::Degraded))
+    {
+        ResearchCandidateTestnetReviewStatus::NeedsOperatorReview
+    } else if current_status != Some(ResearchCandidateStatus::AcceptedForShadow)
+        || latest_qualification.is_none()
+        || matches!(
+            latest_qualification_status,
+            Some(ResearchCandidateQualificationStatus::NeedsMoreData)
+                | Some(ResearchCandidateQualificationStatus::Unknown)
+                | None
+        )
+        || matches!(
+            readiness_status,
+            Some(ExecutionReadinessStatus::Unknown) | None
+        )
+    {
+        ResearchCandidateTestnetReviewStatus::NotReady
+    } else {
+        ResearchCandidateTestnetReviewStatus::ReadyForReview
+    };
+
+    recommendations.insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+
+    let checklist = vec![
+        testnet_review_checklist_item(
+            "experiment_exists",
+            "Experiment exists",
+            provenance_available,
+            checklist_summary(
+                provenance_available,
+                "Experiment provenance is present.",
+                "Experiment provenance is missing.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "candidate_observed",
+            "Candidate observed",
+            latest_observation.is_some(),
+            checklist_summary(
+                latest_observation.is_some(),
+                "Candidate has at least one persisted observation.",
+                "Candidate has no persisted observation.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "candidate_accepted_for_shadow",
+            "Candidate accepted for shadow",
+            current_status == Some(ResearchCandidateStatus::AcceptedForShadow),
+            checklist_summary(
+                current_status == Some(ResearchCandidateStatus::AcceptedForShadow),
+                "Candidate is in ACCEPTED_FOR_SHADOW.",
+                "Candidate is not in ACCEPTED_FOR_SHADOW.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "candidate_promoted_to_shadow_runner_config",
+            "Candidate promoted to shadow runner config",
+            runner_matches,
+            checklist_summary(
+                runner_matches,
+                "Runner alignment matches the candidate.",
+                "Runner alignment does not match the candidate.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "shadow_runs_linked",
+            "Shadow runs linked",
+            total_shadow_runs > 0,
+            checklist_summary(
+                total_shadow_runs > 0,
+                "Linked shadow runs exist.",
+                "No linked shadow runs exist.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "qualification_evaluated",
+            "Qualification evaluated",
+            latest_qualification.is_some(),
+            checklist_summary(
+                latest_qualification.is_some(),
+                "Qualification evaluation exists.",
+                "Qualification evaluation is missing.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "operator_reviewed",
+            "Operator reviewed",
+            latest_review.is_some(),
+            checklist_summary(
+                latest_review.is_some(),
+                "At least one review action has been recorded.",
+                "No review action has been recorded.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "no_execution_table_mutation",
+            "No execution table mutation",
+            request.no_execution_table_mutation,
+            checklist_summary(
+                request.no_execution_table_mutation,
+                "Dossier evaluation is read-only.",
+                "Execution table mutation is not allowed.",
+            ),
+        ),
+        testnet_review_checklist_item(
+            "latest_readiness_not_not_ready",
+            "Latest readiness not NOT_READY",
+            readiness_status != Some(ExecutionReadinessStatus::NotReady),
+            checklist_summary(
+                readiness_status != Some(ExecutionReadinessStatus::NotReady),
+                "Latest readiness is not NOT_READY.",
+                "Latest readiness is NOT_READY.",
+            ),
+        ),
+    ];
+
+    ResearchCandidateTestnetReviewDossier {
+        candidate_id,
+        strategy_id: strategy_id.clone(),
+        symbol: symbol.clone(),
+        timeframe: timeframe.clone(),
+        candidate_status: current_status,
+        status,
+        evidence: ResearchCandidateTestnetReviewEvidence {
+            candidate_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            candidate_status: current_status,
+            latest_review_action: request.latest_review_action.clone(),
+            latest_qualification_evaluation: request.latest_qualification_evaluation.clone(),
+            qualification_trend: request.qualification_trend,
+            shadow_performance_summary: request.shadow_performance_summary.clone(),
+            latest_observation: request.latest_observation.clone(),
+            observation_summary: request.observation_summary.clone(),
+            observation_freshness: request.observation_freshness,
+            observation_age_seconds: request.observation_age_seconds,
+            observation_expires_at: latest_observation
+                .and_then(|value| value.observation_expires_at),
+            runner_alignment: request.runner_alignment.clone(),
+            readiness_snapshot: request.readiness_snapshot.clone(),
+            source_label: provenance_label(candidate),
+            provenance_available,
+            provenance_notes: if provenance_available {
+                Vec::new()
+            } else {
+                vec!["candidate has no linked experiment provenance".to_string()]
+            },
+            candidate_score: candidate.and_then(|value| value.score),
+            candidate_pnl_pct: candidate.and_then(|value| value.pnl_pct),
+            candidate_max_drawdown_pct: candidate.and_then(|value| value.max_drawdown_pct),
+            candidate_trade_count: candidate.and_then(|value| value.trade_count),
+            candidate_win_rate: candidate.and_then(|value| value.win_rate),
+            candidate_fee_drag: candidate.and_then(|value| value.fee_drag),
+            experiment_id: candidate.and_then(|value| value.experiment_id),
+            experiment_run_id: candidate.and_then(|value| value.experiment_run_id),
+            operator_report_findings: request.operator_report_findings.clone(),
+        },
+        checklist,
+        findings,
+        blockers,
+        warnings,
+        recommendations: recommendations.into_iter().collect(),
+        generated_at: request.generated_at,
+        correlation_id: request.correlation_id,
+    }
 }
 
 pub fn research_candidate_qualification_evaluation_from_result(
@@ -3496,6 +4257,170 @@ mod tests {
         }
     }
 
+    fn sample_research_candidate(status: ResearchCandidateStatus) -> ResearchCandidate {
+        ResearchCandidate {
+            id: Uuid::from_u128(0x100),
+            experiment_id: Some(Uuid::from_u128(0x101)),
+            experiment_run_id: Some(Uuid::from_u128(0x102)),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            config: serde_json::json!({ "lookback": 20 }),
+            score: Some(Decimal::new(87, 0)),
+            pnl_pct: Some(Decimal::new(1245, 2)),
+            max_drawdown_pct: Some(Decimal::new(315, 2)),
+            trade_count: Some(32),
+            win_rate: Some(Decimal::new(55, 0)),
+            fee_drag: Some(Decimal::new(25, 2)),
+            status,
+            rejection_reason: None,
+            notes: None,
+            created_at: ts(0, 0, 0),
+            updated_at: ts(1, 0, 0),
+            correlation_id: Some(Uuid::from_u128(0x103)),
+        }
+    }
+
+    fn sample_observation(
+        readiness_status: ExecutionReadinessStatus,
+    ) -> StrategyCandidateObservationResult {
+        StrategyCandidateObservationResult {
+            observation_id: Uuid::from_u128(0x200),
+            candidate_id: Uuid::from_u128(0x100),
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            status: StrategyCandidateObservationStatus::ReadyForReview,
+            requirements: base_observation_requirement(),
+            runner_alignment: aligned_runner_alignment(),
+            summary: StrategyCandidateObservationSummary {
+                candidate_id: Uuid::from_u128(0x100),
+                window_start: ts(0, 0, 0),
+                window_end: ts(1, 0, 0),
+                shadow_runs: 35,
+                would_submit_count: 8,
+                no_signal_count: 4,
+                risk_rejected_count: 3,
+                skipped_count: 1,
+                risk_rejection_rate: Decimal::new(857, 2),
+                no_signal_rate: Decimal::new(1143, 2),
+                latest_readiness_status: Some(readiness_status),
+                latest_readiness_score: Some(91),
+                runner_alignment: aligned_runner_alignment(),
+                decision: StrategyCandidateObservationDecision::Pass,
+                findings: vec![StrategyCandidateObservationFinding {
+                    code: "requirements_met".to_string(),
+                    message: "Requirements met.".to_string(),
+                    blocking: false,
+                }],
+                recommendations: vec!["Ready for review.".to_string()],
+                created_at: ts(1, 0, 0),
+            },
+            decision: StrategyCandidateObservationDecision::Pass,
+            started_at: ts(0, 0, 0),
+            evaluated_at: ts(1, 0, 0),
+            last_observed_at: ts(1, 0, 0),
+            observation_expires_at: Some(ts(1, 15, 0)),
+            observation_max_age_seconds: Some(900),
+            observation_snapshot_hash: Some("hash".to_string()),
+            runner_config_snapshot: None,
+            readiness_snapshot: None,
+            created_by: None,
+            correlation_id: Some(Uuid::from_u128(0x201)),
+        }
+    }
+
+    fn sample_testnet_review_request() -> ResearchCandidateTestnetReviewRequest {
+        let candidate = sample_research_candidate(ResearchCandidateStatus::AcceptedForShadow);
+        let observation = sample_observation(ExecutionReadinessStatus::Ready);
+        let performance = qualification_performance(35, 8, 3, 1, 0);
+        let qualification = ResearchCandidateQualificationEvaluation {
+            id: Uuid::from_u128(0x300),
+            candidate_id: candidate.id,
+            status: ResearchCandidateQualificationStatus::Qualified,
+            score: 91,
+            latest_readiness_status: Some(ExecutionReadinessStatus::Ready),
+            total_shadow_runs: performance.total_shadow_runs,
+            would_submit_count: performance.would_submit_count,
+            risk_rejection_rate_pct: Some(performance.risk_rejection_rate_pct),
+            warnings: Vec::new(),
+            blockers: Vec::new(),
+            recommendations: vec![
+                ResearchCandidateQualificationRecommendation::ReadyForTestnetPromotionConsideration,
+            ],
+            thresholds: ResearchCandidateQualificationThresholds::default(),
+            evaluated_at: ts(1, 0, 0),
+            correlation_id: Some(Uuid::from_u128(0x301)),
+        };
+        let readiness = ResearchCandidatePromotionReadiness {
+            candidate_id: candidate.id,
+            target: "TESTNET_SHADOW".to_string(),
+            latest_observation_id: Some(observation.observation_id),
+            latest_observation_decision: Some(observation.decision),
+            last_observed_at: Some(observation.last_observed_at),
+            observation_expires_at: observation.observation_expires_at,
+            observation_age_seconds: Some(0),
+            observation_max_age_seconds: observation.observation_max_age_seconds,
+            observation_snapshot_hash: observation.observation_snapshot_hash.clone(),
+            latest_recommendation: Some("Ready for review.".to_string()),
+            readiness_status: Some(ExecutionReadinessStatus::Ready),
+            readiness_score: Some(91),
+            runner_alignment: aligned_runner_alignment(),
+            blockers: Vec::new(),
+            is_ready: true,
+            evaluated_at: ts(1, 0, 0),
+        };
+
+        ResearchCandidateTestnetReviewRequest {
+            candidate: Some(candidate),
+            latest_review_action: Some(ResearchCandidateReview {
+                id: Uuid::from_u128(0x400),
+                candidate_id: Uuid::from_u128(0x100),
+                action: ResearchCandidateReviewAction::MarkReadyForTestnetReview,
+                status: ResearchCandidateReviewStatus::Recorded,
+                previous_candidate_status: ResearchCandidateStatus::AcceptedForShadow,
+                next_candidate_status: None,
+                reason: Some("ready".to_string()),
+                notes: None,
+                actor_id: Some(Uuid::from_u128(0x401)),
+                created_at: ts(1, 0, 0),
+                correlation_id: Some(Uuid::from_u128(0x402)),
+                qualification_evaluation_id: Some(Uuid::from_u128(0x300)),
+            }),
+            ready_review_action_recorded: true,
+            latest_qualification_evaluation: Some(qualification),
+            qualification_trend: ResearchCandidateQualificationTrend::Stable,
+            qualification_evaluation_recent: true,
+            shadow_performance_summary: Some(performance),
+            latest_observation: Some(observation.clone()),
+            observation_summary: Some(ResearchCandidateObservationSummaryView {
+                candidate_id: Uuid::from_u128(0x100),
+                total_observations: 1,
+                latest_observation_status: Some(observation.status),
+                latest_runner_alignment: Some(aligned_runner_alignment()),
+                latest_readiness_status: Some(ExecutionReadinessStatus::Ready),
+                latest_recommendations: vec!["Ready for review.".to_string()],
+                stale_count: 0,
+                alignment_mismatch_count: 0,
+                runner_config_drift_count: 0,
+                last_observed_at: Some(observation.last_observed_at),
+                current_accept_for_shadow_eligible: true,
+                current_accept_for_shadow_blockers: Vec::new(),
+                computed_at: ts(1, 0, 0),
+            }),
+            observation_freshness: ResearchCandidateObservationFreshnessStatus::Fresh,
+            observation_age_seconds: Some(0),
+            runner_alignment: Some(aligned_runner_alignment()),
+            readiness_snapshot: Some(readiness),
+            private_stream_stale_warning: false,
+            require_ready_review_action: true,
+            no_execution_table_mutation: true,
+            generated_at: ts(1, 0, 0),
+            correlation_id: Uuid::from_u128(0x500),
+            operator_report_findings: Vec::new(),
+        }
+    }
+
     fn qualification_performance(
         total_shadow_runs: i64,
         would_submit_count: i64,
@@ -4215,6 +5140,144 @@ mod tests {
         assert_eq!(
             result.status,
             ResearchCandidateReviewStatus::CandidateStatusUpdated
+        );
+    }
+
+    #[test]
+    fn testnet_review_dossier_rejected_candidate_is_blocked() {
+        let mut request = sample_testnet_review_request();
+        request.candidate = Some(sample_research_candidate(ResearchCandidateStatus::Rejected));
+
+        let dossier = evaluate_research_candidate_testnet_review_dossier(&request);
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::Blocked
+        );
+        assert!(dossier
+            .blockers
+            .iter()
+            .any(|item| item.contains("blocked for testnet review")));
+    }
+
+    #[test]
+    fn testnet_review_dossier_without_observation_is_blocked() {
+        let mut request = sample_testnet_review_request();
+        request.latest_observation = None;
+        request.observation_summary = None;
+        request.observation_freshness = ResearchCandidateObservationFreshnessStatus::Unknown;
+        request.observation_age_seconds = None;
+        request.readiness_snapshot = None;
+
+        let dossier = evaluate_research_candidate_testnet_review_dossier(&request);
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::Blocked
+        );
+        assert!(dossier
+            .blockers
+            .iter()
+            .any(|item| item.contains("Fresh observation")));
+    }
+
+    #[test]
+    fn testnet_review_dossier_without_shadow_runs_needs_more_shadow_data() {
+        let mut request = sample_testnet_review_request();
+        request.shadow_performance_summary = Some(qualification_performance(0, 0, 0, 0, 0));
+        if let Some(evaluation) = request.latest_qualification_evaluation.as_mut() {
+            evaluation.total_shadow_runs = 0;
+            evaluation.would_submit_count = 0;
+        }
+
+        let dossier = evaluate_research_candidate_testnet_review_dossier(&request);
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::NeedsMoreShadowData
+        );
+        assert!(dossier
+            .warnings
+            .iter()
+            .any(|item| item.contains("No linked shadow runs")));
+    }
+
+    #[test]
+    fn testnet_review_dossier_not_qualified_is_blocked() {
+        let mut request = sample_testnet_review_request();
+        if let Some(evaluation) = request.latest_qualification_evaluation.as_mut() {
+            evaluation.status = ResearchCandidateQualificationStatus::NotQualified;
+        }
+
+        let dossier = evaluate_research_candidate_testnet_review_dossier(&request);
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::Blocked
+        );
+        assert!(dossier
+            .blockers
+            .iter()
+            .any(|item| item.contains("NOT_QUALIFIED")));
+    }
+
+    #[test]
+    fn testnet_review_dossier_degraded_qualification_needs_operator_review() {
+        let mut request = sample_testnet_review_request();
+        if let Some(evaluation) = request.latest_qualification_evaluation.as_mut() {
+            evaluation.status = ResearchCandidateQualificationStatus::Degraded;
+        }
+
+        let dossier = evaluate_research_candidate_testnet_review_dossier(&request);
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::NeedsOperatorReview
+        );
+        assert!(dossier
+            .warnings
+            .iter()
+            .any(|item| item.contains("DEGRADED")));
+    }
+
+    #[test]
+    fn testnet_review_dossier_marked_ready_with_evidence_is_ready_for_review() {
+        let dossier =
+            evaluate_research_candidate_testnet_review_dossier(&sample_testnet_review_request());
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::ReadyForReview
+        );
+        assert!(dossier.blockers.is_empty());
+        assert_eq!(
+            dossier.recommendations,
+            vec![ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview]
+        );
+    }
+
+    #[test]
+    fn testnet_review_dossier_checklist_order_is_deterministic() {
+        let dossier =
+            evaluate_research_candidate_testnet_review_dossier(&sample_testnet_review_request());
+
+        assert_eq!(
+            dossier
+                .checklist
+                .iter()
+                .map(|item| item.code.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "experiment_exists",
+                "candidate_observed",
+                "candidate_accepted_for_shadow",
+                "candidate_promoted_to_shadow_runner_config",
+                "shadow_runs_linked",
+                "qualification_evaluated",
+                "operator_reviewed",
+                "no_execution_table_mutation",
+                "latest_readiness_not_not_ready",
+            ]
         );
     }
 

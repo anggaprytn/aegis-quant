@@ -1335,6 +1335,105 @@ export type ResearchCandidateQualificationHistoryResponse = {
   timestamp: string;
 };
 
+export type ResearchCandidateTestnetReviewStatus =
+  | "READY_FOR_REVIEW"
+  | "NOT_READY"
+  | "NEEDS_MORE_SHADOW_DATA"
+  | "NEEDS_OPERATOR_REVIEW"
+  | "BLOCKED";
+
+export type ResearchCandidateTestnetReviewSection =
+  | "IDENTITY"
+  | "QUALIFICATION"
+  | "SHADOW_PERFORMANCE"
+  | "OBSERVATION"
+  | "RUNNER_ALIGNMENT"
+  | "READINESS"
+  | "PROVENANCE"
+  | "OPERATOR_REVIEW"
+  | "CONTROLS";
+
+export type ResearchCandidateTestnetReviewRecommendation =
+  | "REFRESH_OBSERVATION"
+  | "GATHER_MORE_SHADOW_DATA"
+  | "RE_EVALUATE_QUALIFICATION"
+  | "FIX_RUNNER_ALIGNMENT"
+  | "CLEAR_READINESS_BLOCKERS"
+  | "RECORD_READY_FOR_TESTNET_REVIEW"
+  | "REVIEW_PRIVATE_STREAM_FRESHNESS"
+  | "VERIFY_EXPERIMENT_PROVENANCE"
+  | "MANUAL_OPERATOR_REVIEW";
+
+export type ResearchCandidateTestnetReviewFinding = {
+  section: ResearchCandidateTestnetReviewSection;
+  code: string;
+  summary: string;
+  detail?: string | null;
+  blocking: boolean;
+};
+
+export type ResearchCandidateTestnetReviewChecklist = {
+  code: string;
+  name: string;
+  passed: boolean;
+  summary: string;
+};
+
+export type ResearchCandidateTestnetReviewEvidence = {
+  candidate_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  candidate_status: ResearchCandidateStatus | null;
+  latest_review_action: ResearchCandidateReview | null;
+  latest_qualification_evaluation: ResearchCandidateQualificationEvaluation | null;
+  qualification_trend: ResearchCandidateQualificationTrend;
+  shadow_performance_summary: ResearchCandidateShadowPerformance | null;
+  latest_observation: StrategyCandidateObservation | null;
+  observation_summary: ResearchCandidateObservationSummary | null;
+  observation_freshness: ResearchCandidateObservationFreshnessStatus;
+  observation_age_seconds: number | null;
+  observation_expires_at: string | null;
+  runner_alignment: StrategyCandidateRunnerAlignment | null;
+  readiness_snapshot: ExecutionReadinessResult | Record<string, unknown> | null;
+  source_label: string;
+  provenance_available: boolean;
+  provenance_notes: string[];
+  candidate_score: string | null;
+  candidate_pnl_pct: string | null;
+  candidate_max_drawdown_pct: string | null;
+  candidate_trade_count: number | null;
+  candidate_win_rate: string | null;
+  candidate_fee_drag: string | null;
+  experiment_id: string | null;
+  experiment_run_id: string | null;
+  operator_report_findings: ResearchCandidateTestnetReviewFinding[];
+};
+
+export type ResearchCandidateTestnetReviewDossier = {
+  candidate_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  candidate_status: ResearchCandidateStatus | null;
+  status: ResearchCandidateTestnetReviewStatus;
+  evidence: ResearchCandidateTestnetReviewEvidence;
+  checklist: ResearchCandidateTestnetReviewChecklist[];
+  findings: ResearchCandidateTestnetReviewFinding[];
+  blockers: string[];
+  warnings: string[];
+  recommendations: ResearchCandidateTestnetReviewRecommendation[];
+  generated_at: string;
+  correlation_id: string;
+};
+
+export type ResearchCandidateTestnetReviewDossierResponse = {
+  dossier: ResearchCandidateTestnetReviewDossier;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateWatchlistResponse = {
   watchlist: ResearchCandidateWatchlistEntry[];
   request_id: string;

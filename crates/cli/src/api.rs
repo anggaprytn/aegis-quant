@@ -14,21 +14,21 @@ use aegis_core::{
     ResearchCandidateReview, ResearchCandidateReviewRequest, ResearchCandidateReviewResult,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateWatchlistEntry, ResearchDataCoverageResult,
-    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateWatchlistEntry, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
+    RiskConfigVersion, StrategyCandidateObservationResult, StrategyComparisonSummary,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -767,6 +767,17 @@ impl ApiClient {
         self.get(
             &format!("/research/candidates/{candidate_id}/qualification/history"),
             &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_testnet_review_dossier(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateTestnetReviewDossierResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/testnet-review-dossier"),
+            &[],
         )
         .await
     }
@@ -2171,6 +2182,14 @@ pub struct ResearchCandidateQualificationEvaluateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateQualificationHistoryResponse {
     pub history: ResearchCandidateQualificationHistory,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateTestnetReviewDossierResponse {
+    pub dossier: ResearchCandidateTestnetReviewDossier,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

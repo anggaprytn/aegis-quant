@@ -72,6 +72,7 @@ import type {
   ResearchCandidateReviewResponse,
   ResearchCandidateReviewsResponse,
   ResearchCandidateShadowPerformanceResponse,
+  ResearchCandidateTestnetReviewDossierResponse,
   CreateResearchCandidateFromExperimentRunRequest,
   CreateResearchCandidateRequest,
   ResearchCandidateDecisionRequest,
@@ -410,6 +411,10 @@ export const api = {
       `/research/candidates/${id}/qualification/history`,
       undefined,
       { limit },
+    ),
+  getResearchCandidateTestnetReviewDossier: (id: string) =>
+    request<ResearchCandidateTestnetReviewDossierResponse>(
+      `/research/candidates/${id}/testnet-review-dossier`,
     ),
   getResearchCandidateWatchlist: (limit = 50) =>
     request<ResearchCandidateWatchlistResponse>(

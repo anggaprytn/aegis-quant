@@ -6,7 +6,7 @@ use aegis_core::{
     ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateWatchlistEntry, User,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWatchlistEntry, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -2097,6 +2097,85 @@ pub fn print_research_candidate_qualification_evaluation(
             println!("  - {}", recommendation.message());
         }
     }
+}
+
+pub fn print_research_candidate_testnet_review_dossier(
+    dossier: &ResearchCandidateTestnetReviewDossier,
+) {
+    println!("Status: {}", dossier.status.as_str());
+    println!("Candidate: {}", dossier.candidate_id);
+    println!(
+        "Scope: {} {} {}",
+        dossier.strategy_id, dossier.symbol, dossier.timeframe
+    );
+    println!(
+        "Candidate status: {}",
+        dossier
+            .candidate_status
+            .map(|value| value.as_str())
+            .unwrap_or("UNKNOWN")
+    );
+    println!(
+        "Latest review action: {}",
+        dossier
+            .evidence
+            .latest_review_action
+            .as_ref()
+            .map(|value| value.action.as_str())
+            .unwrap_or("NONE")
+    );
+    println!(
+        "Qualification: {}  Trend: {}",
+        dossier
+            .evidence
+            .latest_qualification_evaluation
+            .as_ref()
+            .map(|value| value.status.as_str())
+            .unwrap_or("UNKNOWN"),
+        dossier.evidence.qualification_trend.as_str()
+    );
+    if let Some(performance) = &dossier.evidence.shadow_performance_summary {
+        println!(
+            "Shadow summary: runs={} would_submit={} risk_rejected={} skipped={} error={}",
+            performance.total_shadow_runs,
+            performance.would_submit_count,
+            performance.risk_rejected_count,
+            performance.skipped_count,
+            performance.error_count
+        );
+    } else {
+        println!("Shadow summary: none");
+    }
+    if dossier.blockers.is_empty() {
+        println!("Blockers: none");
+    } else {
+        println!("Blockers:");
+        for blocker in &dossier.blockers {
+            println!("  - {blocker}");
+        }
+    }
+    if dossier.warnings.is_empty() {
+        println!("Warnings: none");
+    } else {
+        println!("Warnings:");
+        for warning in &dossier.warnings {
+            println!("  - {warning}");
+        }
+    }
+    println!("Checklist:");
+    for item in &dossier.checklist {
+        println!(
+            "  - [{}] {}: {}",
+            if item.passed { "x" } else { " " },
+            item.name,
+            item.summary
+        );
+    }
+    println!("Recommendations:");
+    for recommendation in &dossier.recommendations {
+        println!("  - {}", recommendation.message());
+    }
+    println!("This does not submit orders.");
 }
 
 pub fn print_research_candidate_qualification_history(
