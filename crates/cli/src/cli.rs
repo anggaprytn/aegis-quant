@@ -737,6 +737,8 @@ pub enum ResearchCommands {
     #[command(subcommand)]
     Data(ResearchDataCommands),
     #[command(subcommand)]
+    Campaigns(ResearchCampaignCommands),
+    #[command(subcommand)]
     Batches(ResearchBatchCommands),
     #[command(subcommand)]
     Candidates(ResearchCandidateCommands),
@@ -807,6 +809,61 @@ pub struct ResearchBatchRunArgs {
 pub struct ResearchBatchListArgs {
     #[arg(long, default_value_t = 20)]
     pub limit: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchCampaignCommands {
+    Run(ResearchCampaignRunArgs),
+    List(ResearchBatchListArgs),
+    Get { campaign_id: Uuid },
+    Batches { campaign_id: Uuid },
+    Summary { campaign_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCampaignRunArgs {
+    #[arg(long = "strategies", value_delimiter = ',')]
+    pub strategies: Vec<String>,
+    #[arg(long = "symbols", value_delimiter = ',')]
+    pub symbols: Vec<String>,
+    #[arg(long = "timeframes", value_delimiter = ',')]
+    pub timeframes: Vec<String>,
+    #[arg(long = "start")]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "window-hours")]
+    pub window_hours: i64,
+    #[arg(long = "step-hours")]
+    pub step_hours: i64,
+    #[arg(long = "initial-capital", default_value = "10000")]
+    pub initial_capital: rust_decimal::Decimal,
+    #[arg(long = "fee-bps", default_value = "10")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps", default_value = "5")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "max-batches")]
+    pub max_batches: Option<u32>,
+    #[arg(long = "max-candidates-per-batch", default_value_t = 3)]
+    pub max_candidates_per_batch: u32,
+    #[arg(long = "walk-forward-top-n", default_value_t = 3)]
+    pub walk_forward_top_n: u32,
+    #[arg(long = "base-interval", default_value = "1m")]
+    pub base_interval: String,
+    #[arg(long = "lookbacks", value_delimiter = ',', default_value = "10,20,50")]
+    pub lookbacks: Vec<u32>,
+    #[arg(long = "trend-lookbacks", value_delimiter = ',')]
+    pub trend_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "momentum-lookbacks", value_delimiter = ',')]
+    pub momentum_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
+    pub breakout_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "holding-candles", value_delimiter = ',')]
+    pub holding_candles: Option<Vec<u32>>,
+    #[arg(long = "no-repair-degraded-data", default_value_t = false)]
+    pub no_repair_degraded_data: bool,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -35,8 +35,12 @@ import type {
   PaperPositionRecord,
   ResearchDataCoverageResult,
   ResearchBatchRequest,
+  ResearchBatchCandidateSummary,
   ResearchBatchResult,
   ResearchBatchTriage,
+  ResearchCampaignBatchResult,
+  ResearchCampaignRequest,
+  ResearchCampaignResult,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
   ResearchCandidateObservationHistoryItem,
@@ -354,6 +358,25 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
   repair_degraded_data: true,
   create_candidates: true,
   max_candidates: 3,
+};
+
+const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
+  strategies: ["trend_filter_momentum_v1"],
+  symbols: ["BTCUSDT", "ETHUSDT"],
+  experiment_timeframes: ["5m", "15m"],
+  campaign_start: "2024-05-01T00:00:00Z",
+  campaign_end: "2024-05-03T00:00:00Z",
+  window_hours: 24,
+  step_hours: 24,
+  initial_capital: "1000000",
+  fee_bps: "10",
+  slippage_bps: "5",
+  max_candidates_per_batch: 2,
+  repair_degraded_data: true,
+  walk_forward_top_n: 3,
+  base_interval: "1m",
+  lookback_candidates: [10, 20, 50],
+  momentum_lookback_candidates: [2, 3, 5],
 };
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
@@ -819,6 +842,11 @@ function AuthenticatedDashboard({
     useState<ResearchBatchRequest>(DEFAULT_RESEARCH_BATCH_FORM);
   const [selectedResearchBatchId, setSelectedResearchBatchId] = useState<string | null>(null);
   const [lastResearchBatch, setLastResearchBatch] = useState<ResearchBatchResult | null>(null);
+  const [researchCampaignForm, setResearchCampaignForm] =
+    useState<ResearchCampaignRequest>(DEFAULT_RESEARCH_CAMPAIGN_FORM);
+  const [selectedResearchCampaignId, setSelectedResearchCampaignId] = useState<string | null>(null);
+  const [lastResearchCampaign, setLastResearchCampaign] =
+    useState<ResearchCampaignResult | null>(null);
   const [strategyConfigForm, setStrategyConfigForm] =
     useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
   const [strategyDiagnosticsForm, setStrategyDiagnosticsForm] = useState(
@@ -1220,6 +1248,17 @@ function AuthenticatedDashboard({
     queryFn: () => api.getResearchBatchTriage(selectedResearchBatchId ?? ""),
     enabled: Boolean(selectedResearchBatchId),
   });
+  const researchCampaignsQuery = useQuery({
+    queryKey: ["research-campaigns"],
+    queryFn: () => api.listResearchCampaigns(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchCampaignQuery = useQuery({
+    queryKey: ["research-campaign", selectedResearchCampaignId],
+    queryFn: () => api.getResearchCampaign(selectedResearchCampaignId ?? ""),
+    enabled: Boolean(selectedResearchCampaignId),
+  });
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
     queryFn: () => api.getMarketBackfillRuns(20),
@@ -1596,6 +1635,12 @@ function AuthenticatedDashboard({
       setSelectedResearchBatchId(researchBatchesQuery.data.batches[0].batch_id);
     }
   }, [researchBatchesQuery.data?.batches, selectedResearchBatchId]);
+
+  useEffect(() => {
+    if (!selectedResearchCampaignId && researchCampaignsQuery.data?.campaigns[0]) {
+      setSelectedResearchCampaignId(researchCampaignsQuery.data.campaigns[0].campaign_id);
+    }
+  }, [researchCampaignsQuery.data?.campaigns, selectedResearchCampaignId]);
 
   const refreshOperationalData = async () => {
     await Promise.all([
@@ -2166,6 +2211,18 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
     },
   });
+  const researchCampaignMutation = useMutation({
+    mutationFn: () => api.runResearchCampaign(researchCampaignForm),
+    onSuccess: async (response) => {
+      setLastResearchCampaign(response.campaign);
+      setSelectedResearchCampaignId(response.campaign.campaign_id);
+      await queryClient.invalidateQueries({ queryKey: ["research-campaigns"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-campaign"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-batches"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-candidates"] });
+      await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
+    },
+  });
   const paperMarkMutation = useMutation({
     mutationFn: api.markPaperToMarket,
     onSuccess: () => {
@@ -2348,6 +2405,9 @@ function AuthenticatedDashboard({
   const researchBatches = researchBatchesQuery.data?.batches ?? [];
   const selectedResearchBatch: ResearchBatchResult | null =
     selectedResearchBatchQuery.data?.batch ?? lastResearchBatch;
+  const researchCampaigns = researchCampaignsQuery.data?.campaigns ?? [];
+  const selectedResearchCampaign: ResearchCampaignResult | null =
+    selectedResearchCampaignQuery.data?.campaign ?? lastResearchCampaign;
   const selectedExperiment =
     selectedExperimentQuery.data?.experiment ?? null;
   const strategyExperimentRuns =
@@ -4708,6 +4768,229 @@ function AuthenticatedDashboard({
 
           {section === "experiments" && (
             <section className="grid gap-4 xl:grid-cols-12">
+              <Panel className="xl:col-span-12" title="Research Campaigns">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <Field
+                    label="Strategies"
+                    value={researchCampaignForm.strategies.join(",")}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        strategies: parseStringList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Symbols"
+                    value={researchCampaignForm.symbols.join(",")}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        symbols: parseStringList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Timeframes"
+                    value={researchCampaignForm.experiment_timeframes.join(",")}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        experiment_timeframes: parseStringList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Start"
+                    value={researchCampaignForm.campaign_start ?? ""}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        campaign_start: value || null,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="End"
+                    value={researchCampaignForm.campaign_end ?? ""}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        campaign_end: value || null,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Window Hours"
+                    value={String(researchCampaignForm.window_hours ?? 24)}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        window_hours: Number(value) || 24,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Step Hours"
+                    value={String(researchCampaignForm.step_hours ?? 24)}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        step_hours: Number(value) || 24,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Initial Capital"
+                    value={researchCampaignForm.initial_capital}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        initial_capital: value,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Fee Bps"
+                    value={researchCampaignForm.fee_bps}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({ ...current, fee_bps: value }))
+                    }
+                  />
+                  <Field
+                    label="Slippage Bps"
+                    value={researchCampaignForm.slippage_bps}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        slippage_bps: value,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Batches"
+                    value={String(researchCampaignForm.max_batches ?? "")}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        max_batches: value ? Number(value) || null : null,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Candidates / Batch"
+                    value={String(researchCampaignForm.max_candidates_per_batch ?? 2)}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        max_candidates_per_batch: Number(value) || 2,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={researchCampaignForm.repair_degraded_data ?? true}
+                      onChange={(event) =>
+                        setResearchCampaignForm((current) => ({
+                          ...current,
+                          repair_degraded_data: event.target.checked,
+                        }))
+                      }
+                    />
+                    Repair degraded data
+                  </label>
+                  <ActionButton
+                    label="Run Campaign"
+                    onClick={() => researchCampaignMutation.mutate()}
+                    busy={researchCampaignMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(researchCampaignMutation.error)}
+                    success={
+                      lastResearchCampaign
+                        ? `Campaign ${shortenId(lastResearchCampaign.campaign_id)} ${lastResearchCampaign.status}`
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <div>
+                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+                      Recent Campaigns
+                    </div>
+                    <ResearchCampaignsTable
+                      campaigns={researchCampaigns}
+                      selectedId={selectedResearchCampaignId}
+                      onSelect={setSelectedResearchCampaignId}
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+                      Summary
+                    </div>
+                    <KeyValue
+                      items={[
+                        ["Campaign ID", selectedResearchCampaign?.campaign_id ?? "N/A"],
+                        ["Status", selectedResearchCampaign?.status ?? "N/A"],
+                        [
+                          "Batches",
+                          selectedResearchCampaign
+                            ? `${selectedResearchCampaign.summary.total_batches_completed}/${selectedResearchCampaign.summary.total_batches_planned}`
+                            : "N/A",
+                        ],
+                        [
+                          "Failed",
+                          String(selectedResearchCampaign?.summary.total_batches_failed ?? 0),
+                        ],
+                        [
+                          "Actionable",
+                          String(selectedResearchCampaign?.summary.actionable_batches ?? 0),
+                        ],
+                        [
+                          "Overfit",
+                          String(selectedResearchCampaign?.summary.overfit_only_batches ?? 0),
+                        ],
+                        ["Weak", String(selectedResearchCampaign?.summary.weak_batches ?? 0)],
+                        [
+                          "Best",
+                          selectedResearchCampaign?.summary.best_strategy_symbol_timeframe ?? "-",
+                        ],
+                      ]}
+                      loading={selectedResearchCampaignQuery.isLoading}
+                      error={getErrorMessage(selectedResearchCampaignQuery.error)}
+                    />
+                  </div>
+                  <div>
+                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+                      Findings / Recommendations
+                    </div>
+                    <SimpleList
+                      items={[
+                        ...(selectedResearchCampaign?.summary.findings ?? []).map(
+                          (finding) => `${finding.severity} ${finding.code}: ${finding.message}`,
+                        ),
+                        ...(selectedResearchCampaign?.summary.recommendations ?? []).map(
+                          (recommendation) =>
+                            `${recommendation.priority} ${recommendation.code}: ${recommendation.message}`,
+                        ),
+                      ]}
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <ResearchCampaignBatchTable
+                    batches={selectedResearchCampaign?.batches ?? []}
+                  />
+                  <ResearchCampaignTopCandidatesTable
+                    candidates={selectedResearchCampaign?.summary.top_candidates ?? []}
+                    onSelectCandidate={setSelectedResearchCandidateId}
+                  />
+                </div>
+              </Panel>
               <Panel className="xl:col-span-12" title="Research Batches">
                 <div className="grid gap-3 md:grid-cols-4">
                   {(
@@ -8531,6 +8814,105 @@ function ResearchBatchesTable({
         </button>
       ))}
     </div>
+  );
+}
+
+function ResearchCampaignsTable({
+  campaigns,
+  selectedId,
+  onSelect,
+}: {
+  campaigns: ResearchCampaignResult[];
+  selectedId: string | null;
+  onSelect: (campaignId: string) => void;
+}) {
+  if (!campaigns.length) {
+    return <EmptyState label="No research campaigns found." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {campaigns.map((campaign) => (
+        <button
+          key={campaign.campaign_id}
+          className={cn(
+            "w-full rounded-xl border p-3 text-left",
+            campaign.campaign_id === selectedId
+              ? "border-accent bg-accent/5"
+              : "border-border bg-surface/60",
+          )}
+          onClick={() => onSelect(campaign.campaign_id)}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-mono text-xs">{shortenId(campaign.campaign_id)}</span>
+            <span className="text-xs uppercase text-muted">{campaign.status}</span>
+          </div>
+          <div className="mt-1 text-xs text-slate-300">
+            planned={campaign.summary.total_batches_planned} actionable={campaign.summary.actionable_batches} overfit={campaign.summary.overfit_only_batches} weak={campaign.summary.weak_batches}
+          </div>
+          <div className="mt-1 text-xs text-muted">{formatDateTime(campaign.created_at)}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatchResult[] }) {
+  if (!batches.length) {
+    return <EmptyState label="No campaign batches." />;
+  }
+
+  return (
+    <Table
+      headers={["Plan", "Strategy", "Symbol", "TF", "Window", "Triage", "Candidates", "Error"]}
+      rows={batches.map((batch) => [
+        String(batch.plan.plan_index),
+        batch.plan.strategy_id,
+        batch.plan.symbol,
+        batch.plan.timeframe,
+        `${formatDateTime(batch.plan.start_time)} -> ${formatDateTime(batch.plan.end_time)}`,
+        batch.triage_status,
+        String(batch.candidates_created),
+        batch.error ?? "-",
+      ])}
+    />
+  );
+}
+
+function ResearchCampaignTopCandidatesTable({
+  candidates,
+  onSelectCandidate,
+}: {
+  candidates: ResearchBatchCandidateSummary[];
+  onSelectCandidate: (candidateId: string) => void;
+}) {
+  if (!candidates.length) {
+    return <EmptyState label="No top candidates." />;
+  }
+
+  return (
+    <Table
+      headers={["Strategy", "Symbol", "TF", "Score", "PnL %", "WF", "Candidate"]}
+      rows={candidates.map((candidate) => [
+        candidate.strategy_id,
+        candidate.symbol,
+        candidate.timeframe,
+        candidate.score,
+        candidate.pnl_pct,
+        candidate.robustness_status ?? "-",
+        candidate.candidate_id ? (
+          <button
+            className="font-mono text-accent"
+            onClick={() => onSelectCandidate(candidate.candidate_id ?? "")}
+            type="button"
+          >
+            {shortenId(candidate.candidate_id)}
+          </button>
+        ) : (
+          "-"
+        ),
+      ])}
+    />
   );
 }
 

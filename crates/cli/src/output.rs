@@ -1,7 +1,8 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, MarketDataQualityReport,
     MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCandidateDecisionRejection,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignResult,
+    ResearchCampaignSummary, ResearchCandidateDecisionRejection,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
@@ -139,6 +140,118 @@ pub fn print_research_batch_triage(triage: &ResearchBatchTriage) {
     if !triage.recommendations.is_empty() {
         println!("Recommendations:");
         for recommendation in &triage.recommendations {
+            println!(
+                "  {} {}: {}",
+                recommendation.priority, recommendation.code, recommendation.message
+            );
+        }
+    }
+}
+
+pub fn print_research_campaign(campaign: &ResearchCampaignResult) {
+    println!("Campaign: {}", campaign.campaign_id);
+    println!("Status: {}", campaign.status.as_str());
+    println!("Created: {}", campaign.created_at);
+    println!("Completed: {}", display_option(campaign.completed_at));
+    print_research_campaign_summary(&campaign.summary);
+}
+
+pub fn print_research_campaigns(campaigns: &[ResearchCampaignResult]) {
+    println!("Research campaigns:");
+    for campaign in campaigns {
+        println!(
+            "  {} status={} planned={} completed={} failed={} actionable={} overfit={} weak={} candidates={} created={}",
+            campaign.campaign_id,
+            campaign.status.as_str(),
+            campaign.summary.total_batches_planned,
+            campaign.summary.total_batches_completed,
+            campaign.summary.total_batches_failed,
+            campaign.summary.actionable_batches,
+            campaign.summary.overfit_only_batches,
+            campaign.summary.weak_batches,
+            campaign.summary.candidates_created,
+            campaign.created_at
+        );
+    }
+}
+
+pub fn print_research_campaign_batches(batches: &[ResearchCampaignBatchResult]) {
+    println!("Campaign batches:");
+    for batch in batches {
+        println!(
+            "  #{} {} {} {} {} -> {} batch={} status={} triage={} candidates={} error={}",
+            batch.plan.plan_index,
+            batch.plan.strategy_id,
+            batch.plan.symbol,
+            batch.plan.timeframe,
+            batch.plan.start_time,
+            batch.plan.end_time,
+            display_option(batch.research_batch_id),
+            batch
+                .batch_status
+                .map(|status| status.as_str())
+                .unwrap_or("-"),
+            batch.triage_status.as_str(),
+            batch.candidates_created,
+            batch.error.as_deref().unwrap_or("-")
+        );
+    }
+}
+
+pub fn print_research_campaign_summary(summary: &ResearchCampaignSummary) {
+    println!(
+        "Batches: planned={} completed={} failed={}",
+        summary.total_batches_planned,
+        summary.total_batches_completed,
+        summary.total_batches_failed
+    );
+    println!(
+        "Triage: actionable={} overfit={} weak={} data_quality_blocked={} no_candidates={}",
+        summary.actionable_batches,
+        summary.overfit_only_batches,
+        summary.weak_batches,
+        summary.data_quality_blocked_batches,
+        summary.no_candidate_batches
+    );
+    println!("Candidates created: {}", summary.candidates_created);
+    println!(
+        "Best strategy/symbol/timeframe: {}",
+        summary
+            .best_strategy_symbol_timeframe
+            .as_deref()
+            .unwrap_or("-")
+    );
+    if !summary.top_candidates.is_empty() {
+        println!("Top candidates:");
+        for candidate in summary.top_candidates.iter().take(10) {
+            println!(
+                "  {} {} {} run={} score={} pnl_pct={} wf={} candidate={}",
+                candidate.strategy_id,
+                candidate.symbol,
+                candidate.timeframe,
+                candidate.experiment_run_id,
+                candidate.score,
+                candidate.pnl_pct,
+                candidate
+                    .robustness_status
+                    .map(|status| status.as_str())
+                    .unwrap_or("-"),
+                display_option(candidate.candidate_id)
+            );
+        }
+    }
+    if !summary.findings.is_empty() {
+        println!("Findings:");
+        for finding in &summary.findings {
+            println!(
+                "  {} {}: {}",
+                finding.severity, finding.code, finding.message
+            );
+        }
+    }
+    if !summary.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &summary.recommendations {
             println!(
                 "  {} {}: {}",
                 recommendation.priority, recommendation.code, recommendation.message

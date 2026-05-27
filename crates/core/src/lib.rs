@@ -7089,6 +7089,20 @@ pub enum CoreError {
     UnsupportedResearchBatchStatus(String),
     #[error("unsupported research batch step status: {0}")]
     UnsupportedResearchBatchStepStatus(String),
+    #[error("unsupported research campaign status: {0}")]
+    UnsupportedResearchCampaignStatus(String),
+    #[error("research campaign requires at least one strategy")]
+    EmptyResearchCampaignStrategies,
+    #[error("research campaign requires at least one symbol")]
+    EmptyResearchCampaignSymbols,
+    #[error("research campaign requires at least one timeframe")]
+    EmptyResearchCampaignTimeframes,
+    #[error("research campaign requires at least one window")]
+    EmptyResearchCampaignWindows,
+    #[error("invalid research campaign time range")]
+    InvalidResearchCampaignTimeRange,
+    #[error("invalid research campaign window or step hours")]
+    InvalidResearchCampaignWindowStep,
     #[error("invalid research candidate transition from {0} using decision {1}")]
     InvalidResearchCandidateTransition(String, String),
     #[error("invalid research candidate review action {1} for status {0}")]

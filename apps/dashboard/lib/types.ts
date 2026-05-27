@@ -1233,6 +1233,129 @@ export type ResearchBatchStepsResponse = {
   timestamp: string;
 };
 
+export type ResearchCampaignStatus =
+  | "COMPLETED"
+  | "PARTIAL_SUCCESS"
+  | "FAILED"
+  | "CANCELLED";
+
+export type ResearchCampaignWindow = {
+  start_time: string;
+  end_time: string;
+};
+
+export type ResearchCampaignRequest = {
+  strategies: string[];
+  symbols: string[];
+  experiment_timeframes: string[];
+  windows?: ResearchCampaignWindow[];
+  campaign_start?: string | null;
+  campaign_end?: string | null;
+  window_hours?: number | null;
+  step_hours?: number | null;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  max_batches?: number | null;
+  max_candidates_per_batch?: number;
+  repair_degraded_data?: boolean;
+  walk_forward_top_n?: number;
+  base_interval?: string;
+  lookback_candidates?: number[];
+  trend_lookback_candidates?: number[] | null;
+  momentum_lookback_candidates?: number[] | null;
+  breakout_lookback_candidates?: number[] | null;
+  holding_candles_candidates?: number[] | null;
+  correlation_id?: string | null;
+};
+
+export type ResearchCampaignBatchPlan = {
+  plan_index: number;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+};
+
+export type ResearchCampaignBatchResult = {
+  plan: ResearchCampaignBatchPlan;
+  research_batch_id: string | null;
+  batch_status: ResearchBatchStatus | null;
+  triage_status: ResearchBatchTriageStatus;
+  candidates_created: number;
+  top_candidates: ResearchBatchCandidateSummary[];
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+};
+
+export type ResearchCampaignFinding = {
+  severity: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchCampaignRecommendation = {
+  priority: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchCampaignSummary = {
+  total_batches_planned: number;
+  total_batches_completed: number;
+  total_batches_failed: number;
+  actionable_batches: number;
+  overfit_only_batches: number;
+  weak_batches: number;
+  data_quality_blocked_batches: number;
+  no_candidate_batches: number;
+  candidates_created: number;
+  top_candidates: ResearchBatchCandidateSummary[];
+  best_strategy_symbol_timeframe: string | null;
+  findings: ResearchCampaignFinding[];
+  recommendations: ResearchCampaignRecommendation[];
+};
+
+export type ResearchCampaignResult = {
+  campaign_id: string;
+  status: ResearchCampaignStatus;
+  request: ResearchCampaignRequest;
+  batches: ResearchCampaignBatchResult[];
+  summary: ResearchCampaignSummary;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type ResearchCampaignResponse = {
+  campaign: ResearchCampaignResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCampaignsResponse = {
+  campaigns: ResearchCampaignResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCampaignBatchesResponse = {
+  batches: ResearchCampaignBatchResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCampaignSummaryResponse = {
+  summary: ResearchCampaignSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateStatus =
   | "DISCOVERED"
   | "OBSERVING"

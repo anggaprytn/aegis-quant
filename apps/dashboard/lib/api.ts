@@ -73,6 +73,11 @@ import type {
   ResearchBatchesResponse,
   ResearchBatchStepsResponse,
   ResearchBatchTriageResponse,
+  ResearchCampaignBatchesResponse,
+  ResearchCampaignRequest,
+  ResearchCampaignResponse,
+  ResearchCampaignsResponse,
+  ResearchCampaignSummaryResponse,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
@@ -447,6 +452,19 @@ export const api = {
     request<ResearchBatchStepsResponse>(`/research/batches/${id}/steps`),
   getResearchBatchTriage: (id: string) =>
     request<ResearchBatchTriageResponse>(`/research/batches/${id}/triage`),
+  runResearchCampaign: (payload: ResearchCampaignRequest) =>
+    request<ResearchCampaignResponse>("/research/campaigns/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchCampaigns: (limit = 20) =>
+    request<ResearchCampaignsResponse>("/research/campaigns", undefined, { limit }),
+  getResearchCampaign: (id: string) =>
+    request<ResearchCampaignResponse>(`/research/campaigns/${id}`),
+  getResearchCampaignBatches: (id: string) =>
+    request<ResearchCampaignBatchesResponse>(`/research/campaigns/${id}/batches`),
+  getResearchCampaignSummary: (id: string) =>
+    request<ResearchCampaignSummaryResponse>(`/research/campaigns/${id}/summary`),
   createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
     request<ResearchCandidateResponse>("/research/candidates", {
       method: "POST",

@@ -52,6 +52,22 @@ fn default_research_batch_max_candidates() -> u32 {
     3
 }
 
+fn default_research_campaign_repair_degraded_data() -> bool {
+    true
+}
+
+fn default_research_campaign_walk_forward_top_n() -> u32 {
+    3
+}
+
+fn default_research_campaign_max_candidates_per_batch() -> u32 {
+    3
+}
+
+fn default_research_campaign_lookback_candidates() -> Vec<u32> {
+    vec![10, 20, 50]
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchBatchStatus {
@@ -280,6 +296,23 @@ impl ResearchBatchTriageStatus {
     }
 }
 
+impl std::str::FromStr for ResearchBatchTriageStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ACTIONABLE" => Ok(Self::Actionable),
+            "WEAK" => Ok(Self::Weak),
+            "OVERFIT_ONLY" => Ok(Self::OverfitOnly),
+            "NO_CANDIDATES" => Ok(Self::NoCandidates),
+            "DATA_QUALITY_BLOCKED" => Ok(Self::DataQualityBlocked),
+            "FAILED" => Ok(Self::Failed),
+            "UNKNOWN" => Ok(Self::Unknown),
+            other => Err(CoreError::UnsupportedResearchBatchStatus(other.to_string())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchBatchTriageFinding {
     pub severity: String,
@@ -326,6 +359,451 @@ pub struct ResearchBatchTriage {
     pub findings: Vec<ResearchBatchTriageFinding>,
     pub recommendations: Vec<ResearchBatchTriageRecommendation>,
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCampaignStatus {
+    Completed,
+    PartialSuccess,
+    Failed,
+    Cancelled,
+}
+
+impl ResearchCampaignStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "COMPLETED",
+            Self::PartialSuccess => "PARTIAL_SUCCESS",
+            Self::Failed => "FAILED",
+            Self::Cancelled => "CANCELLED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchCampaignStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "COMPLETED" => Ok(Self::Completed),
+            "PARTIAL_SUCCESS" => Ok(Self::PartialSuccess),
+            "FAILED" => Ok(Self::Failed),
+            "CANCELLED" => Ok(Self::Cancelled),
+            other => Err(CoreError::UnsupportedResearchCampaignStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignWindow {
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignRequest {
+    pub strategies: Vec<String>,
+    pub symbols: Vec<String>,
+    pub experiment_timeframes: Vec<String>,
+    #[serde(default)]
+    pub windows: Vec<ResearchCampaignWindow>,
+    pub campaign_start: Option<DateTime<Utc>>,
+    pub campaign_end: Option<DateTime<Utc>>,
+    pub window_hours: Option<i64>,
+    pub step_hours: Option<i64>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub max_batches: Option<u32>,
+    #[serde(default = "default_research_campaign_max_candidates_per_batch")]
+    pub max_candidates_per_batch: u32,
+    #[serde(default = "default_research_campaign_repair_degraded_data")]
+    pub repair_degraded_data: bool,
+    #[serde(default = "default_research_campaign_walk_forward_top_n")]
+    pub walk_forward_top_n: u32,
+    #[serde(default = "default_research_batch_base_interval")]
+    pub base_interval: String,
+    #[serde(default = "default_research_campaign_lookback_candidates")]
+    pub lookback_candidates: Vec<u32>,
+    pub trend_lookback_candidates: Option<Vec<u32>>,
+    pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub holding_candles_candidates: Option<Vec<u32>>,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl ResearchCampaignRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategies.is_empty() || self.strategies.iter().any(|value| value.trim().is_empty())
+        {
+            return Err(CoreError::EmptyResearchCampaignStrategies);
+        }
+        if self.symbols.is_empty() || self.symbols.iter().any(|value| value.trim().is_empty()) {
+            return Err(CoreError::EmptyResearchCampaignSymbols);
+        }
+        if self.experiment_timeframes.is_empty()
+            || self
+                .experiment_timeframes
+                .iter()
+                .any(|value| value.trim().is_empty())
+        {
+            return Err(CoreError::EmptyResearchCampaignTimeframes);
+        }
+        self.base_interval.parse::<CandleInterval>()?;
+        for timeframe in &self.experiment_timeframes {
+            timeframe.parse::<CandleInterval>()?;
+        }
+        if self.initial_capital <= Decimal::ZERO {
+            return Err(CoreError::InvalidStrategyExperimentInitialCapital);
+        }
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        if self.lookback_candidates.is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentCandidates);
+        }
+        if self.walk_forward_top_n == 0 || self.max_candidates_per_batch == 0 {
+            return Err(CoreError::InvalidStrategyExperimentMaxRuns);
+        }
+        let windows = campaign_windows(self)?;
+        if windows.is_empty() {
+            return Err(CoreError::EmptyResearchCampaignWindows);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignBatchPlan {
+    pub plan_index: i32,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+}
+
+impl ResearchCampaignBatchPlan {
+    pub fn to_batch_request(&self, campaign: &ResearchCampaignRequest) -> ResearchBatchRequest {
+        ResearchBatchRequest {
+            strategy_id: self.strategy_id.clone(),
+            symbol: self.symbol.clone(),
+            base_interval: campaign.base_interval.clone(),
+            target_intervals: vec![self.timeframe.clone()],
+            start_time: self.start_time,
+            end_time: self.end_time,
+            initial_capital: campaign.initial_capital,
+            fee_bps: campaign.fee_bps,
+            slippage_bps: campaign.slippage_bps,
+            experiment_timeframes: vec![self.timeframe.clone()],
+            lookback_candidates: campaign.lookback_candidates.clone(),
+            trend_lookback_candidates: campaign.trend_lookback_candidates.clone(),
+            momentum_lookback_candidates: campaign.momentum_lookback_candidates.clone(),
+            breakout_lookback_candidates: campaign.breakout_lookback_candidates.clone(),
+            holding_candles_candidates: campaign.holding_candles_candidates.clone(),
+            walk_forward_top_n: campaign.walk_forward_top_n,
+            repair_degraded_data: campaign.repair_degraded_data,
+            create_candidates: true,
+            max_candidates: campaign.max_candidates_per_batch,
+            correlation_id: campaign.correlation_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignBatchResult {
+    pub plan: ResearchCampaignBatchPlan,
+    pub research_batch_id: Option<Uuid>,
+    pub batch_status: Option<ResearchBatchStatus>,
+    pub triage_status: ResearchBatchTriageStatus,
+    pub candidates_created: i32,
+    pub top_candidates: Vec<ResearchBatchCandidateSummary>,
+    pub error: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCampaignFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCampaignRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignSummary {
+    pub total_batches_planned: i32,
+    pub total_batches_completed: i32,
+    pub total_batches_failed: i32,
+    pub actionable_batches: i32,
+    pub overfit_only_batches: i32,
+    pub weak_batches: i32,
+    pub data_quality_blocked_batches: i32,
+    pub no_candidate_batches: i32,
+    pub candidates_created: i32,
+    pub top_candidates: Vec<ResearchBatchCandidateSummary>,
+    pub best_strategy_symbol_timeframe: Option<String>,
+    pub findings: Vec<ResearchCampaignFinding>,
+    pub recommendations: Vec<ResearchCampaignRecommendation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignResult {
+    pub campaign_id: Uuid,
+    pub status: ResearchCampaignStatus,
+    pub request: ResearchCampaignRequest,
+    pub batches: Vec<ResearchCampaignBatchResult>,
+    pub summary: ResearchCampaignSummary,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+pub fn campaign_windows(
+    request: &ResearchCampaignRequest,
+) -> Result<Vec<ResearchCampaignWindow>, CoreError> {
+    if !request.windows.is_empty() {
+        for window in &request.windows {
+            if window.end_time <= window.start_time {
+                return Err(CoreError::InvalidResearchCampaignTimeRange);
+            }
+        }
+        return Ok(request.windows.clone());
+    }
+
+    let (Some(campaign_start), Some(campaign_end), Some(window_hours), Some(step_hours)) = (
+        request.campaign_start,
+        request.campaign_end,
+        request.window_hours,
+        request.step_hours,
+    ) else {
+        return Err(CoreError::EmptyResearchCampaignWindows);
+    };
+    if campaign_end <= campaign_start {
+        return Err(CoreError::InvalidResearchCampaignTimeRange);
+    }
+    if window_hours <= 0 || step_hours <= 0 {
+        return Err(CoreError::InvalidResearchCampaignWindowStep);
+    }
+
+    let mut windows = Vec::new();
+    let mut cursor = campaign_start;
+    while cursor < campaign_end {
+        let end_time = (cursor + Duration::hours(window_hours)).min(campaign_end);
+        if end_time <= cursor {
+            return Err(CoreError::InvalidResearchCampaignWindowStep);
+        }
+        windows.push(ResearchCampaignWindow {
+            start_time: cursor,
+            end_time,
+        });
+        cursor += Duration::hours(step_hours);
+    }
+    Ok(windows)
+}
+
+pub fn expand_research_campaign(
+    request: &ResearchCampaignRequest,
+) -> Result<Vec<ResearchCampaignBatchPlan>, CoreError> {
+    request.validate()?;
+    let windows = campaign_windows(request)?;
+    let mut plans = Vec::new();
+    for strategy_id in &request.strategies {
+        for symbol in &request.symbols {
+            for timeframe in &request.experiment_timeframes {
+                for window in &windows {
+                    plans.push(ResearchCampaignBatchPlan {
+                        plan_index: i32::try_from(plans.len() + 1).unwrap_or(i32::MAX),
+                        strategy_id: strategy_id.clone(),
+                        symbol: symbol.clone(),
+                        timeframe: timeframe.clone(),
+                        start_time: window.start_time,
+                        end_time: window.end_time,
+                    });
+                    if request
+                        .max_batches
+                        .is_some_and(|max| plans.len() >= max as usize)
+                    {
+                        return Ok(plans);
+                    }
+                }
+            }
+        }
+    }
+    Ok(plans)
+}
+
+pub fn summarize_research_campaign(
+    planned_count: usize,
+    batches: &[ResearchCampaignBatchResult],
+) -> ResearchCampaignSummary {
+    let total_batches_completed = batches
+        .iter()
+        .filter(|batch| {
+            batch.error.is_none() && batch.batch_status != Some(ResearchBatchStatus::Failed)
+        })
+        .count() as i32;
+    let total_batches_failed = batches
+        .iter()
+        .filter(|batch| {
+            batch.error.is_some()
+                || batch.batch_status == Some(ResearchBatchStatus::Failed)
+                || batch.triage_status == ResearchBatchTriageStatus::Failed
+        })
+        .count() as i32;
+    let actionable_batches = batches
+        .iter()
+        .filter(|batch| batch.triage_status == ResearchBatchTriageStatus::Actionable)
+        .count() as i32;
+    let overfit_only_batches = batches
+        .iter()
+        .filter(|batch| batch.triage_status == ResearchBatchTriageStatus::OverfitOnly)
+        .count() as i32;
+    let weak_batches = batches
+        .iter()
+        .filter(|batch| batch.triage_status == ResearchBatchTriageStatus::Weak)
+        .count() as i32;
+    let data_quality_blocked_batches = batches
+        .iter()
+        .filter(|batch| batch.triage_status == ResearchBatchTriageStatus::DataQualityBlocked)
+        .count() as i32;
+    let no_candidate_batches = batches
+        .iter()
+        .filter(|batch| batch.triage_status == ResearchBatchTriageStatus::NoCandidates)
+        .count() as i32;
+    let candidates_created = batches.iter().map(|batch| batch.candidates_created).sum();
+    let top_candidates = ranked_research_batch_candidates(
+        batches
+            .iter()
+            .flat_map(|batch| batch.top_candidates.clone())
+            .collect(),
+    )
+    .into_iter()
+    .take(10)
+    .collect::<Vec<_>>();
+    let best_strategy_symbol_timeframe = top_candidates.first().map(|candidate| {
+        format!(
+            "{}:{}:{}",
+            candidate.strategy_id, candidate.symbol, candidate.timeframe
+        )
+    });
+
+    let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
+    if candidates_created > 0 {
+        findings.push(campaign_finding(
+            "LOW",
+            "research_campaign_candidates_for_review",
+            "Campaign produced candidates for review.",
+        ));
+        recommendations.push(campaign_recommendation(
+            "LOW",
+            "manual_candidate_review",
+            "Review candidate evidence manually; campaign runner does not promote candidates.",
+        ));
+    }
+    if actionable_batches == 0 && planned_count > 0 {
+        findings.push(campaign_finding(
+            "LOW",
+            "research_campaign_no_actionable_output",
+            "No actionable campaign output.",
+        ));
+        recommendations.push(campaign_recommendation(
+            "LOW",
+            "expand_or_refine_campaign",
+            "Expand windows or refine deterministic strategy parameters before review.",
+        ));
+    }
+    if overfit_only_batches > 0 && actionable_batches == 0 {
+        findings.push(campaign_finding(
+            "MEDIUM",
+            "research_campaign_only_overfit_candidates",
+            "Campaign produced only overfit candidates.",
+        ));
+        recommendations.push(campaign_recommendation(
+            "MEDIUM",
+            "reject_overfit_campaign_output",
+            "Do not promote overfit-only output without stronger out-of-sample evidence.",
+        ));
+    }
+    if total_batches_failed > 0 {
+        findings.push(campaign_finding(
+            "MEDIUM",
+            "research_campaign_failed_batches",
+            "Campaign had failed batches.",
+        ));
+        recommendations.push(campaign_recommendation(
+            "MEDIUM",
+            "inspect_failed_campaign_batches",
+            "Inspect failed batch rows and rerun after fixing data or configuration issues.",
+        ));
+    }
+
+    ResearchCampaignSummary {
+        total_batches_planned: i32::try_from(planned_count).unwrap_or(i32::MAX),
+        total_batches_completed,
+        total_batches_failed,
+        actionable_batches,
+        overfit_only_batches,
+        weak_batches,
+        data_quality_blocked_batches,
+        no_candidate_batches,
+        candidates_created,
+        top_candidates,
+        best_strategy_symbol_timeframe,
+        findings,
+        recommendations,
+    }
+}
+
+pub fn status_from_campaign_summary(summary: &ResearchCampaignSummary) -> ResearchCampaignStatus {
+    if summary.total_batches_planned == 0
+        || summary.total_batches_failed == summary.total_batches_planned
+    {
+        ResearchCampaignStatus::Failed
+    } else if summary.total_batches_failed > 0
+        || summary.total_batches_completed < summary.total_batches_planned
+    {
+        ResearchCampaignStatus::PartialSuccess
+    } else {
+        ResearchCampaignStatus::Completed
+    }
+}
+
+fn campaign_finding(
+    severity: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchCampaignFinding {
+    ResearchCampaignFinding {
+        severity: severity.into(),
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn campaign_recommendation(
+    priority: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchCampaignRecommendation {
+    ResearchCampaignRecommendation {
+        priority: priority.into(),
+        code: code.into(),
+        message: message.into(),
+    }
 }
 
 pub fn build_research_batch_triage(
@@ -541,6 +1019,25 @@ fn triage_recommendation(
         code: code.into(),
         message: message.into(),
     }
+}
+
+fn ranked_research_batch_candidates(
+    mut candidates: Vec<ResearchBatchCandidateSummary>,
+) -> Vec<ResearchBatchCandidateSummary> {
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.pnl_pct.cmp(&left.pnl_pct))
+            .then_with(|| left.max_drawdown_pct.cmp(&right.max_drawdown_pct))
+            .then_with(|| right.win_rate.cmp(&left.win_rate))
+            .then_with(|| right.trade_count.cmp(&left.trade_count))
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id))
+            .then_with(|| left.symbol.cmp(&right.symbol))
+            .then_with(|| left.timeframe.cmp(&right.timeframe))
+            .then_with(|| left.experiment_run_id.cmp(&right.experiment_run_id))
+    });
+    candidates
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -7396,6 +7893,224 @@ mod tests {
                 (1, Uuid::from_u128(2)),
                 (2, Uuid::from_u128(1)),
                 (3, Uuid::from_u128(3)),
+            ]
+        );
+    }
+
+    fn sample_campaign_request() -> ResearchCampaignRequest {
+        ResearchCampaignRequest {
+            strategies: vec![
+                "trend_filter_momentum_v1".to_string(),
+                "volatility_breakout_v2".to_string(),
+            ],
+            symbols: vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()],
+            experiment_timeframes: vec!["5m".to_string(), "15m".to_string()],
+            windows: Vec::new(),
+            campaign_start: Some(ts(0, 0, 0)),
+            campaign_end: Some(ts(0, 0, 0) + Duration::hours(48)),
+            window_hours: Some(24),
+            step_hours: Some(24),
+            initial_capital: Decimal::new(1000000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            max_batches: None,
+            max_candidates_per_batch: 2,
+            repair_degraded_data: true,
+            walk_forward_top_n: 3,
+            base_interval: "1m".to_string(),
+            lookback_candidates: vec![10, 20],
+            trend_lookback_candidates: None,
+            momentum_lookback_candidates: Some(vec![2, 3]),
+            breakout_lookback_candidates: None,
+            holding_candles_candidates: None,
+            correlation_id: None,
+        }
+    }
+
+    fn campaign_batch(
+        plan_index: i32,
+        status: ResearchBatchTriageStatus,
+        score: Decimal,
+        pnl_pct: Decimal,
+    ) -> ResearchCampaignBatchResult {
+        ResearchCampaignBatchResult {
+            plan: ResearchCampaignBatchPlan {
+                plan_index,
+                strategy_id: "trend_filter_momentum_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "5m".to_string(),
+                start_time: ts(1, 0, 0),
+                end_time: ts(2, 0, 0),
+            },
+            research_batch_id: Some(Uuid::from_u128(plan_index as u128)),
+            batch_status: Some(if status == ResearchBatchTriageStatus::Failed {
+                ResearchBatchStatus::Failed
+            } else {
+                ResearchBatchStatus::Completed
+            }),
+            triage_status: status,
+            candidates_created: 1,
+            top_candidates: vec![ResearchBatchCandidateSummary {
+                experiment_id: Uuid::from_u128(100 + plan_index as u128),
+                experiment_run_id: Uuid::from_u128(200 + plan_index as u128),
+                walk_forward_run_id: None,
+                candidate_id: Some(Uuid::from_u128(300 + plan_index as u128)),
+                strategy_id: "trend_filter_momentum_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "5m".to_string(),
+                score,
+                pnl_pct,
+                max_drawdown_pct: Decimal::new(1, 0),
+                trade_count: 3,
+                win_rate: Decimal::new(50, 0),
+                robustness_status: None,
+            }],
+            error: if status == ResearchBatchTriageStatus::Failed {
+                Some("failed".to_string())
+            } else {
+                None
+            },
+            started_at: ts(1, 0, 0),
+            completed_at: Some(ts(1, 1, 0)),
+        }
+    }
+
+    #[test]
+    fn research_campaign_plan_expansion_cross_joins_inputs_and_windows() {
+        let request = sample_campaign_request();
+        let plans = expand_research_campaign(&request).expect("campaign should expand");
+
+        assert_eq!(plans.len(), 16);
+        assert_eq!(plans[0].strategy_id, "trend_filter_momentum_v1");
+        assert_eq!(plans[0].symbol, "BTCUSDT");
+        assert_eq!(plans[0].timeframe, "5m");
+        assert_eq!(plans[0].start_time, ts(0, 0, 0));
+        assert_eq!(plans[1].start_time, ts(0, 0, 0) + Duration::hours(24));
+    }
+
+    #[test]
+    fn research_campaign_max_batches_is_enforced() {
+        let mut request = sample_campaign_request();
+        request.max_batches = Some(3);
+        let plans = expand_research_campaign(&request).expect("campaign should expand");
+
+        assert_eq!(plans.len(), 3);
+        assert_eq!(plans[2].plan_index, 3);
+    }
+
+    #[test]
+    fn research_campaign_failed_batch_leads_partial_success() {
+        let batches = vec![
+            campaign_batch(
+                1,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(8, 0),
+                Decimal::new(2, 0),
+            ),
+            campaign_batch(
+                2,
+                ResearchBatchTriageStatus::Failed,
+                Decimal::ZERO,
+                Decimal::ZERO,
+            ),
+        ];
+        let summary = summarize_research_campaign(2, &batches);
+
+        assert_eq!(
+            status_from_campaign_summary(&summary),
+            ResearchCampaignStatus::PartialSuccess
+        );
+        assert_eq!(summary.total_batches_failed, 1);
+    }
+
+    #[test]
+    fn research_campaign_all_failed_leads_failed() {
+        let batches = vec![
+            campaign_batch(
+                1,
+                ResearchBatchTriageStatus::Failed,
+                Decimal::ZERO,
+                Decimal::ZERO,
+            ),
+            campaign_batch(
+                2,
+                ResearchBatchTriageStatus::Failed,
+                Decimal::ZERO,
+                Decimal::ZERO,
+            ),
+        ];
+        let summary = summarize_research_campaign(2, &batches);
+
+        assert_eq!(
+            status_from_campaign_summary(&summary),
+            ResearchCampaignStatus::Failed
+        );
+    }
+
+    #[test]
+    fn research_campaign_summary_counts_triage_buckets() {
+        let batches = vec![
+            campaign_batch(
+                1,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(8, 0),
+                Decimal::new(2, 0),
+            ),
+            campaign_batch(
+                2,
+                ResearchBatchTriageStatus::OverfitOnly,
+                Decimal::new(7, 0),
+                Decimal::new(3, 0),
+            ),
+            campaign_batch(
+                3,
+                ResearchBatchTriageStatus::Weak,
+                Decimal::new(1, 0),
+                Decimal::new(0, 0),
+            ),
+        ];
+        let summary = summarize_research_campaign(3, &batches);
+
+        assert_eq!(summary.actionable_batches, 1);
+        assert_eq!(summary.overfit_only_batches, 1);
+        assert_eq!(summary.weak_batches, 1);
+        assert_eq!(summary.candidates_created, 3);
+    }
+
+    #[test]
+    fn research_campaign_top_candidate_ranking_is_deterministic() {
+        let batches = vec![
+            campaign_batch(
+                2,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(5, 0),
+                Decimal::new(3, 0),
+            ),
+            campaign_batch(
+                1,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(5, 0),
+                Decimal::new(3, 0),
+            ),
+            campaign_batch(
+                3,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(8, 0),
+                Decimal::new(1, 0),
+            ),
+        ];
+        let summary = summarize_research_campaign(3, &batches);
+
+        assert_eq!(
+            summary
+                .top_candidates
+                .iter()
+                .map(|candidate| candidate.experiment_run_id)
+                .collect::<Vec<_>>(),
+            vec![
+                Uuid::from_u128(203),
+                Uuid::from_u128(201),
+                Uuid::from_u128(202)
             ]
         );
     }

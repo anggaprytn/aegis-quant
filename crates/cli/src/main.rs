@@ -11,21 +11,22 @@ use cli::api::{
     build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
     build_market_data_quality_query, build_market_data_repair_plan_request,
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
-    build_research_batch_request, build_research_data_build_request,
-    build_research_data_coverage_query, build_risk_config_request, build_strategy_config_request,
-    build_strategy_experiment_request, build_strategy_walk_forward_request, ApiClient,
-    ApiClientError, CreateResearchCandidateFromExperimentRunRequest,
-    CreateResearchCandidateRequest, RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
+    build_research_batch_request, build_research_campaign_request,
+    build_research_data_build_request, build_research_data_coverage_query,
+    build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
+    build_strategy_walk_forward_request, ApiClient, ApiClientError,
+    CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
+    RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
     BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
-    ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCandidateCommands,
-    ResearchCommands, ResearchDataCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
-    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
-    TESTNET_ORDER_CONFIRMATION_TEXT,
+    ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
+    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands, RiskCommands,
+    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -547,6 +548,49 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_dataset_build(&response.build);
+                    }
+                }
+            },
+            ResearchCommands::Campaigns(command) => match command {
+                ResearchCampaignCommands::Run(args) => {
+                    let request = build_research_campaign_request(&args)?;
+                    let response = client.run_research_campaign(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_campaign(&response.campaign);
+                    }
+                }
+                ResearchCampaignCommands::List(args) => {
+                    let response = client.list_research_campaigns(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_campaigns(&response.campaigns);
+                    }
+                }
+                ResearchCampaignCommands::Get { campaign_id } => {
+                    let response = client.get_research_campaign(campaign_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_campaign(&response.campaign);
+                    }
+                }
+                ResearchCampaignCommands::Batches { campaign_id } => {
+                    let response = client.get_research_campaign_batches(campaign_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_campaign_batches(&response.batches);
+                    }
+                }
+                ResearchCampaignCommands::Summary { campaign_id } => {
+                    let response = client.get_research_campaign_summary(campaign_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_campaign_summary(&response.summary);
                     }
                 }
             },

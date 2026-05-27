@@ -9,31 +9,32 @@ use aegis_core::{
     MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
     OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
     ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
-    ResearchCandidate, ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewRequest, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
-    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
-    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ResearchCampaignBatchResult, ResearchCampaignRequest, ResearchCampaignResult,
+    ResearchCampaignSummary, ResearchCandidate, ResearchCandidateDecisionRequest,
+    ResearchCandidateLifecycleEvent, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewRequest,
+    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWatchlistEntry, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, ResearchShadowPnlAttributionResult, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -755,6 +756,45 @@ impl ApiClient {
         batch_id: Uuid,
     ) -> Result<ResearchBatchTriageResponse, ApiClientError> {
         self.get(&format!("/research/batches/{batch_id}/triage"), &[])
+            .await
+    }
+
+    pub async fn run_research_campaign(
+        &self,
+        request: &ResearchCampaignRequest,
+    ) -> Result<ResearchCampaignResponse, ApiClientError> {
+        self.post("/research/campaigns/run", request).await
+    }
+
+    pub async fn list_research_campaigns(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchCampaignsResponse, ApiClientError> {
+        self.get("/research/campaigns", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_research_campaign(
+        &self,
+        campaign_id: Uuid,
+    ) -> Result<ResearchCampaignResponse, ApiClientError> {
+        self.get(&format!("/research/campaigns/{campaign_id}"), &[])
+            .await
+    }
+
+    pub async fn get_research_campaign_batches(
+        &self,
+        campaign_id: Uuid,
+    ) -> Result<ResearchCampaignBatchesResponse, ApiClientError> {
+        self.get(&format!("/research/campaigns/{campaign_id}/batches"), &[])
+            .await
+    }
+
+    pub async fn get_research_campaign_summary(
+        &self,
+        campaign_id: Uuid,
+    ) -> Result<ResearchCampaignSummaryResponse, ApiClientError> {
+        self.get(&format!("/research/campaigns/{campaign_id}/summary"), &[])
             .await
     }
 
@@ -2330,6 +2370,38 @@ pub struct ResearchBatchTriageResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchCampaignResponse {
+    pub campaign: ResearchCampaignResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchCampaignsResponse {
+    pub campaigns: Vec<ResearchCampaignResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchCampaignBatchesResponse {
+    pub batches: Vec<ResearchCampaignBatchResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchCampaignSummaryResponse {
+    pub summary: ResearchCampaignSummary,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidatesResponse {
     pub candidates: Vec<ResearchCandidate>,
@@ -3560,6 +3632,39 @@ pub fn build_research_batch_request(
     request
         .validate()
         .context("invalid research batch request")?;
+    Ok(request)
+}
+
+pub fn build_research_campaign_request(
+    args: &crate::cli::ResearchCampaignRunArgs,
+) -> anyhow::Result<ResearchCampaignRequest> {
+    let request = ResearchCampaignRequest {
+        strategies: args.strategies.clone(),
+        symbols: args.symbols.clone(),
+        experiment_timeframes: args.timeframes.clone(),
+        windows: Vec::new(),
+        campaign_start: Some(args.start),
+        campaign_end: Some(args.end),
+        window_hours: Some(args.window_hours),
+        step_hours: Some(args.step_hours),
+        initial_capital: args.initial_capital,
+        fee_bps: args.fee_bps,
+        slippage_bps: args.slippage_bps,
+        max_batches: args.max_batches,
+        max_candidates_per_batch: args.max_candidates_per_batch,
+        repair_degraded_data: !args.no_repair_degraded_data,
+        walk_forward_top_n: args.walk_forward_top_n,
+        base_interval: args.base_interval.clone(),
+        lookback_candidates: args.lookbacks.clone(),
+        trend_lookback_candidates: args.trend_lookbacks.clone(),
+        momentum_lookback_candidates: args.momentum_lookbacks.clone(),
+        breakout_lookback_candidates: args.breakout_lookbacks.clone(),
+        holding_candles_candidates: args.holding_candles.clone(),
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate()
+        .context("invalid research campaign request")?;
     Ok(request)
 }
 

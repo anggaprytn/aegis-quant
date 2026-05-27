@@ -44,19 +44,21 @@ use aegis_core::{
     PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchCandidateTriage,
     ResearchBatchRecommendation, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus,
     ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
-    ResearchCandidate, ResearchCandidateDecision, ResearchCandidateDecisionRejection,
-    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
-    ResearchCandidateObservationFreshnessStatus, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidatePromotionReadiness,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationRequest,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
-    ResearchCandidateReviewContext, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
-    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    ResearchCampaignBatchResult, ResearchCampaignRequest, ResearchCampaignResult,
+    ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate, ResearchCandidateDecision,
+    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
+    ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidatePromotionReadiness, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewContext,
+    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
+    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -126,7 +128,7 @@ use db::{
     get_latest_research_candidate_qualification_evaluation,
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
-    get_recent_closed_candles, get_research_batch, get_research_candidate,
+    get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
@@ -140,6 +142,7 @@ use db::{
     insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
     insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
     insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
+    insert_research_campaign, insert_research_campaign_batch,
     insert_research_candidate_qualification_evaluation, insert_risk_config_audit,
     insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
     insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
@@ -151,7 +154,8 @@ use db::{
     list_market_data_repair_runs, list_market_feed_statuses, list_open_paper_positions,
     list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
     list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_research_batch_steps, list_research_batches, list_research_candidate_events,
+    list_research_batch_steps, list_research_batches, list_research_campaign_batches,
+    list_research_campaigns, list_research_candidate_events,
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
     list_research_candidate_watchlist_rows, list_research_candidates, list_risk_config_audit,
@@ -165,6 +169,7 @@ use db::{
     paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
     persist_risk_config_version, persist_strategy_config_version,
     research_batch_result_from_records, research_batch_step_from_record,
+    research_campaign_batch_result_from_record, research_campaign_result_from_records,
     research_candidate_event_from_record, research_candidate_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row, revoke_session,
@@ -177,6 +182,7 @@ use db::{
     strategy_research_candidate_promotion_result_from_records,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
     summarize_candle_continuity_report, update_research_batch_summary,
+    update_research_campaign_batch, update_research_campaign_summary,
     update_research_candidate_status, update_strategy_state,
     update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
@@ -1582,6 +1588,38 @@ struct ResearchBatchTriageResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchCampaignResponse {
+    campaign: ResearchCampaignResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCampaignsResponse {
+    campaigns: Vec<ResearchCampaignResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCampaignBatchesResponse {
+    batches: Vec<ResearchCampaignBatchResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCampaignSummaryResponse {
+    summary: ResearchCampaignSummary,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateEventsResponse {
     events: Vec<ResearchCandidateLifecycleEvent>,
     request_id: String,
@@ -2610,6 +2648,23 @@ async fn main() {
         .route("/research/data/build", post(post_research_data_build))
         .route("/research/data/builds", get(list_research_data_builds))
         .route("/research/data/builds/:id", get(get_research_data_build))
+        .route(
+            "/research/campaigns/run",
+            post(run_research_campaign_handler),
+        )
+        .route("/research/campaigns", get(list_research_campaigns_handler))
+        .route(
+            "/research/campaigns/:id/batches",
+            get(get_research_campaign_batches_handler),
+        )
+        .route(
+            "/research/campaigns/:id/summary",
+            get(get_research_campaign_summary_handler),
+        )
+        .route(
+            "/research/campaigns/:id",
+            get(get_research_campaign_handler),
+        )
         .route("/research/batches/run", post(run_research_batch_handler))
         .route("/research/batches", get(list_research_batches_handler))
         .route(
@@ -16099,6 +16154,437 @@ async fn build_research_batch_triage_read_model(
         candidates,
         Utc::now(),
     ))
+}
+
+async fn persist_research_campaign_snapshot(
+    state: &AppState,
+    result: &ResearchCampaignResult,
+    error: Option<&str>,
+) -> anyhow::Result<()> {
+    let summary = serde_json::to_value(result)?;
+    update_research_campaign_summary(
+        &state.db_pool,
+        result.campaign_id,
+        result.status,
+        &summary,
+        result.completed_at,
+        error,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn execute_research_campaign(
+    state: &AppState,
+    mut payload: ResearchCampaignRequest,
+    actor_id: Option<Uuid>,
+    correlation_id: Uuid,
+) -> anyhow::Result<ResearchCampaignResult> {
+    payload.correlation_id = Some(correlation_id);
+    payload.validate()?;
+    let plans = aegis_core::expand_research_campaign(&payload)?;
+    let now = Utc::now();
+    let empty_summary = aegis_core::summarize_research_campaign(plans.len(), &[]);
+    let mut result = ResearchCampaignResult {
+        campaign_id: Uuid::new_v4(),
+        status: ResearchCampaignStatus::PartialSuccess,
+        request: payload.clone(),
+        batches: Vec::new(),
+        summary: empty_summary,
+        created_at: now,
+        completed_at: None,
+    };
+    let request_json = serde_json::to_value(&payload)?;
+    let summary_json = serde_json::to_value(&result)?;
+    insert_research_campaign(
+        &state.db_pool,
+        &result,
+        &request_json,
+        &summary_json,
+        Some(correlation_id),
+        None,
+    )
+    .await?;
+
+    for plan in plans {
+        let started_at = Utc::now();
+        let pending_result = ResearchCampaignBatchResult {
+            plan: plan.clone(),
+            research_batch_id: None,
+            batch_status: Some(ResearchBatchStatus::Started),
+            triage_status: ResearchBatchTriageStatus::Unknown,
+            candidates_created: 0,
+            top_candidates: Vec::new(),
+            error: None,
+            started_at,
+            completed_at: None,
+        };
+        let pending_summary = serde_json::to_value(&pending_result)?;
+        let campaign_batch = insert_research_campaign_batch(
+            &state.db_pool,
+            result.campaign_id,
+            &plan,
+            ResearchBatchStatus::Started,
+            ResearchBatchTriageStatus::Unknown,
+            &pending_summary,
+            None,
+        )
+        .await?;
+
+        let batch_request = plan.to_batch_request(&payload);
+        let batch_result =
+            match execute_research_batch(state, batch_request, actor_id, correlation_id).await {
+                Ok(batch) => {
+                    let triage = build_research_batch_triage_read_model(state, &batch).await?;
+                    ResearchCampaignBatchResult {
+                        plan: plan.clone(),
+                        research_batch_id: Some(batch.batch_id),
+                        batch_status: Some(batch.status),
+                        triage_status: triage.status,
+                        candidates_created: i32::try_from(batch.created_candidate_ids.len())
+                            .unwrap_or(i32::MAX),
+                        top_candidates: batch.top_candidates.clone(),
+                        error: None,
+                        started_at: campaign_batch.created_at,
+                        completed_at: Some(Utc::now()),
+                    }
+                }
+                Err(err) => ResearchCampaignBatchResult {
+                    plan: plan.clone(),
+                    research_batch_id: None,
+                    batch_status: Some(ResearchBatchStatus::Failed),
+                    triage_status: ResearchBatchTriageStatus::Failed,
+                    candidates_created: 0,
+                    top_candidates: Vec::new(),
+                    error: Some(err.to_string()),
+                    started_at: campaign_batch.created_at,
+                    completed_at: Some(Utc::now()),
+                },
+            };
+        let batch_summary = serde_json::to_value(&batch_result)?;
+        update_research_campaign_batch(
+            &state.db_pool,
+            campaign_batch.id,
+            batch_result.research_batch_id,
+            batch_result
+                .batch_status
+                .unwrap_or(ResearchBatchStatus::Failed),
+            batch_result.triage_status,
+            batch_result.candidates_created,
+            &batch_summary,
+            batch_result.error.as_deref(),
+        )
+        .await?;
+        result.batches.push(batch_result);
+        result.summary = aegis_core::summarize_research_campaign(
+            result.summary.total_batches_planned as usize,
+            &result.batches,
+        );
+        result.status = aegis_core::status_from_campaign_summary(&result.summary);
+        persist_research_campaign_snapshot(state, &result, None).await?;
+    }
+
+    result.summary = aegis_core::summarize_research_campaign(
+        result.summary.total_batches_planned as usize,
+        &result.batches,
+    );
+    result.status = aegis_core::status_from_campaign_summary(&result.summary);
+    result.completed_at = Some(Utc::now());
+    persist_research_campaign_snapshot(state, &result, None).await?;
+    Ok(result)
+}
+
+async fn run_research_campaign_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCampaignRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    let Some(actor_ref) = actor.as_ref() else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "authentication_required",
+                message: "Authentication is required to run research campaigns.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+    if !matches!(actor_ref.role, UserRole::Owner | UserRole::Operator) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "forbidden",
+                message: "Only OPERATOR or OWNER can run research campaigns.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let state_actor = state_actor_from_authenticated(actor_ref);
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &state_actor,
+        "research.campaign.run",
+        "research/campaigns/run",
+        &json!({ "actor_id": actor_ref.user_id }),
+    )
+    .await;
+
+    match execute_research_campaign(&state, payload, Some(actor_ref.user_id), correlation_id).await
+    {
+        Ok(campaign) => (
+            StatusCode::OK,
+            Json(ResearchCampaignResponse {
+                campaign,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(error = %err, "failed to run research campaign");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_run_research_campaign",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn research_campaign_read_model(
+    state: &AppState,
+    id: Uuid,
+) -> anyhow::Result<Option<ResearchCampaignResult>> {
+    let Some(record) = get_research_campaign(&state.db_pool, id).await? else {
+        return Ok(None);
+    };
+    let batches = list_research_campaign_batches(&state.db_pool, id).await?;
+    Ok(Some(research_campaign_result_from_records(
+        &record, &batches,
+    )?))
+}
+
+async fn list_research_campaigns_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchBatchesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_campaigns(&state.db_pool, bounded_backfill_runs_limit(query.limit)).await {
+        Ok(records) => {
+            let mut campaigns = Vec::new();
+            for record in records {
+                let batches = match list_research_campaign_batches(&state.db_pool, record.id).await
+                {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_query_research_campaign_batches",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                };
+                match research_campaign_result_from_records(&record, &batches) {
+                    Ok(campaign) => campaigns.push(campaign),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_research_campaign",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(ResearchCampaignsResponse {
+                    campaigns,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_campaigns",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_campaign_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match research_campaign_read_model(&state, id).await {
+        Ok(Some(campaign)) => (
+            StatusCode::OK,
+            Json(ResearchCampaignResponse {
+                campaign,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_campaign_not_found",
+                message: "Research campaign was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_campaign",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_campaign_batches_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_campaign_batches(&state.db_pool, id).await {
+        Ok(records) => {
+            let batches = records
+                .iter()
+                .map(research_campaign_batch_result_from_record)
+                .collect::<anyhow::Result<Vec<_>>>();
+            match batches {
+                Ok(batches) => (
+                    StatusCode::OK,
+                    Json(ResearchCampaignBatchesResponse {
+                        batches,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_campaign_batches",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_campaign_batches",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_campaign_summary_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match research_campaign_read_model(&state, id).await {
+        Ok(Some(campaign)) => (
+            StatusCode::OK,
+            Json(ResearchCampaignSummaryResponse {
+                summary: campaign.summary,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_campaign_not_found",
+                message: "Research campaign was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_campaign_summary",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn get_research_batch_triage_handler(

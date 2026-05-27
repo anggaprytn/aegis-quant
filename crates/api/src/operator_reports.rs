@@ -84,6 +84,16 @@ struct ResearchBatchReportSnapshot {
     robust_candidate_count: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ResearchCampaignReportSnapshot {
+    run_count: i64,
+    actionable_campaign_count: i64,
+    overfit_only_campaign_count: i64,
+    failed_campaign_count: i64,
+    partial_success_campaign_count: i64,
+    top_strategy_symbol_timeframe: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -165,6 +175,7 @@ pub async fn generate_operator_report(
             .await?;
     let backtest = load_backtest_activity(&state.db_pool, request, &window).await?;
     let research_batches = load_research_batch_snapshot(&state.db_pool, &window).await?;
+    let research_campaigns = load_research_campaign_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -178,6 +189,7 @@ pub async fn generate_operator_report(
         shadow_pnl.as_ref(),
         &backtest,
         &research_batches,
+        &research_campaigns,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -214,6 +226,7 @@ pub async fn generate_operator_report(
             &research_qualification,
             shadow_pnl.as_ref(),
             &research_batches,
+            &research_campaigns,
         )?,
         format: request.format,
         persisted: false,
@@ -1288,6 +1301,54 @@ async fn load_research_batch_snapshot(
     })
 }
 
+async fn load_research_campaign_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<ResearchCampaignReportSnapshot> {
+    let row = query(
+        r#"
+        SELECT
+            COUNT(*) AS run_count,
+            COUNT(*) FILTER (
+                WHERE COALESCE((summary->'summary'->>'actionable_batches')::BIGINT, 0) > 0
+            ) AS actionable_campaign_count,
+            COUNT(*) FILTER (
+                WHERE COALESCE((summary->'summary'->>'overfit_only_batches')::BIGINT, 0) > 0
+                  AND COALESCE((summary->'summary'->>'actionable_batches')::BIGINT, 0) = 0
+            ) AS overfit_only_campaign_count,
+            COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_campaign_count,
+            COUNT(*) FILTER (WHERE status = 'PARTIAL_SUCCESS') AS partial_success_campaign_count,
+            (
+                SELECT summary->'summary'->>'best_strategy_symbol_timeframe'
+                FROM research_campaigns
+                WHERE created_at >= $1
+                  AND created_at <= $2
+                  AND summary->'summary'->>'best_strategy_symbol_timeframe' IS NOT NULL
+                ORDER BY COALESCE((summary->'summary'->>'actionable_batches')::BIGINT, 0) DESC,
+                         created_at DESC,
+                         id DESC
+                LIMIT 1
+            ) AS top_strategy_symbol_timeframe
+        FROM research_campaigns
+        WHERE created_at >= $1
+          AND created_at <= $2
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ResearchCampaignReportSnapshot {
+        run_count: row.get("run_count"),
+        actionable_campaign_count: row.get("actionable_campaign_count"),
+        overfit_only_campaign_count: row.get("overfit_only_campaign_count"),
+        failed_campaign_count: row.get("failed_campaign_count"),
+        partial_success_campaign_count: row.get("partial_success_campaign_count"),
+        top_strategy_symbol_timeframe: row.get("top_strategy_symbol_timeframe"),
+    })
+}
+
 async fn load_candidate_shadow_pnl_snapshot(
     state: &AppState,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
@@ -1345,6 +1406,7 @@ fn build_findings(
     shadow_pnl: Option<&CandidateShadowPnlReportSnapshot>,
     backtest: &BacktestActivity,
     research_batches: &ResearchBatchReportSnapshot,
+    research_campaigns: &ResearchCampaignReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -1570,6 +1632,47 @@ fn build_findings(
             "No actionable candidates found",
             "Research batches in the selected window did not produce robust candidate evidence.",
             "research_batches",
+        ));
+    }
+
+    if research_campaigns.run_count > 0 && research_campaigns.actionable_campaign_count > 0 {
+        findings.push(finding(
+            "research_campaign_candidates_for_review",
+            OperatorReportSeverity::Low,
+            "Campaign produced candidates for review",
+            "At least one research campaign produced actionable output for manual review.",
+            "research_campaigns",
+        ));
+    }
+    if research_campaigns.overfit_only_campaign_count > 0
+        && research_campaigns.actionable_campaign_count == 0
+    {
+        findings.push(finding(
+            "research_campaign_only_overfit_candidates",
+            OperatorReportSeverity::Medium,
+            "Campaign produced only overfit candidates",
+            "Research campaign output was overfit-only and should not advance without stronger out-of-sample evidence.",
+            "research_campaigns",
+        ));
+    }
+    if research_campaigns.failed_campaign_count > 0
+        || research_campaigns.partial_success_campaign_count > 0
+    {
+        findings.push(finding(
+            "research_campaign_failed_batches",
+            OperatorReportSeverity::Medium,
+            "Campaign had failed batches",
+            "At least one research campaign failed or completed with partial success.",
+            "research_campaigns",
+        ));
+    }
+    if research_campaigns.run_count > 0 && research_campaigns.actionable_campaign_count == 0 {
+        findings.push(finding(
+            "research_campaign_no_actionable_output",
+            OperatorReportSeverity::Low,
+            "No actionable campaign output",
+            "Research campaigns in the selected window did not produce actionable output.",
+            "research_campaigns",
         ));
     }
 
@@ -1955,6 +2058,7 @@ fn build_sections(
     research_qualification: &OperatorReportResearchQualificationSnapshot,
     shadow_pnl: Option<&CandidateShadowPnlReportSnapshot>,
     research_batches: &ResearchBatchReportSnapshot,
+    research_campaigns: &ResearchCampaignReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -2166,6 +2270,46 @@ fn build_sections(
                 ),
             ],
             research_batches,
+        )?,
+        section(
+            "research_campaigns",
+            "Research Campaigns",
+            if research_campaigns.failed_campaign_count > 0
+                || research_campaigns.partial_success_campaign_count > 0
+                || research_campaigns.overfit_only_campaign_count > 0
+            {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Research-only campaign orchestration across strategies, symbols, timeframes, and windows.",
+            vec![
+                highlight("Campaigns Run", research_campaigns.run_count.to_string()),
+                highlight(
+                    "Actionable Campaigns",
+                    research_campaigns.actionable_campaign_count.to_string(),
+                ),
+                highlight(
+                    "Overfit-only Campaigns",
+                    research_campaigns.overfit_only_campaign_count.to_string(),
+                ),
+                highlight(
+                    "Failed Campaigns",
+                    research_campaigns.failed_campaign_count.to_string(),
+                ),
+                highlight(
+                    "Partial Success",
+                    research_campaigns.partial_success_campaign_count.to_string(),
+                ),
+                highlight(
+                    "Top Strategy/Symbol/Timeframe",
+                    research_campaigns
+                        .top_strategy_symbol_timeframe
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+            ],
+            research_campaigns,
         )?,
         section(
             "research_candidate_qualification",
@@ -2679,7 +2823,8 @@ fn yes_no(value: bool) -> &'static str {
 mod tests {
     use super::{
         build_findings, build_recommendations, status_from_findings, BacktestActivity,
-        ResearchBatchReportSnapshot, StrategyBehaviorData, SystemAndMarketData,
+        ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot, StrategyBehaviorData,
+        SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
@@ -2846,6 +2991,7 @@ mod tests {
             None,
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
+            &ResearchCampaignReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2876,6 +3022,7 @@ mod tests {
             None,
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
+            &ResearchCampaignReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2901,6 +3048,7 @@ mod tests {
             None,
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
+            &ResearchCampaignReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2926,6 +3074,7 @@ mod tests {
             None,
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
+            &ResearchCampaignReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2977,6 +3126,7 @@ mod tests {
             None,
             &BacktestActivity { run_count: 0 },
             &ResearchBatchReportSnapshot::default(),
+            &ResearchCampaignReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -3013,6 +3163,7 @@ mod tests {
             None,
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
+            &ResearchCampaignReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3046,6 +3197,7 @@ mod tests {
             None,
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
+            &ResearchCampaignReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
