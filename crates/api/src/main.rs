@@ -10985,6 +10985,42 @@ async fn run_strategy_experiment_handler(
     let correlation_id = payload
         .correlation_id
         .expect("correlation_id must be set before experiment execution");
+    let strategy_id = match parse_strategy_id(&payload.strategy_id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) = ensure_strategy_config(&state, strategy_id).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            strategy_id = %strategy_id,
+            "failed to initialize strategy config before experiment"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_initialize_strategy_config",
+                message: "Failed to initialize strategy config.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
     if let Some(actor) = actor.as_ref() {
         let state_actor = state_actor_from_authenticated(actor);
         let _ = insert_audit_log(
@@ -11057,6 +11093,42 @@ async fn run_multi_timeframe_strategy_experiment_handler(
     let correlation_id = payload
         .correlation_id
         .expect("correlation_id must be set before experiment execution");
+    let strategy_id = match parse_strategy_id(&payload.strategy_id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) = ensure_strategy_config(&state, strategy_id).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            strategy_id = %strategy_id,
+            "failed to initialize strategy config before multi-timeframe experiment"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_initialize_strategy_config",
+                message: "Failed to initialize strategy config.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
     if let Some(actor) = actor.as_ref() {
         let state_actor = state_actor_from_authenticated(actor);
         let _ = insert_audit_log(
@@ -11131,6 +11203,42 @@ async fn run_strategy_walk_forward_handler(
     let correlation_id = payload
         .correlation_id
         .expect("correlation_id must be set before walk-forward execution");
+    let strategy_id = match parse_strategy_id(&payload.strategy_id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) = ensure_strategy_config(&state, strategy_id).await {
+        error!(
+            request_id = %request.request_id,
+            correlation_id = %request.correlation_id,
+            error = %err,
+            strategy_id = %strategy_id,
+            "failed to initialize strategy config before walk-forward"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_initialize_strategy_config",
+                message: "Failed to initialize strategy config.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
     if let Some(actor) = actor.as_ref() {
         let state_actor = state_actor_from_authenticated(actor);
         let _ = insert_audit_log(
@@ -20274,9 +20382,10 @@ mod tests {
         promote_strategy_research_candidate_handler, reconcile_exchange_testnet_orders_handler,
         reconcile_testnet_orders, refresh, register_strategy_research_candidate_handler,
         repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
-        route_access, run_exchange_testnet_shadow_handler, strategy_diagnostics_handler,
-        submit_exchange_testnet_pipeline, submit_exchange_testnet_shadow_promotion_handler,
-        AppConfig, AppState, ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
+        route_access, run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
+        strategy_diagnostics_handler, submit_exchange_testnet_pipeline,
+        submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
+        ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
         ExecutionReadinessSnapshotsResponse, RequestContext, StrategyRuntimeConfig,
         TestnetShadowPromotionResponse, TestnetShadowPromotionSubmitResponse,
         TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
@@ -21328,6 +21437,19 @@ mod tests {
             .with_state(state)
     }
 
+    fn experiments_test_router(state: AppState) -> Router {
+        Router::new()
+            .route(
+                "/experiments/strategy/run",
+                post(run_strategy_experiment_handler),
+            )
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                request_context_middleware,
+            ))
+            .with_state(state)
+    }
+
     fn readiness_test_router(state: AppState) -> Router {
         Router::new()
             .route("/auth/login", post(login))
@@ -22063,6 +22185,57 @@ mod tests {
             .await
             .expect("strategy config count");
         assert_eq!(config_count, 2);
+    }
+
+    #[tokio::test]
+    async fn strategy_experiment_bootstraps_config_on_clean_database() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = experiments_test_router(auth_test_state(test_db.pool.clone(), None, None));
+
+        let initial_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM strategy_configs")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("initial strategy config count");
+        assert_eq!(initial_count, 0);
+
+        let response = app
+            .oneshot(cli_request(
+                "POST",
+                "/experiments/strategy/run",
+                json!({
+                    "strategy_id": "trend_filter_momentum_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "15m",
+                    "start_time": "2024-05-01T00:00:00Z",
+                    "end_time": "2024-05-02T00:00:00Z",
+                    "initial_capital": "1000000",
+                    "fee_bps": "10",
+                    "slippage_bps": "5",
+                    "lookback_candidates": [10],
+                    "trend_lookback_candidates": [10],
+                    "momentum_lookback_candidates": [2],
+                    "holding_candles_candidates": [3]
+                }),
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload["experiment"]["strategy_id"].as_str(),
+            Some("trend_filter_momentum_v1")
+        );
+
+        let trend_config_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM strategy_configs WHERE strategy_id = 'trend_filter_momentum_v1'",
+        )
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("trend config count");
+        assert_eq!(trend_config_count, 1);
     }
 
     #[tokio::test]
