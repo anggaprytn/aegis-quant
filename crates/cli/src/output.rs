@@ -10,11 +10,12 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchRegimeCalibrationCandidateResult,
-    ResearchRegimeCalibrationResult, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult,
-    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
-    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, User,
+    ResearchCandidateWatchlistEntry, ResearchHypothesis, ResearchHypothesisGenerationResult,
+    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationResult,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
+    ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
+    StrategyRobustnessMatrixResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -762,6 +763,50 @@ pub fn print_research_regime_strategy_leaderboard(leaderboard: &ResearchRegimeSt
             );
         }
     }
+}
+
+pub fn print_research_hypothesis_generation(result: &ResearchHypothesisGenerationResult) {
+    println!(
+        "Research hypotheses: generated={} persisted={}",
+        result.generated_count, result.persisted_count
+    );
+    print_research_hypotheses(&result.hypotheses);
+}
+
+pub fn print_research_hypotheses(hypotheses: &[ResearchHypothesis]) {
+    if hypotheses.is_empty() {
+        println!("No research hypotheses.");
+        return;
+    }
+    for hypothesis in hypotheses {
+        print_research_hypothesis(hypothesis);
+    }
+}
+
+pub fn print_research_hypothesis(hypothesis: &ResearchHypothesis) {
+    println!(
+        "Hypothesis {} priority={} status={} source={}",
+        display_option(hypothesis.id),
+        hypothesis.priority.as_str(),
+        hypothesis.status.as_str(),
+        hypothesis.source_type.as_str()
+    );
+    println!(
+        "  scope: strategy={} symbol={} timeframe={} regime={}",
+        hypothesis.strategy_id.as_deref().unwrap_or("-"),
+        hypothesis.symbol.as_deref().unwrap_or("-"),
+        hypothesis.timeframe.as_deref().unwrap_or("-"),
+        hypothesis.regime.map(|value| value.as_str()).unwrap_or("-")
+    );
+    println!("  evidence: {}", hypothesis.evidence.summary);
+    println!("  proposed action: {}", hypothesis.proposed_action);
+    println!(
+        "  proposed experiment config: {}",
+        serde_json::to_string(&hypothesis.proposed_experiment_config)
+            .unwrap_or_else(|_| "{}".to_string())
+    );
+    println!("  expected effect: {}", hypothesis.expected_effect);
+    println!("  risk: {}", hypothesis.risk);
 }
 
 pub fn print_status(

@@ -822,8 +822,41 @@ pub enum ResearchCommands {
     Batches(ResearchBatchCommands),
     #[command(subcommand)]
     Candidates(ResearchCandidateCommands),
+    #[command(subcommand)]
+    Hypotheses(ResearchHypothesisCommands),
     #[command(name = "robustness-matrix", subcommand)]
     RobustnessMatrix(ResearchRobustnessMatrixCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchHypothesisCommands {
+    Generate(ResearchHypothesisGenerateArgs),
+    List(ResearchBatchListArgs),
+    Get { hypothesis_id: Uuid },
+    Decide(ResearchHypothesisDecisionArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchHypothesisGenerateArgs {
+    #[arg(long = "campaign-id")]
+    pub campaign_id: Option<Uuid>,
+    #[arg(long = "batch-id")]
+    pub batch_id: Option<Uuid>,
+    #[arg(long = "candidate-id")]
+    pub candidate_id: Option<Uuid>,
+    #[arg(long = "include-sources", value_delimiter = ',')]
+    pub include_sources: Vec<String>,
+    #[arg(long = "no-persist", default_value_t = false)]
+    pub no_persist: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchHypothesisDecisionArgs {
+    pub hypothesis_id: Uuid,
+    #[arg(long)]
+    pub decision: String,
+    #[arg(long)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

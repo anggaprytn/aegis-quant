@@ -64,7 +64,9 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchRegimeCalibrationCandidateResult,
+    ResearchDatasetBuildResult, ResearchHypothesis, ResearchHypothesisGenerationEvidence,
+    ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
+    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
     ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
@@ -130,7 +132,7 @@ use db::{
     apply_research_candidate_review, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, complete_market_data_repair_run,
     complete_research_batch_step, connect_pool, count_users, create_paper_order,
-    create_research_candidate, ensure_system_state,
+    create_research_candidate, decide_research_hypothesis, ensure_system_state,
     get_active_strategy_research_candidate_promotion,
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
@@ -142,20 +144,21 @@ use db::{
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
-    get_research_regime_calibration, get_research_regime_dataset, get_research_regime_discovery,
-    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
-    get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_research_candidate, get_strategy_robustness_matrix_run,
-    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
-    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
-    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
-    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
-    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
-    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
-    insert_research_batch, insert_research_batch_step, insert_research_campaign,
-    insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
+    get_research_hypothesis, get_research_regime_calibration, get_research_regime_dataset,
+    get_research_regime_discovery, get_risk_config, get_risk_decision_by_id, get_session_by_id,
+    get_session_by_id_and_hash, get_strategy_backtest_breakdown, get_strategy_experiment,
+    get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_research_candidate,
+    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown,
+    get_strategy_status, get_strategy_walk_forward_run, get_system_event, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
+    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
+    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
+    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
+    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
+    insert_research_campaign, insert_research_campaign_batch,
+    insert_research_candidate_qualification_evaluation, insert_research_hypothesis,
     insert_research_regime_calibration, insert_research_regime_dataset,
     insert_research_regime_discovery, insert_risk_config_audit, insert_risk_evaluation,
     insert_session, insert_signal_deduped, insert_strategy_config_audit,
@@ -172,7 +175,7 @@ use db::{
     list_research_campaigns, list_research_candidate_events,
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
-    list_research_candidate_watchlist_rows, list_research_candidates,
+    list_research_candidate_watchlist_rows, list_research_candidates, list_research_hypotheses,
     list_research_regime_calibration_candidates, list_research_regime_calibrations,
     list_research_regime_datasets, list_research_regime_discoveries,
     list_research_regime_discovery_windows, list_research_regime_windows, list_risk_config_audit,
@@ -1659,6 +1662,41 @@ struct ResearchRegimeStrategyLeaderboardResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchHypothesisGenerationResponse {
+    result: ResearchHypothesisGenerationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchHypothesesResponse {
+    hypotheses: Vec<ResearchHypothesis>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchHypothesisResponse {
+    hypothesis: ResearchHypothesis,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchHypothesesListQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchHypothesisDecisionRequest {
+    decision: ResearchHypothesisStatus,
+    reason: Option<String>,
+}
+
+#[derive(Serialize)]
 struct ResearchRegimeDatasetResponse {
     dataset: ResearchRegimeDatasetResult,
     request_id: String,
@@ -3004,6 +3042,22 @@ async fn main() {
         .route(
             "/research/campaigns/:id",
             get(get_research_campaign_handler),
+        )
+        .route(
+            "/research/hypotheses/generate",
+            post(generate_research_hypotheses_handler),
+        )
+        .route(
+            "/research/hypotheses",
+            get(list_research_hypotheses_handler),
+        )
+        .route(
+            "/research/hypotheses/:id/decision",
+            post(decide_research_hypothesis_handler),
+        )
+        .route(
+            "/research/hypotheses/:id",
+            get(get_research_hypothesis_handler),
         )
         .route("/research/batches/run", post(run_research_batch_handler))
         .route("/research/batches", get(list_research_batches_handler))
@@ -18194,6 +18248,278 @@ async fn get_research_campaign_regime_leaderboard_handler(
         )
             .into_response(),
     }
+}
+
+async fn generate_research_hypotheses_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchHypothesisGenerationRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let Some(actor) = actor else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "unauthorized",
+                message: "Authentication is required.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+    if !matches!(actor.role, UserRole::Owner | UserRole::Operator) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "forbidden",
+                message: "Only OPERATOR or OWNER can generate research hypotheses.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    match build_research_hypothesis_evidence(&state, &payload).await {
+        Ok(evidence) => {
+            let mut result = aegis_core::generate_research_hypotheses(evidence, Utc::now());
+            if payload.persist {
+                let mut persisted = Vec::new();
+                for hypothesis in &result.hypotheses {
+                    match insert_research_hypothesis(
+                        &state.db_pool,
+                        hypothesis,
+                        Uuid::parse_str(&request.correlation_id).ok(),
+                    )
+                    .await
+                    {
+                        Ok(value) => persisted.push(value),
+                        Err(err) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(ErrorResponse {
+                                    error: "failed_to_persist_research_hypothesis",
+                                    message: err.to_string(),
+                                    request_id: request.request_id,
+                                    correlation_id: request.correlation_id,
+                                    timestamp: Utc::now(),
+                                }),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+                result.persisted_count = i32::try_from(persisted.len()).unwrap_or(i32::MAX);
+                result.hypotheses = persisted;
+            }
+            (
+                StatusCode::OK,
+                Json(ResearchHypothesisGenerationResponse {
+                    result,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_generate_research_hypotheses",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_research_hypotheses_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchHypothesesListQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_hypotheses(&state.db_pool, query.limit.unwrap_or(50).clamp(1, 200)).await {
+        Ok(hypotheses) => (
+            StatusCode::OK,
+            Json(ResearchHypothesesResponse {
+                hypotheses,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_hypotheses",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_hypothesis_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_research_hypothesis(&state.db_pool, id).await {
+        Ok(Some(hypothesis)) => (
+            StatusCode::OK,
+            Json(ResearchHypothesisResponse {
+                hypothesis,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_hypothesis_not_found",
+                message: "Research hypothesis was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_get_research_hypothesis",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn decide_research_hypothesis_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchHypothesisDecisionRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let Some(actor) = actor else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "unauthorized",
+                message: "Authentication is required.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+    if !matches!(actor.role, UserRole::Owner | UserRole::Operator) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "forbidden",
+                message: "Only OPERATOR or OWNER can decide research hypotheses.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    match decide_research_hypothesis(
+        &state.db_pool,
+        id,
+        payload.decision,
+        payload.reason.as_deref(),
+        Some(actor.user_id),
+        Uuid::parse_str(&request.correlation_id).ok(),
+    )
+    .await
+    {
+        Ok(Some(hypothesis)) => (
+            StatusCode::OK,
+            Json(ResearchHypothesisResponse {
+                hypothesis,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_hypothesis_not_found",
+                message: "Research hypothesis was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_decide_research_hypothesis",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn build_research_hypothesis_evidence(
+    state: &AppState,
+    request: &ResearchHypothesisGenerationRequest,
+) -> anyhow::Result<ResearchHypothesisGenerationEvidence> {
+    let include_all = request.include_sources.is_empty();
+    let mut evidence = ResearchHypothesisGenerationEvidence::default();
+    if let Some(campaign_id) = request.campaign_id {
+        if include_all
+            || request
+                .include_sources
+                .contains(&aegis_core::ResearchHypothesisIncludedSource::FailureAttribution)
+        {
+            evidence.failure_attribution =
+                build_research_campaign_failure_attribution_read_model(state, campaign_id).await?;
+        }
+        if include_all
+            || request
+                .include_sources
+                .contains(&aegis_core::ResearchHypothesisIncludedSource::RegimeLeaderboard)
+        {
+            if let Some(campaign) = research_campaign_read_model(state, campaign_id).await? {
+                evidence.regime_leaderboard = Some(
+                    aegis_core::build_research_regime_strategy_leaderboard(&campaign, Utc::now()),
+                );
+            }
+        }
+    }
+    Ok(evidence)
 }
 
 async fn build_research_campaign_failure_attribution_read_model(

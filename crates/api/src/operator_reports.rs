@@ -145,6 +145,15 @@ struct ResearchRegimeCalibrationReportSnapshot {
     latest_calibration_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ResearchHypothesisReportSnapshot {
+    generated_count: i64,
+    high_priority_count: i64,
+    accepted_count: i64,
+    rejected_count: i64,
+    archived_count: i64,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -234,6 +243,7 @@ pub async fn generate_operator_report(
         load_research_regime_discovery_snapshot(&state.db_pool, &window).await?;
     let regime_calibrations =
         load_research_regime_calibration_snapshot(&state.db_pool, &window).await?;
+    let research_hypotheses = load_research_hypothesis_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -252,6 +262,7 @@ pub async fn generate_operator_report(
         &regime_datasets,
         &regime_discoveries,
         &regime_calibrations,
+        &research_hypotheses,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -293,6 +304,7 @@ pub async fn generate_operator_report(
             &regime_datasets,
             &regime_discoveries,
             &regime_calibrations,
+            &research_hypotheses,
         )?,
         format: request.format,
         persisted: false,
@@ -1750,6 +1762,35 @@ async fn load_research_regime_calibration_snapshot(
     Ok(snapshot)
 }
 
+async fn load_research_hypothesis_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<ResearchHypothesisReportSnapshot> {
+    let row = query(
+        r#"
+        SELECT
+            COUNT(*) AS generated_count,
+            COUNT(*) FILTER (WHERE priority = 'HIGH' AND status = 'PROPOSED') AS high_priority_count,
+            COUNT(*) FILTER (WHERE status = 'ACCEPTED_FOR_EXPERIMENT') AS accepted_count,
+            COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected_count,
+            COUNT(*) FILTER (WHERE status = 'ARCHIVED') AS archived_count
+        FROM research_hypotheses
+        WHERE created_at >= $1 AND created_at <= $2
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_one(pool)
+    .await?;
+    Ok(ResearchHypothesisReportSnapshot {
+        generated_count: row.get("generated_count"),
+        high_priority_count: row.get("high_priority_count"),
+        accepted_count: row.get("accepted_count"),
+        rejected_count: row.get("rejected_count"),
+        archived_count: row.get("archived_count"),
+    })
+}
+
 async fn load_candidate_shadow_pnl_snapshot(
     state: &AppState,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
@@ -1812,6 +1853,7 @@ fn build_findings(
     regime_datasets: &ResearchRegimeDatasetReportSnapshot,
     regime_discoveries: &ResearchRegimeDiscoveryReportSnapshot,
     regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
+    research_hypotheses: &ResearchHypothesisReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -2286,6 +2328,42 @@ fn build_findings(
             "research_campaigns",
         ));
     }
+    if research_hypotheses.generated_count > 0 {
+        findings.push(finding(
+            "research_hypotheses_generated",
+            OperatorReportSeverity::Low,
+            "Research hypotheses generated",
+            &format!(
+                "{} research hypotheses were generated in the report window.",
+                research_hypotheses.generated_count
+            ),
+            "research_hypotheses",
+        ));
+    }
+    if research_hypotheses.high_priority_count > 0 {
+        findings.push(finding(
+            "research_hypotheses_high_priority_pending",
+            OperatorReportSeverity::Medium,
+            "High-priority hypotheses pending review",
+            &format!(
+                "{} high-priority proposed hypotheses require review.",
+                research_hypotheses.high_priority_count
+            ),
+            "research_hypotheses",
+        ));
+    }
+    if research_hypotheses.accepted_count > 0 {
+        findings.push(finding(
+            "research_hypotheses_accepted",
+            OperatorReportSeverity::Low,
+            "Hypotheses accepted for experiment",
+            &format!(
+                "{} hypotheses were accepted for experiment.",
+                research_hypotheses.accepted_count
+            ),
+            "research_hypotheses",
+        ));
+    }
 
     if system_market.market.stale_feed_count == 0 {
         let threshold = i64::from(system_market.stale_threshold_seconds);
@@ -2691,6 +2769,7 @@ fn build_sections(
     regime_datasets: &ResearchRegimeDatasetReportSnapshot,
     regime_discoveries: &ResearchRegimeDiscoveryReportSnapshot,
     regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
+    research_hypotheses: &ResearchHypothesisReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -3051,6 +3130,28 @@ fn build_sections(
                 ),
             ],
             robustness_matrix,
+        )?,
+        section(
+            "research_hypotheses",
+            "Research Hypotheses",
+            if research_hypotheses.high_priority_count > 0 {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            if research_hypotheses.generated_count > 0 {
+                "Research planning hypotheses are available for review."
+            } else {
+                "No research hypotheses were generated in this window."
+            },
+            vec![
+                highlight("Generated", research_hypotheses.generated_count.to_string()),
+                highlight("High Priority", research_hypotheses.high_priority_count.to_string()),
+                highlight("Accepted", research_hypotheses.accepted_count.to_string()),
+                highlight("Rejected", research_hypotheses.rejected_count.to_string()),
+                highlight("Archived", research_hypotheses.archived_count.to_string()),
+            ],
+            research_hypotheses,
         )?,
         section(
             "research_regime_datasets",
@@ -3675,9 +3776,9 @@ mod tests {
     use super::{
         build_findings, build_recommendations, status_from_findings, BacktestActivity,
         ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot,
-        ResearchRegimeCalibrationReportSnapshot, ResearchRegimeDatasetReportSnapshot,
-        ResearchRegimeDiscoveryReportSnapshot, StrategyBehaviorData,
-        StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
+        ResearchHypothesisReportSnapshot, ResearchRegimeCalibrationReportSnapshot,
+        ResearchRegimeDatasetReportSnapshot, ResearchRegimeDiscoveryReportSnapshot,
+        StrategyBehaviorData, StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
@@ -3849,6 +3950,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3884,6 +3986,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3914,6 +4017,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3944,6 +4048,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4000,6 +4105,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -4041,6 +4147,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4079,6 +4186,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4123,6 +4231,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(!findings
@@ -4169,6 +4278,7 @@ mod tests {
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
+            &ResearchHypothesisReportSnapshot::default(),
         );
 
         assert!(findings

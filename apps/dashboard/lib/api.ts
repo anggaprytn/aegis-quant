@@ -78,6 +78,10 @@ import type {
   ResearchCampaignResponse,
   ResearchCampaignsResponse,
   ResearchCampaignFailureAttributionResponse,
+  ResearchHypothesisGenerationRequest,
+  ResearchHypothesisGenerationResponse,
+  ResearchHypothesesResponse,
+  ResearchHypothesisResponse,
   ResearchRegimeStrategyLeaderboardResponse,
   ResearchCampaignSummaryResponse,
   ResearchDatasetBuildRequest,
@@ -536,6 +540,23 @@ export const api = {
     request<ResearchRegimeStrategyLeaderboardResponse>(
       `/research/campaigns/${id}/regime-leaderboard`,
     ),
+  generateResearchHypotheses: (payload: ResearchHypothesisGenerationRequest) =>
+    request<ResearchHypothesisGenerationResponse>("/research/hypotheses/generate", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchHypotheses: (limit = 50) =>
+    request<ResearchHypothesesResponse>("/research/hypotheses", undefined, { limit }),
+  getResearchHypothesis: (id: string) =>
+    request<ResearchHypothesisResponse>(`/research/hypotheses/${id}`),
+  decideResearchHypothesis: (
+    id: string,
+    payload: { decision: string; reason?: string },
+  ) =>
+    request<ResearchHypothesisResponse>(`/research/hypotheses/${id}/decision`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
     request<ResearchCandidateResponse>("/research/candidates", {
       method: "POST",

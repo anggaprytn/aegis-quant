@@ -1525,6 +1525,77 @@ export type ResearchRegimeStrategyLeaderboardResponse = {
   timestamp: string;
 };
 
+export type ResearchHypothesisSource =
+  | "CAMPAIGN_FAILURE_ATTRIBUTION"
+  | "REGIME_LEADERBOARD"
+  | "OPPORTUNITY_ANALYSIS"
+  | "SIGNAL_FEATURE_ATTRIBUTION"
+  | "EXIT_ATTRIBUTION"
+  | "DATA_QUALITY";
+
+export type ResearchHypothesisStatus =
+  | "PROPOSED"
+  | "ACCEPTED_FOR_EXPERIMENT"
+  | "REJECTED"
+  | "ARCHIVED";
+
+export type ResearchHypothesisPriority = "HIGH" | "MEDIUM" | "LOW";
+
+export type ResearchHypothesis = {
+  id: string | null;
+  source_type: ResearchHypothesisSource;
+  status: ResearchHypothesisStatus;
+  strategy_id: string | null;
+  symbol: string | null;
+  timeframe: string | null;
+  regime: ResearchRegimeLabel | null;
+  failure_reasons: ResearchCandidateFailureReason[];
+  evidence: { summary: string; details: unknown };
+  recommendation: { code: string; actions: string[] };
+  proposed_action: string;
+  proposed_experiment_config: unknown;
+  priority: ResearchHypothesisPriority;
+  expected_effect: string;
+  risk: string;
+  created_at: string;
+};
+
+export type ResearchHypothesisGenerationRequest = {
+  campaign_id?: string;
+  batch_id?: string;
+  candidate_id?: string;
+  include_sources?: string[];
+  persist?: boolean;
+};
+
+export type ResearchHypothesisGenerationResult = {
+  hypotheses: ResearchHypothesis[];
+  generated_count: number;
+  persisted_count: number;
+  generated_at: string;
+};
+
+export type ResearchHypothesisGenerationResponse = {
+  result: ResearchHypothesisGenerationResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchHypothesesResponse = {
+  hypotheses: ResearchHypothesis[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchHypothesisResponse = {
+  hypothesis: ResearchHypothesis;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCampaignResult = {
   campaign_id: string;
   status: ResearchCampaignStatus;

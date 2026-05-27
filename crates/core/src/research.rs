@@ -3,14 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
     calculate_strategy_rejection_rate, summarize_candle_continuity, Candle, CandleInterval,
     CoreError, ExecutionReadinessStatus, MarketDataQualityReport, MarketDataQualityRequest,
     MarketDataQualityStatus, MarketDataSource, MarketProviderHealth, StrategyExitAttributionResult,
-    StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
+    StrategyOpportunityAnalysisResult, StrategyOpportunityStatus,
+    StrategySignalFeatureAttributionResult, StrategyWalkForwardRobustnessStatus, Symbol,
+    TestnetShadowRunnerConfig,
 };
 
 const REGIME_MIN_CANDLES: usize = 5;
@@ -2137,6 +2139,150 @@ pub struct ResearchCampaignFailureAttribution {
     pub generated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchHypothesisSource {
+    CampaignFailureAttribution,
+    RegimeLeaderboard,
+    OpportunityAnalysis,
+    SignalFeatureAttribution,
+    ExitAttribution,
+    DataQuality,
+}
+
+impl ResearchHypothesisSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CampaignFailureAttribution => "CAMPAIGN_FAILURE_ATTRIBUTION",
+            Self::RegimeLeaderboard => "REGIME_LEADERBOARD",
+            Self::OpportunityAnalysis => "OPPORTUNITY_ANALYSIS",
+            Self::SignalFeatureAttribution => "SIGNAL_FEATURE_ATTRIBUTION",
+            Self::ExitAttribution => "EXIT_ATTRIBUTION",
+            Self::DataQuality => "DATA_QUALITY",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchHypothesisStatus {
+    Proposed,
+    AcceptedForExperiment,
+    Rejected,
+    Archived,
+}
+
+impl ResearchHypothesisStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Proposed => "PROPOSED",
+            Self::AcceptedForExperiment => "ACCEPTED_FOR_EXPERIMENT",
+            Self::Rejected => "REJECTED",
+            Self::Archived => "ARCHIVED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchHypothesisPriority {
+    High,
+    Medium,
+    Low,
+}
+
+impl ResearchHypothesisPriority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "HIGH",
+            Self::Medium => "MEDIUM",
+            Self::Low => "LOW",
+        }
+    }
+
+    fn rank(self) -> i32 {
+        match self {
+            Self::High => 0,
+            Self::Medium => 1,
+            Self::Low => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchHypothesisRecommendation {
+    pub code: String,
+    pub actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchHypothesisEvidence {
+    pub summary: String,
+    pub details: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchHypothesis {
+    pub id: Option<Uuid>,
+    pub source_type: ResearchHypothesisSource,
+    pub status: ResearchHypothesisStatus,
+    pub strategy_id: Option<String>,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub regime: Option<ResearchRegimeLabel>,
+    pub failure_reasons: Vec<ResearchCandidateFailureReason>,
+    pub evidence: ResearchHypothesisEvidence,
+    pub recommendation: ResearchHypothesisRecommendation,
+    pub proposed_action: String,
+    pub proposed_experiment_config: Value,
+    pub priority: ResearchHypothesisPriority,
+    pub expected_effect: String,
+    pub risk: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchHypothesisIncludedSource {
+    FailureAttribution,
+    RegimeLeaderboard,
+    OpportunityAnalysis,
+    SignalFeatureAttribution,
+    ExitAttribution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchHypothesisGenerationRequest {
+    pub campaign_id: Option<Uuid>,
+    pub batch_id: Option<Uuid>,
+    pub candidate_id: Option<Uuid>,
+    #[serde(default)]
+    pub include_sources: Vec<ResearchHypothesisIncludedSource>,
+    #[serde(default = "default_research_hypothesis_persist")]
+    pub persist: bool,
+}
+
+fn default_research_hypothesis_persist() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchHypothesisGenerationResult {
+    pub hypotheses: Vec<ResearchHypothesis>,
+    pub generated_count: i32,
+    pub persisted_count: i32,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResearchHypothesisGenerationEvidence {
+    pub failure_attribution: Option<ResearchCampaignFailureAttribution>,
+    pub regime_leaderboard: Option<ResearchRegimeStrategyLeaderboard>,
+    pub opportunity_analysis: Option<StrategyOpportunityAnalysisResult>,
+    pub signal_feature_attribution: Option<StrategySignalFeatureAttributionResult>,
+    pub exit_attribution: Option<StrategyExitAttributionResult>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchCandidateFailureInput {
     pub candidate_id: Option<Uuid>,
@@ -2953,6 +3099,500 @@ fn failure_recommendation(
         code: code.into(),
         message: message.into(),
     }
+}
+
+pub fn generate_research_hypotheses(
+    evidence: ResearchHypothesisGenerationEvidence,
+    generated_at: DateTime<Utc>,
+) -> ResearchHypothesisGenerationResult {
+    let mut hypotheses = Vec::new();
+    if let Some(attribution) = evidence.failure_attribution.as_ref() {
+        hypotheses.extend(hypotheses_from_failure_attribution(
+            attribution,
+            generated_at,
+        ));
+    }
+    if let Some(leaderboard) = evidence.regime_leaderboard.as_ref() {
+        hypotheses.extend(hypotheses_from_regime_leaderboard(
+            leaderboard,
+            generated_at,
+        ));
+    }
+    if let Some(opportunity) = evidence.opportunity_analysis.as_ref() {
+        hypotheses.extend(hypotheses_from_opportunity_analysis(
+            opportunity,
+            generated_at,
+        ));
+    }
+    if let Some(signal_features) = evidence.signal_feature_attribution.as_ref() {
+        hypotheses.extend(hypotheses_from_signal_feature_attribution(
+            signal_features,
+            generated_at,
+        ));
+    }
+    if let Some(exit_attribution) = evidence.exit_attribution.as_ref() {
+        hypotheses.extend(hypotheses_from_exit_attribution(
+            exit_attribution,
+            generated_at,
+        ));
+    }
+    hypotheses = dedupe_and_sort_hypotheses(hypotheses);
+    ResearchHypothesisGenerationResult {
+        generated_count: i32::try_from(hypotheses.len()).unwrap_or(i32::MAX),
+        persisted_count: 0,
+        hypotheses,
+        generated_at,
+    }
+}
+
+fn hypotheses_from_failure_attribution(
+    attribution: &ResearchCampaignFailureAttribution,
+    created_at: DateTime<Utc>,
+) -> Vec<ResearchHypothesis> {
+    let mut hypotheses = Vec::new();
+    for breakdown in &attribution.strategy_timeframe_breakdown {
+        let matching_rows = attribution
+            .candidate_failure_table
+            .iter()
+            .filter(|row| {
+                row.strategy_id == breakdown.strategy_id
+                    && row.symbol == breakdown.symbol
+                    && row.timeframe == breakdown.timeframe
+            })
+            .collect::<Vec<_>>();
+        let top_reason = breakdown.top_failure_reasons.first().copied();
+        for reason in &breakdown.top_failure_reasons {
+            let priority = match reason {
+                ResearchCandidateFailureReason::FeeDrag => {
+                    if top_reason == Some(ResearchCandidateFailureReason::FeeDrag) {
+                        ResearchHypothesisPriority::High
+                    } else {
+                        ResearchHypothesisPriority::Medium
+                    }
+                }
+                ResearchCandidateFailureReason::TooManyTrades
+                | ResearchCandidateFailureReason::RegimeMismatch
+                | ResearchCandidateFailureReason::OverfitRisk
+                | ResearchCandidateFailureReason::DataQualityDegraded => {
+                    ResearchHypothesisPriority::High
+                }
+                ResearchCandidateFailureReason::TooFewTrades => ResearchHypothesisPriority::Medium,
+                _ => ResearchHypothesisPriority::Low,
+            };
+            let (code, actions, proposed_action, expected_effect, risk, config) = match reason {
+                ResearchCandidateFailureReason::FeeDrag
+                | ResearchCandidateFailureReason::TooManyTrades => (
+                    "reduce_fee_drag_and_turnover",
+                    vec![
+                        "increase timeframe",
+                        "increase cooldown",
+                        "tighten entry filters",
+                        "test lower trade frequency",
+                    ],
+                    "Test a lower-turnover variant before adding new strategy families.",
+                    "Lower fee drag and reduce weak churn.",
+                    "May miss short-lived opportunities and reduce sample count.",
+                    json!({
+                        "experiment": "lower_trade_frequency",
+                        "timeframe_multiplier": 2,
+                        "cooldown_multiplier": 2,
+                        "entry_filter": "tighten",
+                        "max_trade_frequency": "below_current_median"
+                    }),
+                ),
+                ResearchCandidateFailureReason::TooFewTrades => (
+                    "loosen_entry_opportunity",
+                    vec![
+                        "loosen entry thresholds",
+                        "expand lower/upper bands",
+                        "test more permissive config",
+                    ],
+                    "Test a more permissive configuration to prove opportunity exists.",
+                    "Increase sample size before judging edge.",
+                    "May add noisy trades and worsen fee drag.",
+                    json!({
+                        "experiment": "more_permissive_entries",
+                        "entry_threshold": "loosen",
+                        "range_bands": "expand",
+                        "min_trade_count": "above_too_few_threshold"
+                    }),
+                ),
+                ResearchCandidateFailureReason::RegimeMismatch => (
+                    "split_or_disable_mismatched_regime",
+                    vec![
+                        "disable strategy for mismatched regime",
+                        "test regime-specific strategy",
+                        "split campaigns by regime",
+                    ],
+                    "Run regime-segmented research and disable this strategy in mismatched regimes.",
+                    "Reduce strategy/regime mismatch and make comparisons cleaner.",
+                    "Could discard rare transitional regimes too aggressively.",
+                    json!({
+                        "experiment": "regime_specific_campaign",
+                        "disabled_regime": breakdown.dominant_regime.as_str(),
+                        "split_by_regime": true
+                    }),
+                ),
+                ResearchCandidateFailureReason::OverfitRisk => (
+                    "broaden_walk_forward_validation",
+                    vec![
+                        "require broader walk-forward",
+                        "add more windows/symbols",
+                        "reject candidate unless robustness improves",
+                    ],
+                    "Broaden walk-forward validation before accepting any candidate.",
+                    "Separate robust behavior from window-specific overfit.",
+                    "More validation may leave no candidate eligible.",
+                    json!({
+                        "experiment": "broader_walk_forward",
+                        "min_windows": "increase",
+                        "symbols": "expand",
+                        "acceptance_gate": "robustness_improves"
+                    }),
+                ),
+                ResearchCandidateFailureReason::DataQualityDegraded
+                | ResearchCandidateFailureReason::InsufficientData => (
+                    "repair_data_before_research",
+                    vec![
+                        "repair data before research",
+                        "do not accept candidates from degraded windows",
+                    ],
+                    "Repair or backfill data, then rerun research for affected windows.",
+                    "Avoid accepting candidates based on degraded evidence.",
+                    "Research is blocked until data coverage is fixed.",
+                    json!({
+                        "experiment": "data_repair_rerun",
+                        "require_good_data_quality": true,
+                        "accept_degraded_windows": false
+                    }),
+                ),
+                _ => (
+                    "investigate_weak_edge",
+                    vec!["run feature attribution", "compare against opportunity analysis"],
+                    "Run attribution before changing strategy logic.",
+                    "Identify whether weak edge is entry quality or opportunity scarcity.",
+                    "May confirm that the strategy should be rejected.",
+                    json!({ "experiment": "diagnose_weak_edge" }),
+                ),
+            };
+            hypotheses.push(research_hypothesis(
+                ResearchHypothesisSource::CampaignFailureAttribution,
+                Some(breakdown.strategy_id.clone()),
+                Some(breakdown.symbol.clone()),
+                Some(breakdown.timeframe.clone()),
+                Some(breakdown.dominant_regime),
+                vec![*reason],
+                format!(
+                    "{} {} {} failed with {} across {} candidates.",
+                    breakdown.strategy_id,
+                    breakdown.symbol,
+                    breakdown.timeframe,
+                    reason.as_str(),
+                    breakdown.candidate_count
+                ),
+                json!({
+                    "campaign_id": attribution.campaign_id,
+                    "candidate_count": breakdown.candidate_count,
+                    "avg_pnl_pct": breakdown.avg_pnl_pct,
+                    "avg_trade_count": breakdown.avg_trade_count,
+                    "matching_rows": matching_rows.len()
+                }),
+                code,
+                actions,
+                proposed_action,
+                config,
+                priority,
+                expected_effect,
+                risk,
+                created_at,
+            ));
+        }
+    }
+    hypotheses
+}
+
+fn hypotheses_from_regime_leaderboard(
+    leaderboard: &ResearchRegimeStrategyLeaderboard,
+    created_at: DateTime<Utc>,
+) -> Vec<ResearchHypothesis> {
+    let mut hypotheses = Vec::new();
+    for cell in &leaderboard.per_regime {
+        let promising = cell
+            .rankings
+            .iter()
+            .any(regime_strategy_ranking_is_promising);
+        if !promising {
+            let least_bad = cell
+                .rankings
+                .iter()
+                .find(|ranking| regime_strategy_ranking_is_least_bad(ranking));
+            hypotheses.push(research_hypothesis(
+                ResearchHypothesisSource::RegimeLeaderboard,
+                least_bad.map(|ranking| ranking.strategy_id.clone()),
+                least_bad.map(|ranking| ranking.symbol.clone()),
+                least_bad.map(|ranking| ranking.timeframe.clone()),
+                Some(cell.regime_label),
+                vec![ResearchCandidateFailureReason::WeakEdge],
+                format!("No promising strategy found for {}.", cell.regime_label.as_str()),
+                json!({
+                    "campaign_id": leaderboard.campaign_id,
+                    "least_bad": least_bad,
+                    "ranking_count": cell.rankings.len()
+                }),
+                "define_next_regime_hypothesis",
+                vec![
+                    "do not promote least-bad strategy",
+                    "create explicit regime-specific experiment",
+                    "compare against broader validation",
+                ],
+                "Treat least-bad as diagnostic evidence and design a new regime-specific experiment.",
+                json!({
+                    "experiment": "regime_specific_hypothesis",
+                    "target_regime": cell.regime_label.as_str(),
+                    "promote_least_bad": false
+                }),
+                ResearchHypothesisPriority::Medium,
+                "Convert negative regime evidence into a targeted next test.",
+                "The next experiment may still find no robust strategy.",
+                created_at,
+            ));
+        }
+        if cell
+            .rankings
+            .iter()
+            .any(|ranking| ranking.status == ResearchRegimeStrategyStatus::Overfit)
+        {
+            hypotheses.push(research_hypothesis(
+                ResearchHypothesisSource::RegimeLeaderboard,
+                None,
+                None,
+                None,
+                Some(cell.regime_label),
+                vec![ResearchCandidateFailureReason::OverfitRisk],
+                format!("{} is overfit-heavy.", cell.regime_label.as_str()),
+                json!({
+                    "campaign_id": leaderboard.campaign_id,
+                    "overfit_rankings": cell.rankings.iter().filter(|ranking| ranking.status == ResearchRegimeStrategyStatus::Overfit).count()
+                }),
+                "tighten_regime_walk_forward",
+                vec![
+                    "require broader walk-forward",
+                    "add more windows/symbols",
+                    "reject candidate unless robustness improves",
+                ],
+                "Require broader validation for this regime before candidate acceptance.",
+                json!({
+                    "experiment": "regime_walk_forward_expansion",
+                    "target_regime": cell.regime_label.as_str(),
+                    "min_windows": "increase"
+                }),
+                ResearchHypothesisPriority::High,
+                "Reduce overfit-heavy regime selection.",
+                "May block all candidates in this regime.",
+                created_at,
+            ));
+        }
+    }
+    hypotheses
+}
+
+fn hypotheses_from_opportunity_analysis(
+    result: &StrategyOpportunityAnalysisResult,
+    created_at: DateTime<Utc>,
+) -> Vec<ResearchHypothesis> {
+    if result.data_quality_status != StrategyOpportunityStatus::HealthyOpportunity {
+        return vec![research_hypothesis(
+            ResearchHypothesisSource::DataQuality,
+            Some(result.strategy_id.clone()),
+            Some(result.symbol.clone()),
+            Some(result.timeframe.clone()),
+            None,
+            vec![ResearchCandidateFailureReason::DataQualityDegraded],
+            "Opportunity analysis was blocked or degraded by data quality.".to_string(),
+            json!({ "data_quality_status": result.data_quality_status }),
+            "repair_data_before_research",
+            vec![
+                "repair data before research",
+                "do not accept candidates from degraded windows",
+            ],
+            "Repair data before using this opportunity analysis.",
+            json!({ "require_good_data_quality": true }),
+            ResearchHypothesisPriority::High,
+            "Prevent degraded windows from driving research acceptance.",
+            "Research is delayed until data repair is complete.",
+            created_at,
+        )];
+    }
+    Vec::new()
+}
+
+fn hypotheses_from_signal_feature_attribution(
+    result: &StrategySignalFeatureAttributionResult,
+    created_at: DateTime<Utc>,
+) -> Vec<ResearchHypothesis> {
+    let threshold = 5_i64;
+    result
+        .best_buckets
+        .iter()
+        .filter(|bucket| bucket.sample_count >= threshold)
+        .map(|bucket| {
+            research_hypothesis(
+                ResearchHypothesisSource::SignalFeatureAttribution,
+                Some(result.strategy_id.clone()),
+                Some(result.symbol.clone()),
+                Some(result.timeframe.clone()),
+                None,
+                vec![ResearchCandidateFailureReason::WeakEdge],
+                format!(
+                    "Feature bucket {} looks promising with {} samples.",
+                    bucket.bucket_label, bucket.sample_count
+                ),
+                json!({
+                    "feature": bucket.feature_name,
+                    "bucket": bucket.bucket_label,
+                    "sample_count": bucket.sample_count,
+                    "worst_buckets": result.worst_buckets
+                }),
+                "use_promising_feature_bucket",
+                vec![
+                    "create strategy/config variant using promising bucket boundaries",
+                    "avoid worst bucket boundaries",
+                ],
+                "Create a config variant bounded by promising feature buckets.",
+                json!({
+                    "experiment": "feature_bucket_variant",
+                    "feature": bucket.feature_name,
+                    "include_bucket": bucket.bucket_label,
+                    "avoid_worst_buckets": true
+                }),
+                ResearchHypothesisPriority::High,
+                "Improve entry selectivity using observed feature buckets.",
+                "Bucket edge may be sample-specific and needs walk-forward validation.",
+                created_at,
+            )
+        })
+        .collect()
+}
+
+fn hypotheses_from_exit_attribution(
+    result: &StrategyExitAttributionResult,
+    created_at: DateTime<Utc>,
+) -> Vec<ResearchHypothesis> {
+    if result.per_holding_window.is_empty()
+        || !result
+            .per_holding_window
+            .iter()
+            .all(|window| window.avg_net_pnl_pct < Decimal::ZERO)
+    {
+        return Vec::new();
+    }
+    vec![research_hypothesis(
+        ResearchHypothesisSource::ExitAttribution,
+        Some(result.strategy_id.clone()),
+        Some(result.symbol.clone()),
+        Some(result.timeframe.clone()),
+        None,
+        vec![ResearchCandidateFailureReason::WeakEdge],
+        "Exit attribution is negative across all tested holding windows.".to_string(),
+        json!({
+            "holding_windows": result.per_holding_window,
+            "recommendation": result.recommendation
+        }),
+        "reject_before_exit_tweaks",
+        vec![
+            "reject strategy/config",
+            "test alternative entry logic before exit tweaks",
+        ],
+        "Reject this config until entry logic improves.",
+        json!({
+            "experiment": "alternative_entry_logic",
+            "exit_tweaks_first": false
+        }),
+        ResearchHypothesisPriority::High,
+        "Avoid optimizing exits for consistently negative entries.",
+        "A different exit may still help, but evidence says entry quality is the first problem.",
+        created_at,
+    )]
+}
+
+fn research_hypothesis(
+    source_type: ResearchHypothesisSource,
+    strategy_id: Option<String>,
+    symbol: Option<String>,
+    timeframe: Option<String>,
+    regime: Option<ResearchRegimeLabel>,
+    failure_reasons: Vec<ResearchCandidateFailureReason>,
+    evidence_summary: String,
+    evidence_details: Value,
+    recommendation_code: impl Into<String>,
+    actions: Vec<&str>,
+    proposed_action: impl Into<String>,
+    proposed_experiment_config: Value,
+    priority: ResearchHypothesisPriority,
+    expected_effect: impl Into<String>,
+    risk: impl Into<String>,
+    created_at: DateTime<Utc>,
+) -> ResearchHypothesis {
+    ResearchHypothesis {
+        id: None,
+        source_type,
+        status: ResearchHypothesisStatus::Proposed,
+        strategy_id,
+        symbol,
+        timeframe,
+        regime,
+        failure_reasons,
+        evidence: ResearchHypothesisEvidence {
+            summary: evidence_summary,
+            details: evidence_details,
+        },
+        recommendation: ResearchHypothesisRecommendation {
+            code: recommendation_code.into(),
+            actions: actions.into_iter().map(str::to_string).collect(),
+        },
+        proposed_action: proposed_action.into(),
+        proposed_experiment_config,
+        priority,
+        expected_effect: expected_effect.into(),
+        risk: risk.into(),
+        created_at,
+    }
+}
+
+fn dedupe_and_sort_hypotheses(hypotheses: Vec<ResearchHypothesis>) -> Vec<ResearchHypothesis> {
+    let mut by_key = BTreeMap::<String, ResearchHypothesis>::new();
+    for hypothesis in hypotheses {
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}",
+            hypothesis.source_type.as_str(),
+            hypothesis.strategy_id.as_deref().unwrap_or(""),
+            hypothesis.symbol.as_deref().unwrap_or(""),
+            hypothesis.timeframe.as_deref().unwrap_or(""),
+            hypothesis.regime.map(|value| value.as_str()).unwrap_or(""),
+            hypothesis.recommendation.code
+        );
+        by_key
+            .entry(key)
+            .and_modify(|existing| {
+                if hypothesis.priority.rank() < existing.priority.rank() {
+                    *existing = hypothesis.clone();
+                }
+            })
+            .or_insert(hypothesis);
+    }
+    let mut values = by_key.into_values().collect::<Vec<_>>();
+    values.sort_by(|left, right| {
+        left.priority
+            .rank()
+            .cmp(&right.priority.rank())
+            .then_with(|| left.source_type.cmp(&right.source_type))
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id))
+            .then_with(|| left.symbol.cmp(&right.symbol))
+            .then_with(|| left.timeframe.cmp(&right.timeframe))
+            .then_with(|| left.regime.cmp(&right.regime))
+            .then_with(|| left.recommendation.code.cmp(&right.recommendation.code))
+    });
+    values
 }
 
 pub fn campaign_windows(
@@ -13521,5 +14161,250 @@ mod tests {
         let consistency = calculate_strategy_robustness_regime_consistency(&cells);
 
         assert_eq!(consistency, Decimal::new(50, 0));
+    }
+
+    fn hypothesis_attribution_with_reason(
+        reason: ResearchCandidateFailureReason,
+    ) -> ResearchCampaignFailureAttribution {
+        ResearchCampaignFailureAttribution {
+            campaign_id: Uuid::from_u128(42),
+            overall_failure_reasons: vec![reason],
+            regime_summary: Vec::new(),
+            candidate_failure_table: vec![ResearchCandidateFailureAttributionRow {
+                candidate_id: Some(Uuid::from_u128(1)),
+                experiment_run_id: None,
+                walk_forward_run_id: None,
+                strategy_id: "range_reversion_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "15m".to_string(),
+                window_start: ts(0, 0, 0),
+                window_end: ts(1, 0, 0),
+                regime_label: ResearchRegimeLabel::TrendUp,
+                failure_reasons: vec![reason],
+                pnl_pct: Some(Decimal::new(-1, 0)),
+                gross_pnl_pct: Some(Decimal::new(1, 0)),
+                fee_drag_pct: Some(Decimal::new(25, 1)),
+                trade_count: Some(30),
+                win_rate: Some(Decimal::new(30, 0)),
+                max_drawdown_pct: Some(Decimal::new(5, 0)),
+                walk_forward_status: Some("OVERFIT_RISK".to_string()),
+                data_quality_status: None,
+            }],
+            strategy_timeframe_breakdown: vec![ResearchStrategyTimeframeFailureBreakdown {
+                strategy_id: "range_reversion_v1".to_string(),
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "15m".to_string(),
+                candidate_count: 1,
+                dominant_regime: ResearchRegimeLabel::TrendUp,
+                top_failure_reasons: vec![reason],
+                avg_pnl_pct: Some(Decimal::new(-1, 0)),
+                avg_trade_count: Some(Decimal::new(30, 0)),
+            }],
+            findings: Vec::new(),
+            recommendations: Vec::new(),
+            generated_at: ts(2, 0, 0),
+        }
+    }
+
+    fn generated_from_attribution(
+        reason: ResearchCandidateFailureReason,
+    ) -> Vec<ResearchHypothesis> {
+        generate_research_hypotheses(
+            ResearchHypothesisGenerationEvidence {
+                failure_attribution: Some(hypothesis_attribution_with_reason(reason)),
+                ..Default::default()
+            },
+            ts(3, 0, 0),
+        )
+        .hypotheses
+    }
+
+    #[test]
+    fn hypothesis_fee_drag_rule_is_high_priority() {
+        let hypotheses = generated_from_attribution(ResearchCandidateFailureReason::FeeDrag);
+        assert_eq!(hypotheses[0].priority, ResearchHypothesisPriority::High);
+        assert_eq!(
+            hypotheses[0].recommendation.code,
+            "reduce_fee_drag_and_turnover"
+        );
+    }
+
+    #[test]
+    fn hypothesis_too_few_trades_rule_is_medium_priority() {
+        let hypotheses = generated_from_attribution(ResearchCandidateFailureReason::TooFewTrades);
+        assert_eq!(hypotheses[0].priority, ResearchHypothesisPriority::Medium);
+        assert_eq!(
+            hypotheses[0].recommendation.code,
+            "loosen_entry_opportunity"
+        );
+    }
+
+    #[test]
+    fn hypothesis_regime_mismatch_rule_is_high_priority() {
+        let hypotheses = generated_from_attribution(ResearchCandidateFailureReason::RegimeMismatch);
+        assert_eq!(hypotheses[0].priority, ResearchHypothesisPriority::High);
+        assert_eq!(
+            hypotheses[0].recommendation.code,
+            "split_or_disable_mismatched_regime"
+        );
+    }
+
+    #[test]
+    fn hypothesis_overfit_risk_rule_is_high_priority() {
+        let hypotheses = generated_from_attribution(ResearchCandidateFailureReason::OverfitRisk);
+        assert_eq!(hypotheses[0].priority, ResearchHypothesisPriority::High);
+        assert_eq!(
+            hypotheses[0].recommendation.code,
+            "broaden_walk_forward_validation"
+        );
+    }
+
+    #[test]
+    fn hypothesis_promising_bucket_rule_uses_bucket_boundaries() {
+        let bucket = crate::StrategySignalFeatureBucket {
+            feature_name: "close_vs_sma_pct".to_string(),
+            bucket_label: "0..1".to_string(),
+            sample_count: 5,
+            win_rate: Decimal::new(60, 0),
+            avg_net_pnl_pct: Decimal::new(1, 0),
+            median_net_pnl_pct: Decimal::new(1, 0),
+            best_net_pnl_pct: Decimal::new(2, 0),
+            worst_net_pnl_pct: Decimal::new(-1, 0),
+            total_net_pnl_pct: Decimal::new(5, 0),
+            recommendation: crate::StrategySignalFeatureRecommendation::Promising,
+        };
+        let result = generate_research_hypotheses(
+            ResearchHypothesisGenerationEvidence {
+                signal_feature_attribution: Some(StrategySignalFeatureAttributionResult {
+                    strategy_id: "s1".to_string(),
+                    symbol: "BTCUSDT".to_string(),
+                    timeframe: "15m".to_string(),
+                    start_time: ts(0, 0, 0),
+                    end_time: ts(1, 0, 0),
+                    holding_window: 5,
+                    total_raw_signals: 10,
+                    executable_signals: 10,
+                    attributed_signals: 5,
+                    insufficient_forward_data_count: 0,
+                    suppression_breakdown: Vec::new(),
+                    feature_buckets: vec![bucket.clone()],
+                    best_buckets: vec![bucket],
+                    worst_buckets: Vec::new(),
+                    recommendations: Vec::new(),
+                    samples: Vec::new(),
+                    status: crate::StrategySignalFeatureAttributionStatus::PromisingFeaturesFound,
+                    computed_at: ts(2, 0, 0),
+                }),
+                ..Default::default()
+            },
+            ts(3, 0, 0),
+        );
+        assert_eq!(
+            result.hypotheses[0].recommendation.code,
+            "use_promising_feature_bucket"
+        );
+    }
+
+    #[test]
+    fn hypothesis_exit_attribution_negative_rule_rejects_config() {
+        let result = generate_research_hypotheses(
+            ResearchHypothesisGenerationEvidence {
+                exit_attribution: Some(StrategyExitAttributionResult {
+                    strategy_id: "s1".to_string(),
+                    symbol: "BTCUSDT".to_string(),
+                    timeframe: "15m".to_string(),
+                    start_time: ts(0, 0, 0),
+                    end_time: ts(1, 0, 0),
+                    total_raw_signals: 1,
+                    total_executable_signals: 1,
+                    suppression_breakdown: Vec::new(),
+                    per_holding_window: vec![crate::StrategyExitAttributionHoldingWindow {
+                        holding_candles: 5,
+                        trade_count: 1,
+                        win_rate: Decimal::ZERO,
+                        avg_net_pnl_pct: Decimal::new(-1, 0),
+                        median_net_pnl_pct: Decimal::new(-1, 0),
+                        total_net_pnl_pct: Decimal::new(-1, 0),
+                        best_net_pnl_pct: Decimal::new(-1, 0),
+                        worst_net_pnl_pct: Decimal::new(-1, 0),
+                        max_drawdown_pct: None,
+                        fee_drag_pct: Decimal::new(1, 0),
+                        recommendation: crate::StrategyExitAttributionRecommendation::Negative,
+                    }],
+                    best_holding_window: None,
+                    worst_holding_window: Some(5),
+                    status: crate::StrategyExitAttributionStatus::Negative,
+                    recommendation: crate::StrategyExitAttributionRecommendation::Negative,
+                    trades: Vec::new(),
+                    computed_at: ts(2, 0, 0),
+                }),
+                ..Default::default()
+            },
+            ts(3, 0, 0),
+        );
+        assert_eq!(
+            result.hypotheses[0].recommendation.code,
+            "reject_before_exit_tweaks"
+        );
+    }
+
+    #[test]
+    fn hypothesis_data_quality_rule_blocks_research() {
+        let result = generate_research_hypotheses(
+            ResearchHypothesisGenerationEvidence {
+                opportunity_analysis: Some(StrategyOpportunityAnalysisResult {
+                    strategy_id: "s1".to_string(),
+                    symbol: "BTCUSDT".to_string(),
+                    timeframe: "15m".to_string(),
+                    start_time: ts(0, 0, 0),
+                    end_time: ts(1, 0, 0),
+                    total_closed_candles: 0,
+                    evaluable_windows: 0,
+                    would_signal_count: 0,
+                    no_signal_count: 0,
+                    signal_rate_pct: Decimal::ZERO,
+                    top_blocking_conditions: Vec::new(),
+                    condition_pass_rates: Vec::new(),
+                    condition_failure_breakdown: Vec::new(),
+                    example_pass_windows: Vec::new(),
+                    example_fail_windows: Vec::new(),
+                    distributions: json!({}),
+                    recommendation: crate::StrategyOpportunityRecommendation {
+                        status: StrategyOpportunityStatus::DataQualityDegraded,
+                        messages: Vec::new(),
+                    },
+                    data_quality_status: StrategyOpportunityStatus::DataQualityDegraded,
+                    analyzed_at: ts(2, 0, 0),
+                }),
+                ..Default::default()
+            },
+            ts(3, 0, 0),
+        );
+        assert_eq!(
+            result.hypotheses[0].source_type,
+            ResearchHypothesisSource::DataQuality
+        );
+    }
+
+    #[test]
+    fn hypothesis_ordering_and_dedup_are_deterministic() {
+        let attribution =
+            hypothesis_attribution_with_reason(ResearchCandidateFailureReason::FeeDrag);
+        let first = generate_research_hypotheses(
+            ResearchHypothesisGenerationEvidence {
+                failure_attribution: Some(attribution.clone()),
+                ..Default::default()
+            },
+            ts(3, 0, 0),
+        );
+        let second = generate_research_hypotheses(
+            ResearchHypothesisGenerationEvidence {
+                failure_attribution: Some(attribution),
+                ..Default::default()
+            },
+            ts(3, 0, 0),
+        );
+        assert_eq!(first.hypotheses, second.hypotheses);
+        assert_eq!(first.hypotheses.len(), 1);
     }
 }

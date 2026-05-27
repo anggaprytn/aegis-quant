@@ -11,7 +11,9 @@ use aegis_core::{
     ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
     ResearchCandidateStatus, ResearchDataCoverageResult, ResearchDataReadinessStatus,
     ResearchDatasetBuildRequest, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchDatasetBuildStepStatus, ResearchHypothesis, ResearchHypothesisEvidence,
+    ResearchHypothesisPriority, ResearchHypothesisRecommendation, ResearchHypothesisSource,
+    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
     ResearchRegimeCalibrationRecommendation, ResearchRegimeCalibrationRequest,
     ResearchRegimeCalibrationResult, ResearchRegimeCalibrationStatus,
     ResearchRegimeClassificationExplanation, ResearchRegimeClassifierConfig,
@@ -42,15 +44,15 @@ use chrono::{TimeZone, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
     complete_market_data_repair_run, count_candles_by_interval, count_candles_range,
-    create_paper_order, create_research_candidate, fail_exchange_reconciliation_run,
-    get_aggregated_candle_coverage, get_backtest_equity_curve, get_backtest_run,
-    get_backtest_trades, get_candle_backfill_run, get_candles_for_quality_report,
+    create_paper_order, create_research_candidate, decide_research_hypothesis,
+    fail_exchange_reconciliation_run, get_aggregated_candle_coverage, get_backtest_equity_curve,
+    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_candles_for_quality_report,
     get_closed_1m_candles_range, get_closed_candles_range, get_exchange_private_stream_state,
     get_exchange_reconciliation_run, get_exchange_testnet_order_by_client_order_id,
     get_order_by_idempotency_key, get_research_candidate_shadow_performance,
     get_research_candidate_shadow_pnl_attribution, get_research_dataset_build,
-    get_research_regime_calibration, get_research_regime_discovery, get_risk_decision,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_research_hypothesis, get_research_regime_calibration, get_research_regime_discovery,
+    get_risk_decision, get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
     get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown, get_system_state,
     get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
     get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
@@ -58,7 +60,7 @@ use db::{
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_market_data_repair_run, insert_paper_account, insert_research_candidate_shadow_run_link,
-    insert_research_dataset_build, insert_research_regime_calibration,
+    insert_research_dataset_build, insert_research_hypothesis, insert_research_regime_calibration,
     insert_research_regime_discovery, insert_risk_decision, insert_signal_deduped,
     insert_strategy_candidate_observation, insert_strategy_experiment,
     insert_strategy_experiment_runs, insert_strategy_research_candidate,
@@ -68,18 +70,18 @@ use db::{
     list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
     list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
     list_orders, list_recent_signals, list_research_candidate_shadow_runs,
-    list_research_dataset_build_steps, list_research_regime_calibration_candidates,
-    list_research_regime_calibrations, list_research_regime_discovery_windows,
-    list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
-    list_strategy_performance_rankings, list_strategy_research_candidates,
-    list_strategy_robustness_matrix_cells, list_strategy_robustness_matrix_runs,
-    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
-    list_testnet_promotion_funnel_rows, list_testnet_shadow_runs,
-    list_testnet_shadow_runs_in_window, mark_strategy_research_candidate_promoted,
-    market_data_repair_result_from_record, replace_research_dataset_build_steps,
-    research_candidate_event_from_record, research_candidate_from_record,
-    research_dataset_build_result_from_records, research_regime_calibration_result_from_records,
-    research_regime_discovery_result_from_records,
+    list_research_dataset_build_steps, list_research_hypotheses,
+    list_research_regime_calibration_candidates, list_research_regime_calibrations,
+    list_research_regime_discovery_windows, list_strategy_candidate_observations,
+    list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
+    list_strategy_research_candidates, list_strategy_robustness_matrix_cells,
+    list_strategy_robustness_matrix_runs, list_strategy_walk_forward_runs,
+    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
+    list_testnet_shadow_runs, list_testnet_shadow_runs_in_window,
+    mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
+    replace_research_dataset_build_steps, research_candidate_event_from_record,
+    research_candidate_from_record, research_dataset_build_result_from_records,
+    research_regime_calibration_result_from_records, research_regime_discovery_result_from_records,
     resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
     strategy_research_candidate_from_record, strategy_robustness_matrix_cell_from_record,
@@ -108,6 +110,25 @@ use uuid::Uuid;
 
 fn fixed_time() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 1, 1, 0, 3, 0).unwrap()
+}
+
+async fn execution_table_counts(pool: &sqlx::PgPool) -> Vec<(String, i64)> {
+    sqlx::query_as(
+        r#"
+        SELECT name, count FROM (
+            SELECT 'orders' AS name, COUNT(*)::BIGINT AS count FROM orders
+            UNION ALL SELECT 'paper_positions', COUNT(*)::BIGINT FROM paper_positions
+            UNION ALL SELECT 'paper_fills', COUNT(*)::BIGINT FROM paper_fills
+            UNION ALL SELECT 'exchange_testnet_orders', COUNT(*)::BIGINT FROM exchange_testnet_orders
+            UNION ALL SELECT 'exchange_testnet_order_lifecycle_events', COUNT(*)::BIGINT FROM exchange_testnet_order_lifecycle_events
+            UNION ALL SELECT 'testnet_shadow_promotions', COUNT(*)::BIGINT FROM testnet_shadow_promotions
+        ) counts
+        ORDER BY name
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .expect("execution table counts should query")
 }
 
 fn sample_research_coverage_result() -> ResearchDataCoverageResult {
@@ -1769,6 +1790,74 @@ async fn research_dataset_build_records_round_trip() {
     assert_eq!(
         build.steps[0].status,
         ResearchDatasetBuildStepStatus::Completed
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_hypotheses_persist_decide_and_do_not_mutate_execution_tables() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let before_execution = execution_table_counts(&test_db.pool).await;
+    let hypothesis = ResearchHypothesis {
+        id: Some(Uuid::from_u128(0x4848)),
+        source_type: ResearchHypothesisSource::CampaignFailureAttribution,
+        status: ResearchHypothesisStatus::Proposed,
+        strategy_id: Some("range_reversion_v1".to_string()),
+        symbol: Some("BTCUSDT".to_string()),
+        timeframe: Some("15m".to_string()),
+        regime: Some(ResearchRegimeLabel::Range),
+        failure_reasons: vec![aegis_core::ResearchCandidateFailureReason::OverfitRisk],
+        evidence: ResearchHypothesisEvidence {
+            summary: "overfit risk sample".to_string(),
+            details: serde_json::json!({ "source": "integration_db" }),
+        },
+        recommendation: ResearchHypothesisRecommendation {
+            code: "broaden_walk_forward_validation".to_string(),
+            actions: vec!["require broader walk-forward".to_string()],
+        },
+        proposed_action: "Broaden walk-forward validation.".to_string(),
+        proposed_experiment_config: serde_json::json!({ "experiment": "broader_walk_forward" }),
+        priority: ResearchHypothesisPriority::High,
+        expected_effect: "Separate robust behavior from overfit.".to_string(),
+        risk: "May reject all candidates.".to_string(),
+        created_at: fixed_time(),
+    };
+
+    let persisted = insert_research_hypothesis(&test_db.pool, &hypothesis, None)
+        .await
+        .expect("hypothesis should persist");
+    let hypothesis_id = persisted.id.expect("persisted id");
+    let fetched = get_research_hypothesis(&test_db.pool, hypothesis_id)
+        .await
+        .expect("get should work")
+        .expect("hypothesis should exist");
+    assert_eq!(fetched.status, ResearchHypothesisStatus::Proposed);
+
+    let listed = list_research_hypotheses(&test_db.pool, 10)
+        .await
+        .expect("list should work");
+    assert!(listed.iter().any(|value| value.id == Some(hypothesis_id)));
+
+    let decided = decide_research_hypothesis(
+        &test_db.pool,
+        hypothesis_id,
+        ResearchHypothesisStatus::AcceptedForExperiment,
+        Some("integration decision"),
+        None,
+        None,
+    )
+    .await
+    .expect("decision should persist")
+    .expect("hypothesis should exist");
+    assert_eq!(
+        decided.status,
+        ResearchHypothesisStatus::AcceptedForExperiment
+    );
+    assert_eq!(
+        before_execution,
+        execution_table_counts(&test_db.pool).await
     );
 }
 

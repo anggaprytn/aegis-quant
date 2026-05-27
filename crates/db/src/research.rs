@@ -18,19 +18,22 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchDatasetBuildStepStatus, ResearchHypothesis, ResearchHypothesisEvidence,
+    ResearchHypothesisPriority, ResearchHypothesisRecommendation, ResearchHypothesisSource,
+    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
     ResearchRegimeCalibrationResult, ResearchRegimeClassifierConfig, ResearchRegimeDatasetRequest,
     ResearchRegimeDatasetResult, ResearchRegimeDatasetStatus,
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
     ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus, ResearchRegimeDiscoverySummary,
-    ResearchRegimeWindow, ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
-    ResearchShadowPnlRunInput, StrategyCandidateObservationDecision,
-    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
-    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
-    StrategyResearchCandidateSource, StrategyResearchCandidateStatus,
-    StrategyWalkForwardRecommendation, StrategyWalkForwardRobustnessStatus, Symbol,
+    ResearchRegimeLabel, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput,
+    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
+    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+    StrategyCandidateObservationSummary, StrategyResearchCandidate,
+    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
+    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
+    StrategyResearchCandidateStatus, StrategyWalkForwardRecommendation,
+    StrategyWalkForwardRobustnessStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -210,6 +213,19 @@ pub struct ResearchRegimeCalibrationCandidateRecord {
     pub score: Decimal,
     pub rank: i32,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchHypothesisEventRecord {
+    pub id: Uuid,
+    pub hypothesis_id: Uuid,
+    pub previous_status: Option<String>,
+    pub next_status: String,
+    pub reason: Option<String>,
+    pub actor_id: Option<Uuid>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1267,6 +1283,237 @@ pub async fn list_research_campaigns(
     .await?;
 
     Ok(rows.into_iter().map(map_research_campaign).collect())
+}
+
+pub async fn insert_research_hypothesis(
+    pool: &PgPool,
+    hypothesis: &ResearchHypothesis,
+    correlation_id: Option<Uuid>,
+) -> Result<ResearchHypothesis> {
+    let id = hypothesis.id.unwrap_or_else(Uuid::new_v4);
+    let failure_reasons = serde_json::to_value(&hypothesis.failure_reasons)?;
+    let evidence = serde_json::to_value(&hypothesis.evidence)?;
+    let recommendation = serde_json::to_value(&hypothesis.recommendation)?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_hypotheses (
+            id,
+            source_type,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            regime,
+            failure_reasons,
+            evidence,
+            recommendation,
+            proposed_action,
+            proposed_experiment_config,
+            priority,
+            expected_effect,
+            risk,
+            created_at,
+            updated_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16, $17)
+        RETURNING
+            id,
+            source_type,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            regime,
+            failure_reasons,
+            evidence,
+            recommendation,
+            proposed_action,
+            proposed_experiment_config,
+            priority,
+            expected_effect,
+            risk,
+            created_at
+        "#,
+    )
+    .bind(id)
+    .bind(hypothesis.source_type.as_str())
+    .bind(hypothesis.status.as_str())
+    .bind(&hypothesis.strategy_id)
+    .bind(&hypothesis.symbol)
+    .bind(&hypothesis.timeframe)
+    .bind(hypothesis.regime.map(|value| value.as_str().to_string()))
+    .bind(failure_reasons)
+    .bind(evidence)
+    .bind(recommendation)
+    .bind(&hypothesis.proposed_action)
+    .bind(&hypothesis.proposed_experiment_config)
+    .bind(hypothesis.priority.as_str())
+    .bind(&hypothesis.expected_effect)
+    .bind(&hypothesis.risk)
+    .bind(hypothesis.created_at)
+    .bind(correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    map_research_hypothesis(row)
+}
+
+pub async fn list_research_hypotheses(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ResearchHypothesis>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            source_type,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            regime,
+            failure_reasons,
+            evidence,
+            recommendation,
+            proposed_action,
+            proposed_experiment_config,
+            priority,
+            expected_effect,
+            risk,
+            created_at
+        FROM research_hypotheses
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(map_research_hypothesis).collect()
+}
+
+pub async fn get_research_hypothesis(
+    pool: &PgPool,
+    hypothesis_id: Uuid,
+) -> Result<Option<ResearchHypothesis>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            source_type,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            regime,
+            failure_reasons,
+            evidence,
+            recommendation,
+            proposed_action,
+            proposed_experiment_config,
+            priority,
+            expected_effect,
+            risk,
+            created_at
+        FROM research_hypotheses
+        WHERE id = $1
+        "#,
+    )
+    .bind(hypothesis_id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(map_research_hypothesis).transpose()
+}
+
+pub async fn decide_research_hypothesis(
+    pool: &PgPool,
+    hypothesis_id: Uuid,
+    status: ResearchHypothesisStatus,
+    reason: Option<&str>,
+    actor_id: Option<Uuid>,
+    correlation_id: Option<Uuid>,
+) -> Result<Option<ResearchHypothesis>> {
+    let mut tx = pool.begin().await?;
+    let previous = sqlx::query("SELECT status FROM research_hypotheses WHERE id = $1 FOR UPDATE")
+        .bind(hypothesis_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(previous) = previous else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+    let previous_status: String = previous.get("status");
+    let row = sqlx::query(
+        r#"
+        UPDATE research_hypotheses
+        SET status = $2,
+            updated_at = $3,
+            decided_at = $3,
+            decided_by = $4,
+            decision_reason = $5,
+            correlation_id = $6
+        WHERE id = $1
+        RETURNING
+            id,
+            source_type,
+            status,
+            strategy_id,
+            symbol,
+            timeframe,
+            regime,
+            failure_reasons,
+            evidence,
+            recommendation,
+            proposed_action,
+            proposed_experiment_config,
+            priority,
+            expected_effect,
+            risk,
+            created_at
+        "#,
+    )
+    .bind(hypothesis_id)
+    .bind(status.as_str())
+    .bind(Utc::now())
+    .bind(actor_id)
+    .bind(reason)
+    .bind(correlation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO research_hypothesis_events (
+            id,
+            hypothesis_id,
+            previous_status,
+            next_status,
+            reason,
+            actor_id,
+            payload,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(hypothesis_id)
+    .bind(previous_status)
+    .bind(status.as_str())
+    .bind(reason)
+    .bind(actor_id)
+    .bind(serde_json::json!({ "decision": status.as_str(), "reason": reason }))
+    .bind(Utc::now())
+    .bind(correlation_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    map_research_hypothesis(row).map(Some)
 }
 
 pub async fn insert_research_campaign_batch(
@@ -4824,6 +5071,84 @@ fn map_research_dataset_build_step(row: sqlx::postgres::PgRow) -> ResearchDatase
         started_at: row.get("started_at"),
         completed_at: row.get("completed_at"),
     }
+}
+
+fn map_research_hypothesis(row: sqlx::postgres::PgRow) -> Result<ResearchHypothesis> {
+    let source_type: String = row.get("source_type");
+    let status: String = row.get("status");
+    let priority: String = row.get("priority");
+    let regime: Option<String> = row.get("regime");
+    let failure_reasons: Value = row.get("failure_reasons");
+    let evidence: Value = row.get("evidence");
+    let recommendation: Value = row.get("recommendation");
+    Ok(ResearchHypothesis {
+        id: Some(row.get("id")),
+        source_type: parse_research_hypothesis_source(&source_type)?,
+        status: parse_research_hypothesis_status(&status)?,
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        regime: regime
+            .as_deref()
+            .map(parse_research_regime_label)
+            .transpose()?,
+        failure_reasons: serde_json::from_value(failure_reasons)
+            .context("invalid research_hypotheses.failure_reasons")?,
+        evidence: serde_json::from_value::<ResearchHypothesisEvidence>(evidence)
+            .context("invalid research_hypotheses.evidence")?,
+        recommendation: serde_json::from_value::<ResearchHypothesisRecommendation>(recommendation)
+            .context("invalid research_hypotheses.recommendation")?,
+        proposed_action: row.get("proposed_action"),
+        proposed_experiment_config: row.get("proposed_experiment_config"),
+        priority: parse_research_hypothesis_priority(&priority)?,
+        expected_effect: row.get("expected_effect"),
+        risk: row.get("risk"),
+        created_at: row.get("created_at"),
+    })
+}
+
+fn parse_research_hypothesis_source(value: &str) -> Result<ResearchHypothesisSource> {
+    Ok(match value {
+        "CAMPAIGN_FAILURE_ATTRIBUTION" => ResearchHypothesisSource::CampaignFailureAttribution,
+        "REGIME_LEADERBOARD" => ResearchHypothesisSource::RegimeLeaderboard,
+        "OPPORTUNITY_ANALYSIS" => ResearchHypothesisSource::OpportunityAnalysis,
+        "SIGNAL_FEATURE_ATTRIBUTION" => ResearchHypothesisSource::SignalFeatureAttribution,
+        "EXIT_ATTRIBUTION" => ResearchHypothesisSource::ExitAttribution,
+        "DATA_QUALITY" => ResearchHypothesisSource::DataQuality,
+        other => anyhow::bail!("unsupported research hypothesis source: {other}"),
+    })
+}
+
+fn parse_research_hypothesis_status(value: &str) -> Result<ResearchHypothesisStatus> {
+    Ok(match value {
+        "PROPOSED" => ResearchHypothesisStatus::Proposed,
+        "ACCEPTED_FOR_EXPERIMENT" => ResearchHypothesisStatus::AcceptedForExperiment,
+        "REJECTED" => ResearchHypothesisStatus::Rejected,
+        "ARCHIVED" => ResearchHypothesisStatus::Archived,
+        other => anyhow::bail!("unsupported research hypothesis status: {other}"),
+    })
+}
+
+fn parse_research_hypothesis_priority(value: &str) -> Result<ResearchHypothesisPriority> {
+    Ok(match value {
+        "HIGH" => ResearchHypothesisPriority::High,
+        "MEDIUM" => ResearchHypothesisPriority::Medium,
+        "LOW" => ResearchHypothesisPriority::Low,
+        other => anyhow::bail!("unsupported research hypothesis priority: {other}"),
+    })
+}
+
+fn parse_research_regime_label(value: &str) -> Result<ResearchRegimeLabel> {
+    Ok(match value {
+        "TREND_UP" => ResearchRegimeLabel::TrendUp,
+        "TREND_DOWN" => ResearchRegimeLabel::TrendDown,
+        "RANGE" => ResearchRegimeLabel::Range,
+        "HIGH_VOLATILITY" => ResearchRegimeLabel::HighVolatility,
+        "LOW_VOLATILITY" => ResearchRegimeLabel::LowVolatility,
+        "MIXED" => ResearchRegimeLabel::Mixed,
+        "UNKNOWN" => ResearchRegimeLabel::Unknown,
+        other => anyhow::bail!("unsupported research regime label: {other}"),
+    })
 }
 
 fn map_strategy_research_candidate(row: sqlx::postgres::PgRow) -> StrategyResearchCandidateRecord {

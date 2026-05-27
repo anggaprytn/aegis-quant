@@ -22,18 +22,19 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
-    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
-    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
-    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeStrategyLeaderboard,
-    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExitAttributionResult, StrategyExperimentRequest, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    ResearchHypothesis, ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
+    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
+    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
+    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyExitAttributionResult, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
     StrategyMultiTimeframeExperimentResult, StrategyOpportunityAnalysisResult,
     StrategyPerformanceSummary, StrategyRobustnessMatrixCell, StrategyRobustnessMatrixRequest,
     StrategyRobustnessMatrixResult, StrategySignalFeatureAttributionResult,
@@ -824,6 +825,42 @@ impl ApiClient {
         self.get(
             &format!("/research/campaigns/{campaign_id}/regime-leaderboard"),
             &[],
+        )
+        .await
+    }
+
+    pub async fn generate_research_hypotheses(
+        &self,
+        request: &ResearchHypothesisGenerationRequest,
+    ) -> Result<ResearchHypothesisGenerationResponse, ApiClientError> {
+        self.post("/research/hypotheses/generate", request).await
+    }
+
+    pub async fn list_research_hypotheses(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchHypothesesResponse, ApiClientError> {
+        self.get("/research/hypotheses", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_research_hypothesis(
+        &self,
+        hypothesis_id: Uuid,
+    ) -> Result<ResearchHypothesisResponse, ApiClientError> {
+        self.get(&format!("/research/hypotheses/{hypothesis_id}"), &[])
+            .await
+    }
+
+    pub async fn decide_research_hypothesis(
+        &self,
+        hypothesis_id: Uuid,
+        decision: ResearchHypothesisStatus,
+        reason: Option<String>,
+    ) -> Result<ResearchHypothesisResponse, ApiClientError> {
+        self.post(
+            &format!("/research/hypotheses/{hypothesis_id}/decision"),
+            &serde_json::json!({ "decision": decision, "reason": reason }),
         )
         .await
     }
@@ -2698,6 +2735,30 @@ pub struct ResearchCampaignFailureAttributionResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchRegimeStrategyLeaderboardResponse {
     pub leaderboard: ResearchRegimeStrategyLeaderboard,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchHypothesisGenerationResponse {
+    pub result: ResearchHypothesisGenerationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchHypothesesResponse {
+    pub hypotheses: Vec<ResearchHypothesis>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchHypothesisResponse {
+    pub hypothesis: ResearchHypothesis,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -1,7 +1,8 @@
 use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateReviewRequest, TestnetShadowRunnerControlAction,
+    ResearchCandidateReviewRequest, ResearchHypothesisGenerationRequest,
+    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, TestnetShadowRunnerControlAction,
     TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
@@ -27,7 +28,7 @@ use cli::cli::{
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
-    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
+    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands, ResearchHypothesisCommands,
     ResearchRegimeCalibrationCommands, ResearchRegimeDatasetCommands,
     ResearchRegimeDiscoveryCommands, ResearchRobustnessMatrixCommands, RiskCommands,
     RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
@@ -65,6 +66,34 @@ fn try_print_research_candidate_decision_rejection(
         output::print_research_candidate_decision_rejection(&parsed.rejection, &parsed.message);
     }
     Ok(true)
+}
+
+fn parse_hypothesis_sources(
+    values: &[String],
+) -> anyhow::Result<Vec<ResearchHypothesisIncludedSource>> {
+    values
+        .iter()
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "failure_attribution" => Ok(ResearchHypothesisIncludedSource::FailureAttribution),
+            "regime_leaderboard" => Ok(ResearchHypothesisIncludedSource::RegimeLeaderboard),
+            "opportunity_analysis" => Ok(ResearchHypothesisIncludedSource::OpportunityAnalysis),
+            "signal_feature_attribution" => {
+                Ok(ResearchHypothesisIncludedSource::SignalFeatureAttribution)
+            }
+            "exit_attribution" => Ok(ResearchHypothesisIncludedSource::ExitAttribution),
+            other => anyhow::bail!("unsupported hypothesis source: {other}"),
+        })
+        .collect()
+}
+
+fn parse_hypothesis_status(value: &str) -> anyhow::Result<ResearchHypothesisStatus> {
+    Ok(match value.trim().to_ascii_uppercase().as_str() {
+        "PROPOSED" => ResearchHypothesisStatus::Proposed,
+        "ACCEPTED_FOR_EXPERIMENT" => ResearchHypothesisStatus::AcceptedForExperiment,
+        "REJECTED" => ResearchHypothesisStatus::Rejected,
+        "ARCHIVED" => ResearchHypothesisStatus::Archived,
+        other => anyhow::bail!("unsupported hypothesis decision: {other}"),
+    })
 }
 
 fn login_required_message() -> &'static str {
@@ -1153,6 +1182,54 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate_shadow_promotion_result(&response.result);
+                    }
+                }
+            },
+            ResearchCommands::Hypotheses(command) => match command {
+                ResearchHypothesisCommands::Generate(args) => {
+                    let request = ResearchHypothesisGenerationRequest {
+                        campaign_id: args.campaign_id,
+                        batch_id: args.batch_id,
+                        candidate_id: args.candidate_id,
+                        include_sources: parse_hypothesis_sources(&args.include_sources)?,
+                        persist: !args.no_persist,
+                    };
+                    let response = client.generate_research_hypotheses(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_hypothesis_generation(&response.result);
+                    }
+                }
+                ResearchHypothesisCommands::List(args) => {
+                    let response = client.list_research_hypotheses(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_hypotheses(&response.hypotheses);
+                    }
+                }
+                ResearchHypothesisCommands::Get { hypothesis_id } => {
+                    let response = client.get_research_hypothesis(hypothesis_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_hypothesis(&response.hypothesis);
+                    }
+                }
+                ResearchHypothesisCommands::Decide(args) => {
+                    let decision = parse_hypothesis_status(&args.decision)?;
+                    let response = client
+                        .decide_research_hypothesis(
+                            args.hypothesis_id,
+                            decision,
+                            args.reason.clone(),
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_hypothesis(&response.hypothesis);
                     }
                 }
             },

@@ -42,6 +42,9 @@ import type {
   ResearchCampaignFailureAttribution,
   ResearchCampaignRequest,
   ResearchCampaignResult,
+  ResearchHypothesis,
+  ResearchHypothesisPriority,
+  ResearchHypothesisStatus,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
   ResearchRegimeCalibrationRequest,
@@ -1000,6 +1003,11 @@ function AuthenticatedDashboard({
   const [selectedResearchCampaignId, setSelectedResearchCampaignId] = useState<string | null>(null);
   const [lastResearchCampaign, setLastResearchCampaign] =
     useState<ResearchCampaignResult | null>(null);
+  const [selectedResearchHypothesisId, setSelectedResearchHypothesisId] = useState<string | null>(null);
+  const [researchHypothesisPriorityFilter, setResearchHypothesisPriorityFilter] =
+    useState<ResearchHypothesisPriority | "ALL">("ALL");
+  const [researchHypothesisStatusFilter, setResearchHypothesisStatusFilter] =
+    useState<ResearchHypothesisStatus | "ALL">("ALL");
   const [strategyConfigForm, setStrategyConfigForm] =
     useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
   const [strategyDiagnosticsForm, setStrategyDiagnosticsForm] = useState(
@@ -1485,6 +1493,29 @@ function AuthenticatedDashboard({
     queryKey: ["research-campaign-regime-leaderboard", selectedResearchCampaignId],
     queryFn: () => api.getResearchCampaignRegimeLeaderboard(selectedResearchCampaignId ?? ""),
     enabled: Boolean(selectedResearchCampaignId),
+  });
+  const researchHypothesesQuery = useQuery({
+    queryKey: ["research-hypotheses"],
+    queryFn: () => api.listResearchHypotheses(50),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const generateResearchHypothesesMutation = useMutation({
+    mutationFn: () =>
+      api.generateResearchHypotheses({
+        campaign_id: selectedResearchCampaignId ?? undefined,
+        persist: true,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["research-hypotheses"] });
+    },
+  });
+  const decideResearchHypothesisMutation = useMutation({
+    mutationFn: ({ id, decision }: { id: string; decision: ResearchHypothesisStatus }) =>
+      api.decideResearchHypothesis(id, { decision, reason: "dashboard review" }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["research-hypotheses"] });
+    },
   });
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
@@ -2807,6 +2838,20 @@ function AuthenticatedDashboard({
     selectedResearchCampaignFailureAttributionQuery.data?.attribution ?? null;
   const selectedResearchCampaignRegimeLeaderboard =
     selectedResearchCampaignRegimeLeaderboardQuery.data?.leaderboard ?? null;
+  const researchHypotheses = researchHypothesesQuery.data?.hypotheses ?? [];
+  const filteredResearchHypotheses = researchHypotheses.filter((hypothesis) => {
+    const priorityMatches =
+      researchHypothesisPriorityFilter === "ALL" ||
+      hypothesis.priority === researchHypothesisPriorityFilter;
+    const statusMatches =
+      researchHypothesisStatusFilter === "ALL" ||
+      hypothesis.status === researchHypothesisStatusFilter;
+    return priorityMatches && statusMatches;
+  });
+  const selectedResearchHypothesis =
+    researchHypotheses.find((hypothesis) => hypothesis.id === selectedResearchHypothesisId) ??
+    filteredResearchHypotheses[0] ??
+    null;
   const selectedExperiment =
     selectedExperimentQuery.data?.experiment ?? null;
   const strategyExperimentRuns =
@@ -6361,6 +6406,26 @@ function AuthenticatedDashboard({
                 <div className="mt-4">
                   <ResearchCampaignOverallLeaderboardTable
                     leaderboard={selectedResearchCampaignRegimeLeaderboard}
+                  />
+                </div>
+                <div className="mt-4">
+                  <ResearchHypothesesPanel
+                    hypotheses={filteredResearchHypotheses}
+                    selectedHypothesis={selectedResearchHypothesis}
+                    priorityFilter={researchHypothesisPriorityFilter}
+                    statusFilter={researchHypothesisStatusFilter}
+                    loading={researchHypothesesQuery.isLoading}
+                    error={getErrorMessage(researchHypothesesQuery.error)}
+                    generateBusy={generateResearchHypothesesMutation.isPending}
+                    decideBusy={decideResearchHypothesisMutation.isPending}
+                    canMutate={user.role === "OWNER" || user.role === "OPERATOR"}
+                    onPriorityFilter={setResearchHypothesisPriorityFilter}
+                    onStatusFilter={setResearchHypothesisStatusFilter}
+                    onSelect={setSelectedResearchHypothesisId}
+                    onGenerate={() => generateResearchHypothesesMutation.mutate()}
+                    onDecide={(id, decision) =>
+                      decideResearchHypothesisMutation.mutate({ id, decision })
+                    }
                   />
                 </div>
                 <div className="mt-4">
@@ -10905,6 +10970,151 @@ function ResearchCampaignFailureReasonsTable({
         ])}
       />
     </div>
+  );
+}
+
+function ResearchHypothesesPanel({
+  hypotheses,
+  selectedHypothesis,
+  priorityFilter,
+  statusFilter,
+  loading,
+  error,
+  generateBusy,
+  decideBusy,
+  canMutate,
+  onPriorityFilter,
+  onStatusFilter,
+  onSelect,
+  onGenerate,
+  onDecide,
+}: {
+  hypotheses: ResearchHypothesis[];
+  selectedHypothesis: ResearchHypothesis | null;
+  priorityFilter: ResearchHypothesisPriority | "ALL";
+  statusFilter: ResearchHypothesisStatus | "ALL";
+  loading?: boolean;
+  error?: string;
+  generateBusy?: boolean;
+  decideBusy?: boolean;
+  canMutate: boolean;
+  onPriorityFilter: (value: ResearchHypothesisPriority | "ALL") => void;
+  onStatusFilter: (value: ResearchHypothesisStatus | "ALL") => void;
+  onSelect: (id: string | null) => void;
+  onGenerate: () => void;
+  onDecide: (id: string, decision: ResearchHypothesisStatus) => void;
+}) {
+  return (
+    <Panel title="Research Hypotheses">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <select
+          className="rounded-md border border-border bg-panel px-2 py-2 text-sm"
+          value={priorityFilter}
+          onChange={(event) =>
+            onPriorityFilter(event.target.value as ResearchHypothesisPriority | "ALL")
+          }
+        >
+          {["ALL", "HIGH", "MEDIUM", "LOW"].map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+        <select
+          className="rounded-md border border-border bg-panel px-2 py-2 text-sm"
+          value={statusFilter}
+          onChange={(event) =>
+            onStatusFilter(event.target.value as ResearchHypothesisStatus | "ALL")
+          }
+        >
+          {["ALL", "PROPOSED", "ACCEPTED_FOR_EXPERIMENT", "REJECTED", "ARCHIVED"].map(
+            (value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ),
+          )}
+        </select>
+        <ActionButton
+          label="Generate"
+          onClick={onGenerate}
+          busy={generateBusy}
+          disabled={!canMutate}
+        />
+      </div>
+      {loading ? <EmptyState label="Loading hypotheses." /> : null}
+      {error ? <div className="mb-3 text-sm text-danger">{error}</div> : null}
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Table
+          headers={["Priority", "Status", "Source", "Evidence"]}
+          rows={hypotheses.map((hypothesis) => [
+            hypothesis.priority,
+            hypothesis.status,
+            hypothesis.source_type,
+            <button
+              className="text-left text-accent"
+              key={hypothesis.id ?? hypothesis.evidence.summary}
+              onClick={() => onSelect(hypothesis.id)}
+              type="button"
+            >
+              {hypothesis.evidence.summary}
+            </button>,
+          ])}
+        />
+        <div className="rounded-lg border border-border p-3">
+          {selectedHypothesis ? (
+            <div className="space-y-3 text-sm">
+              <KeyValue
+                items={[
+                  ["ID", selectedHypothesis.id ?? "-"],
+                  ["Strategy", selectedHypothesis.strategy_id ?? "-"],
+                  ["Symbol", selectedHypothesis.symbol ?? "-"],
+                  ["Timeframe", selectedHypothesis.timeframe ?? "-"],
+                  ["Regime", selectedHypothesis.regime ?? "-"],
+                  ["Action", selectedHypothesis.proposed_action],
+                  ["Expected Effect", selectedHypothesis.expected_effect],
+                  ["Risk", selectedHypothesis.risk],
+                ]}
+              />
+              <pre className="max-h-64 overflow-auto rounded-md bg-background p-3 text-xs">
+                {JSON.stringify(selectedHypothesis.proposed_experiment_config, null, 2)}
+              </pre>
+              <div className="flex flex-wrap gap-2">
+                <ActionButton
+                  label="Accept"
+                  onClick={() =>
+                    selectedHypothesis.id &&
+                    onDecide(selectedHypothesis.id, "ACCEPTED_FOR_EXPERIMENT")
+                  }
+                  busy={decideBusy}
+                  disabled={!canMutate || !selectedHypothesis.id}
+                />
+                <ActionButton
+                  label="Reject"
+                  tone="warning"
+                  onClick={() =>
+                    selectedHypothesis.id && onDecide(selectedHypothesis.id, "REJECTED")
+                  }
+                  busy={decideBusy}
+                  disabled={!canMutate || !selectedHypothesis.id}
+                />
+                <ActionButton
+                  label="Archive"
+                  tone="danger"
+                  onClick={() =>
+                    selectedHypothesis.id && onDecide(selectedHypothesis.id, "ARCHIVED")
+                  }
+                  busy={decideBusy}
+                  disabled={!canMutate || !selectedHypothesis.id}
+                />
+              </div>
+            </div>
+          ) : (
+            <EmptyState label="No hypothesis selected." />
+          )}
+        </div>
+      </div>
+    </Panel>
   );
 }
 
