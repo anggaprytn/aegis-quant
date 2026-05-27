@@ -710,6 +710,36 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_regime_calibration(&response.calibration);
                     }
                 }
+                ResearchRegimeCalibrationCommands::List(args) => {
+                    let response = client.list_research_regime_calibrations(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        for calibration in &response.calibrations {
+                            output::print_research_regime_calibration(calibration);
+                        }
+                    }
+                }
+                ResearchRegimeCalibrationCommands::Get { calibration_id } => {
+                    let response = client
+                        .get_research_regime_calibration(calibration_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_calibration(&response.calibration);
+                    }
+                }
+                ResearchRegimeCalibrationCommands::Candidates { calibration_id } => {
+                    let response = client
+                        .get_research_regime_calibration_candidates(calibration_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_calibration_candidates(&response.candidates);
+                    }
+                }
             },
             ResearchCommands::Campaigns(command) => match command {
                 ResearchCampaignCommands::Run(args) => {

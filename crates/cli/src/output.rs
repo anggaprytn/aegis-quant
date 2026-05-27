@@ -10,7 +10,8 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchRegimeCalibrationResult, ResearchRegimeDatasetResult,
+    ResearchCandidateWatchlistEntry, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationResult, ResearchRegimeDatasetResult,
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult, ResearchRegimeWindow,
     ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
     StrategyRobustnessMatrixResult, User,
@@ -437,6 +438,32 @@ pub fn print_research_regime_calibration(calibration: &ResearchRegimeCalibration
             sample.choppiness_proxy,
             sample
                 .alternate_labels_considered
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+}
+
+pub fn print_research_regime_calibration_candidates(
+    candidates: &[ResearchRegimeCalibrationCandidateResult],
+) {
+    println!("Regime calibration candidates:");
+    for (index, candidate) in candidates.iter().enumerate() {
+        println!(
+            "  #{} {} score={} counts={} missing={}",
+            index + 1,
+            candidate.candidate_id,
+            candidate.total_score,
+            candidate
+                .counts_by_regime
+                .iter()
+                .map(|(regime, count)| format!("{}={}", regime.as_str(), count))
+                .collect::<Vec<_>>()
+                .join(","),
+            candidate
+                .missing_regimes
                 .iter()
                 .map(|regime| regime.as_str())
                 .collect::<Vec<_>>()

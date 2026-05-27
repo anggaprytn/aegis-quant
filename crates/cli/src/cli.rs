@@ -879,6 +879,9 @@ pub enum ResearchRegimeDiscoveryCommands {
 #[derive(Debug, Subcommand)]
 pub enum ResearchRegimeCalibrationCommands {
     Run(ResearchRegimeCalibrationRunArgs),
+    List(ResearchBatchListArgs),
+    Get { calibration_id: Uuid },
+    Candidates { calibration_id: Uuid },
 }
 
 #[derive(Debug, Args)]
@@ -923,6 +926,8 @@ pub struct ResearchRegimeDiscoveryRunArgs {
     pub allow_missing_candles: bool,
     #[arg(long = "auto-backfill-missing", default_value_t = false)]
     pub auto_backfill_missing: bool,
+    #[arg(long = "calibration-id")]
+    pub calibration_id: Option<Uuid>,
 }
 
 #[derive(Debug, Subcommand)]

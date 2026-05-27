@@ -22,11 +22,12 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
-    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
-    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
-    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
+    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
+    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
+    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeWindow,
+    ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
@@ -870,6 +871,39 @@ impl ApiClient {
         request: &ResearchRegimeCalibrationRequest,
     ) -> Result<ResearchRegimeCalibrationResponse, ApiClientError> {
         self.post("/research/regime-calibration/run", request).await
+    }
+
+    pub async fn list_research_regime_calibrations(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchRegimeCalibrationsResponse, ApiClientError> {
+        self.get(
+            "/research/regime-calibration",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn get_research_regime_calibration(
+        &self,
+        calibration_id: Uuid,
+    ) -> Result<ResearchRegimeCalibrationResponse, ApiClientError> {
+        self.get(
+            &format!("/research/regime-calibration/{calibration_id}"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_research_regime_calibration_candidates(
+        &self,
+        calibration_id: Uuid,
+    ) -> Result<ResearchRegimeCalibrationCandidatesResponse, ApiClientError> {
+        self.get(
+            &format!("/research/regime-calibration/{calibration_id}/candidates"),
+            &[],
+        )
+        .await
     }
 
     pub async fn list_research_regime_discoveries(
@@ -2706,6 +2740,22 @@ pub struct ResearchRegimeCalibrationResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeCalibrationsResponse {
+    pub calibrations: Vec<ResearchRegimeCalibrationResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeCalibrationCandidatesResponse {
+    pub candidates: Vec<ResearchRegimeCalibrationCandidateResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidatesResponse {
     pub candidates: Vec<ResearchCandidate>,
@@ -4180,7 +4230,7 @@ pub fn build_research_regime_discovery_request(
         require_existing_candles: !args.allow_missing_candles,
         auto_backfill_missing: args.auto_backfill_missing,
         classifier_config: None,
-        calibration_id: None,
+        calibration_id: args.calibration_id,
     };
     request
         .validate()

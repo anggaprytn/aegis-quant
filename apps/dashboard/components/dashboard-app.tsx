@@ -987,6 +987,8 @@ function AuthenticatedDashboard({
     useState<ResearchRegimeCalibrationRequest>(DEFAULT_RESEARCH_REGIME_CALIBRATION_FORM);
   const [lastResearchRegimeCalibration, setLastResearchRegimeCalibration] =
     useState<ResearchRegimeCalibrationResult | null>(null);
+  const [selectedResearchRegimeCalibrationId, setSelectedResearchRegimeCalibrationId] =
+    useState<string | null>(null);
   const [researchBatchForm, setResearchBatchForm] =
     useState<ResearchBatchRequest>(DEFAULT_RESEARCH_BATCH_FORM);
   const [selectedResearchBatchId, setSelectedResearchBatchId] = useState<string | null>(null);
@@ -1417,6 +1419,23 @@ function AuthenticatedDashboard({
     queryFn: () => api.listResearchRegimeDiscoveries(20),
     enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
+  });
+  const researchRegimeCalibrationsQuery = useQuery({
+    queryKey: ["research-regime-calibrations"],
+    queryFn: () => api.listResearchRegimeCalibrations(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchRegimeCalibrationQuery = useQuery({
+    queryKey: ["research-regime-calibration", selectedResearchRegimeCalibrationId],
+    queryFn: () => api.getResearchRegimeCalibration(selectedResearchRegimeCalibrationId ?? ""),
+    enabled: Boolean(selectedResearchRegimeCalibrationId),
+  });
+  const selectedResearchRegimeCalibrationCandidatesQuery = useQuery({
+    queryKey: ["research-regime-calibration-candidates", selectedResearchRegimeCalibrationId],
+    queryFn: () =>
+      api.getResearchRegimeCalibrationCandidates(selectedResearchRegimeCalibrationId ?? ""),
+    enabled: Boolean(selectedResearchRegimeCalibrationId),
   });
   const selectedResearchRegimeDiscoveryQuery = useQuery({
     queryKey: ["research-regime-discovery", selectedResearchRegimeDiscoveryId],
@@ -1858,6 +1877,14 @@ function AuthenticatedDashboard({
       );
     }
   }, [researchRegimeDiscoveriesQuery.data?.discoveries, selectedResearchRegimeDiscoveryId]);
+
+  useEffect(() => {
+    if (!selectedResearchRegimeCalibrationId && researchRegimeCalibrationsQuery.data?.calibrations[0]) {
+      setSelectedResearchRegimeCalibrationId(
+        researchRegimeCalibrationsQuery.data.calibrations[0].calibration_id,
+      );
+    }
+  }, [researchRegimeCalibrationsQuery.data?.calibrations, selectedResearchRegimeCalibrationId]);
 
   useEffect(() => {
     if (!selectedResearchBatchId && researchBatchesQuery.data?.batches[0]) {
@@ -2512,8 +2539,9 @@ function AuthenticatedDashboard({
   });
   const researchRegimeCalibrationMutation = useMutation({
     mutationFn: () => api.runResearchRegimeCalibration(researchRegimeCalibrationForm),
-    onSuccess: (response) => {
+    onSuccess: async (response) => {
       setLastResearchRegimeCalibration(response.calibration);
+      setSelectedResearchRegimeCalibrationId(response.calibration.calibration_id);
       if (response.calibration.recommended_config) {
         setResearchRegimeDiscoveryForm((current) => ({
           ...current,
@@ -2523,9 +2551,13 @@ function AuthenticatedDashboard({
           scan_end: response.calibration.request.scan_end,
           window_hours: response.calibration.request.window_hours,
           step_hours: response.calibration.request.step_hours,
-          classifier_config: response.calibration.recommended_config,
+          classifier_config: null,
+          calibration_id: response.calibration.calibration_id,
         }));
       }
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-calibrations"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-calibration"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-calibration-candidates"] });
     },
   });
   const researchRegimeDatasetFromDiscoveryMutation = useMutation({
@@ -2746,6 +2778,13 @@ function AuthenticatedDashboard({
     selectedResearchRegimeDataset?.windows ??
     [];
   const researchRegimeDiscoveries = researchRegimeDiscoveriesQuery.data?.discoveries ?? [];
+  const researchRegimeCalibrations = researchRegimeCalibrationsQuery.data?.calibrations ?? [];
+  const selectedResearchRegimeCalibration: ResearchRegimeCalibrationResult | null =
+    selectedResearchRegimeCalibrationQuery.data?.calibration ?? lastResearchRegimeCalibration;
+  const selectedResearchRegimeCalibrationCandidates =
+    selectedResearchRegimeCalibrationCandidatesQuery.data?.candidates ??
+    selectedResearchRegimeCalibration?.candidates ??
+    [];
   const selectedResearchRegimeDiscovery: ResearchRegimeDiscoveryResult | null =
     selectedResearchRegimeDiscoveryQuery.data?.discovery ?? lastResearchRegimeDiscovery;
   const selectedResearchRegimeDiscoveryWindows: ResearchRegimeDiscoveryCandidateWindow[] =
@@ -5705,10 +5744,25 @@ function AuthenticatedDashboard({
                   />
                 </div>
                 <div className="mt-4 grid gap-4 xl:grid-cols-3">
-                  <ResearchRegimeCalibrationTopConfigs calibration={lastResearchRegimeCalibration} />
-                  <ResearchRegimeCalibrationRecommended calibration={lastResearchRegimeCalibration} />
-                  <ResearchRegimeCalibrationSamples calibration={lastResearchRegimeCalibration} />
+                  <ResearchRegimeCalibrationsTable
+                    calibrations={researchRegimeCalibrations}
+                    selectedId={selectedResearchRegimeCalibrationId}
+                    onSelect={setSelectedResearchRegimeCalibrationId}
+                  />
+                  <ResearchRegimeCalibrationRecommended calibration={selectedResearchRegimeCalibration} />
+                  <ResearchRegimeCalibrationTopConfigs
+                    calibration={selectedResearchRegimeCalibration}
+                    candidates={selectedResearchRegimeCalibrationCandidates}
+                  />
+                  <ResearchRegimeCalibrationSamples calibration={selectedResearchRegimeCalibration} />
                 </div>
+                <InlineStatus
+                  error={
+                    getErrorMessage(researchRegimeCalibrationsQuery.error) ||
+                    getErrorMessage(selectedResearchRegimeCalibrationQuery.error) ||
+                    getErrorMessage(selectedResearchRegimeCalibrationCandidatesQuery.error)
+                  }
+                />
               </Panel>
               <Panel className="xl:col-span-12" title="Regime Discovery">
                 <div className="grid gap-3 md:grid-cols-4">
@@ -5787,6 +5841,17 @@ function AuthenticatedDashboard({
                       setResearchRegimeDiscoveryForm((current) => ({
                         ...current,
                         target_regimes: parseStringList(value) as ResearchRegimeDiscoveryRequest["target_regimes"],
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Calibration ID"
+                    value={researchRegimeDiscoveryForm.calibration_id ?? ""}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({
+                        ...current,
+                        calibration_id: value || null,
+                        classifier_config: null,
                       }))
                     }
                   />
@@ -10325,12 +10390,59 @@ function ResearchRegimeDiscoveriesTable({
   );
 }
 
+function ResearchRegimeCalibrationsTable({
+  calibrations,
+  selectedId,
+  onSelect,
+}: {
+  calibrations: ResearchRegimeCalibrationResult[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  if (!calibrations.length) {
+    return <EmptyState label="No calibrations yet." />;
+  }
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Recent Calibrations
+      </div>
+      <div className="space-y-2">
+        {calibrations.slice(0, 8).map((calibration) => (
+          <button
+            key={calibration.calibration_id}
+            type="button"
+            onClick={() => onSelect(calibration.calibration_id)}
+            className={`w-full rounded-md border p-3 text-left text-sm ${
+              selectedId === calibration.calibration_id
+                ? "border-cyan-300/70 bg-cyan-400/10"
+                : "border-slate-700 bg-slate-950/40"
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-xs">{shortenId(calibration.calibration_id)}</span>
+              <span className="text-xs text-muted">{calibration.status}</span>
+            </div>
+            <div className="mt-1 text-xs text-slate-300">
+              {calibration.request.symbol} {calibration.request.timeframe}
+            </div>
+            <div className="mt-1 text-xs text-muted">{formatDateTime(calibration.created_at)}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ResearchRegimeCalibrationTopConfigs({
   calibration,
+  candidates,
 }: {
   calibration: ResearchRegimeCalibrationResult | null;
+  candidates?: ResearchRegimeCalibrationResult["candidates"];
 }) {
-  if (!calibration) {
+  const rows = candidates ?? calibration?.candidates ?? [];
+  if (!calibration && !rows.length) {
     return <EmptyState label="No calibration run yet." />;
   }
   return (
@@ -10340,7 +10452,7 @@ function ResearchRegimeCalibrationTopConfigs({
       </div>
       <Table
         headers={["Candidate", "Score", "Diversity", "Dominant", "Counts"]}
-        rows={calibration.candidates.slice(0, 6).map((candidate) => [
+        rows={rows.slice(0, 8).map((candidate) => [
           candidate.candidate_id,
           candidate.total_score,
           candidate.diversity_score,
@@ -10360,6 +10472,9 @@ function ResearchRegimeCalibrationRecommended({
   calibration: ResearchRegimeCalibrationResult | null;
 }) {
   const config = calibration?.recommended_config;
+  const discoveryCommand = calibration
+    ? `aegis research regime-discovery run --symbol ${calibration.request.symbol} --timeframe ${calibration.request.timeframe} --scan-start ${calibration.request.scan_start} --scan-end ${calibration.request.scan_end} --window-hours ${calibration.request.window_hours} --step-hours ${calibration.request.step_hours} --max-windows-per-regime 10 --calibration-id ${calibration.calibration_id}`
+    : "-";
   return (
     <div>
       <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
@@ -10374,6 +10489,7 @@ function ResearchRegimeCalibrationRecommended({
           ["High Vol", config?.high_volatility_threshold_pct ?? "-"],
           ["Low Vol", config?.low_volatility_threshold_pct ?? "-"],
           ["Missing", calibration?.missing_regimes.join(", ") || "-"],
+          ["Discovery CLI", discoveryCommand],
         ]}
       />
       <SimpleList
@@ -10423,6 +10539,21 @@ function ResearchRegimeDiscoverySummaryTable({
         rows={["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY", "LOW_VOLATILITY"].map(
           (regime) => [regime, String(counts[regime as keyof typeof counts] ?? 0)],
         )}
+      />
+      <KeyValue
+        items={[
+          ["Calibration", discovery?.request.calibration_id ?? "-"],
+          [
+            "Config Source",
+            discovery?.request.classifier_config
+              ? discovery.request.calibration_id
+                ? "inline override"
+                : "inline"
+              : discovery?.request.calibration_id
+                ? "saved calibration"
+                : "default",
+          ],
+        ]}
       />
       {discovery?.missing_regimes.length ? (
         <div className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 p-2 text-xs text-amber-100">

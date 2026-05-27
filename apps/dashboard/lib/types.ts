@@ -1722,6 +1722,20 @@ export type ResearchRegimeCalibrationResponse = {
   timestamp: string;
 };
 
+export type ResearchRegimeCalibrationsResponse = {
+  calibrations: ResearchRegimeCalibrationResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeCalibrationCandidatesResponse = {
+  candidates: ResearchRegimeCalibrationCandidateResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchRegimeDiscoveriesResponse = {
   discoveries: ResearchRegimeDiscoveryResult[];
   request_id: string;

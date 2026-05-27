@@ -130,6 +130,15 @@ struct ResearchRegimeDiscoveryReportSnapshot {
     latest_status: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ResearchRegimeCalibrationReportSnapshot {
+    calibration_count: i64,
+    missing_regime_count: i64,
+    balanced_count: i64,
+    latest_status: Option<String>,
+    latest_calibration_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -217,6 +226,8 @@ pub async fn generate_operator_report(
     let regime_datasets = load_research_regime_dataset_snapshot(&state.db_pool, &window).await?;
     let regime_discoveries =
         load_research_regime_discovery_snapshot(&state.db_pool, &window).await?;
+    let regime_calibrations =
+        load_research_regime_calibration_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -234,6 +245,7 @@ pub async fn generate_operator_report(
         &robustness_matrix,
         &regime_datasets,
         &regime_discoveries,
+        &regime_calibrations,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -274,6 +286,7 @@ pub async fn generate_operator_report(
             &robustness_matrix,
             &regime_datasets,
             &regime_discoveries,
+            &regime_calibrations,
         )?,
         format: request.format,
         persisted: false,
@@ -1608,6 +1621,48 @@ async fn load_research_regime_discovery_snapshot(
     Ok(snapshot)
 }
 
+async fn load_research_regime_calibration_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<ResearchRegimeCalibrationReportSnapshot> {
+    let rows = query(
+        r#"
+        SELECT id, summary, status
+        FROM research_regime_calibrations
+        WHERE created_at >= $1 AND created_at <= $2
+        ORDER BY created_at DESC, id DESC
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_all(pool)
+    .await?;
+    let mut snapshot = ResearchRegimeCalibrationReportSnapshot {
+        calibration_count: rows.len() as i64,
+        ..Default::default()
+    };
+    for (index, row) in rows.iter().enumerate() {
+        let id: Uuid = row.get("id");
+        let status: String = row.get("status");
+        if index == 0 {
+            snapshot.latest_status = Some(status);
+            snapshot.latest_calibration_id = Some(id);
+        }
+        let summary: serde_json::Value = row.get("summary");
+        let missing = summary
+            .get("missing_regimes")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if missing.is_empty() {
+            snapshot.balanced_count += 1;
+        } else {
+            snapshot.missing_regime_count += 1;
+        }
+    }
+    Ok(snapshot)
+}
+
 async fn load_candidate_shadow_pnl_snapshot(
     state: &AppState,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
@@ -1669,6 +1724,7 @@ fn build_findings(
     robustness_matrix: &StrategyRobustnessMatrixReportSnapshot,
     regime_datasets: &ResearchRegimeDatasetReportSnapshot,
     regime_discoveries: &ResearchRegimeDiscoveryReportSnapshot,
+    regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -2077,6 +2133,33 @@ fn build_findings(
             "research_regime_discovery",
         ));
     }
+    if regime_calibrations.balanced_count > 0 {
+        findings.push(finding(
+            "research_regime_calibration_balanced_config",
+            OperatorReportSeverity::Low,
+            "Regime calibration produced balanced config",
+            "At least one recent calibration has a recommended config with no missing regimes.",
+            "research_regime_calibration",
+        ));
+    }
+    if regime_calibrations.missing_regime_count > 0 {
+        findings.push(finding(
+            "research_regime_calibration_missing_regimes",
+            OperatorReportSeverity::Medium,
+            "Calibration still missing regimes",
+            "One or more recent calibration recommendations are missing target regimes.",
+            "research_regime_calibration",
+        ));
+    }
+    if regime_datasets.dataset_count > 0 && regime_discoveries.discovery_count > 0 {
+        findings.push(finding(
+            "research_campaign_calibrated_regime_dataset_available",
+            OperatorReportSeverity::Low,
+            "Campaign used calibrated regime dataset",
+            "A regime discovery and dataset are available for research-only calibrated campaign runs.",
+            "research_campaigns",
+        ));
+    }
 
     if system_market.market.stale_feed_count == 0 {
         let threshold = i64::from(system_market.stale_threshold_seconds);
@@ -2481,6 +2564,7 @@ fn build_sections(
     robustness_matrix: &StrategyRobustnessMatrixReportSnapshot,
     regime_datasets: &ResearchRegimeDatasetReportSnapshot,
     regime_discoveries: &ResearchRegimeDiscoveryReportSnapshot,
+    regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -2874,6 +2958,36 @@ fn build_sections(
                 ),
             ],
             regime_discoveries,
+        )?,
+        section(
+            "research_regime_calibration",
+            "Research Regime Calibration",
+            if regime_calibrations.missing_regime_count > 0 {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Research-only persisted calibration for reusable regime classifier thresholds.",
+            vec![
+                highlight("Calibrations", regime_calibrations.calibration_count.to_string()),
+                highlight("Balanced", regime_calibrations.balanced_count.to_string()),
+                highlight("Missing Regimes", regime_calibrations.missing_regime_count.to_string()),
+                highlight(
+                    "Latest Calibration",
+                    regime_calibrations
+                        .latest_calibration_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+                highlight(
+                    "Latest Status",
+                    regime_calibrations
+                        .latest_status
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+            ],
+            regime_calibrations,
         )?,
         section(
             "research_candidate_qualification",
@@ -3388,8 +3502,9 @@ mod tests {
     use super::{
         build_findings, build_recommendations, status_from_findings, BacktestActivity,
         ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot,
-        ResearchRegimeDatasetReportSnapshot, ResearchRegimeDiscoveryReportSnapshot,
-        StrategyBehaviorData, StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
+        ResearchRegimeCalibrationReportSnapshot, ResearchRegimeDatasetReportSnapshot,
+        ResearchRegimeDiscoveryReportSnapshot, StrategyBehaviorData,
+        StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
@@ -3560,6 +3675,7 @@ mod tests {
             &StrategyRobustnessMatrixReportSnapshot::default(),
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3594,6 +3710,7 @@ mod tests {
             &StrategyRobustnessMatrixReportSnapshot::default(),
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3623,6 +3740,7 @@ mod tests {
             &StrategyRobustnessMatrixReportSnapshot::default(),
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3652,6 +3770,7 @@ mod tests {
             &StrategyRobustnessMatrixReportSnapshot::default(),
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3707,6 +3826,7 @@ mod tests {
             &StrategyRobustnessMatrixReportSnapshot::default(),
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -3747,6 +3867,7 @@ mod tests {
             &StrategyRobustnessMatrixReportSnapshot::default(),
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3784,6 +3905,7 @@ mod tests {
             &StrategyRobustnessMatrixReportSnapshot::default(),
             &ResearchRegimeDatasetReportSnapshot::default(),
             &ResearchRegimeDiscoveryReportSnapshot::default(),
+            &ResearchRegimeCalibrationReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {

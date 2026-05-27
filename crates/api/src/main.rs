@@ -64,7 +64,8 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
+    ResearchDatasetBuildResult, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeWindow,
@@ -140,8 +141,8 @@ use db::{
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
-    get_research_regime_dataset, get_research_regime_discovery, get_risk_config,
-    get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
+    get_research_regime_calibration, get_research_regime_dataset, get_research_regime_discovery,
+    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
     get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
     get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
     get_strategy_research_candidate, get_strategy_robustness_matrix_run,
@@ -154,8 +155,9 @@ use db::{
     insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
     insert_research_batch, insert_research_batch_step, insert_research_campaign,
     insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
-    insert_research_regime_dataset, insert_research_regime_discovery, insert_risk_config_audit,
-    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
+    insert_research_regime_calibration, insert_research_regime_dataset,
+    insert_research_regime_discovery, insert_risk_config_audit, insert_risk_evaluation,
+    insert_session, insert_signal_deduped, insert_strategy_config_audit,
     insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
     insert_system_event, insert_testnet_shadow_promotion, insert_user,
     link_research_candidate_walk_forward_run, list_backtest_runs, list_candle_backfill_runs,
@@ -170,6 +172,7 @@ use db::{
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
     list_research_candidate_watchlist_rows, list_research_candidates,
+    list_research_regime_calibration_candidates, list_research_regime_calibrations,
     list_research_regime_datasets, list_research_regime_discoveries,
     list_research_regime_discovery_windows, list_research_regime_windows, list_risk_config_audit,
     list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
@@ -187,14 +190,15 @@ use db::{
     research_candidate_event_from_record, research_candidate_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row,
-    research_regime_dataset_result_from_records, research_regime_discovery_result_from_records,
-    research_regime_discovery_window_from_record, research_regime_window_from_record,
-    revoke_session, risk_config_audit_from_record, risk_config_from_record,
-    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
-    strategy_candidate_observation_result_from_record, strategy_config_audit_from_record,
-    strategy_config_from_record, strategy_config_version_from_record,
-    strategy_experiment_result_from_records, strategy_experiment_run_from_record,
-    strategy_research_candidate_from_record,
+    research_regime_calibration_candidate_from_record,
+    research_regime_calibration_result_from_records, research_regime_dataset_result_from_records,
+    research_regime_discovery_result_from_records, research_regime_discovery_window_from_record,
+    research_regime_window_from_record, revoke_session, risk_config_audit_from_record,
+    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
+    set_kill_switch_state, strategy_candidate_observation_result_from_record,
+    strategy_config_audit_from_record, strategy_config_from_record,
+    strategy_config_version_from_record, strategy_experiment_result_from_records,
+    strategy_experiment_run_from_record, strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
     strategy_robustness_matrix_cell_from_record, strategy_robustness_matrix_result_from_record,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
@@ -1702,6 +1706,22 @@ struct ResearchRegimeCalibrationResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchRegimeCalibrationsResponse {
+    calibrations: Vec<ResearchRegimeCalibrationResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchRegimeCalibrationCandidatesResponse {
+    candidates: Vec<ResearchRegimeCalibrationCandidateResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateEventsResponse {
     events: Vec<ResearchCandidateLifecycleEvent>,
     request_id: String,
@@ -2938,6 +2958,18 @@ async fn main() {
         .route(
             "/research/regime-calibration/run",
             post(run_research_regime_calibration_handler),
+        )
+        .route(
+            "/research/regime-calibration",
+            get(list_research_regime_calibrations_handler),
+        )
+        .route(
+            "/research/regime-calibration/:id/candidates",
+            get(get_research_regime_calibration_candidates_handler),
+        )
+        .route(
+            "/research/regime-calibration/:id",
+            get(get_research_regime_calibration_handler),
         )
         .route(
             "/research/campaigns/run",
@@ -17102,7 +17134,21 @@ async fn run_research_regime_discovery_handler(
 ) -> impl IntoResponse {
     let request = request_context(request);
     let result = async {
+        let mut payload = payload;
         payload.validate()?;
+        if payload.classifier_config.is_none() {
+            if let Some(calibration_id) = payload.calibration_id {
+                let Some(record) =
+                    get_research_regime_calibration(&state.db_pool, calibration_id).await?
+                else {
+                    anyhow::bail!("regime calibration not found: {calibration_id}");
+                };
+                let Some(config) = record.recommended_config else {
+                    anyhow::bail!("regime calibration has no recommended_config: {calibration_id}");
+                };
+                payload.classifier_config = Some(serde_json::from_value(config)?);
+            }
+        }
         if payload.auto_backfill_missing {
             let service = HistoricalCandleBackfillService::new(
                 state.db_pool.clone(),
@@ -17166,6 +17212,20 @@ async fn run_research_regime_discovery_handler(
         )
             .into_response(),
     }
+}
+
+async fn research_regime_calibration_read_model(
+    state: &AppState,
+    id: Uuid,
+) -> anyhow::Result<Option<ResearchRegimeCalibrationResult>> {
+    let Some(record) = get_research_regime_calibration(&state.db_pool, id).await? else {
+        return Ok(None);
+    };
+    let candidates = list_research_regime_calibration_candidates(&state.db_pool, id).await?;
+    Ok(Some(research_regime_calibration_result_from_records(
+        &record,
+        &candidates,
+    )?))
 }
 
 async fn research_regime_discovery_read_model(
@@ -17403,6 +17463,12 @@ async fn run_research_regime_calibration_handler(
             &candles,
             Utc::now(),
         )?;
+        insert_research_regime_calibration(
+            &state.db_pool,
+            &result,
+            Uuid::parse_str(&request.correlation_id).ok(),
+        )
+        .await?;
         anyhow::Ok(result)
     }
     .await;
@@ -17422,6 +17488,159 @@ async fn run_research_regime_calibration_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_run_research_regime_calibration",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_research_regime_calibrations_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchBatchesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_regime_calibrations(
+        &state.db_pool,
+        bounded_backfill_runs_limit(query.limit),
+    )
+    .await
+    {
+        Ok(records) => {
+            let mut calibrations = Vec::new();
+            for record in records {
+                match research_regime_calibration_read_model(&state, record.id).await {
+                    Ok(Some(calibration)) => calibrations.push(calibration),
+                    Ok(None) => {}
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_research_regime_calibration",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(ResearchRegimeCalibrationsResponse {
+                    calibrations,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_calibrations",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_regime_calibration_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match research_regime_calibration_read_model(&state, id).await {
+        Ok(Some(calibration)) => (
+            StatusCode::OK,
+            Json(ResearchRegimeCalibrationResponse {
+                calibration,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_regime_calibration_not_found",
+                message: "Regime calibration not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_calibration",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_regime_calibration_candidates_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_regime_calibration_candidates(&state.db_pool, id).await {
+        Ok(records) => {
+            let candidates = match records
+                .iter()
+                .map(research_regime_calibration_candidate_from_record)
+                .collect::<anyhow::Result<Vec<_>>>()
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_research_regime_calibration_candidates",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(ResearchRegimeCalibrationCandidatesResponse {
+                    candidates,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_calibration_candidates",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

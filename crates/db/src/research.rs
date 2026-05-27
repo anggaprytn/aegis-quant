@@ -18,18 +18,19 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeDatasetStatus, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus,
-    ResearchRegimeDiscoverySummary, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput,
-    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
-    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
-    StrategyCandidateObservationSummary, StrategyResearchCandidate,
-    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
-    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
-    StrategyResearchCandidateStatus, StrategyWalkForwardRecommendation,
-    StrategyWalkForwardRobustnessStatus, Symbol,
+    ResearchDatasetBuildStepStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationResult, ResearchRegimeClassifierConfig, ResearchRegimeDatasetRequest,
+    ResearchRegimeDatasetResult, ResearchRegimeDatasetStatus,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus, ResearchRegimeDiscoverySummary,
+    ResearchRegimeWindow, ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
+    ResearchShadowPnlRunInput, StrategyCandidateObservationDecision,
+    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
+    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
+    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus,
+    StrategyWalkForwardRecommendation, StrategyWalkForwardRobustnessStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -179,6 +180,35 @@ pub struct ResearchRegimeDiscoveryWindowRecord {
     pub data_quality_status: String,
     pub candle_count: i32,
     pub explanation: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchRegimeCalibrationRecord {
+    pub id: Uuid,
+    pub symbol: String,
+    pub timeframe: String,
+    pub scan_start: DateTime<Utc>,
+    pub scan_end: DateTime<Utc>,
+    pub window_hours: i64,
+    pub step_hours: i64,
+    pub status: String,
+    pub recommended_config: Option<Value>,
+    pub summary: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchRegimeCalibrationCandidateRecord {
+    pub id: Uuid,
+    pub calibration_id: Uuid,
+    pub name: String,
+    pub config: Value,
+    pub counts_by_regime: Value,
+    pub missing_regimes: Value,
+    pub score: Decimal,
+    pub rank: i32,
     pub created_at: DateTime<Utc>,
 }
 
@@ -638,6 +668,39 @@ fn map_research_regime_discovery_window(
     }
 }
 
+fn map_research_regime_calibration(row: sqlx::postgres::PgRow) -> ResearchRegimeCalibrationRecord {
+    ResearchRegimeCalibrationRecord {
+        id: row.get("id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        scan_start: row.get("scan_start"),
+        scan_end: row.get("scan_end"),
+        window_hours: row.get("window_hours"),
+        step_hours: row.get("step_hours"),
+        status: row.get("status"),
+        recommended_config: row.get("recommended_config"),
+        summary: row.get("summary"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_research_regime_calibration_candidate(
+    row: sqlx::postgres::PgRow,
+) -> ResearchRegimeCalibrationCandidateRecord {
+    ResearchRegimeCalibrationCandidateRecord {
+        id: row.get("id"),
+        calibration_id: row.get("calibration_id"),
+        name: row.get("name"),
+        config: row.get("config"),
+        counts_by_regime: row.get("counts_by_regime"),
+        missing_regimes: row.get("missing_regimes"),
+        score: row.get("score"),
+        rank: row.get("rank"),
+        created_at: row.get("created_at"),
+    }
+}
+
 pub fn research_campaign_batch_result_from_record(
     record: &ResearchCampaignBatchRecord,
 ) -> Result<ResearchCampaignBatchResult> {
@@ -759,6 +822,47 @@ pub fn research_regime_discovery_result_from_records(
         summary,
         created_at: record.created_at,
     })
+}
+
+pub fn research_regime_calibration_candidate_from_record(
+    record: &ResearchRegimeCalibrationCandidateRecord,
+) -> Result<ResearchRegimeCalibrationCandidateResult> {
+    Ok(ResearchRegimeCalibrationCandidateResult {
+        candidate_id: record.name.clone(),
+        classifier_config: serde_json::from_value(record.config.clone())?,
+        counts_by_regime: serde_json::from_value(record.counts_by_regime.clone())?,
+        missing_regimes: serde_json::from_value(record.missing_regimes.clone())?,
+        total_windows_scanned: 0,
+        data_quality_good_windows: 0,
+        avg_confidence: Decimal::ZERO,
+        diversity_score: Decimal::ZERO,
+        balance_score: Decimal::ZERO,
+        dominant_regime_share: Decimal::ZERO,
+        total_score: record.score,
+        warnings: Vec::new(),
+        explanation_samples: Vec::new(),
+    })
+}
+
+pub fn research_regime_calibration_result_from_records(
+    record: &ResearchRegimeCalibrationRecord,
+    candidate_records: &[ResearchRegimeCalibrationCandidateRecord],
+) -> Result<ResearchRegimeCalibrationResult> {
+    let mut result: ResearchRegimeCalibrationResult =
+        serde_json::from_value(record.summary.clone())?;
+    result.calibration_id = record.id;
+    result.status = record.status.parse()?;
+    result.candidates = candidate_records
+        .iter()
+        .map(research_regime_calibration_candidate_from_record)
+        .collect::<Result<Vec<_>>>()?;
+    result.recommended_config = record
+        .recommended_config
+        .clone()
+        .map(serde_json::from_value::<ResearchRegimeClassifierConfig>)
+        .transpose()?;
+    result.created_at = record.created_at;
+    Ok(result)
 }
 
 pub fn research_batch_step_from_record(
@@ -1629,6 +1733,149 @@ pub async fn list_research_regime_discovery_windows(
     Ok(rows
         .into_iter()
         .map(map_research_regime_discovery_window)
+        .collect())
+}
+
+pub async fn insert_research_regime_calibration(
+    pool: &PgPool,
+    result: &ResearchRegimeCalibrationResult,
+    correlation_id: Option<Uuid>,
+) -> Result<ResearchRegimeCalibrationRecord> {
+    let summary = serde_json::to_value(result)?;
+    let recommended_config = result
+        .recommended_config
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()?;
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_regime_calibrations (
+            id,
+            symbol,
+            timeframe,
+            scan_start,
+            scan_end,
+            window_hours,
+            step_hours,
+            status,
+            recommended_config,
+            summary,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING id, symbol, timeframe, scan_start, scan_end, window_hours, step_hours, status,
+            recommended_config, summary, created_at, correlation_id
+        "#,
+    )
+    .bind(result.calibration_id)
+    .bind(&result.request.symbol)
+    .bind(&result.request.timeframe)
+    .bind(result.request.scan_start)
+    .bind(result.request.scan_end)
+    .bind(result.request.window_hours)
+    .bind(result.request.step_hours)
+    .bind(result.status.as_str())
+    .bind(recommended_config)
+    .bind(summary)
+    .bind(result.created_at)
+    .bind(correlation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    for (index, candidate) in result.candidates.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO research_regime_calibration_candidates (
+                id,
+                calibration_id,
+                name,
+                config,
+                counts_by_regime,
+                missing_regimes,
+                score,
+                rank,
+                created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(result.calibration_id)
+        .bind(&candidate.candidate_id)
+        .bind(serde_json::to_value(&candidate.classifier_config)?)
+        .bind(serde_json::to_value(&candidate.counts_by_regime)?)
+        .bind(serde_json::to_value(&candidate.missing_regimes)?)
+        .bind(candidate.total_score)
+        .bind((index + 1) as i32)
+        .bind(result.created_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(map_research_regime_calibration(row))
+}
+
+pub async fn get_research_regime_calibration(
+    pool: &PgPool,
+    calibration_id: Uuid,
+) -> Result<Option<ResearchRegimeCalibrationRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, symbol, timeframe, scan_start, scan_end, window_hours, step_hours, status,
+            recommended_config, summary, created_at, correlation_id
+        FROM research_regime_calibrations
+        WHERE id = $1
+        "#,
+    )
+    .bind(calibration_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(map_research_regime_calibration))
+}
+
+pub async fn list_research_regime_calibrations(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ResearchRegimeCalibrationRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, symbol, timeframe, scan_start, scan_end, window_hours, step_hours, status,
+            recommended_config, summary, created_at, correlation_id
+        FROM research_regime_calibrations
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(map_research_regime_calibration)
+        .collect())
+}
+
+pub async fn list_research_regime_calibration_candidates(
+    pool: &PgPool,
+    calibration_id: Uuid,
+) -> Result<Vec<ResearchRegimeCalibrationCandidateRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, calibration_id, name, config, counts_by_regime, missing_regimes, score, rank, created_at
+        FROM research_regime_calibration_candidates
+        WHERE calibration_id = $1
+        ORDER BY rank ASC, score DESC, name ASC
+        "#,
+    )
+    .bind(calibration_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(map_research_regime_calibration_candidate)
         .collect())
 }
 

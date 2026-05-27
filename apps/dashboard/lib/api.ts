@@ -82,8 +82,10 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  ResearchRegimeCalibrationCandidatesResponse,
   ResearchRegimeCalibrationRequest,
   ResearchRegimeCalibrationResponse,
+  ResearchRegimeCalibrationsResponse,
   ResearchRegimeDatasetFromDiscoveryRequest,
   ResearchRegimeDatasetRequest,
   ResearchRegimeDatasetResponse,
@@ -485,6 +487,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  listResearchRegimeCalibrations: (limit = 20) =>
+    request<ResearchRegimeCalibrationsResponse>("/research/regime-calibration", undefined, { limit }),
+  getResearchRegimeCalibration: (id: string) =>
+    request<ResearchRegimeCalibrationResponse>(`/research/regime-calibration/${id}`),
+  getResearchRegimeCalibrationCandidates: (id: string) =>
+    request<ResearchRegimeCalibrationCandidatesResponse>(
+      `/research/regime-calibration/${id}/candidates`,
+    ),
   listResearchRegimeDiscoveries: (limit = 20) =>
     request<ResearchRegimeDiscoveriesResponse>("/research/regime-discovery", undefined, { limit }),
   getResearchRegimeDiscovery: (id: string) =>

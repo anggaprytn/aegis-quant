@@ -11,13 +11,15 @@ use aegis_core::{
     ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
     ResearchCandidateStatus, ResearchDataCoverageResult, ResearchDataReadinessStatus,
     ResearchDatasetBuildRequest, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchRegimeClassificationExplanation,
-    ResearchRegimeClassifierConfig, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRecommendation, ResearchRegimeDiscoveryRequest,
-    ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus, ResearchRegimeDiscoverySummary,
-    ResearchRegimeLabel, ResearchShadowPnlAttributionRequest, ResearchShadowPnlStatus,
-    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
-    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
+    ResearchDatasetBuildStepStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationRecommendation, ResearchRegimeCalibrationRequest,
+    ResearchRegimeCalibrationResult, ResearchRegimeCalibrationStatus,
+    ResearchRegimeClassificationExplanation, ResearchRegimeClassifierConfig,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRecommendation,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus,
+    ResearchRegimeDiscoverySummary, ResearchRegimeLabel, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
     StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
     StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
@@ -47,17 +49,18 @@ use db::{
     get_exchange_reconciliation_run, get_exchange_testnet_order_by_client_order_id,
     get_order_by_idempotency_key, get_research_candidate_shadow_performance,
     get_research_candidate_shadow_pnl_attribution, get_research_dataset_build,
-    get_research_regime_discovery, get_risk_decision, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_robustness_matrix_run,
-    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_shadow_run_by_id,
-    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_research_regime_calibration, get_research_regime_discovery, get_risk_decision,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
+    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_market_data_repair_run, insert_paper_account, insert_research_candidate_shadow_run_link,
-    insert_research_dataset_build, insert_research_regime_discovery, insert_risk_decision,
-    insert_signal_deduped, insert_strategy_candidate_observation, insert_strategy_experiment,
+    insert_research_dataset_build, insert_research_regime_calibration,
+    insert_research_regime_discovery, insert_risk_decision, insert_signal_deduped,
+    insert_strategy_candidate_observation, insert_strategy_experiment,
     insert_strategy_experiment_runs, insert_strategy_research_candidate,
     insert_strategy_robustness_matrix_cells, insert_strategy_robustness_matrix_run,
     insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
@@ -65,7 +68,8 @@ use db::{
     list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
     list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
     list_orders, list_recent_signals, list_research_candidate_shadow_runs,
-    list_research_dataset_build_steps, list_research_regime_discovery_windows,
+    list_research_dataset_build_steps, list_research_regime_calibration_candidates,
+    list_research_regime_calibrations, list_research_regime_discovery_windows,
     list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_performance_rankings, list_strategy_research_candidates,
     list_strategy_robustness_matrix_cells, list_strategy_robustness_matrix_runs,
@@ -74,7 +78,8 @@ use db::{
     list_testnet_shadow_runs_in_window, mark_strategy_research_candidate_promoted,
     market_data_repair_result_from_record, replace_research_dataset_build_steps,
     research_candidate_event_from_record, research_candidate_from_record,
-    research_dataset_build_result_from_records, research_regime_discovery_result_from_records,
+    research_dataset_build_result_from_records, research_regime_calibration_result_from_records,
+    research_regime_discovery_result_from_records,
     resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
     strategy_research_candidate_from_record, strategy_robustness_matrix_cell_from_record,
@@ -4646,4 +4651,98 @@ async fn research_regime_discovery_and_windows_persist() {
         hydrated.selected_windows[0].regime_label,
         ResearchRegimeLabel::Range
     );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_regime_calibration_and_candidates_persist() {
+    let test_db = TestDatabase::setup().await.expect("db should setup");
+    let calibration_id = Uuid::new_v4();
+    let created_at = fixed_time();
+    let config = ResearchRegimeClassifierConfig {
+        trend_return_threshold_pct: Decimal::new(10, 1),
+        trend_slope_threshold: Decimal::ZERO,
+        range_return_max_pct: Decimal::new(8, 1),
+        range_choppiness_min: Decimal::new(70, 0),
+        high_volatility_threshold_pct: Decimal::new(45, 2),
+        low_volatility_threshold_pct: Decimal::new(18, 2),
+        min_confidence: Decimal::ZERO,
+        priority_order: vec![
+            ResearchRegimeLabel::HighVolatility,
+            ResearchRegimeLabel::TrendUp,
+            ResearchRegimeLabel::TrendDown,
+            ResearchRegimeLabel::LowVolatility,
+            ResearchRegimeLabel::Range,
+        ],
+    };
+    let request = ResearchRegimeCalibrationRequest {
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "15m".to_string(),
+        scan_start: created_at,
+        scan_end: created_at + chrono::Duration::days(30),
+        window_hours: 24,
+        step_hours: 12,
+        threshold_candidates: None,
+        target_min_windows_per_regime: 10,
+    };
+    let candidate = ResearchRegimeCalibrationCandidateResult {
+        candidate_id: "crypto_vol_balanced".to_string(),
+        classifier_config: config.clone(),
+        counts_by_regime: [
+            (ResearchRegimeLabel::TrendUp, 10),
+            (ResearchRegimeLabel::TrendDown, 10),
+            (ResearchRegimeLabel::Range, 10),
+            (ResearchRegimeLabel::HighVolatility, 10),
+            (ResearchRegimeLabel::LowVolatility, 10),
+        ]
+        .into_iter()
+        .collect(),
+        missing_regimes: Vec::new(),
+        total_windows_scanned: 100,
+        data_quality_good_windows: 100,
+        avg_confidence: Decimal::new(75, 0),
+        diversity_score: Decimal::new(100, 0),
+        balance_score: Decimal::new(80, 0),
+        dominant_regime_share: Decimal::new(20, 0),
+        total_score: Decimal::new(925, 1),
+        warnings: Vec::new(),
+        explanation_samples: Vec::new(),
+    };
+    let result = ResearchRegimeCalibrationResult {
+        calibration_id,
+        status: ResearchRegimeCalibrationStatus::Completed,
+        request,
+        candidates: vec![candidate],
+        recommended_config: Some(config.clone()),
+        recommended_candidate_id: Some("crypto_vol_balanced".to_string()),
+        missing_regimes: Vec::new(),
+        recommendations: vec![ResearchRegimeCalibrationRecommendation {
+            priority: "LOW".to_string(),
+            code: "research_only".to_string(),
+            message: "Research only.".to_string(),
+        }],
+        created_at,
+    };
+
+    insert_research_regime_calibration(&test_db.pool, &result, Some(Uuid::new_v4()))
+        .await
+        .expect("calibration should persist");
+    let record = get_research_regime_calibration(&test_db.pool, calibration_id)
+        .await
+        .expect("calibration should load")
+        .expect("calibration should exist");
+    let candidates = list_research_regime_calibration_candidates(&test_db.pool, calibration_id)
+        .await
+        .expect("candidates should load");
+    let hydrated =
+        research_regime_calibration_result_from_records(&record, &candidates).expect("should map");
+    let listed = list_research_regime_calibrations(&test_db.pool, 10)
+        .await
+        .expect("calibrations should list");
+
+    assert!(listed.iter().any(|record| record.id == calibration_id));
+    assert_eq!(hydrated.calibration_id, calibration_id);
+    assert_eq!(hydrated.recommended_config, Some(config));
+    assert_eq!(hydrated.candidates.len(), 1);
+    assert!(hydrated.candidates[0].missing_regimes.is_empty());
 }
