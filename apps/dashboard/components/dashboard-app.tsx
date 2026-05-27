@@ -728,12 +728,12 @@ function AuthenticatedDashboard({
   const [lastResearchCandidateObservation, setLastResearchCandidateObservation] =
     useState<StrategyCandidateObservation | null>(null);
   const [researchCandidateStrategyFilter, setResearchCandidateStrategyFilter] =
-    useState("momentum_v1");
+    useState("");
   const [researchCandidateSymbolFilter, setResearchCandidateSymbolFilter] =
-    useState("BTCUSDT");
+    useState("");
   const [researchCandidateTimeframeFilter, setResearchCandidateTimeframeFilter] = useState("");
   const [researchCandidateStatusFilter, setResearchCandidateStatusFilter] =
-    useState<StrategyResearchCandidateStatus | "">("DISCOVERED");
+    useState<StrategyResearchCandidateStatus | "">("");
   const [researchCandidateDecisionReason, setResearchCandidateDecisionReason] = useState("");
   const [researchCandidateReviewReason, setResearchCandidateReviewReason] = useState("");
   const [researchCandidateReviewNotes, setResearchCandidateReviewNotes] = useState("");
@@ -4638,7 +4638,7 @@ function AuthenticatedDashboard({
                     ["Skipped Windows", String(selectedWalkForward?.skipped_windows ?? 0)],
                     [
                       "Recommendation",
-                      selectedWalkForward
+                      selectedWalkForward?.recommendation
                         ? `${selectedWalkForward.recommendation.action}: ${selectedWalkForward.recommendation.reason}`
                         : "N/A",
                     ],
@@ -4665,11 +4665,13 @@ function AuthenticatedDashboard({
                     label="Strategy"
                     value={researchCandidateStrategyFilter}
                     onChange={setResearchCandidateStrategyFilter}
+                    placeholder="all strategies"
                   />
                   <Field
                     label="Symbol"
                     value={researchCandidateSymbolFilter}
                     onChange={setResearchCandidateSymbolFilter}
+                    placeholder="all symbols"
                   />
                   <Field
                     label="Timeframe"
@@ -4685,7 +4687,7 @@ function AuthenticatedDashboard({
                         value as StrategyResearchCandidateStatus | "",
                       )
                     }
-                    placeholder="DISCOVERED"
+                    placeholder="all statuses"
                   />
                 </div>
                 <div className="overflow-auto rounded-2xl border border-border">
@@ -4824,8 +4826,10 @@ function AuthenticatedDashboard({
                     </div>
                   </div>
                   <div className="mt-2 text-xs">
-                    {researchCandidateWalkForwardEvidence?.recommendation_reason ??
-                      "No linked walk-forward evidence. Testnet review remains blocked until evidence is linked."}
+                    {researchCandidateWalkForwardEvidence?.robustness_status === "OVERFIT_RISK"
+                      ? "OVERFIT_RISK: do not accept. This evidence is read-only and does not submit orders."
+                      : researchCandidateWalkForwardEvidence?.recommendation_reason ??
+                        "No linked walk-forward evidence. Testnet review remains blocked until evidence is linked."}
                   </div>
                   <div className="mt-3 flex items-center gap-3">
                     <ActionButton
@@ -5314,8 +5318,8 @@ function AuthenticatedDashboard({
                       ) : null}
                       {researchCandidateQualification?.walk_forward_status === "OVERFIT_RISK" ? (
                         <div className="mt-3 rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-rose-100">
-                          Walk-forward robustness is OVERFIT_RISK. Do not advance this candidate
-                          toward testnet review.
+                          OVERFIT_RISK: do not accept. Do not advance this candidate toward
+                          testnet review.
                         </div>
                       ) : null}
                       {qualificationNeedsMoreData ? (
@@ -5390,7 +5394,7 @@ function AuthenticatedDashboard({
                             </div>
                           </div>
                           <div className="mt-2 text-xs text-slate-300">
-                            This does not submit orders.
+                            This does not submit orders. Execution tables are not touched.
                           </div>
                           <div className="mt-3 grid gap-2 sm:grid-cols-2">
                             <div>

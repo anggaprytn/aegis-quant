@@ -5686,7 +5686,6 @@ pub async fn get_backtest_run(pool: &PgPool, run_id: Uuid) -> Result<Option<Back
         r#"
         SELECT
             id,
-            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,
@@ -5725,7 +5724,6 @@ pub async fn list_backtest_runs(pool: &PgPool, limit: i64) -> Result<Vec<Backtes
         r#"
         SELECT
             id,
-            experiment_group_id,
             strategy_id,
             symbol,
             timeframe,

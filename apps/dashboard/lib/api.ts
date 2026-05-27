@@ -138,9 +138,25 @@ import type {
   TestnetShadowRunsResponse,
 } from "@/lib/types";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://localhost:3000";
+function dashboardApiBaseUrl() {
+  const configured =
+    process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+    "http://localhost:3000";
+
+  if (typeof window === "undefined") {
+    return configured;
+  }
+
+  const localDashboardHost =
+    window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+  if (localDashboardHost && window.location.port === "3101") {
+    return `${window.location.protocol}//${window.location.hostname}:3100`;
+  }
+
+  return configured;
+}
+
+const API_BASE_URL = dashboardApiBaseUrl();
 const ACCESS_TOKEN_STORAGE_KEY = "aegis_dashboard_access_token";
 let accessToken =
   typeof window !== "undefined"
