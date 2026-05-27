@@ -1102,6 +1102,7 @@ export type ResearchBatchRequest = {
   momentum_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   lower_band_pct_candidates?: string[] | null;
+  upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;
@@ -1269,6 +1270,7 @@ export type ResearchCampaignRequest = {
   momentum_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   lower_band_pct_candidates?: string[] | null;
+  upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;
@@ -3496,6 +3498,7 @@ export type StrategyExperimentRequest = {
   momentum_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   lower_band_pct_candidates?: string[] | null;
+  upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;
@@ -3520,6 +3523,7 @@ export type StrategyMultiTimeframeExperimentRequest = {
   momentum_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   lower_band_pct_candidates?: string[] | null;
+  upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;

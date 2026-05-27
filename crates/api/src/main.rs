@@ -6,6 +6,7 @@ mod readiness;
 mod research_candidate_observation;
 
 use std::{
+    collections::BTreeMap,
     env,
     net::SocketAddr,
     sync::Arc,
@@ -210,7 +211,7 @@ use market_ingest::{
     check_binance_provider_health, HistoricalCandleBackfillService, MarketIngestConfig,
     ResearchDatasetService,
 };
-use replay_engine::ReplayEngine;
+use replay_engine::{simulate_backtest, ReplayEngine};
 use research_candidate_observation::evaluate_candidate_observation;
 use risk_engine::{validate_risk_config, RiskEvaluator};
 use rust_decimal::prelude::ToPrimitive;
@@ -2118,6 +2119,47 @@ struct StrategyOpportunityAnalysisResponse {
 }
 
 #[derive(Serialize)]
+struct StrategyOpportunityReplayConsistencyResponse {
+    result: StrategyOpportunityReplayConsistencyResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyOpportunityReplayConsistencyResult {
+    strategy_id: String,
+    symbol: String,
+    timeframe: String,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    opportunity_evaluable_windows: i64,
+    opportunity_would_signal_count: i64,
+    replay_signal_count: i64,
+    backtest_trade_count: i32,
+    cooldown_suppressed_count: Option<i64>,
+    no_signal_reason_breakdown: Vec<StrategyNoSignalReasonCount>,
+    mismatch_count: i64,
+    mismatch_examples: Vec<StrategyOpportunityReplayMismatchExample>,
+    explanation: String,
+}
+
+#[derive(Serialize)]
+struct StrategyNoSignalReasonCount {
+    reason: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
+struct StrategyOpportunityReplayMismatchExample {
+    source_candle_open_time: DateTime<Utc>,
+    source_candle_close_time: DateTime<Utc>,
+    opportunity_would_signal: bool,
+    replay_generated_signal: bool,
+    replay_reason: String,
+}
+
+#[derive(Serialize)]
 struct PaperAccountView {
     id: Uuid,
     name: String,
@@ -2845,6 +2887,10 @@ async fn main() {
         .route(
             "/strategy/:id/opportunity-analysis",
             get(strategy_opportunity_analysis_handler),
+        )
+        .route(
+            "/strategy/:id/opportunity-replay-consistency",
+            get(strategy_opportunity_replay_consistency_handler),
         )
         .route("/signals/recent", get(get_recent_signals))
         .layer(middleware::from_fn_with_state(
@@ -15787,6 +15833,7 @@ async fn execute_research_batch(
                 momentum_lookback_candidates: payload.momentum_lookback_candidates.clone(),
                 breakout_lookback_candidates: payload.breakout_lookback_candidates.clone(),
                 lower_band_pct_candidates: payload.lower_band_pct_candidates.clone(),
+                upper_band_pct_candidates: payload.upper_band_pct_candidates.clone(),
                 min_range_width_pct_candidates: payload.min_range_width_pct_candidates.clone(),
                 max_range_width_pct_candidates: payload.max_range_width_pct_candidates.clone(),
                 holding_candles_candidates: payload.holding_candles_candidates.clone(),
@@ -15863,6 +15910,7 @@ async fn execute_research_batch(
                     momentum_lookback_candles: experiment_run.candidate.momentum_lookback_candles,
                     breakout_lookback_candles: experiment_run.candidate.breakout_lookback_candles,
                     lower_band_pct: experiment_run.candidate.lower_band_pct,
+                    upper_band_pct: experiment_run.candidate.upper_band_pct,
                     min_range_width_pct: experiment_run.candidate.min_range_width_pct,
                     max_range_width_pct: experiment_run.candidate.max_range_width_pct,
                     holding_candles: experiment_run.candidate.holding_candles,
@@ -22765,6 +22813,357 @@ async fn strategy_opportunity_analysis_handler(
         .into_response()
 }
 
+async fn strategy_opportunity_replay_consistency_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<StrategyOpportunityAnalysisQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if query.end_time <= query.start_time {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_time_range",
+                message: "end_time must be after start_time".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    let symbol = match Symbol::new(query.symbol.clone()) {
+        Ok(symbol) => symbol,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_symbol",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let timeframe = match query.timeframe.parse::<CandleInterval>() {
+        Ok(timeframe) => timeframe,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_timeframe",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let persisted = match ensure_strategy_config(&state, strategy_id).await {
+        Ok(config) => config,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_strategy_config",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let config_json = match query.config_json.as_deref() {
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_config_json",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let config = match config_json.clone() {
+        Some(value) => match serde_json::from_value::<StrategyConfigUpdateRequest>(value) {
+            Ok(mut override_request) => {
+                override_request.strategy_id = strategy_id.to_string();
+                let validation = validate_strategy_config(
+                    &override_request,
+                    &strategy_validation_context(&state),
+                );
+                match validation.normalized_config {
+                    Some(config) if validation.valid => config,
+                    _ => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: "invalid_config",
+                                message: validation
+                                    .issues
+                                    .iter()
+                                    .map(|issue| issue.message.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("; "),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_config_json",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => persisted,
+    };
+    let effective_config = StrategyConfig {
+        timeframe,
+        symbols: vec![symbol.clone()],
+        ..config
+    };
+    let candles = match get_closed_candles_range(
+        &state.db_pool,
+        &symbol,
+        timeframe,
+        query.start_time,
+        query.end_time,
+    )
+    .await
+    {
+        Ok(candles) => candles,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_closed_candles",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let full_limit = candles.len().saturating_add(1);
+    let analysis_request = StrategyOpportunityAnalysisRequest {
+        strategy_id: strategy_id.to_string(),
+        symbol: symbol.as_str().to_string(),
+        timeframe: timeframe.as_str().to_string(),
+        start_time: query.start_time,
+        end_time: query.end_time,
+        config: config_json,
+        limit_samples: Some(full_limit),
+        include_examples: true,
+    };
+    let opportunity =
+        match analyze_opportunity(&analysis_request, &effective_config, &candles, Utc::now()) {
+            Ok(result) => result,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_analyze_strategy_opportunity",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+    let mut opportunity_by_open_time = BTreeMap::new();
+    for example in opportunity
+        .example_pass_windows
+        .iter()
+        .chain(opportunity.example_fail_windows.iter())
+    {
+        opportunity_by_open_time.insert(example.source_candle_open_time, example);
+    }
+
+    let required = required_candle_count(&effective_config) as usize;
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let mut replay_signal_count = 0_i64;
+    let mut reason_counts = BTreeMap::<String, i64>::new();
+    let mut mismatch_examples = Vec::new();
+    let mut mismatch_count = 0_i64;
+    if candles.len() >= required {
+        for end in required..=candles.len() {
+            let latest = &candles[end - 1];
+            let evaluation = match evaluate_strategy(StrategyEvaluationContext {
+                correlation_id,
+                strategy_id,
+                symbol: symbol.clone(),
+                config: effective_config.clone(),
+                candles: candles[..end].to_vec(),
+                evaluated_at: latest.close_time,
+            }) {
+                Ok(evaluation) => evaluation,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_evaluate_replay_signal",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            if evaluation.generated {
+                replay_signal_count += 1;
+            } else {
+                *reason_counts
+                    .entry(evaluation.reason.as_str().to_string())
+                    .or_insert(0) += 1;
+            }
+            if let Some(opportunity_window) = opportunity_by_open_time.get(&latest.open_time) {
+                if opportunity_window.would_signal != evaluation.generated {
+                    mismatch_count += 1;
+                    if mismatch_examples.len() < query.limit_samples.unwrap_or(5) {
+                        mismatch_examples.push(StrategyOpportunityReplayMismatchExample {
+                            source_candle_open_time: latest.open_time,
+                            source_candle_close_time: latest.close_time,
+                            opportunity_would_signal: opportunity_window.would_signal,
+                            replay_generated_signal: evaluation.generated,
+                            replay_reason: evaluation.reason.as_str().to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let backtest_request = BacktestRequest {
+        strategy_id: strategy_id.to_string(),
+        symbol: symbol.as_str().to_string(),
+        timeframe: timeframe.as_str().to_string(),
+        start_time: query.start_time,
+        end_time: query.end_time,
+        initial_capital: Decimal::new(1_000_000, 0),
+        risk_config_id: None,
+        risk_config: None,
+        fee_bps: Decimal::ZERO,
+        slippage_bps: Decimal::ZERO,
+        correlation_id: Some(correlation_id),
+        holding_candles: effective_config.holding_candles,
+        strategy_config_override: None,
+    };
+    let backtest = match simulate_backtest(
+        Uuid::new_v4(),
+        Utc::now(),
+        correlation_id,
+        &backtest_request,
+        &effective_config,
+        candles.clone(),
+    ) {
+        Ok(execution) => execution,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_simulate_read_only_backtest",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let no_signal_reason_breakdown = reason_counts
+        .into_iter()
+        .map(|(reason, count)| StrategyNoSignalReasonCount { reason, count })
+        .collect::<Vec<_>>();
+    let explanation = if mismatch_count == 0 {
+        "Opportunity WOULD_SIGNAL count matches direct strategy evaluator signal count for the same closed candles and config. Backtest trades can be lower because replay needs a next candle for entry and does not evaluate new entries while a simulated position is open."
+            .to_string()
+    } else {
+        "Opportunity analysis and direct strategy evaluator disagree on one or more windows; inspect mismatch_examples before trusting experiment evidence."
+            .to_string()
+    };
+
+    (
+        StatusCode::OK,
+        Json(StrategyOpportunityReplayConsistencyResponse {
+            result: StrategyOpportunityReplayConsistencyResult {
+                strategy_id: strategy_id.to_string(),
+                symbol: symbol.as_str().to_string(),
+                timeframe: timeframe.as_str().to_string(),
+                start_time: query.start_time,
+                end_time: query.end_time,
+                opportunity_evaluable_windows: opportunity.evaluable_windows,
+                opportunity_would_signal_count: opportunity.would_signal_count,
+                replay_signal_count,
+                backtest_trade_count: backtest.result.trade_count,
+                cooldown_suppressed_count: None,
+                no_signal_reason_breakdown,
+                mismatch_count,
+                mismatch_examples,
+                explanation,
+            },
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
 async fn disable_strategy(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -23305,8 +23704,9 @@ mod tests {
         request_context_middleware, risk_decision_not_found_error, route_access,
         run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
         strategy_diagnostics_handler, strategy_opportunity_analysis_handler,
-        submit_exchange_testnet_pipeline, submit_exchange_testnet_shadow_promotion_handler,
-        AppConfig, AppState, ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
+        strategy_opportunity_replay_consistency_handler, submit_exchange_testnet_pipeline,
+        submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
+        ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
         ExecutionReadinessSnapshotsResponse, RequestContext, StrategyRuntimeConfig,
         TestnetShadowPromotionResponse, TestnetShadowPromotionSubmitResponse,
         TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
@@ -24397,6 +24797,10 @@ mod tests {
                 "/strategy/:id/opportunity-analysis",
                 get(strategy_opportunity_analysis_handler),
             )
+            .route(
+                "/strategy/:id/opportunity-replay-consistency",
+                get(strategy_opportunity_replay_consistency_handler),
+            )
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 request_context_middleware,
@@ -24635,6 +25039,7 @@ mod tests {
                 momentum_lookback_candles: None,
                 breakout_lookback_candles: None,
                 lower_band_pct: None,
+                upper_band_pct: None,
                 min_range_width_pct: None,
                 max_range_width_pct: None,
                 holding_candles: Some(3),
@@ -25328,6 +25733,62 @@ mod tests {
             Some("INSUFFICIENT_DATA")
         );
         assert_eq!(payload["result"]["evaluable_windows"].as_i64(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn strategy_opportunity_replay_consistency_reads_without_execution_mutation() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = strategy_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let closes = (0..30)
+            .map(|index| 100_000 + index * 100)
+            .collect::<Vec<_>>();
+        seed_shadow_candles(&test_db.pool, "BTCUSDT", &closes).await;
+
+        let before = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+        let start = (Utc::now() - chrono::Duration::hours(1))
+            .to_rfc3339()
+            .replace("+00:00", "Z");
+        let end = Utc::now().to_rfc3339().replace("+00:00", "Z");
+        let path = format!(
+            "/strategy/trend_filter_momentum_v1/opportunity-replay-consistency?symbol=BTCUSDT&timeframe=1m&start_time={start}&end_time={end}"
+        );
+
+        let response = app.oneshot(get_request(&path)).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+
+        assert_eq!(payload["result"]["mismatch_count"].as_i64(), Some(0));
+        assert_eq!(
+            payload["result"]["opportunity_would_signal_count"],
+            payload["result"]["replay_signal_count"]
+        );
+        assert!(
+            payload["result"]["backtest_trade_count"]
+                .as_i64()
+                .unwrap_or(0)
+                > 0
+        );
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.3);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.5
+        );
     }
 
     async fn insert_recent_closed_candle(pool: &PgPool, symbol: &str, close: Decimal) {

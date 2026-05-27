@@ -885,10 +885,14 @@ fn analyze_range_reversion_window(
     let near_lower_band = range.range_position_pct <= lower_band;
     let reversal_confirmation = latest.close > previous.close || latest.close > latest.open;
     let latest_low_not_undercutting_previous_low = latest.low >= previous.low;
-    let final_would_signal = width_within_bounds
+    let raw_would_signal = width_within_bounds
         && near_lower_band
         && reversal_confirmation
         && latest_low_not_undercutting_previous_low;
+    let confidence = Decimal::new(66, 2);
+    let confidence_floor = config.confidence_floor.unwrap_or(Decimal::ZERO);
+    let confidence_floor_passed = confidence >= confidence_floor;
+    let final_would_signal = raw_would_signal && confidence_floor_passed;
 
     range_positions.push(range.range_position_pct);
     range_widths.push(range.range_width_pct);
@@ -907,6 +911,7 @@ fn analyze_range_reversion_window(
             "latest_low_not_undercutting_previous_low",
             latest_low_not_undercutting_previous_low,
         ),
+        condition("confidence_floor", confidence_floor_passed),
         condition("freshness", true),
         condition("final_would_signal", final_would_signal),
     ];
@@ -927,6 +932,8 @@ fn analyze_range_reversion_window(
             "previous_close": previous.close,
             "latest_low": latest.low,
             "previous_low": previous.low,
+            "confidence": confidence,
+            "confidence_floor": config.confidence_floor,
         }),
     }
 }
@@ -942,8 +949,12 @@ fn analyze_trend_filter_window(config: &StrategyConfig, window: &[Candle]) -> Wi
     let close_above_sma = latest.close > sma;
     let latest_close_above_previous_close = latest.close > previous.close;
     let momentum_condition = latest.close > momentum_reference.close;
-    let final_would_signal =
+    let raw_would_signal =
         close_above_sma && latest_close_above_previous_close && momentum_condition;
+    let confidence = Decimal::new(68, 2);
+    let confidence_floor = config.confidence_floor.unwrap_or(Decimal::ZERO);
+    let confidence_floor_passed = confidence >= confidence_floor;
+    let final_would_signal = raw_would_signal && confidence_floor_passed;
     let conditions = vec![
         condition("has_enough_data", true),
         condition("close_above_sma", close_above_sma),
@@ -952,6 +963,7 @@ fn analyze_trend_filter_window(config: &StrategyConfig, window: &[Candle]) -> Wi
             latest_close_above_previous_close,
         ),
         condition("momentum_condition", momentum_condition),
+        condition("confidence_floor", confidence_floor_passed),
         condition("freshness", true),
         condition("final_would_signal", final_would_signal),
     ];
@@ -966,6 +978,8 @@ fn analyze_trend_filter_window(config: &StrategyConfig, window: &[Candle]) -> Wi
             "previous_close": previous.close,
             "sma": sma,
             "momentum_reference_close": momentum_reference.close,
+            "confidence": confidence,
+            "confidence_floor": config.confidence_floor,
         }),
     }
 }
@@ -1093,14 +1107,34 @@ fn build_opportunity_recommendation(
             "reversal_confirmation" if strategy_id == StrategyId::RangeReversionV1 => {
                 messages.push("Reversal confirmation may be too restrictive.".to_string())
             }
+            "close_above_sma"
+                if strategy_id == StrategyId::TrendFilterMomentumV1
+                    && status == StrategyOpportunityStatus::TooLoose =>
+            {
+                messages.push("Signal rate is too high; test longer trend lookbacks or add a trend-strength filter.".to_string())
+            }
             "close_above_sma" if strategy_id == StrategyId::TrendFilterMomentumV1 => {
-                messages.push("SMA trend filter blocks many windows; test shorter trend lookbacks.".to_string())
+                messages.push("SMA trend filter blocks many windows; test shorter trend lookbacks only if empirical replay confirms a lower-quality under-signal problem.".to_string())
+            }
+            "momentum_condition"
+                if strategy_id == StrategyId::TrendFilterMomentumV1
+                    && status == StrategyOpportunityStatus::TooLoose =>
+            {
+                messages.push("Signal rate is too high; test stronger momentum confirmation, longer momentum lookbacks, and increased cooldown.".to_string())
             }
             "momentum_condition" if strategy_id == StrategyId::TrendFilterMomentumV1 => {
-                messages.push("Momentum lookback may be too strict; test shorter momentum lookbacks.".to_string())
+                messages.push("Momentum lookback may be too strict; test shorter momentum lookbacks only when replay confirms too few enterable signals.".to_string())
             }
             _ => {}
         }
+    }
+    if strategy_id == StrategyId::TrendFilterMomentumV1
+        && status == StrategyOpportunityStatus::TooLoose
+    {
+        messages.push(
+            "Signal rate is above 20%; tighten before promotion by testing longer trend lookbacks, stronger momentum confirmation, increased cooldown, or a volatility/trend-strength filter."
+                .to_string(),
+        );
     }
     if messages.is_empty() {
         messages.push(match status {
@@ -3189,6 +3223,114 @@ mod tests {
 
         assert!(close_above_sma.passed_count > 0);
         assert!(close_above_sma.failed_count > 0);
+    }
+
+    #[test]
+    fn range_reversion_opportunity_count_matches_evaluator_signal_count() {
+        let config = default_config(StrategyId::RangeReversionV1, CandleInterval::FifteenMinutes);
+        let candles = (0..30)
+            .map(|index| {
+                range_candle(
+                    index,
+                    Decimal::new(1003, 1),
+                    Decimal::new(102, 0),
+                    Decimal::new(100, 0),
+                    Decimal::new(1004, 1),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let result = analyze_opportunity(
+            &opportunity_request(StrategyId::RangeReversionV1),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+        let evaluator_count = (required_candle_count(&config) as usize..=candles.len())
+            .filter(|end| {
+                let latest = &candles[*end - 1];
+                evaluate(StrategyEvaluationContext {
+                    correlation_id: Uuid::new_v4(),
+                    strategy_id: StrategyId::RangeReversionV1,
+                    symbol: Symbol::new("BTCUSDT").expect("valid symbol"),
+                    config: config.clone(),
+                    candles: candles[..*end].to_vec(),
+                    evaluated_at: latest.close_time,
+                })
+                .expect("evaluation should succeed")
+                .generated
+            })
+            .count() as i64;
+
+        assert_eq!(result.would_signal_count, evaluator_count);
+        assert!(result.would_signal_count > 0);
+    }
+
+    #[test]
+    fn range_reversion_opportunity_honors_confidence_floor_like_evaluator() {
+        let mut config =
+            default_config(StrategyId::RangeReversionV1, CandleInterval::FifteenMinutes);
+        config.confidence_floor = Some(Decimal::new(67, 2));
+        let candles = range_reversion_candles(Decimal::new(1004, 1), Decimal::new(1003, 1));
+
+        let result = analyze_opportunity(
+            &opportunity_request(StrategyId::RangeReversionV1),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+        let evaluation = evaluate(StrategyEvaluationContext {
+            correlation_id: Uuid::new_v4(),
+            strategy_id: StrategyId::RangeReversionV1,
+            symbol: Symbol::new("BTCUSDT").expect("valid symbol"),
+            config,
+            candles,
+            evaluated_at: Utc::now(),
+        })
+        .expect("evaluation should succeed");
+
+        assert_eq!(result.would_signal_count, 0);
+        assert!(!evaluation.generated);
+    }
+
+    #[test]
+    fn trend_filter_too_loose_recommendation_tightens_strategy() {
+        let mut config = default_config(
+            StrategyId::TrendFilterMomentumV1,
+            CandleInterval::FifteenMinutes,
+        );
+        config.trend_lookback_candles = Some(3);
+        config.momentum_lookback_candles = Some(2);
+        let candles = (0..30)
+            .map(|index| {
+                let close = 100 + index;
+                range_candle(
+                    index,
+                    Decimal::new(close - 1, 0),
+                    Decimal::new(close + 1, 0),
+                    Decimal::new(close - 2, 0),
+                    Decimal::new(close, 0),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let result = analyze_opportunity(
+            &opportunity_request(StrategyId::TrendFilterMomentumV1),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+        let joined = result.recommendation.messages.join(" ");
+
+        assert_eq!(
+            result.recommendation.status,
+            StrategyOpportunityStatus::TooLoose
+        );
+        assert!(joined.contains("longer trend lookbacks"));
+        assert!(!joined.contains("test shorter trend lookbacks"));
     }
 
     #[test]

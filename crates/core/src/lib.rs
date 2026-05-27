@@ -2544,6 +2544,7 @@ pub struct StrategyExperimentCandidate {
     pub momentum_lookback_candles: Option<u32>,
     pub breakout_lookback_candles: Option<u32>,
     pub lower_band_pct: Option<Decimal>,
+    pub upper_band_pct: Option<Decimal>,
     pub min_range_width_pct: Option<Decimal>,
     pub max_range_width_pct: Option<Decimal>,
     pub holding_candles: Option<u32>,
@@ -2567,6 +2568,7 @@ pub struct StrategyExperimentRequest {
     pub momentum_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
     pub lower_band_pct_candidates: Option<Vec<Decimal>>,
+    pub upper_band_pct_candidates: Option<Vec<Decimal>>,
     pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
     pub max_range_width_pct_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
@@ -2629,6 +2631,8 @@ pub struct StrategyWalkForwardCandidate {
     #[serde(default)]
     pub lower_band_pct: Option<Decimal>,
     #[serde(default)]
+    pub upper_band_pct: Option<Decimal>,
+    #[serde(default)]
     pub min_range_width_pct: Option<Decimal>,
     #[serde(default)]
     pub max_range_width_pct: Option<Decimal>,
@@ -2649,6 +2653,7 @@ fn default_strategy_walk_forward_candidate() -> StrategyWalkForwardCandidate {
         momentum_lookback_candles: None,
         breakout_lookback_candles: None,
         lower_band_pct: None,
+        upper_band_pct: None,
         min_range_width_pct: None,
         max_range_width_pct: None,
         holding_candles: None,
@@ -2993,6 +2998,11 @@ impl StrategyExperimentRequest {
             .clone()
             .filter(|values| !values.is_empty())
             .unwrap_or_else(|| vec![Decimal::new(20, 0)]);
+        let upper_bands = self
+            .upper_band_pct_candidates
+            .clone()
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| vec![Decimal::new(80, 0)]);
         let min_range_widths = self
             .min_range_width_pct_candidates
             .clone()
@@ -3009,61 +3019,72 @@ impl StrategyExperimentRequest {
                 for momentum_lookback_candles in &momentum_lookbacks {
                     for breakout_lookback_candles in &breakout_lookbacks {
                         for lower_band_pct in &lower_bands {
-                            for min_range_width_pct in &min_range_widths {
-                                for max_range_width_pct in &max_range_widths {
-                                    for holding_candles in &holdings {
-                                        for stop_loss_pct in &stop_losses {
-                                            for take_profit_pct in &take_profits {
-                                                candidates.push(StrategyExperimentCandidate {
-                                                    lookback_candles: *lookback_candles,
-                                                    trend_lookback_candles: Some(
-                                                        *trend_lookback_candles,
-                                                    ),
-                                                    momentum_lookback_candles:
-                                                        if *momentum_lookback_candles == 0 {
+                            for upper_band_pct in &upper_bands {
+                                for min_range_width_pct in &min_range_widths {
+                                    for max_range_width_pct in &max_range_widths {
+                                        for holding_candles in &holdings {
+                                            for stop_loss_pct in &stop_losses {
+                                                for take_profit_pct in &take_profits {
+                                                    candidates.push(StrategyExperimentCandidate {
+                                                        lookback_candles: *lookback_candles,
+                                                        trend_lookback_candles: Some(
+                                                            *trend_lookback_candles,
+                                                        ),
+                                                        momentum_lookback_candles:
+                                                            if *momentum_lookback_candles == 0 {
+                                                                None
+                                                            } else {
+                                                                Some(*momentum_lookback_candles)
+                                                            },
+                                                        breakout_lookback_candles: Some(
+                                                            *breakout_lookback_candles,
+                                                        ),
+                                                        lower_band_pct: Some(*lower_band_pct)
+                                                            .filter(|_| {
+                                                                self.strategy_id
+                                                                    == "range_reversion_v1"
+                                                            }),
+                                                        upper_band_pct: Some(*upper_band_pct)
+                                                            .filter(|_| {
+                                                                self.strategy_id
+                                                                    == "range_reversion_v1"
+                                                            }),
+                                                        min_range_width_pct: Some(
+                                                            *min_range_width_pct,
+                                                        )
+                                                        .filter(|value| {
+                                                            self.strategy_id == "range_reversion_v1"
+                                                                && *value != Decimal::ZERO
+                                                        }),
+                                                        max_range_width_pct: Some(
+                                                            *max_range_width_pct,
+                                                        )
+                                                        .filter(|value| {
+                                                            self.strategy_id == "range_reversion_v1"
+                                                                && *value != Decimal::ZERO
+                                                        }),
+                                                        holding_candles: if *holding_candles == 0 {
                                                             None
                                                         } else {
-                                                            Some(*momentum_lookback_candles)
+                                                            Some(*holding_candles)
                                                         },
-                                                    breakout_lookback_candles: Some(
-                                                        *breakout_lookback_candles,
-                                                    ),
-                                                    lower_band_pct: Some(*lower_band_pct).filter(
-                                                        |_| {
-                                                            self.strategy_id == "range_reversion_v1"
+                                                        stop_loss_pct: if *stop_loss_pct
+                                                            == Decimal::ZERO
+                                                        {
+                                                            None
+                                                        } else {
+                                                            Some(*stop_loss_pct)
                                                         },
-                                                    ),
-                                                    min_range_width_pct: Some(*min_range_width_pct)
-                                                        .filter(|value| {
-                                                            self.strategy_id == "range_reversion_v1"
-                                                                && *value != Decimal::ZERO
-                                                        }),
-                                                    max_range_width_pct: Some(*max_range_width_pct)
-                                                        .filter(|value| {
-                                                            self.strategy_id == "range_reversion_v1"
-                                                                && *value != Decimal::ZERO
-                                                        }),
-                                                    holding_candles: if *holding_candles == 0 {
-                                                        None
-                                                    } else {
-                                                        Some(*holding_candles)
-                                                    },
-                                                    stop_loss_pct: if *stop_loss_pct
-                                                        == Decimal::ZERO
-                                                    {
-                                                        None
-                                                    } else {
-                                                        Some(*stop_loss_pct)
-                                                    },
-                                                    take_profit_pct: if *take_profit_pct
-                                                        == Decimal::ZERO
-                                                    {
-                                                        None
-                                                    } else {
-                                                        Some(*take_profit_pct)
-                                                    },
-                                                    max_signal_age_ms: self.max_signal_age_ms,
-                                                });
+                                                        take_profit_pct: if *take_profit_pct
+                                                            == Decimal::ZERO
+                                                        {
+                                                            None
+                                                        } else {
+                                                            Some(*take_profit_pct)
+                                                        },
+                                                        max_signal_age_ms: self.max_signal_age_ms,
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -3098,6 +3119,7 @@ pub struct StrategyMultiTimeframeExperimentRequest {
     pub momentum_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
     pub lower_band_pct_candidates: Option<Vec<Decimal>>,
+    pub upper_band_pct_candidates: Option<Vec<Decimal>>,
     pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
     pub max_range_width_pct_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
@@ -3140,6 +3162,7 @@ impl StrategyMultiTimeframeExperimentRequest {
             momentum_lookback_candidates: self.momentum_lookback_candidates.clone(),
             breakout_lookback_candidates: self.breakout_lookback_candidates.clone(),
             lower_band_pct_candidates: self.lower_band_pct_candidates.clone(),
+            upper_band_pct_candidates: self.upper_band_pct_candidates.clone(),
             min_range_width_pct_candidates: self.min_range_width_pct_candidates.clone(),
             max_range_width_pct_candidates: self.max_range_width_pct_candidates.clone(),
             holding_candles_candidates: self.holding_candles_candidates.clone(),

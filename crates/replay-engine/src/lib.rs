@@ -415,6 +415,7 @@ impl ReplayEngine {
                 momentum_lookback_candles: candidate.momentum_lookback_candles,
                 breakout_lookback_candles: candidate.breakout_lookback_candles,
                 lower_band_pct: candidate.lower_band_pct,
+                upper_band_pct: candidate.upper_band_pct,
                 min_range_width_pct: candidate.min_range_width_pct,
                 max_range_width_pct: candidate.max_range_width_pct,
                 holding_candles: candidate.holding_candles,
@@ -684,7 +685,10 @@ fn experiment_strategy_override(
             .lower_band_pct
             .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.lower_band_pct),
-        upper_band_pct: base_config.upper_band_pct,
+        upper_band_pct: candidate
+            .upper_band_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.upper_band_pct),
         min_range_width_pct: candidate
             .min_range_width_pct
             .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
@@ -1125,7 +1129,11 @@ fn walk_forward_strategy_override(
             .lower_band_pct
             .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.lower_band_pct),
-        upper_band_pct: base_config.upper_band_pct,
+        upper_band_pct: request
+            .candidate_config
+            .upper_band_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.upper_band_pct),
         min_range_width_pct: request
             .candidate_config
             .min_range_width_pct
@@ -1198,6 +1206,7 @@ fn strategy_walk_forward_candidate_from_config(
         momentum_lookback_candles: read_u32(&["momentum_lookback_candles", "momentum_lookback"]),
         breakout_lookback_candles: read_u32(&["breakout_lookback_candles", "breakout_lookback"]),
         lower_band_pct: read_decimal(&["lower_band_pct", "lower_band"])?,
+        upper_band_pct: read_decimal(&["upper_band_pct", "upper_band"])?,
         min_range_width_pct: read_decimal(&["min_range_width_pct", "min_range_width"])?,
         max_range_width_pct: read_decimal(&["max_range_width_pct", "max_range_width"])?,
         holding_candles: read_u32(&["holding_candles", "holding"]),
@@ -2272,6 +2281,7 @@ mod tests {
             momentum_lookback_candidates: None,
             breakout_lookback_candidates: None,
             lower_band_pct_candidates: None,
+            upper_band_pct_candidates: None,
             min_range_width_pct_candidates: None,
             max_range_width_pct_candidates: None,
             holding_candles_candidates: Some(vec![3, 5]),
@@ -2350,6 +2360,7 @@ mod tests {
             momentum_lookback_candidates: None,
             breakout_lookback_candidates: None,
             lower_band_pct_candidates: Some(vec![Decimal::new(20, 0)]),
+            upper_band_pct_candidates: Some(vec![Decimal::new(90, 0)]),
             min_range_width_pct_candidates: Some(vec![Decimal::new(15, 2)]),
             max_range_width_pct_candidates: Some(vec![Decimal::new(3, 0)]),
             holding_candles_candidates: Some(vec![3]),
@@ -2379,6 +2390,7 @@ mod tests {
             momentum_lookback_candidates: Some(vec![2, 3]),
             breakout_lookback_candidates: None,
             lower_band_pct_candidates: None,
+            upper_band_pct_candidates: None,
             min_range_width_pct_candidates: None,
             max_range_width_pct_candidates: None,
             max_runs: Some(4),
@@ -2404,6 +2416,7 @@ mod tests {
                 momentum_lookback_candles: None,
                 breakout_lookback_candles: None,
                 lower_band_pct: None,
+                upper_band_pct: None,
                 min_range_width_pct: None,
                 max_range_width_pct: None,
                 holding_candles: Some(3),
@@ -2450,6 +2463,7 @@ mod tests {
                 momentum_lookback_candles: None,
                 breakout_lookback_candles: None,
                 lower_band_pct: None,
+                upper_band_pct: None,
                 min_range_width_pct: None,
                 max_range_width_pct: None,
                 holding_candles: Some(3),
@@ -2572,13 +2586,7 @@ mod tests {
             Symbol::new("BTCUSDT").unwrap(),
             range_reversion_experiment_request(),
             (0..80)
-                .map(|index| {
-                    if index % 10 == 0 {
-                        candle(index, 100, 102, 100, 100)
-                    } else {
-                        candle(index, 101, 102, 100, 101)
-                    }
-                })
+                .map(|index| candle(index, 99, 102, 100, 100))
                 .collect(),
             Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
             Uuid::from_u128(0x504),
@@ -2592,6 +2600,11 @@ mod tests {
             execution.runs[0].candidate.lower_band_pct,
             Some(Decimal::new(20, 0))
         );
+        assert_eq!(
+            execution.runs[0].candidate.upper_band_pct,
+            Some(Decimal::new(90, 0))
+        );
+        assert_eq!(execution.runs[0].trade_count > 0, true);
     }
 
     #[test]
@@ -2826,6 +2839,7 @@ mod tests {
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
             lower_band_pct: None,
+            upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
             holding_candles: Some(5),
