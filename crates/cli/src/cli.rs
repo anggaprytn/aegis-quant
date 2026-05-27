@@ -621,6 +621,12 @@ pub struct StrategyConfigArgs {
     pub momentum_lookback_candles: Option<u32>,
     #[arg(long = "breakout-lookback-candles")]
     pub breakout_lookback_candles: Option<u32>,
+    #[arg(long = "min-close-above-sma-pct")]
+    pub min_close_above_sma_pct: Option<rust_decimal::Decimal>,
+    #[arg(long = "max-close-above-sma-pct")]
+    pub max_close_above_sma_pct: Option<rust_decimal::Decimal>,
+    #[arg(long = "min-momentum-return-pct")]
+    pub min_momentum_return_pct: Option<rust_decimal::Decimal>,
     #[arg(long = "confidence-floor")]
     pub confidence_floor: Option<rust_decimal::Decimal>,
     #[arg(long = "stop-loss-pct")]
@@ -859,6 +865,12 @@ pub struct ResearchBatchRunArgs {
     pub momentum_lookbacks: Option<Vec<u32>>,
     #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
     pub breakout_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "min-close-above-sma-pct", value_delimiter = ',')]
+    pub min_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "max-close-above-sma-pct", value_delimiter = ',')]
+    pub max_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "min-momentum-return-pct", value_delimiter = ',')]
+    pub min_momentum_return_pct: Option<Vec<rust_decimal::Decimal>>,
     #[arg(long = "holding-candles", value_delimiter = ',')]
     pub holding_candles: Option<Vec<u32>>,
     #[arg(long = "walk-forward-top-n", default_value_t = 3)]
@@ -927,6 +939,12 @@ pub struct ResearchCampaignRunArgs {
     pub momentum_lookbacks: Option<Vec<u32>>,
     #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
     pub breakout_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "min-close-above-sma-pct", value_delimiter = ',')]
+    pub min_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "max-close-above-sma-pct", value_delimiter = ',')]
+    pub max_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "min-momentum-return-pct", value_delimiter = ',')]
+    pub min_momentum_return_pct: Option<Vec<rust_decimal::Decimal>>,
     #[arg(long = "holding-candles", value_delimiter = ',')]
     pub holding_candles: Option<Vec<u32>>,
     #[arg(long = "no-repair-degraded-data", default_value_t = false)]
@@ -1513,6 +1531,12 @@ pub struct StrategyExperimentRunArgs {
     pub momentum_lookbacks: Option<Vec<u32>>,
     #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
     pub breakout_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "min-close-above-sma-pct", value_delimiter = ',')]
+    pub min_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "max-close-above-sma-pct", value_delimiter = ',')]
+    pub max_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "min-momentum-return-pct", value_delimiter = ',')]
+    pub min_momentum_return_pct: Option<Vec<rust_decimal::Decimal>>,
     #[arg(long = "holding-candles", value_delimiter = ',')]
     pub holding_candles: Option<Vec<u32>>,
     #[arg(long = "stop-loss-pct", value_delimiter = ',')]
@@ -1553,6 +1577,12 @@ pub struct StrategyMultiTimeframeExperimentRunArgs {
     pub momentum_lookbacks: Option<Vec<u32>>,
     #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
     pub breakout_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "min-close-above-sma-pct", value_delimiter = ',')]
+    pub min_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "max-close-above-sma-pct", value_delimiter = ',')]
+    pub max_close_above_sma_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "min-momentum-return-pct", value_delimiter = ',')]
+    pub min_momentum_return_pct: Option<Vec<rust_decimal::Decimal>>,
     #[arg(long = "holding-candles", value_delimiter = ',')]
     pub holding_candles: Option<Vec<u32>>,
     #[arg(long = "stop-loss-pct", value_delimiter = ',')]

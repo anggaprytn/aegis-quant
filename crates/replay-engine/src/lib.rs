@@ -545,6 +545,9 @@ impl ReplayEngine {
                 upper_band_pct: candidate.upper_band_pct,
                 min_range_width_pct: candidate.min_range_width_pct,
                 max_range_width_pct: candidate.max_range_width_pct,
+                min_close_above_sma_pct: candidate.min_close_above_sma_pct,
+                max_close_above_sma_pct: candidate.max_close_above_sma_pct,
+                min_momentum_return_pct: candidate.min_momentum_return_pct,
                 holding_candles: candidate.holding_candles,
                 stop_loss_pct: candidate.stop_loss_pct,
                 take_profit_pct: candidate.take_profit_pct,
@@ -1273,7 +1276,7 @@ fn extract_signal_feature_metrics(
     index: usize,
 ) -> Vec<StrategySignalFeatureMetric> {
     let mut metrics = match strategy_id {
-        StrategyId::TrendFilterMomentumV1 => {
+        StrategyId::TrendFilterMomentumV1 | StrategyId::TrendFilterMomentumV2 => {
             extract_trend_filter_momentum_features(config, candles, index)
         }
         StrategyId::RangeReversionV1 => extract_range_reversion_features(config, candles, index),
@@ -1709,11 +1712,17 @@ fn strategy_config_update_from_candidate(
         trend_lookback_candles: candidate
             .trend_lookback_candles
             .or(Some(candidate.lookback_candles))
-            .filter(|_| strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .filter(|_| {
+                strategy_id == StrategyId::TrendFilterMomentumV1.as_str()
+                    || strategy_id == StrategyId::TrendFilterMomentumV2.as_str()
+            })
             .or(base_config.trend_lookback_candles),
         momentum_lookback_candles: candidate
             .momentum_lookback_candles
-            .filter(|_| strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .filter(|_| {
+                strategy_id == StrategyId::TrendFilterMomentumV1.as_str()
+                    || strategy_id == StrategyId::TrendFilterMomentumV2.as_str()
+            })
             .or(base_config.momentum_lookback_candles),
         breakout_lookback_candles: candidate
             .breakout_lookback_candles
@@ -1736,6 +1745,18 @@ fn strategy_config_update_from_candidate(
             .max_range_width_pct
             .filter(|_| strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.max_range_width_pct),
+        min_close_above_sma_pct: candidate
+            .min_close_above_sma_pct
+            .filter(|_| strategy_id == StrategyId::TrendFilterMomentumV2.as_str())
+            .or(base_config.min_close_above_sma_pct),
+        max_close_above_sma_pct: candidate
+            .max_close_above_sma_pct
+            .filter(|_| strategy_id == StrategyId::TrendFilterMomentumV2.as_str())
+            .or(base_config.max_close_above_sma_pct),
+        min_momentum_return_pct: candidate
+            .min_momentum_return_pct
+            .filter(|_| strategy_id == StrategyId::TrendFilterMomentumV2.as_str())
+            .or(base_config.min_momentum_return_pct),
         confidence_floor: base_config.confidence_floor,
         stop_loss_pct: candidate.stop_loss_pct.or(base_config.stop_loss_pct),
         take_profit_pct: candidate.take_profit_pct.or(base_config.take_profit_pct),
@@ -2157,12 +2178,18 @@ fn walk_forward_strategy_override(
             .candidate_config
             .trend_lookback_candles
             .or(Some(request.candidate_config.lookback_candles))
-            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .filter(|_| {
+                request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str()
+                    || request.strategy_id == StrategyId::TrendFilterMomentumV2.as_str()
+            })
             .or(base_config.trend_lookback_candles),
         momentum_lookback_candles: request
             .candidate_config
             .momentum_lookback_candles
-            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .filter(|_| {
+                request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str()
+                    || request.strategy_id == StrategyId::TrendFilterMomentumV2.as_str()
+            })
             .or(base_config.momentum_lookback_candles),
         breakout_lookback_candles: request
             .candidate_config
@@ -2190,6 +2217,21 @@ fn walk_forward_strategy_override(
             .max_range_width_pct
             .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.max_range_width_pct),
+        min_close_above_sma_pct: request
+            .candidate_config
+            .min_close_above_sma_pct
+            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV2.as_str())
+            .or(base_config.min_close_above_sma_pct),
+        max_close_above_sma_pct: request
+            .candidate_config
+            .max_close_above_sma_pct
+            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV2.as_str())
+            .or(base_config.max_close_above_sma_pct),
+        min_momentum_return_pct: request
+            .candidate_config
+            .min_momentum_return_pct
+            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV2.as_str())
+            .or(base_config.min_momentum_return_pct),
         confidence_floor: base_config.confidence_floor,
         stop_loss_pct: request
             .candidate_config
@@ -2255,6 +2297,9 @@ fn strategy_walk_forward_candidate_from_config(
         upper_band_pct: read_decimal(&["upper_band_pct", "upper_band"])?,
         min_range_width_pct: read_decimal(&["min_range_width_pct", "min_range_width"])?,
         max_range_width_pct: read_decimal(&["max_range_width_pct", "max_range_width"])?,
+        min_close_above_sma_pct: read_decimal(&["min_close_above_sma_pct"])?,
+        max_close_above_sma_pct: read_decimal(&["max_close_above_sma_pct"])?,
+        min_momentum_return_pct: read_decimal(&["min_momentum_return_pct"])?,
         holding_candles: read_u32(&["holding_candles", "holding"]),
         stop_loss_pct: read_decimal(&["stop_loss_pct"])?,
         take_profit_pct: read_decimal(&["take_profit_pct"])?,
@@ -2821,17 +2866,51 @@ fn required_candles_for_request(request: &StrategyExperimentRequest) -> usize {
         .copied()
         .max()
         .unwrap_or(1) as usize;
+    let max_strategy_lookback = [
+        Some(max_lookback),
+        request
+            .trend_lookback_candidates
+            .as_ref()
+            .and_then(|values| values.iter().copied().max())
+            .map(|value| value as usize),
+        request
+            .momentum_lookback_candidates
+            .as_ref()
+            .and_then(|values| values.iter().copied().max())
+            .map(|value| value as usize),
+        request
+            .breakout_lookback_candidates
+            .as_ref()
+            .and_then(|values| values.iter().copied().max())
+            .map(|value| value as usize),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .unwrap_or(max_lookback);
     let max_holding = request
         .holding_candles_candidates
         .as_ref()
         .and_then(|values| values.iter().copied().max())
         .unwrap_or(0) as usize;
 
-    max_lookback.saturating_add(max_holding).saturating_add(2)
+    max_strategy_lookback
+        .saturating_add(max_holding)
+        .saturating_add(2)
 }
 
 fn required_candles_for_candidate(candidate: &StrategyExperimentCandidate) -> usize {
-    candidate.lookback_candles as usize + candidate.holding_candles.unwrap_or(0) as usize + 2
+    [
+        candidate.lookback_candles,
+        candidate.trend_lookback_candles.unwrap_or(0),
+        candidate.momentum_lookback_candles.unwrap_or(0),
+        candidate.breakout_lookback_candles.unwrap_or(0),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(candidate.lookback_candles) as usize
+        + candidate.holding_candles.unwrap_or(0) as usize
+        + 2
 }
 
 fn required_candles_from_runs(runs: &[StrategyExperimentRun]) -> i32 {
@@ -3345,6 +3424,9 @@ mod tests {
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -3435,6 +3517,15 @@ mod tests {
         config.holding_candles = Some(1);
         config.trend_lookback_candles = Some(3);
         config.momentum_lookback_candles = Some(2);
+        config
+    }
+
+    fn trend_filter_v2_feature_strategy_config() -> StrategyConfig {
+        let mut config = trend_filter_feature_strategy_config();
+        config.strategy_id = StrategyId::TrendFilterMomentumV2;
+        config.min_close_above_sma_pct = Some(Decimal::ZERO);
+        config.max_close_above_sma_pct = Some(Decimal::new(10, 0));
+        config.min_momentum_return_pct = Some(Decimal::ZERO);
         config
     }
 
@@ -3529,6 +3620,9 @@ mod tests {
             upper_band_pct_candidates: None,
             min_range_width_pct_candidates: None,
             max_range_width_pct_candidates: None,
+            min_close_above_sma_pct_candidates: None,
+            max_close_above_sma_pct_candidates: None,
+            min_momentum_return_pct_candidates: None,
             holding_candles_candidates: Some(vec![3, 5]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
@@ -3556,6 +3650,9 @@ mod tests {
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -3582,6 +3679,9 @@ mod tests {
             upper_band_pct: Some(Decimal::new(80, 0)),
             min_range_width_pct: Some(Decimal::new(15, 2)),
             max_range_width_pct: Some(Decimal::new(3, 0)),
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -3608,6 +3708,9 @@ mod tests {
             upper_band_pct_candidates: Some(vec![Decimal::new(90, 0)]),
             min_range_width_pct_candidates: Some(vec![Decimal::new(15, 2)]),
             max_range_width_pct_candidates: Some(vec![Decimal::new(3, 0)]),
+            min_close_above_sma_pct_candidates: None,
+            max_close_above_sma_pct_candidates: None,
+            min_momentum_return_pct_candidates: None,
             holding_candles_candidates: Some(vec![3]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
@@ -3638,7 +3741,25 @@ mod tests {
             upper_band_pct_candidates: None,
             min_range_width_pct_candidates: None,
             max_range_width_pct_candidates: None,
+            min_close_above_sma_pct_candidates: None,
+            max_close_above_sma_pct_candidates: None,
+            min_momentum_return_pct_candidates: None,
             max_runs: Some(4),
+            ..sample_experiment_request()
+        }
+    }
+
+    fn trend_filter_v2_experiment_request() -> StrategyExperimentRequest {
+        StrategyExperimentRequest {
+            strategy_id: "trend_filter_momentum_v2".to_string(),
+            timeframe: "15m".to_string(),
+            lookback_candidates: vec![10, 20],
+            trend_lookback_candidates: Some(vec![10]),
+            momentum_lookback_candidates: Some(vec![2]),
+            min_close_above_sma_pct_candidates: Some(vec![Decimal::ZERO]),
+            max_close_above_sma_pct_candidates: Some(vec![Decimal::new(5, 1)]),
+            min_momentum_return_pct_candidates: Some(vec![Decimal::ZERO]),
+            max_runs: Some(1),
             ..sample_experiment_request()
         }
     }
@@ -3664,6 +3785,9 @@ mod tests {
                 upper_band_pct: None,
                 min_range_width_pct: None,
                 max_range_width_pct: None,
+                min_close_above_sma_pct: None,
+                max_close_above_sma_pct: None,
+                min_momentum_return_pct: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -3718,6 +3842,9 @@ mod tests {
                 upper_band_pct: None,
                 min_range_width_pct: None,
                 max_range_width_pct: None,
+                min_close_above_sma_pct: None,
+                max_close_above_sma_pct: None,
+                min_momentum_return_pct: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -3948,6 +4075,34 @@ mod tests {
             run.candidate.trend_lookback_candles == Some(10)
                 && run.candidate.momentum_lookback_candles == Some(2)
         }));
+    }
+
+    #[test]
+    fn trend_filter_v2_experiment_passes_sma_band_candidate() {
+        let mut config = trend_filter_strategy_config();
+        config.strategy_id = StrategyId::TrendFilterMomentumV2;
+        config.timeframe = CandleInterval::FifteenMinutes;
+        config.max_signal_age_ms = 2_700_000;
+        config.min_close_above_sma_pct = Some(Decimal::ZERO);
+        config.max_close_above_sma_pct = Some(Decimal::ONE);
+        config.min_momentum_return_pct = Some(Decimal::ZERO);
+
+        let execution = build_strategy_experiment_execution(
+            &config,
+            Symbol::new("BTCUSDT").unwrap(),
+            trend_filter_v2_experiment_request(),
+            long_trending_candles(80),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x513),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(execution.result.strategy_id, "trend_filter_momentum_v2");
+        assert_eq!(
+            execution.runs[0].candidate.max_close_above_sma_pct,
+            Some(Decimal::new(5, 1))
+        );
     }
 
     #[test]
@@ -4213,6 +4368,9 @@ mod tests {
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             holding_candles: Some(5),
             stop_loss_pct: Some(Decimal::new(2, 0)),
             take_profit_pct: Some(Decimal::new(4, 0)),
@@ -4526,6 +4684,37 @@ mod tests {
             .metrics
             .iter()
             .any(|metric| metric.feature_name == "distance_from_recent_high_pct"));
+    }
+
+    #[test]
+    fn signal_feature_extracts_trend_filter_momentum_v2_features() {
+        let result = calculate_signal_feature_attribution(
+            &signal_feature_attribution_request("trend_filter_momentum_v2"),
+            &trend_filter_v2_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            long_trending_candles(12),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert!(result.attributed_signals > 0);
+        let sample = result.samples.first().expect("sample");
+        for feature_name in [
+            "close_vs_sma_pct",
+            "momentum_return_pct",
+            "candle_body_pct",
+            "candle_range_pct",
+            "distance_from_recent_high_pct",
+            "distance_from_recent_low_pct",
+        ] {
+            assert!(
+                sample
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.feature_name == feature_name),
+                "missing feature {feature_name}"
+            );
+        }
     }
 
     #[test]

@@ -89,7 +89,7 @@ make verify
 - Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
 - Strategy experiments are research-only parameter sweeps on stored candles; they must not mutate live, paper, shadow, promotion, or testnet execution state.
-- Baseline research strategies such as `trend_filter_momentum_v1` and `volatility_breakout_v2` are deterministic candle-only comparators for experiments and candidate review. They are not financial advice, do not promise profit, and do not bypass risk, paper, shadow, testnet, or live execution boundaries.
+- Baseline research strategies such as `trend_filter_momentum_v1`, `trend_filter_momentum_v2`, and `volatility_breakout_v2` are deterministic candle-only comparators for experiments and candidate review. They are not financial advice, do not promise profit, and do not bypass risk, paper, shadow, testnet, or live execution boundaries.
 - Research candidate lifecycle operations are review-only controls; candidate creation, observation, decisions, and archival append auditable lifecycle events and do not execute trades or auto-submit anything.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
 

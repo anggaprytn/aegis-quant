@@ -236,6 +236,9 @@ type StrategyExperimentFormState = {
   lower_band_pct: string;
   min_range_width_pct: string;
   max_range_width_pct: string;
+  min_close_above_sma_pct: string;
+  max_close_above_sma_pct: string;
+  min_momentum_return_pct: string;
   holding_candles: string;
   stop_loss_pct: string;
   take_profit_pct: string;
@@ -269,7 +272,7 @@ type StrategyWalkForwardFormState = {
 };
 
 const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
-  strategy_id: "trend_filter_momentum_v1",
+  strategy_id: "trend_filter_momentum_v2",
   symbol: "BTCUSDT",
   timeframes: "5m,15m",
   start_time: "2026-05-01T00:00:00Z",
@@ -284,6 +287,9 @@ const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   lower_band_pct: "10,20,30",
   min_range_width_pct: "0.15",
   max_range_width_pct: "3.0",
+  min_close_above_sma_pct: "0",
+  max_close_above_sma_pct: "0.5,1.0,1.5",
+  min_momentum_return_pct: "0,0.1,0.2",
   holding_candles: "3,5,10",
   stop_loss_pct: "",
   take_profit_pct: "",
@@ -352,7 +358,7 @@ const DEFAULT_RESEARCH_DATA_FORM: ResearchDatasetBuildRequest = {
 };
 
 const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
-  strategy_id: "trend_filter_momentum_v1",
+  strategy_id: "trend_filter_momentum_v2",
   symbol: "BTCUSDT",
   base_interval: "1m",
   target_intervals: ["5m", "15m", "1h"],
@@ -364,6 +370,9 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
   experiment_timeframes: ["5m", "15m"],
   lookback_candidates: [10, 20, 50],
   momentum_lookback_candidates: [2, 3, 5],
+  min_close_above_sma_pct_candidates: ["0"],
+  max_close_above_sma_pct_candidates: ["0.5", "1.0", "1.5"],
+  min_momentum_return_pct_candidates: ["0", "0.1", "0.2"],
   holding_candles_candidates: [3, 5, 10],
   walk_forward_top_n: 3,
   repair_degraded_data: true,
@@ -372,7 +381,7 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
 };
 
 const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
-  strategies: ["trend_filter_momentum_v1", "volatility_breakout_v2", "range_reversion_v1"],
+  strategies: ["trend_filter_momentum_v1", "trend_filter_momentum_v2", "range_reversion_v1"],
   symbols: ["BTCUSDT", "ETHUSDT"],
   experiment_timeframes: ["5m", "15m"],
   campaign_start: "2024-05-01T00:00:00Z",
@@ -388,6 +397,9 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   base_interval: "1m",
   lookback_candidates: [10, 20, 50],
   momentum_lookback_candidates: [2, 3, 5],
+  min_close_above_sma_pct_candidates: ["0"],
+  max_close_above_sma_pct_candidates: ["0.5", "1.0", "1.5"],
+  min_momentum_return_pct_candidates: ["0", "0.1", "0.2"],
   lower_band_pct_candidates: ["10", "20", "30"],
   min_range_width_pct_candidates: ["0.15"],
   max_range_width_pct_candidates: ["3.0"],
@@ -431,6 +443,9 @@ function strategyConfigFormFromStatus(
     upper_band_pct: strategy?.upper_band_pct ?? null,
     min_range_width_pct: strategy?.min_range_width_pct ?? null,
     max_range_width_pct: strategy?.max_range_width_pct ?? null,
+    min_close_above_sma_pct: strategy?.min_close_above_sma_pct ?? null,
+    max_close_above_sma_pct: strategy?.max_close_above_sma_pct ?? null,
+    min_momentum_return_pct: strategy?.min_momentum_return_pct ?? null,
     confidence_floor: strategy?.confidence_floor ?? null,
     stop_loss_pct: strategy?.stop_loss_pct ?? null,
     take_profit_pct: strategy?.take_profit_pct ?? null,
@@ -537,6 +552,9 @@ function buildStrategyExperimentRequest(
     lower_band_pct_candidates: parseDecimalList(form.lower_band_pct),
     min_range_width_pct_candidates: parseDecimalList(form.min_range_width_pct),
     max_range_width_pct_candidates: parseDecimalList(form.max_range_width_pct),
+    min_close_above_sma_pct_candidates: parseDecimalList(form.min_close_above_sma_pct),
+    max_close_above_sma_pct_candidates: parseDecimalList(form.max_close_above_sma_pct),
+    min_momentum_return_pct_candidates: parseDecimalList(form.min_momentum_return_pct),
     holding_candles_candidates: holding.length ? holding : null,
     stop_loss_pct_candidates: parseDecimalList(form.stop_loss_pct),
     take_profit_pct_candidates: parseDecimalList(form.take_profit_pct),
@@ -3866,6 +3884,36 @@ function AuthenticatedDashboard({
                       }
                     />
                     <Field
+                      label="Min Close Above SMA %"
+                      value={strategyConfigForm.min_close_above_sma_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_close_above_sma_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Max Close Above SMA %"
+                      value={strategyConfigForm.max_close_above_sma_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          max_close_above_sma_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Momentum Return %"
+                      value={strategyConfigForm.min_momentum_return_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_momentum_return_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
                       label="Stop Loss %"
                       value={strategyConfigForm.stop_loss_pct ?? ""}
                       onChange={(value) =>
@@ -5695,6 +5743,16 @@ function AuthenticatedDashboard({
                     }
                   />
                   <Field
+                    label="Max Close Above SMA %"
+                    value={researchBatchForm.max_close_above_sma_pct_candidates?.join(",") ?? ""}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        max_close_above_sma_pct_candidates: parseDecimalList(value),
+                      }))
+                    }
+                  />
+                  <Field
                     label="Holding Candles"
                     value={researchBatchForm.holding_candles_candidates?.join(",") ?? ""}
                     onChange={(value) =>
@@ -5799,6 +5857,9 @@ function AuthenticatedDashboard({
                       ["lower_band_pct", "Lower Band %"],
                       ["min_range_width_pct", "Min Range Width %"],
                       ["max_range_width_pct", "Max Range Width %"],
+                      ["min_close_above_sma_pct", "Min Close Above SMA %"],
+                      ["max_close_above_sma_pct", "Max Close Above SMA %"],
+                      ["min_momentum_return_pct", "Min Momentum Return %"],
                       ["holding_candles", "Holding Candles"],
                       ["stop_loss_pct", "Stop Loss %"],
                       ["take_profit_pct", "Take Profit %"],

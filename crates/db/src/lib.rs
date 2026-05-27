@@ -586,6 +586,9 @@ pub struct StrategyConfigRecord {
     pub upper_band_pct: Option<Decimal>,
     pub min_range_width_pct: Option<Decimal>,
     pub max_range_width_pct: Option<Decimal>,
+    pub min_close_above_sma_pct: Option<Decimal>,
+    pub max_close_above_sma_pct: Option<Decimal>,
+    pub min_momentum_return_pct: Option<Decimal>,
     pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -8502,6 +8505,9 @@ async fn upsert_strategy_config_tx(
             upper_band_pct,
             min_range_width_pct,
             max_range_width_pct,
+            min_close_above_sma_pct,
+            max_close_above_sma_pct,
+            min_momentum_return_pct,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -8512,7 +8518,7 @@ async fn upsert_strategy_config_tx(
             updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, NOW(), NOW()
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, NOW(), NOW()
         )
         ON CONFLICT (strategy_id) DO UPDATE
         SET
@@ -8534,6 +8540,9 @@ async fn upsert_strategy_config_tx(
             upper_band_pct = EXCLUDED.upper_band_pct,
             min_range_width_pct = EXCLUDED.min_range_width_pct,
             max_range_width_pct = EXCLUDED.max_range_width_pct,
+            min_close_above_sma_pct = EXCLUDED.min_close_above_sma_pct,
+            max_close_above_sma_pct = EXCLUDED.max_close_above_sma_pct,
+            min_momentum_return_pct = EXCLUDED.min_momentum_return_pct,
             confidence_floor = EXCLUDED.confidence_floor,
             stop_loss_pct = EXCLUDED.stop_loss_pct,
             take_profit_pct = EXCLUDED.take_profit_pct,
@@ -8558,6 +8567,9 @@ async fn upsert_strategy_config_tx(
             upper_band_pct,
             min_range_width_pct,
             max_range_width_pct,
+            min_close_above_sma_pct,
+            max_close_above_sma_pct,
+            min_momentum_return_pct,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -8587,6 +8599,9 @@ async fn upsert_strategy_config_tx(
     .bind(config.upper_band_pct)
     .bind(config.min_range_width_pct)
     .bind(config.max_range_width_pct)
+    .bind(config.min_close_above_sma_pct)
+    .bind(config.max_close_above_sma_pct)
+    .bind(config.min_momentum_return_pct)
     .bind(config.confidence_floor)
     .bind(config.stop_loss_pct)
     .bind(config.take_profit_pct)
@@ -8622,6 +8637,9 @@ async fn get_strategy_config_tx(
             upper_band_pct,
             min_range_width_pct,
             max_range_width_pct,
+            min_close_above_sma_pct,
+            max_close_above_sma_pct,
+            min_momentum_return_pct,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -8664,6 +8682,9 @@ pub async fn get_strategy_config(
             upper_band_pct,
             min_range_width_pct,
             max_range_width_pct,
+            min_close_above_sma_pct,
+            max_close_above_sma_pct,
+            min_momentum_return_pct,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -9029,6 +9050,9 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
             c.upper_band_pct,
             c.min_range_width_pct,
             c.max_range_width_pct,
+            c.min_close_above_sma_pct,
+            c.max_close_above_sma_pct,
+            c.min_momentum_return_pct,
             c.confidence_floor,
             c.stop_loss_pct,
             c.take_profit_pct,
@@ -9072,6 +9096,9 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
                 upper_band_pct: row.get("upper_band_pct"),
                 min_range_width_pct: row.get("min_range_width_pct"),
                 max_range_width_pct: row.get("max_range_width_pct"),
+                min_close_above_sma_pct: row.get("min_close_above_sma_pct"),
+                max_close_above_sma_pct: row.get("max_close_above_sma_pct"),
+                min_momentum_return_pct: row.get("min_momentum_return_pct"),
                 confidence_floor: row.get("confidence_floor"),
                 stop_loss_pct: row.get("stop_loss_pct"),
                 take_profit_pct: row.get("take_profit_pct"),
@@ -9119,6 +9146,9 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
         upper_band_pct: record.upper_band_pct,
         min_range_width_pct: record.min_range_width_pct,
         max_range_width_pct: record.max_range_width_pct,
+        min_close_above_sma_pct: record.min_close_above_sma_pct,
+        max_close_above_sma_pct: record.max_close_above_sma_pct,
+        min_momentum_return_pct: record.min_momentum_return_pct,
         confidence_floor: record.confidence_floor,
         stop_loss_pct: record.stop_loss_pct,
         take_profit_pct: record.take_profit_pct,
@@ -10167,6 +10197,9 @@ fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
         upper_band_pct: row.get("upper_band_pct"),
         min_range_width_pct: row.get("min_range_width_pct"),
         max_range_width_pct: row.get("max_range_width_pct"),
+        min_close_above_sma_pct: row.get("min_close_above_sma_pct"),
+        max_close_above_sma_pct: row.get("max_close_above_sma_pct"),
+        min_momentum_return_pct: row.get("min_momentum_return_pct"),
         confidence_floor: row.get("confidence_floor"),
         stop_loss_pct: row.get("stop_loss_pct"),
         take_profit_pct: row.get("take_profit_pct"),

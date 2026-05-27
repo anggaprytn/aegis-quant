@@ -1105,6 +1105,9 @@ export type ResearchBatchRequest = {
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
+  min_close_above_sma_pct_candidates?: string[] | null;
+  max_close_above_sma_pct_candidates?: string[] | null;
+  min_momentum_return_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;
   walk_forward_top_n?: number;
   repair_degraded_data?: boolean;
@@ -1273,6 +1276,9 @@ export type ResearchCampaignRequest = {
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
+  min_close_above_sma_pct_candidates?: string[] | null;
+  max_close_above_sma_pct_candidates?: string[] | null;
+  min_momentum_return_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;
   correlation_id?: string | null;
 };
@@ -2330,6 +2336,9 @@ export type StrategyStatusView = {
   upper_band_pct: string | null;
   min_range_width_pct: string | null;
   max_range_width_pct: string | null;
+  min_close_above_sma_pct: string | null;
+  max_close_above_sma_pct: string | null;
+  min_momentum_return_pct: string | null;
   confidence_floor: string | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
@@ -2375,6 +2384,9 @@ export type StrategyConfigUpdateRequest = {
   upper_band_pct?: string | null;
   min_range_width_pct?: string | null;
   max_range_width_pct?: string | null;
+  min_close_above_sma_pct?: string | null;
+  max_close_above_sma_pct?: string | null;
+  min_momentum_return_pct?: string | null;
   confidence_floor?: string | null;
   stop_loss_pct?: string | null;
   take_profit_pct?: string | null;
@@ -3652,6 +3664,9 @@ export type StrategyExperimentRequest = {
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
+  min_close_above_sma_pct_candidates?: string[] | null;
+  max_close_above_sma_pct_candidates?: string[] | null;
+  min_momentum_return_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;
   stop_loss_pct_candidates?: string[] | null;
   take_profit_pct_candidates?: string[] | null;
@@ -3677,6 +3692,9 @@ export type StrategyMultiTimeframeExperimentRequest = {
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
   max_range_width_pct_candidates?: string[] | null;
+  min_close_above_sma_pct_candidates?: string[] | null;
+  max_close_above_sma_pct_candidates?: string[] | null;
+  min_momentum_return_pct_candidates?: string[] | null;
   holding_candles_candidates?: number[] | null;
   stop_loss_pct_candidates?: string[] | null;
   take_profit_pct_candidates?: string[] | null;

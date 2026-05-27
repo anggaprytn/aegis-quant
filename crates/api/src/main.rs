@@ -2385,6 +2385,9 @@ struct StrategyStatusView {
     upper_band_pct: Option<String>,
     min_range_width_pct: Option<String>,
     max_range_width_pct: Option<String>,
+    min_close_above_sma_pct: Option<String>,
+    max_close_above_sma_pct: Option<String>,
+    min_momentum_return_pct: Option<String>,
     confidence_floor: Option<String>,
     stop_loss_pct: Option<String>,
     take_profit_pct: Option<String>,
@@ -3836,6 +3839,18 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
             .config
             .max_range_width_pct
             .map(|value| value.to_string()),
+        min_close_above_sma_pct: record
+            .config
+            .min_close_above_sma_pct
+            .map(|value| value.to_string()),
+        max_close_above_sma_pct: record
+            .config
+            .max_close_above_sma_pct
+            .map(|value| value.to_string()),
+        min_momentum_return_pct: record
+            .config
+            .min_momentum_return_pct
+            .map(|value| value.to_string()),
         confidence_floor: record
             .config
             .confidence_floor
@@ -3876,6 +3891,9 @@ fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfi
         upper_band_pct: config.upper_band_pct,
         min_range_width_pct: config.min_range_width_pct,
         max_range_width_pct: config.max_range_width_pct,
+        min_close_above_sma_pct: config.min_close_above_sma_pct,
+        max_close_above_sma_pct: config.max_close_above_sma_pct,
+        min_momentum_return_pct: config.min_momentum_return_pct,
         confidence_floor: config.confidence_floor,
         stop_loss_pct: config.stop_loss_pct,
         take_profit_pct: config.take_profit_pct,
@@ -15497,7 +15515,10 @@ fn strategy_config_request_with_candidate_overrides(
         cooldown_seconds: base.cooldown_seconds,
         lookback_candles,
         trend_lookback_candles: Some(lookback_candles)
-            .filter(|_| base.strategy_id == StrategyId::TrendFilterMomentumV1)
+            .filter(|_| {
+                base.strategy_id == StrategyId::TrendFilterMomentumV1
+                    || base.strategy_id == StrategyId::TrendFilterMomentumV2
+            })
             .or(base.trend_lookback_candles),
         momentum_lookback_candles: base.momentum_lookback_candles,
         breakout_lookback_candles: Some(lookback_candles)
@@ -15507,6 +15528,9 @@ fn strategy_config_request_with_candidate_overrides(
         upper_band_pct: base.upper_band_pct,
         min_range_width_pct: base.min_range_width_pct,
         max_range_width_pct: base.max_range_width_pct,
+        min_close_above_sma_pct: base.min_close_above_sma_pct,
+        max_close_above_sma_pct: base.max_close_above_sma_pct,
+        min_momentum_return_pct: base.min_momentum_return_pct,
         confidence_floor: base.confidence_floor,
         stop_loss_pct,
         take_profit_pct,
@@ -15909,6 +15933,15 @@ async fn execute_research_batch(
                 upper_band_pct_candidates: payload.upper_band_pct_candidates.clone(),
                 min_range_width_pct_candidates: payload.min_range_width_pct_candidates.clone(),
                 max_range_width_pct_candidates: payload.max_range_width_pct_candidates.clone(),
+                min_close_above_sma_pct_candidates: payload
+                    .min_close_above_sma_pct_candidates
+                    .clone(),
+                max_close_above_sma_pct_candidates: payload
+                    .max_close_above_sma_pct_candidates
+                    .clone(),
+                min_momentum_return_pct_candidates: payload
+                    .min_momentum_return_pct_candidates
+                    .clone(),
                 holding_candles_candidates: payload.holding_candles_candidates.clone(),
                 stop_loss_pct_candidates: None,
                 take_profit_pct_candidates: None,
@@ -15986,6 +16019,9 @@ async fn execute_research_batch(
                     upper_band_pct: experiment_run.candidate.upper_band_pct,
                     min_range_width_pct: experiment_run.candidate.min_range_width_pct,
                     max_range_width_pct: experiment_run.candidate.max_range_width_pct,
+                    min_close_above_sma_pct: experiment_run.candidate.min_close_above_sma_pct,
+                    max_close_above_sma_pct: experiment_run.candidate.max_close_above_sma_pct,
+                    min_momentum_return_pct: experiment_run.candidate.min_momentum_return_pct,
                     holding_candles: experiment_run.candidate.holding_candles,
                     stop_loss_pct: experiment_run.candidate.stop_loss_pct,
                     take_profit_pct: experiment_run.candidate.take_profit_pct,
@@ -24069,9 +24105,9 @@ mod tests {
         run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
         strategy_diagnostics_handler, strategy_exit_attribution_handler,
         strategy_opportunity_analysis_handler, strategy_opportunity_replay_consistency_handler,
-        strategy_signal_feature_attribution_handler,
-        submit_exchange_testnet_pipeline, submit_exchange_testnet_shadow_promotion_handler,
-        AppConfig, AppState, ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
+        strategy_signal_feature_attribution_handler, submit_exchange_testnet_pipeline,
+        submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
+        ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
         ExecutionReadinessSnapshotsResponse, RequestContext, StrategyRuntimeConfig,
         TestnetShadowPromotionResponse, TestnetShadowPromotionSubmitResponse,
         TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
@@ -25319,6 +25355,9 @@ mod tests {
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -25415,6 +25454,9 @@ mod tests {
                 upper_band_pct: None,
                 min_range_width_pct: None,
                 max_range_width_pct: None,
+                min_close_above_sma_pct: None,
+                max_close_above_sma_pct: None,
+                min_momentum_return_pct: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -26502,6 +26544,9 @@ mod tests {
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,

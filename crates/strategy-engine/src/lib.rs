@@ -21,11 +21,12 @@ pub struct StrategyValidationContext {
     pub max_position_notional: Option<Decimal>,
 }
 
-pub fn known_strategy_ids() -> [StrategyId; 5] {
+pub fn known_strategy_ids() -> [StrategyId; 6] {
     [
         StrategyId::MomentumV1,
         StrategyId::VolatilityBreakoutV1,
         StrategyId::TrendFilterMomentumV1,
+        StrategyId::TrendFilterMomentumV2,
         StrategyId::VolatilityBreakoutV2,
         StrategyId::RangeReversionV1,
     ]
@@ -45,7 +46,7 @@ pub fn validate_strategy_config(
                 StrategyConfigValidationSeverity::Error,
                 "unknown_strategy",
                 "strategy_id",
-                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v1, volatility_breakout_v2, or range_reversion_v1",
+                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v2, trend_filter_momentum_v1, volatility_breakout_v2, or range_reversion_v1",
             ));
             return StrategyConfigValidationResult {
                 strategy_id: request.strategy_id.clone(),
@@ -208,7 +209,7 @@ pub fn validate_strategy_config(
     let lookback_range = match strategy_id {
         StrategyId::MomentumV1 => 2..=50,
         StrategyId::VolatilityBreakoutV1 => 5..=500,
-        StrategyId::TrendFilterMomentumV1 => 2..=500,
+        StrategyId::TrendFilterMomentumV1 | StrategyId::TrendFilterMomentumV2 => 2..=500,
         StrategyId::VolatilityBreakoutV2 => 5..=500,
         StrategyId::RangeReversionV1 => 2..=500,
     };
@@ -243,6 +244,35 @@ pub fn validate_strategy_config(
                 "invalid_momentum_lookback_candles",
                 "momentum_lookback_candles",
                 "momentum_lookback_candles must be greater than zero",
+            ));
+        }
+    }
+    if strategy_id == StrategyId::TrendFilterMomentumV2 {
+        let min_close_above_sma_pct = request.min_close_above_sma_pct.unwrap_or(Decimal::ZERO);
+        let max_close_above_sma_pct = request.max_close_above_sma_pct.unwrap_or(Decimal::ONE);
+        let min_momentum_return_pct = request.min_momentum_return_pct.unwrap_or(Decimal::ZERO);
+        if min_close_above_sma_pct < Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_close_above_sma_pct",
+                "min_close_above_sma_pct",
+                "min_close_above_sma_pct must be greater than or equal to 0",
+            ));
+        }
+        if max_close_above_sma_pct < min_close_above_sma_pct {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_close_above_sma_band",
+                "max_close_above_sma_pct",
+                "max_close_above_sma_pct must be greater than or equal to min_close_above_sma_pct",
+            ));
+        }
+        if min_momentum_return_pct < Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_momentum_return_pct",
+                "min_momentum_return_pct",
+                "min_momentum_return_pct must be greater than or equal to 0",
             ));
         }
     }
@@ -395,6 +425,15 @@ pub fn validate_strategy_config(
             max_range_width_pct: request
                 .max_range_width_pct
                 .or((strategy_id == StrategyId::RangeReversionV1).then_some(max_range_width_pct)),
+            min_close_above_sma_pct: request
+                .min_close_above_sma_pct
+                .or((strategy_id == StrategyId::TrendFilterMomentumV2).then_some(Decimal::ZERO)),
+            max_close_above_sma_pct: request
+                .max_close_above_sma_pct
+                .or((strategy_id == StrategyId::TrendFilterMomentumV2).then_some(Decimal::ONE)),
+            min_momentum_return_pct: request
+                .min_momentum_return_pct
+                .or((strategy_id == StrategyId::TrendFilterMomentumV2).then_some(Decimal::ZERO)),
             confidence_floor: request.confidence_floor,
             stop_loss_pct: request.stop_loss_pct,
             take_profit_pct: request.take_profit_pct,
@@ -414,7 +453,7 @@ pub fn validate_strategy_config(
 
 pub fn required_candle_count(config: &StrategyConfig) -> i64 {
     match config.strategy_id {
-        StrategyId::TrendFilterMomentumV1 => {
+        StrategyId::TrendFilterMomentumV1 | StrategyId::TrendFilterMomentumV2 => {
             let trend = trend_lookback(config) as i64 + 1;
             let momentum = momentum_lookback(config) as i64 + 1;
             trend.max(momentum).max(2)
@@ -449,6 +488,7 @@ pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluation
         StrategyId::MomentumV1 => evaluate_momentum(&context, candles),
         StrategyId::VolatilityBreakoutV1 => evaluate_breakout(&context, candles),
         StrategyId::TrendFilterMomentumV1 => evaluate_trend_filter_momentum(&context, candles),
+        StrategyId::TrendFilterMomentumV2 => evaluate_trend_filter_momentum_v2(&context, candles),
         StrategyId::VolatilityBreakoutV2 => evaluate_volume_breakout(&context, candles),
         StrategyId::RangeReversionV1 => evaluate_range_reversion(&context, candles),
     }
@@ -593,6 +633,9 @@ pub fn diagnose(
             StrategyId::TrendFilterMomentumV1 => {
                 diagnose_trend_filter_momentum(&context, &candles, &mut condition_checks)
             }
+            StrategyId::TrendFilterMomentumV2 => {
+                diagnose_trend_filter_momentum_v2(&context, &candles, &mut condition_checks)
+            }
             StrategyId::VolatilityBreakoutV2 => {
                 diagnose_volume_breakout(&context, &candles, &mut condition_checks)
             }
@@ -649,6 +692,7 @@ pub fn analyze_opportunity(
     let mut close_vs_low = Vec::new();
     let mut close_vs_high = Vec::new();
     let mut reversal_confirmation_count = 0_i64;
+    let mut close_vs_sma_values = Vec::new();
 
     if candles.len() >= required {
         for end in required..=candles.len() {
@@ -664,6 +708,9 @@ pub fn analyze_opportunity(
                     &mut reversal_confirmation_count,
                 ),
                 StrategyId::TrendFilterMomentumV1 => analyze_trend_filter_window(config, window),
+                StrategyId::TrendFilterMomentumV2 => {
+                    analyze_trend_filter_v2_window(config, window, &mut close_vs_sma_values)
+                }
                 _ => analyze_generic_window(config, strategy_id, window)?,
             };
 
@@ -730,6 +777,7 @@ pub fn analyze_opportunity(
             "latest_close_vs_range_low_pct": distribution_json(&close_vs_low),
             "latest_close_vs_range_high_pct": distribution_json(&close_vs_high),
             "reversal_confirmation_count": reversal_confirmation_count,
+            "close_vs_sma_pct": distribution_json(&close_vs_sma_values),
         }),
         recommendation,
         data_quality_status,
@@ -984,6 +1032,70 @@ fn analyze_trend_filter_window(config: &StrategyConfig, window: &[Candle]) -> Wi
     }
 }
 
+fn analyze_trend_filter_v2_window(
+    config: &StrategyConfig,
+    window: &[Candle],
+    close_vs_sma_values: &mut Vec<Decimal>,
+) -> WindowOutcome {
+    let latest = window.last().expect("window must contain latest candle");
+    let trend = trend_lookback(config) as usize;
+    let momentum = momentum_lookback(config) as usize;
+    let trend_window = &window[window.len() - trend - 1..window.len() - 1];
+    let sma = average_decimal(trend_window.iter().map(|candle| candle.close));
+    let momentum_reference = &window[window.len() - momentum - 1];
+    let close_vs_sma_pct = pct_ratio(latest.close - sma, sma);
+    let momentum_return_pct = pct_ratio(
+        latest.close - momentum_reference.close,
+        momentum_reference.close,
+    );
+    close_vs_sma_values.push(close_vs_sma_pct);
+
+    let min_band = min_close_above_sma_pct(config);
+    let max_band = max_close_above_sma_pct(config);
+    let min_momentum = min_momentum_return_pct(config);
+    let valid_config = max_band >= min_band;
+    let close_above_sma = latest.close > sma;
+    let close_within_sma_band =
+        close_vs_sma_pct >= min_band && close_vs_sma_pct <= max_band && valid_config;
+    let momentum_confirmed =
+        latest.close > momentum_reference.close && momentum_return_pct >= min_momentum;
+    let raw_would_signal =
+        valid_config && close_above_sma && close_within_sma_band && momentum_confirmed;
+    let confidence = Decimal::new(68, 2);
+    let confidence_floor = config.confidence_floor.unwrap_or(Decimal::ZERO);
+    let confidence_floor_passed = confidence >= confidence_floor;
+    let final_would_signal = raw_would_signal && confidence_floor_passed;
+    let conditions = vec![
+        condition("has_enough_data", true),
+        condition("valid_config", valid_config),
+        condition("close_above_sma", close_above_sma),
+        condition("close_within_sma_band", close_within_sma_band),
+        condition("momentum_confirmed", momentum_confirmed),
+        condition("confidence_floor", confidence_floor_passed),
+        condition("freshness", true),
+        condition("final_would_signal", final_would_signal),
+    ];
+    WindowOutcome {
+        open_time: latest.open_time,
+        close_time: latest.close_time,
+        would_signal: final_would_signal,
+        blocking_condition: first_failed(&conditions),
+        conditions,
+        details: json!({
+            "latest_close": latest.close,
+            "sma": sma,
+            "close_vs_sma_pct": close_vs_sma_pct,
+            "min_close_above_sma_pct": min_band,
+            "max_close_above_sma_pct": max_band,
+            "momentum_reference_close": momentum_reference.close,
+            "momentum_return_pct": momentum_return_pct,
+            "min_momentum_return_pct": min_momentum,
+            "confidence": confidence,
+            "confidence_floor": config.confidence_floor,
+        }),
+    }
+}
+
 fn analyze_generic_window(
     config: &StrategyConfig,
     strategy_id: StrategyId,
@@ -1125,10 +1237,17 @@ fn build_opportunity_recommendation(
             "momentum_condition" if strategy_id == StrategyId::TrendFilterMomentumV1 => {
                 messages.push("Momentum lookback may be too strict; test shorter momentum lookbacks only when replay confirms too few enterable signals.".to_string())
             }
+            "close_within_sma_band" if strategy_id == StrategyId::TrendFilterMomentumV2 => {
+                messages.push("SMA band blocks many windows; inspect CLOSE_TOO_EXTENDED_ABOVE_SMA versus close-too-close failures before widening the band.".to_string())
+            }
+            "momentum_confirmed" if strategy_id == StrategyId::TrendFilterMomentumV2 => {
+                messages.push("Momentum confirmation blocks many windows; test lower min_momentum_return_pct only if replay does not overtrade.".to_string())
+            }
             _ => {}
         }
     }
-    if strategy_id == StrategyId::TrendFilterMomentumV1
+    if (strategy_id == StrategyId::TrendFilterMomentumV1
+        || strategy_id == StrategyId::TrendFilterMomentumV2)
         && status == StrategyOpportunityStatus::TooLoose
     {
         messages.push(
@@ -1261,6 +1380,62 @@ fn evaluate_trend_filter_momentum(
     if latest.close <= sma
         || latest.close <= previous.close
         || latest.close <= momentum_reference.close
+    {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    Ok(generated_result(
+        context,
+        latest,
+        SignalReason::TrendFilterMomentum,
+        Decimal::new(68, 2),
+    )?)
+}
+
+fn evaluate_trend_filter_momentum_v2(
+    context: &StrategyEvaluationContext,
+    candles: Vec<Candle>,
+) -> Result<StrategyEvaluationResult, CoreError> {
+    let min_band = min_close_above_sma_pct(&context.config);
+    let max_band = max_close_above_sma_pct(&context.config);
+    if max_band < min_band {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    let required = required_candle_count(&context.config) as usize;
+    if candles.len() < required {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::InsufficientHistory,
+        ));
+    }
+
+    let latest = candles.last().expect("candles must be present");
+    let trend = trend_lookback(&context.config) as usize;
+    let momentum = momentum_lookback(&context.config) as usize;
+    let trend_window = &candles[candles.len() - trend - 1..candles.len() - 1];
+    let sma = average_decimal(trend_window.iter().map(|candle| candle.close));
+    let momentum_reference = &candles[candles.len() - momentum - 1];
+    let close_vs_sma_pct = pct_ratio(latest.close - sma, sma);
+    let momentum_return_pct = pct_ratio(
+        latest.close - momentum_reference.close,
+        momentum_reference.close,
+    );
+
+    if latest.close <= sma
+        || close_vs_sma_pct < min_band
+        || close_vs_sma_pct > max_band
+        || latest.close <= momentum_reference.close
+        || momentum_return_pct < min_momentum_return_pct(&context.config)
     {
         return Ok(no_signal_result(
             context,
@@ -1762,6 +1937,176 @@ fn diagnose_trend_filter_momentum(
     )
 }
 
+fn diagnose_trend_filter_momentum_v2(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    let min_band = min_close_above_sma_pct(&context.config);
+    let max_band = max_close_above_sma_pct(&context.config);
+    if max_band < min_band {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::InvalidConfig),
+            summary: format!(
+                "Invalid trend-filter momentum v2 config: max_close_above_sma_pct {} is below min_close_above_sma_pct {}.",
+                max_band, min_band
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let trend = trend_lookback(&context.config) as usize;
+    let momentum = momentum_lookback(&context.config) as usize;
+    let latest = candles.last().expect("candles must be present");
+    let trend_window = &candles[candles.len() - trend - 1..candles.len() - 1];
+    let sma = average_decimal(trend_window.iter().map(|candle| candle.close));
+    let momentum_reference = &candles[candles.len() - momentum - 1];
+    let close_vs_sma_pct = pct_ratio(latest.close - sma, sma);
+    let momentum_return_pct = pct_ratio(
+        latest.close - momentum_reference.close,
+        momentum_reference.close,
+    );
+    let min_momentum = min_momentum_return_pct(&context.config);
+
+    let close_above_sma = latest.close > sma;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "close_above_sma".to_string(),
+        passed: close_above_sma,
+        severity: if close_above_sma {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!(
+            "Latest close {} compared with SMA({}) {} gives close_vs_sma_pct {}.",
+            latest.close, trend, sma, close_vs_sma_pct
+        ),
+        actual: Some(latest.close.to_string()),
+        expected: Some(format!("> {sma}")),
+    });
+    if !close_above_sma {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::CloseBelowSma),
+            summary: format!(
+                "Trend-filter momentum v2 did not trigger because latest close {} is not above SMA({}) {}.",
+                latest.close, trend, sma
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let above_min = close_vs_sma_pct >= min_band;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "close_above_sma_min_band".to_string(),
+        passed: above_min,
+        severity: if above_min {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!(
+            "close_vs_sma_pct {} must be at least configured min {}.",
+            close_vs_sma_pct, min_band
+        ),
+        actual: Some(close_vs_sma_pct.to_string()),
+        expected: Some(format!(">= {min_band}")),
+    });
+    if !above_min {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::CloseTooCloseToSma),
+            summary: format!(
+                "Trend-filter momentum v2 did not trigger because close_vs_sma_pct {} is below min band {}.",
+                close_vs_sma_pct, min_band
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let below_max = close_vs_sma_pct <= max_band;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "close_below_sma_max_band".to_string(),
+        passed: below_max,
+        severity: if below_max {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!(
+            "close_vs_sma_pct {} must be at most configured max {}.",
+            close_vs_sma_pct, max_band
+        ),
+        actual: Some(close_vs_sma_pct.to_string()),
+        expected: Some(format!("<= {max_band}")),
+    });
+    if !below_max {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::CloseTooExtendedAboveSma),
+            summary: format!(
+                "Trend-filter momentum v2 did not trigger because close_vs_sma_pct {} is above max band {}.",
+                close_vs_sma_pct, max_band
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let momentum_confirmed =
+        latest.close > momentum_reference.close && momentum_return_pct >= min_momentum;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "momentum_confirmed".to_string(),
+        passed: momentum_confirmed,
+        severity: if momentum_confirmed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!(
+            "Latest close {} versus {}-candle reference {} gives momentum_return_pct {}; min is {}.",
+            latest.close, momentum, momentum_reference.close, momentum_return_pct, min_momentum
+        ),
+        actual: Some(momentum_return_pct.to_string()),
+        expected: Some(format!(">= {min_momentum} and close > {}", momentum_reference.close)),
+    });
+    if !momentum_confirmed {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::MomentumNotConfirmed),
+            summary: format!(
+                "Trend-filter momentum v2 did not trigger because momentum_return_pct {} is not confirmed.",
+                momentum_return_pct
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "close_within_sma_band".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: format!(
+            "close_vs_sma_pct {} is within configured band {} to {}.",
+            close_vs_sma_pct, min_band, max_band
+        ),
+        actual: Some(close_vs_sma_pct.to_string()),
+        expected: Some(format!("{min_band}..={max_band}")),
+    });
+
+    confidence_outcome(
+        context,
+        latest,
+        SignalReason::TrendFilterMomentum,
+        Decimal::new(68, 2),
+    )
+}
+
 fn diagnose_volume_breakout(
     context: &StrategyEvaluationContext,
     candles: &[Candle],
@@ -2129,6 +2474,18 @@ fn max_range_width_pct(config: &StrategyConfig) -> Decimal {
     config.max_range_width_pct.unwrap_or(Decimal::new(3, 0))
 }
 
+fn min_close_above_sma_pct(config: &StrategyConfig) -> Decimal {
+    config.min_close_above_sma_pct.unwrap_or(Decimal::ZERO)
+}
+
+fn max_close_above_sma_pct(config: &StrategyConfig) -> Decimal {
+    config.max_close_above_sma_pct.unwrap_or(Decimal::ONE)
+}
+
+fn min_momentum_return_pct(config: &StrategyConfig) -> Decimal {
+    config.min_momentum_return_pct.unwrap_or(Decimal::ZERO)
+}
+
 #[derive(Debug)]
 struct RangeMetrics {
     range_high: Decimal,
@@ -2207,6 +2564,9 @@ pub fn build_default_strategy_configs(
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -2230,6 +2590,9 @@ pub fn build_default_strategy_configs(
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -2253,11 +2616,40 @@ pub fn build_default_strategy_configs(
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
             notes: Some("Research baseline trend-filter momentum config".to_string()),
+        },
+        StrategyConfig {
+            strategy_id: StrategyId::TrendFilterMomentumV2,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols: symbols.clone(),
+            timeframe: CandleInterval::FifteenMinutes,
+            suggested_notional,
+            max_signal_age_ms: 2_700_000,
+            cooldown_seconds: 1_800,
+            lookback_candles: 20,
+            trend_lookback_candles: Some(20),
+            momentum_lookback_candles: Some(3),
+            breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
+            min_close_above_sma_pct: Some(Decimal::ZERO),
+            max_close_above_sma_pct: Some(Decimal::ONE),
+            min_momentum_return_pct: Some(Decimal::ZERO),
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: Some("Research baseline feature-filtered trend momentum config".to_string()),
         },
         StrategyConfig {
             strategy_id: StrategyId::VolatilityBreakoutV2,
@@ -2276,6 +2668,9 @@ pub fn build_default_strategy_configs(
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -2299,6 +2694,9 @@ pub fn build_default_strategy_configs(
             upper_band_pct: Some(Decimal::new(80, 0)),
             min_range_width_pct: Some(Decimal::new(15, 2)),
             max_range_width_pct: Some(Decimal::new(3, 0)),
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -2353,7 +2751,9 @@ fn max_strategy_confidence(strategy_id: StrategyId) -> Decimal {
     match strategy_id {
         StrategyId::MomentumV1 => Decimal::new(65, 2),
         StrategyId::VolatilityBreakoutV1 => Decimal::new(70, 2),
-        StrategyId::TrendFilterMomentumV1 => Decimal::new(68, 2),
+        StrategyId::TrendFilterMomentumV1 | StrategyId::TrendFilterMomentumV2 => {
+            Decimal::new(68, 2)
+        }
         StrategyId::VolatilityBreakoutV2 => Decimal::new(72, 2),
         StrategyId::RangeReversionV1 => Decimal::new(66, 2),
     }
@@ -2520,6 +2920,9 @@ mod tests {
             upper_band_pct: None,
             min_range_width_pct: None,
             max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
             confidence_floor: None,
             stop_loss_pct: Some(Decimal::new(5, 0)),
             take_profit_pct: Some(Decimal::new(10, 0)),
@@ -2822,6 +3225,109 @@ mod tests {
             Some(StrategyNoSignalReason::TrendCloseNotAboveSma)
         );
         assert!(result.summary.contains("not above SMA"));
+    }
+
+    fn v2_candles(latest_close: Decimal, momentum_reference_close: Decimal) -> Vec<Candle> {
+        let mut candles = (0..20)
+            .map(|index| {
+                let close = if index == 17 {
+                    momentum_reference_close
+                } else {
+                    Decimal::new(100, 0)
+                };
+                range_candle(
+                    index,
+                    close - Decimal::ONE,
+                    close + Decimal::ONE,
+                    close - Decimal::new(2, 0),
+                    close,
+                )
+            })
+            .collect::<Vec<_>>();
+        candles.push(range_candle(
+            20,
+            latest_close - Decimal::ONE,
+            latest_close + Decimal::ONE,
+            latest_close - Decimal::new(2, 0),
+            latest_close,
+        ));
+        candles
+    }
+
+    #[test]
+    fn trend_filter_momentum_v2_emits_buy_within_sma_band_and_momentum() {
+        let result = evaluate(context(
+            StrategyId::TrendFilterMomentumV2,
+            v2_candles(Decimal::new(1005, 1), Decimal::new(100, 0)),
+        ))
+        .expect("evaluation should succeed");
+
+        assert!(result.generated);
+        assert_eq!(result.reason, SignalReason::TrendFilterMomentum);
+    }
+
+    #[test]
+    fn trend_filter_momentum_v2_no_signal_when_close_below_sma() {
+        let result = diagnose(context(
+            StrategyId::TrendFilterMomentumV2,
+            v2_candles(Decimal::new(995, 1), Decimal::new(100, 0)),
+        ))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::CloseBelowSma)
+        );
+    }
+
+    #[test]
+    fn trend_filter_momentum_v2_no_signal_when_close_too_extended() {
+        let result = diagnose(context(
+            StrategyId::TrendFilterMomentumV2,
+            v2_candles(Decimal::new(102, 0), Decimal::new(100, 0)),
+        ))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::CloseTooExtendedAboveSma)
+        );
+        assert!(result.summary.contains("above max band"));
+    }
+
+    #[test]
+    fn trend_filter_momentum_v2_no_signal_when_momentum_not_confirmed() {
+        let result = diagnose(context(
+            StrategyId::TrendFilterMomentumV2,
+            v2_candles(Decimal::new(1005, 1), Decimal::new(101, 0)),
+        ))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::MomentumNotConfirmed)
+        );
+    }
+
+    #[test]
+    fn trend_filter_momentum_v2_validation_rejects_inverted_sma_band() {
+        let mut request = sample_request("trend_filter_momentum_v2");
+        request.lookback_candles = 20;
+        request.trend_lookback_candles = Some(20);
+        request.momentum_lookback_candles = Some(3);
+        request.min_close_above_sma_pct = Some(Decimal::ONE);
+        request.max_close_above_sma_pct = Some(Decimal::ZERO);
+
+        let result = validate_strategy_config(&request, &validation_context());
+
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|issue| {
+            issue.severity == StrategyConfigValidationSeverity::Error
+                && issue.code == "invalid_close_above_sma_band"
+        }));
     }
 
     #[test]
@@ -3223,6 +3729,54 @@ mod tests {
 
         assert!(close_above_sma.passed_count > 0);
         assert!(close_above_sma.failed_count > 0);
+    }
+
+    #[test]
+    fn trend_filter_v2_opportunity_counts_band_and_momentum_conditions() {
+        let mut config = default_config(
+            StrategyId::TrendFilterMomentumV2,
+            CandleInterval::FifteenMinutes,
+        );
+        config.trend_lookback_candles = Some(3);
+        config.momentum_lookback_candles = Some(2);
+        config.max_close_above_sma_pct = Some(Decimal::ONE);
+        let closes = [100, 100, 100, 1005, 100, 101, 100, 1020];
+        let candles = closes
+            .iter()
+            .enumerate()
+            .map(|(index, close)| {
+                let close = Decimal::new(*close, 1);
+                range_candle(
+                    index as i64,
+                    close - Decimal::ONE,
+                    close + Decimal::ONE,
+                    close - Decimal::new(2, 0),
+                    close,
+                )
+            })
+            .collect::<Vec<_>>();
+        let result = analyze_opportunity(
+            &opportunity_request(StrategyId::TrendFilterMomentumV2),
+            &config,
+            &candles,
+            Utc::now(),
+        )
+        .expect("analysis should succeed");
+
+        for condition in [
+            "close_above_sma",
+            "close_within_sma_band",
+            "momentum_confirmed",
+            "final_would_signal",
+        ] {
+            assert!(
+                result
+                    .condition_pass_rates
+                    .iter()
+                    .any(|row| row.condition == condition),
+                "missing condition {condition}"
+            );
+        }
     }
 
     #[test]
