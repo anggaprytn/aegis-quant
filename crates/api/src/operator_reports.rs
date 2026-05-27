@@ -2120,6 +2120,23 @@ fn build_recommendations(findings: &[OperatorReportFinding]) -> Vec<OperatorRepo
     }
 
     if findings.iter().any(|finding| {
+        matches!(
+            finding.code.as_str(),
+            "research_campaign_no_actionable_output" | "research_campaign_failure_regime_mismatch"
+        )
+    }) {
+        recommendations.push(recommendation(
+            "run_signal_feature_attribution",
+            OperatorReportSeverity::Low,
+            "Run signal feature attribution for weak-edge strategies.",
+            &[
+                "research_campaign_no_actionable_output",
+                "research_campaign_failure_regime_mismatch",
+            ],
+        ));
+    }
+
+    if findings.iter().any(|finding| {
         finding.code == "market_data_quality_bad"
             || finding.code == "market_data_quality_degraded"
             || finding.code == "minor_candle_gaps_detected"

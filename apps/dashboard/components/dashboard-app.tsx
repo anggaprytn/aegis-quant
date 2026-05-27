@@ -75,6 +75,8 @@ import type {
   StrategyMultiTimeframeExperimentRequest,
   StrategyMultiTimeframeExperimentResult,
   StrategyOpportunityAnalysisResult,
+  StrategySignalFeatureBucket,
+  StrategySignalFeatureAttributionResult,
   StrategyWalkForwardAcceptedResponse,
   StrategyWalkForwardRequest,
   StrategyWalkForwardResult,
@@ -469,6 +471,22 @@ function strategyExitAttributionFormFromStatus(strategy?: StrategyStatusView) {
     holding_windows: "1,3,5,10,20",
     fee_bps: "10",
     slippage_bps: "5",
+  };
+}
+
+function strategySignalFeatureAttributionFormFromStatus(strategy?: StrategyStatusView) {
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  return {
+    symbol: strategy?.symbols[0] ?? "BTCUSDT",
+    timeframe: strategy?.timeframe ?? "15m",
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    experiment_run_id: "",
+    holding_window: "5",
+    fee_bps: "10",
+    slippage_bps: "5",
+    min_samples_per_bucket: "5",
   };
 }
 
@@ -910,6 +928,11 @@ function AuthenticatedDashboard({
   );
   const [strategyExitAttributionResult, setStrategyExitAttributionResult] =
     useState<StrategyExitAttributionResult | null>(null);
+  const [strategySignalFeatureAttributionForm, setStrategySignalFeatureAttributionForm] = useState(
+    strategySignalFeatureAttributionFormFromStatus(),
+  );
+  const [strategySignalFeatureAttributionResult, setStrategySignalFeatureAttributionResult] =
+    useState<StrategySignalFeatureAttributionResult | null>(null);
   const [riskConfigForm, setRiskConfigForm] = useState<RiskConfig>(riskConfigFormFromView());
 
   useEffect(() => {
@@ -1623,8 +1646,12 @@ function AuthenticatedDashboard({
       setStrategyExitAttributionForm(
         strategyExitAttributionFormFromStatus(selectedStrategyStatusQuery.data.strategy),
       );
+      setStrategySignalFeatureAttributionForm(
+        strategySignalFeatureAttributionFormFromStatus(selectedStrategyStatusQuery.data.strategy),
+      );
       setStrategyDiagnosticsResult(null);
       setStrategyOpportunityResult(null);
+      setStrategySignalFeatureAttributionResult(null);
       setStrategyExitAttributionResult(null);
     }
   }, [selectedStrategyStatusQuery.data?.strategy]);
@@ -1902,6 +1929,24 @@ function AuthenticatedDashboard({
       }),
     onSuccess: (response) => {
       setStrategyExitAttributionResult(response.result);
+    },
+  });
+
+  const strategySignalFeatureAttributionMutation = useMutation({
+    mutationFn: () =>
+      api.getStrategySignalFeatureAttribution(selectedStrategyId, {
+        symbol: strategySignalFeatureAttributionForm.symbol,
+        timeframe: strategySignalFeatureAttributionForm.timeframe,
+        start_time: strategySignalFeatureAttributionForm.start_time,
+        end_time: strategySignalFeatureAttributionForm.end_time,
+        experiment_run_id: strategySignalFeatureAttributionForm.experiment_run_id || undefined,
+        holding_window: strategySignalFeatureAttributionForm.holding_window,
+        fee_bps: strategySignalFeatureAttributionForm.fee_bps,
+        slippage_bps: strategySignalFeatureAttributionForm.slippage_bps,
+        min_samples_per_bucket: strategySignalFeatureAttributionForm.min_samples_per_bucket,
+      }),
+    onSuccess: (response) => {
+      setStrategySignalFeatureAttributionResult(response.result);
     },
   });
 
@@ -4296,6 +4341,142 @@ function AuthenticatedDashboard({
                       </table>
                     </div>
                   </div>
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-12" title="Strategy Signal Feature Attribution">
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <Field
+                      label="Symbol"
+                      value={strategySignalFeatureAttributionForm.symbol}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, symbol: value }))
+                      }
+                    />
+                    <Field
+                      label="Timeframe"
+                      value={strategySignalFeatureAttributionForm.timeframe}
+                      as="select"
+                      options={TIMEFRAME_OPTIONS}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, timeframe: value }))
+                      }
+                    />
+                    <Field
+                      label="Start"
+                      value={strategySignalFeatureAttributionForm.start_time}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, start_time: value }))
+                      }
+                    />
+                    <Field
+                      label="End"
+                      value={strategySignalFeatureAttributionForm.end_time}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, end_time: value }))
+                      }
+                    />
+                    <Field
+                      label="Experiment Run ID"
+                      value={strategySignalFeatureAttributionForm.experiment_run_id}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, experiment_run_id: value }))
+                      }
+                    />
+                    <Field
+                      label="Holding Window"
+                      value={strategySignalFeatureAttributionForm.holding_window}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, holding_window: value }))
+                      }
+                    />
+                    <Field
+                      label="Fee Bps"
+                      value={strategySignalFeatureAttributionForm.fee_bps}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, fee_bps: value }))
+                      }
+                    />
+                    <Field
+                      label="Slippage Bps"
+                      value={strategySignalFeatureAttributionForm.slippage_bps}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({ ...current, slippage_bps: value }))
+                      }
+                    />
+                    <Field
+                      label="Min Samples"
+                      value={strategySignalFeatureAttributionForm.min_samples_per_bucket}
+                      onChange={(value) =>
+                        setStrategySignalFeatureAttributionForm((current) => ({
+                          ...current,
+                          min_samples_per_bucket: value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <ActionButton
+                    label="Run Feature Attribution"
+                    onClick={() => strategySignalFeatureAttributionMutation.mutate()}
+                    busy={strategySignalFeatureAttributionMutation.isPending}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(strategySignalFeatureAttributionMutation.error)}
+                    success={
+                      strategySignalFeatureAttributionResult
+                        ? `feature attribution: ${strategySignalFeatureAttributionResult.status}`
+                        : undefined
+                    }
+                  />
+                  <KeyValue
+                    items={[
+                      ["Status", strategySignalFeatureAttributionResult?.status ?? "N/A"],
+                      [
+                        "Signals",
+                        strategySignalFeatureAttributionResult
+                          ? `${strategySignalFeatureAttributionResult.attributed_signals} attributed / ${strategySignalFeatureAttributionResult.executable_signals} executable / raw ${strategySignalFeatureAttributionResult.total_raw_signals}`
+                          : "N/A",
+                      ],
+                      [
+                        "Insufficient Forward",
+                        String(strategySignalFeatureAttributionResult?.insufficient_forward_data_count ?? 0),
+                      ],
+                      [
+                        "Holding Window",
+                        strategySignalFeatureAttributionResult
+                          ? String(strategySignalFeatureAttributionResult.holding_window)
+                          : "N/A",
+                      ],
+                    ]}
+                    loading={strategySignalFeatureAttributionMutation.isPending}
+                    error={undefined}
+                  />
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Recommendations</div>
+                    {(strategySignalFeatureAttributionResult?.recommendations ?? []).length > 0 ? (
+                      (strategySignalFeatureAttributionResult?.recommendations ?? []).map((message) => (
+                        <div key={message} className="mt-2">
+                          {message}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="mt-2">Run feature attribution to inspect entry buckets.</div>
+                    )}
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <FeatureBucketTable
+                      title="Best Buckets"
+                      buckets={strategySignalFeatureAttributionResult?.best_buckets ?? []}
+                    />
+                    <FeatureBucketTable
+                      title="Worst Buckets"
+                      buckets={strategySignalFeatureAttributionResult?.worst_buckets ?? []}
+                    />
+                  </div>
+                  <FeatureBucketTable
+                    title="Feature Bucket Details"
+                    buckets={strategySignalFeatureAttributionResult?.feature_buckets ?? []}
+                  />
                 </div>
               </Panel>
             </section>
@@ -8280,6 +8461,61 @@ function SimpleList({ items }: { items: string[] }) {
 function formatPercent(value?: string | null) {
   const formatted = formatNumber(value);
   return formatted === "-" ? "-" : `${formatted}%`;
+}
+
+function FeatureBucketTable({
+  title,
+  buckets,
+}: {
+  title: string;
+  buckets: StrategySignalFeatureBucket[];
+}) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-border bg-surface/40">
+      <div className="px-3 py-2 text-xs font-medium text-slate-100">{title}</div>
+      <table className="min-w-full text-left text-xs text-slate-300">
+        <thead className="text-slate-100">
+          <tr>
+            <th className="px-3 py-2">Feature</th>
+            <th className="px-3 py-2">Bucket</th>
+            <th className="px-3 py-2">Samples</th>
+            <th className="px-3 py-2">Win</th>
+            <th className="px-3 py-2">Avg</th>
+            <th className="px-3 py-2">Median</th>
+            <th className="px-3 py-2">Best</th>
+            <th className="px-3 py-2">Worst</th>
+            <th className="px-3 py-2">Recommendation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.length > 0 ? (
+            buckets.map((bucket) => (
+              <tr
+                key={`${title}-${bucket.feature_name}-${bucket.bucket_label}`}
+                className="border-t border-border"
+              >
+                <td className="px-3 py-2">{bucket.feature_name}</td>
+                <td className="px-3 py-2">{bucket.bucket_label}</td>
+                <td className="px-3 py-2">{bucket.sample_count}</td>
+                <td className="px-3 py-2">{formatPercent(bucket.win_rate)}</td>
+                <td className="px-3 py-2">{formatPercent(bucket.avg_net_pnl_pct)}</td>
+                <td className="px-3 py-2">{formatPercent(bucket.median_net_pnl_pct)}</td>
+                <td className="px-3 py-2">{formatPercent(bucket.best_net_pnl_pct)}</td>
+                <td className="px-3 py-2">{formatPercent(bucket.worst_net_pnl_pct)}</td>
+                <td className="px-3 py-2">{bucket.recommendation}</td>
+              </tr>
+            ))
+          ) : (
+            <tr className="border-t border-border">
+              <td className="px-3 py-3 text-slate-500" colSpan={9}>
+                No buckets.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 function TestnetPromotionFunnelCards({

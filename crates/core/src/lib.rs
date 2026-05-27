@@ -1715,6 +1715,22 @@ fn default_strategy_exit_attribution_holding_windows() -> Vec<u32> {
     vec![1, 3, 5, 10, 20]
 }
 
+fn default_strategy_signal_feature_holding_window() -> u32 {
+    5
+}
+
+fn default_strategy_signal_feature_fee_bps() -> Decimal {
+    Decimal::new(10, 0)
+}
+
+fn default_strategy_signal_feature_slippage_bps() -> Decimal {
+    Decimal::new(5, 0)
+}
+
+fn default_strategy_signal_feature_min_samples_per_bucket() -> u32 {
+    5
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyOpportunityAnalysisRequest {
     pub strategy_id: String,
@@ -1954,6 +1970,156 @@ pub struct StrategyExitAttributionResult {
     pub status: StrategyExitAttributionStatus,
     pub recommendation: StrategyExitAttributionRecommendation,
     pub trades: Vec<StrategyExitAttributionTrade>,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategySignalFeatureAttributionRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub config_json: Option<Value>,
+    pub experiment_run_id: Option<Uuid>,
+    #[serde(default = "default_strategy_signal_feature_holding_window")]
+    pub holding_window: u32,
+    #[serde(default = "default_strategy_signal_feature_fee_bps")]
+    pub fee_bps: Decimal,
+    #[serde(default = "default_strategy_signal_feature_slippage_bps")]
+    pub slippage_bps: Decimal,
+    #[serde(default = "default_strategy_signal_feature_min_samples_per_bucket")]
+    pub min_samples_per_bucket: u32,
+}
+
+impl StrategySignalFeatureAttributionRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategy_id.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestStrategyId);
+        }
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestSymbol);
+        }
+        if self.timeframe.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestTimeframe);
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidBacktestTimeRange);
+        }
+        self.timeframe.parse::<CandleInterval>()?;
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn normalized_holding_window(&self) -> u32 {
+        self.holding_window.max(1)
+    }
+
+    pub fn normalized_min_samples_per_bucket(&self) -> u32 {
+        self.min_samples_per_bucket.max(1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategySignalFeatureAttributionStatus {
+    PromisingFeaturesFound,
+    NoPromisingFeatures,
+    InsufficientData,
+    DataQualityDegraded,
+}
+
+impl StrategySignalFeatureAttributionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PromisingFeaturesFound => "PROMISING_FEATURES_FOUND",
+            Self::NoPromisingFeatures => "NO_PROMISING_FEATURES",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::DataQualityDegraded => "DATA_QUALITY_DEGRADED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategySignalFeatureRecommendation {
+    Promising,
+    Weak,
+    Avoid,
+    InsufficientSamples,
+}
+
+impl StrategySignalFeatureRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Promising => "PROMISING",
+            Self::Weak => "WEAK",
+            Self::Avoid => "AVOID",
+            Self::InsufficientSamples => "INSUFFICIENT_SAMPLES",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategySignalFeatureMetric {
+    pub feature_name: String,
+    pub value: Decimal,
+    pub bucket_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategySignalFeatureSample {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub signal_time: DateTime<Utc>,
+    pub entry_candle_open_time: DateTime<Utc>,
+    pub exit_candle_open_time: DateTime<Utc>,
+    pub forward_net_pnl_pct: Decimal,
+    pub regime_label: Option<String>,
+    pub hour_of_day_utc: u32,
+    pub day_of_week: String,
+    pub metrics: Vec<StrategySignalFeatureMetric>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategySignalFeatureBucket {
+    pub feature_name: String,
+    pub bucket_label: String,
+    pub sample_count: i64,
+    pub win_rate: Decimal,
+    pub avg_net_pnl_pct: Decimal,
+    pub median_net_pnl_pct: Decimal,
+    pub best_net_pnl_pct: Decimal,
+    pub worst_net_pnl_pct: Decimal,
+    pub total_net_pnl_pct: Decimal,
+    pub recommendation: StrategySignalFeatureRecommendation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategySignalFeatureAttributionResult {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub holding_window: u32,
+    pub total_raw_signals: i64,
+    pub executable_signals: i64,
+    pub attributed_signals: i64,
+    pub insufficient_forward_data_count: i64,
+    pub suppression_breakdown: Vec<ReplaySuppressionCount>,
+    pub feature_buckets: Vec<StrategySignalFeatureBucket>,
+    pub best_buckets: Vec<StrategySignalFeatureBucket>,
+    pub worst_buckets: Vec<StrategySignalFeatureBucket>,
+    pub recommendations: Vec<String>,
+    pub samples: Vec<StrategySignalFeatureSample>,
+    pub status: StrategySignalFeatureAttributionStatus,
     pub computed_at: DateTime<Utc>,
 }
 

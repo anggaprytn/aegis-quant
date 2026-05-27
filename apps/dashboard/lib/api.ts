@@ -136,6 +136,7 @@ import type {
   StrategyPerformanceRankingsResponse,
   StrategyPerformanceSummaryResponse,
   StrategyPnlBreakdownResponse,
+  StrategySignalFeatureAttributionResponse,
   StrategyConfigAuditResponse,
   StrategyConfigUpdateRequest,
   StrategyConfigValidationResponse,
@@ -828,6 +829,25 @@ export const api = {
   ) =>
     request<StrategyExitAttributionResponse>(
       `/strategy/${id}/exit-attribution`,
+      undefined,
+      params,
+    ),
+  getStrategySignalFeatureAttribution: (
+    id: string,
+    params: {
+      symbol: string;
+      timeframe: string;
+      start_time: string;
+      end_time: string;
+      experiment_run_id?: string;
+      holding_window?: string;
+      fee_bps: string;
+      slippage_bps: string;
+      min_samples_per_bucket?: string;
+    },
+  ) =>
+    request<StrategySignalFeatureAttributionResponse>(
+      `/strategy/${id}/signal-feature-attribution`,
       undefined,
       params,
     ),

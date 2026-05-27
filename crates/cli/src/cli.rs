@@ -578,6 +578,7 @@ pub enum StrategyCommands {
     Diagnostics(StrategyDiagnosticsArgs),
     OpportunityAnalysis(StrategyOpportunityAnalysisArgs),
     ExitAttribution(StrategyExitAttributionArgs),
+    SignalFeatureAttribution(StrategySignalFeatureAttributionArgs),
     Enable {
         strategy_id: String,
     },
@@ -692,6 +693,29 @@ pub struct StrategyExitAttributionArgs {
     pub fee_bps: rust_decimal::Decimal,
     #[arg(long = "slippage-bps")]
     pub slippage_bps: rust_decimal::Decimal,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct StrategySignalFeatureAttributionArgs {
+    pub strategy_id: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "experiment-run-id")]
+    pub experiment_run_id: Option<Uuid>,
+    #[arg(long = "holding-window", default_value_t = 5)]
+    pub holding_window: u32,
+    #[arg(long = "fee-bps", default_value = "10")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps", default_value = "5")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "min-samples-per-bucket", default_value_t = 5)]
+    pub min_samples_per_bucket: u32,
 }
 
 #[derive(Debug, Subcommand)]

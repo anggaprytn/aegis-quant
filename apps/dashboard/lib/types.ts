@@ -2637,6 +2637,79 @@ export type StrategyExitAttributionResponse = {
   timestamp: string;
 };
 
+export type StrategySignalFeatureAttributionStatus =
+  | "PROMISING_FEATURES_FOUND"
+  | "NO_PROMISING_FEATURES"
+  | "INSUFFICIENT_DATA"
+  | "DATA_QUALITY_DEGRADED";
+
+export type StrategySignalFeatureRecommendation =
+  | "PROMISING"
+  | "WEAK"
+  | "AVOID"
+  | "INSUFFICIENT_SAMPLES";
+
+export type StrategySignalFeatureMetric = {
+  feature_name: string;
+  value: string;
+  bucket_label: string;
+};
+
+export type StrategySignalFeatureSample = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  signal_time: string;
+  entry_candle_open_time: string;
+  exit_candle_open_time: string;
+  forward_net_pnl_pct: string;
+  regime_label: string | null;
+  hour_of_day_utc: number;
+  day_of_week: string;
+  metrics: StrategySignalFeatureMetric[];
+};
+
+export type StrategySignalFeatureBucket = {
+  feature_name: string;
+  bucket_label: string;
+  sample_count: number;
+  win_rate: string;
+  avg_net_pnl_pct: string;
+  median_net_pnl_pct: string;
+  best_net_pnl_pct: string;
+  worst_net_pnl_pct: string;
+  total_net_pnl_pct: string;
+  recommendation: StrategySignalFeatureRecommendation;
+};
+
+export type StrategySignalFeatureAttributionResult = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  holding_window: number;
+  total_raw_signals: number;
+  executable_signals: number;
+  attributed_signals: number;
+  insufficient_forward_data_count: number;
+  suppression_breakdown: ReplaySuppressionCount[];
+  feature_buckets: StrategySignalFeatureBucket[];
+  best_buckets: StrategySignalFeatureBucket[];
+  worst_buckets: StrategySignalFeatureBucket[];
+  recommendations: string[];
+  samples: StrategySignalFeatureSample[];
+  status: StrategySignalFeatureAttributionStatus;
+  computed_at: string;
+};
+
+export type StrategySignalFeatureAttributionResponse = {
+  result: StrategySignalFeatureAttributionResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type EvaluateStrategyResponse = {
   strategy_id: string;
   symbol: string;

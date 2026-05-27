@@ -30,13 +30,13 @@ use aegis_core::{
     StrategyExitAttributionResult, StrategyExperimentRequest, StrategyExperimentResult,
     StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
     StrategyMultiTimeframeExperimentResult, StrategyOpportunityAnalysisResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    StrategyPerformanceSummary, StrategySignalFeatureAttributionResult, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -1275,6 +1275,39 @@ impl ApiClient {
         }
         self.get(&format!("/strategy/{strategy_id}/exit-attribution"), &query)
             .await
+    }
+
+    pub async fn strategy_signal_feature_attribution(
+        &self,
+        strategy_id: &str,
+        symbol: String,
+        timeframe: String,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        experiment_run_id: Option<Uuid>,
+        holding_window: u32,
+        fee_bps: Decimal,
+        slippage_bps: Decimal,
+        min_samples_per_bucket: u32,
+    ) -> Result<StrategySignalFeatureAttributionResponse, ApiClientError> {
+        let mut query = vec![
+            ("symbol", symbol),
+            ("timeframe", timeframe),
+            ("start_time", start_time.to_rfc3339()),
+            ("end_time", end_time.to_rfc3339()),
+            ("holding_window", holding_window.to_string()),
+            ("fee_bps", fee_bps.to_string()),
+            ("slippage_bps", slippage_bps.to_string()),
+            ("min_samples_per_bucket", min_samples_per_bucket.to_string()),
+        ];
+        if let Some(experiment_run_id) = experiment_run_id {
+            query.push(("experiment_run_id", experiment_run_id.to_string()));
+        }
+        self.get(
+            &format!("/strategy/{strategy_id}/signal-feature-attribution"),
+            &query,
+        )
+        .await
     }
 
     pub async fn enable_strategy(
@@ -2733,6 +2766,14 @@ pub struct StrategyOpportunityAnalysisResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyExitAttributionResponse {
     pub result: StrategyExitAttributionResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategySignalFeatureAttributionResponse {
+    pub result: StrategySignalFeatureAttributionResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

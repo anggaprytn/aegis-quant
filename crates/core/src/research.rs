@@ -1215,8 +1215,8 @@ fn build_failure_recommendations(
             | ResearchCandidateFailureReason::WeakEdge => recommendations.push(
                 failure_recommendation(
                     "LOW",
-                    "tighten_candidate_acceptance",
-                    "Keep weak-edge candidates in research only until win rate, drawdown, and net PnL improve together.",
+                    "run_signal_feature_attribution",
+                    "Run signal feature attribution for weak-edge strategies before changing exits or promoting candidates.",
                 ),
             ),
         }

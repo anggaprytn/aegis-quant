@@ -9,13 +9,16 @@ use aegis_core::{
     StrategyExperimentGlobalRankingEntry, StrategyExperimentMetric, StrategyExperimentRequest,
     StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategySignalFeatureAttributionRequest, StrategySignalFeatureAttributionResult,
+    StrategySignalFeatureAttributionStatus, StrategySignalFeatureBucket,
+    StrategySignalFeatureMetric, StrategySignalFeatureRecommendation, StrategySignalFeatureSample,
     StrategyTimeframeCandidate, StrategyTimeframeComparison, StrategyWalkForwardCandidate,
     StrategyWalkForwardRecommendation, StrategyWalkForwardRequest, StrategyWalkForwardResult,
     StrategyWalkForwardRobustnessStatus, StrategyWalkForwardRobustnessSummary,
     StrategyWalkForwardStatus, StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol,
 };
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use db::{
     backtest_result_from_record, get_backtest_run, get_closed_candles_range,
     get_strategy_experiment_run, get_strategy_status, insert_backtest_equity_points,
@@ -293,6 +296,67 @@ impl ReplayEngine {
         .await
         .context("failed to load closed candles range")?;
         calculate_exit_attribution(&request, &strategy_config, &symbol, candles, Utc::now())
+    }
+
+    pub async fn run_signal_feature_attribution(
+        &self,
+        request: StrategySignalFeatureAttributionRequest,
+    ) -> Result<StrategySignalFeatureAttributionResult> {
+        request.validate()?;
+        let (base_config, symbol) = self
+            .load_strategy_experiment_context(&request.strategy_id, &request.symbol)
+            .await?;
+        let timeframe = parse_strategy_timeframe(&request.timeframe)?;
+        let mut strategy_config = match request.config_json.clone() {
+            Some(value) => {
+                let mut update = serde_json::from_value::<StrategyConfigUpdateRequest>(value)
+                    .context("failed to decode signal feature attribution config_json")?;
+                update.strategy_id = request.strategy_id.clone();
+                validate_strategy_config(&update, &StrategyValidationContext::default())
+                    .normalized_config
+                    .ok_or_else(|| anyhow!("invalid signal feature attribution config_json"))?
+            }
+            None => match request.experiment_run_id {
+                Some(run_id) => {
+                    let run = get_strategy_experiment_run(&self.pool, run_id)
+                        .await?
+                        .ok_or_else(|| anyhow!("strategy experiment run not found"))?;
+                    let candidate = serde_json::from_value::<StrategyExperimentCandidate>(
+                        run.candidate_config.clone(),
+                    )
+                    .context("failed to decode experiment run candidate config")?;
+                    let update = strategy_config_update_from_candidate(
+                        &base_config,
+                        &request.strategy_id,
+                        &request.symbol,
+                        &request.timeframe,
+                        &candidate,
+                    );
+                    validate_strategy_config(&update, &StrategyValidationContext::default())
+                        .normalized_config
+                        .ok_or_else(|| anyhow!("invalid experiment run candidate config"))?
+                }
+                None => base_config,
+            },
+        };
+        strategy_config.timeframe = timeframe;
+        strategy_config.symbols = vec![symbol.clone()];
+        let candles = get_closed_candles_range(
+            &self.pool,
+            &symbol,
+            timeframe,
+            request.start_time,
+            request.end_time,
+        )
+        .await
+        .context("failed to load closed candles range")?;
+        calculate_signal_feature_attribution(
+            &request,
+            &strategy_config,
+            &symbol,
+            candles,
+            Utc::now(),
+        )
     }
 
     pub async fn run_multi_timeframe_strategy_experiment(
@@ -1015,6 +1079,569 @@ pub fn calculate_exit_attribution(
         trades,
         computed_at,
     })
+}
+
+pub fn calculate_signal_feature_attribution(
+    request: &StrategySignalFeatureAttributionRequest,
+    strategy_config: &StrategyConfig,
+    symbol: &Symbol,
+    mut candles: Vec<Candle>,
+    computed_at: DateTime<Utc>,
+) -> Result<StrategySignalFeatureAttributionResult> {
+    request.validate()?;
+    candles.sort_by_key(|candle| candle.open_time);
+    let strategy_id: StrategyId = request.strategy_id.parse()?;
+    let holding_window = request.normalized_holding_window();
+    let min_samples_per_bucket = request.normalized_min_samples_per_bucket();
+    let suppression_holding_candles = strategy_config.holding_candles.unwrap_or(3);
+    let fee_drag_pct = (request.fee_bps + request.slippage_bps) / Decimal::new(100, 0);
+    let interval = request.timeframe.parse::<CandleInterval>()?;
+    let gap_tolerance_seconds = interval.duration().num_seconds() + 1;
+    let correlation_id = Uuid::new_v4();
+    let mut raw_signal_count = 0_i64;
+    let mut executable_signal_count = 0_i64;
+    let mut suppression_counts = BTreeMap::<ReplaySuppressionReason, i32>::new();
+    let mut last_executed_entry_time = None;
+    let mut open_until_signal_index: Option<usize> = None;
+    let mut samples = Vec::new();
+    let mut data_quality_degraded = false;
+
+    for index in 0..candles.len() {
+        if open_until_signal_index.is_some_and(|close_index| index >= close_index) {
+            open_until_signal_index = None;
+        }
+
+        let candle = &candles[index];
+        let evaluation = evaluate_strategy(StrategyEvaluationContext {
+            correlation_id,
+            strategy_id,
+            symbol: symbol.clone(),
+            config: strategy_config.clone(),
+            candles: candles[..=index].to_vec(),
+            evaluated_at: candle.close_time,
+        })?;
+
+        let Some(signal) = evaluation.signal else {
+            continue;
+        };
+        raw_signal_count += 1;
+
+        if signal.side != aegis_core::SignalSide::Buy {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::InvalidSignal)
+                .or_insert(0) += 1;
+            continue;
+        }
+        if cooldown_active(
+            last_executed_entry_time,
+            candle.close_time,
+            strategy_config.cooldown_seconds,
+        ) {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::CooldownActive)
+                .or_insert(0) += 1;
+            continue;
+        }
+        if open_until_signal_index.is_some() {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::PositionAlreadyOpen)
+                .or_insert(0) += 1;
+            continue;
+        }
+
+        let entry_index = index + 1;
+        let Some(entry) = candles.get(entry_index) else {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::InsufficientForwardData)
+                .or_insert(0) += 1;
+            continue;
+        };
+        executable_signal_count += 1;
+        *suppression_counts
+            .entry(ReplaySuppressionReason::None)
+            .or_insert(0) += 1;
+        last_executed_entry_time = Some(entry.open_time);
+        open_until_signal_index = Some(index.saturating_add(suppression_holding_candles as usize));
+
+        let exit_index = entry_index + holding_window as usize;
+        let Some(exit) = candles.get(exit_index) else {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::InsufficientForwardData)
+                .or_insert(0) += 1;
+            continue;
+        };
+
+        let max_gap_seconds = candles[entry_index..=exit_index]
+            .windows(2)
+            .map(|pair| pair[1].open_time.signed_duration_since(pair[0].open_time))
+            .map(|duration| duration.num_seconds())
+            .max()
+            .unwrap_or(interval.duration().num_seconds());
+        let gap_detected = max_gap_seconds > gap_tolerance_seconds;
+        data_quality_degraded |= gap_detected;
+        if gap_detected {
+            continue;
+        }
+
+        let gross_pnl_pct = if entry.open > Decimal::ZERO {
+            ((exit.close - entry.open) / entry.open) * Decimal::new(100, 0)
+        } else {
+            Decimal::ZERO
+        };
+        let forward_net_pnl_pct = gross_pnl_pct - fee_drag_pct;
+        let metrics = extract_signal_feature_metrics(strategy_id, strategy_config, &candles, index);
+        if metrics.is_empty() {
+            continue;
+        }
+
+        samples.push(StrategySignalFeatureSample {
+            strategy_id: request.strategy_id.clone(),
+            symbol: request.symbol.clone(),
+            timeframe: request.timeframe.clone(),
+            signal_time: candle.close_time,
+            entry_candle_open_time: entry.open_time,
+            exit_candle_open_time: exit.open_time,
+            forward_net_pnl_pct,
+            regime_label: None,
+            hour_of_day_utc: candle.close_time.hour(),
+            day_of_week: format!("{:?}", candle.close_time.weekday()),
+            metrics,
+        });
+    }
+
+    let insufficient_forward_data_count = suppression_counts
+        .get(&ReplaySuppressionReason::InsufficientForwardData)
+        .copied()
+        .unwrap_or_default() as i64;
+    let mut feature_buckets = build_signal_feature_buckets(&samples, min_samples_per_bucket);
+    feature_buckets.sort_by(|left, right| {
+        left.feature_name
+            .cmp(&right.feature_name)
+            .then_with(|| left.bucket_label.cmp(&right.bucket_label))
+    });
+    let best_buckets = ranked_signal_feature_buckets(
+        &feature_buckets,
+        true,
+        StrategySignalFeatureRecommendation::Promising,
+    );
+    let worst_buckets = ranked_signal_feature_buckets(
+        &feature_buckets,
+        false,
+        StrategySignalFeatureRecommendation::Avoid,
+    );
+    let attributed_signals = samples.len() as i64;
+    let status = if data_quality_degraded {
+        StrategySignalFeatureAttributionStatus::DataQualityDegraded
+    } else if attributed_signals == 0 {
+        StrategySignalFeatureAttributionStatus::InsufficientData
+    } else if best_buckets
+        .iter()
+        .any(|bucket| bucket.recommendation == StrategySignalFeatureRecommendation::Promising)
+    {
+        StrategySignalFeatureAttributionStatus::PromisingFeaturesFound
+    } else {
+        StrategySignalFeatureAttributionStatus::NoPromisingFeatures
+    };
+    let recommendations = signal_feature_recommendations(status, &best_buckets, &worst_buckets);
+
+    Ok(StrategySignalFeatureAttributionResult {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        start_time: request.start_time,
+        end_time: request.end_time,
+        holding_window,
+        total_raw_signals: raw_signal_count,
+        executable_signals: executable_signal_count,
+        attributed_signals,
+        insufficient_forward_data_count,
+        suppression_breakdown: suppression_breakdown(&suppression_counts),
+        feature_buckets,
+        best_buckets,
+        worst_buckets,
+        recommendations,
+        samples,
+        status,
+        computed_at,
+    })
+}
+
+fn extract_signal_feature_metrics(
+    strategy_id: StrategyId,
+    config: &StrategyConfig,
+    candles: &[Candle],
+    index: usize,
+) -> Vec<StrategySignalFeatureMetric> {
+    let mut metrics = match strategy_id {
+        StrategyId::TrendFilterMomentumV1 => {
+            extract_trend_filter_momentum_features(config, candles, index)
+        }
+        StrategyId::RangeReversionV1 => extract_range_reversion_features(config, candles, index),
+        _ => Vec::new(),
+    };
+    let candle = &candles[index];
+    metrics.push(feature_metric(
+        "hour_of_day_utc",
+        Decimal::from(candle.close_time.hour()),
+        format!("{:02}", candle.close_time.hour()),
+    ));
+    metrics.push(feature_metric(
+        "day_of_week",
+        Decimal::from(candle.close_time.weekday().num_days_from_monday()),
+        format!("{:?}", candle.close_time.weekday()),
+    ));
+    metrics
+}
+
+fn extract_trend_filter_momentum_features(
+    config: &StrategyConfig,
+    candles: &[Candle],
+    index: usize,
+) -> Vec<StrategySignalFeatureMetric> {
+    let latest = &candles[index];
+    let trend = config
+        .trend_lookback_candles
+        .unwrap_or(config.lookback_candles) as usize;
+    let momentum = config
+        .momentum_lookback_candles
+        .unwrap_or(config.lookback_candles) as usize;
+    if index < trend || index < momentum {
+        return Vec::new();
+    }
+    let trend_window = &candles[index - trend..index];
+    let sma = average_decimal_replay(trend_window.iter().map(|candle| candle.close));
+    let momentum_reference = &candles[index - momentum];
+    let recent_high = trend_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+    let recent_low = trend_window
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(latest.low);
+    let recent_volatility_pct = average_decimal_replay(trend_window.iter().map(candle_range_pct));
+    let mut metrics = Vec::new();
+    metrics.push(decimal_feature_metric(
+        "close_vs_sma_pct",
+        pct_change(latest.close, sma),
+    ));
+    metrics.push(decimal_feature_metric(
+        "momentum_return_pct",
+        pct_change(latest.close, momentum_reference.close),
+    ));
+    metrics.push(decimal_feature_metric(
+        "recent_volatility_pct",
+        recent_volatility_pct,
+    ));
+    metrics.push(decimal_feature_metric(
+        "candle_body_pct",
+        candle_body_pct(latest),
+    ));
+    metrics.push(decimal_feature_metric(
+        "candle_range_pct",
+        candle_range_pct(latest),
+    ));
+    metrics.push(decimal_feature_metric(
+        "distance_from_recent_high_pct",
+        pct_change(latest.close, recent_high),
+    ));
+    metrics.push(decimal_feature_metric(
+        "distance_from_recent_low_pct",
+        pct_change(latest.close, recent_low),
+    ));
+    metrics
+}
+
+fn extract_range_reversion_features(
+    config: &StrategyConfig,
+    candles: &[Candle],
+    index: usize,
+) -> Vec<StrategySignalFeatureMetric> {
+    let lookback = config.lookback_candles as usize;
+    if index + 1 < lookback || index == 0 {
+        return Vec::new();
+    }
+    let latest = &candles[index];
+    let previous = &candles[index - 1];
+    let range_window = &candles[index + 1 - lookback..=index];
+    let range_high = range_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+    let range_low = range_window
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(latest.low);
+    let range_width = range_high - range_low;
+    let range_width_pct = if range_low > Decimal::ZERO {
+        (range_width / range_low) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let range_position_pct = if range_width > Decimal::ZERO {
+        ((latest.close - range_low) / range_width) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    };
+    vec![
+        decimal_feature_metric("range_position_pct", range_position_pct),
+        decimal_feature_metric("range_width_pct", range_width_pct),
+        decimal_feature_metric(
+            "close_vs_range_low_pct",
+            pct_change(latest.close, range_low),
+        ),
+        decimal_feature_metric(
+            "close_vs_range_high_pct",
+            pct_change(latest.close, range_high),
+        ),
+        decimal_feature_metric(
+            "reversal_strength_pct",
+            pct_change(latest.close, previous.close),
+        ),
+        decimal_feature_metric(
+            "latest_low_vs_previous_low_pct",
+            pct_change(latest.low, previous.low),
+        ),
+        decimal_feature_metric("candle_body_pct", candle_body_pct(latest)),
+        decimal_feature_metric("candle_range_pct", candle_range_pct(latest)),
+    ]
+}
+
+fn build_signal_feature_buckets(
+    samples: &[StrategySignalFeatureSample],
+    min_samples_per_bucket: u32,
+) -> Vec<StrategySignalFeatureBucket> {
+    let mut grouped = BTreeMap::<(String, String), Vec<Decimal>>::new();
+    for sample in samples {
+        for metric in &sample.metrics {
+            grouped
+                .entry((metric.feature_name.clone(), metric.bucket_label.clone()))
+                .or_default()
+                .push(sample.forward_net_pnl_pct);
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|((feature_name, bucket_label), mut values)| {
+            values.sort();
+            let sample_count = values.len() as i64;
+            let total_net_pnl_pct = values.iter().copied().sum::<Decimal>();
+            let win_count = values
+                .iter()
+                .filter(|value| **value > Decimal::ZERO)
+                .count() as i64;
+            let avg_net_pnl_pct = if sample_count > 0 {
+                total_net_pnl_pct / Decimal::from(sample_count)
+            } else {
+                Decimal::ZERO
+            };
+            let win_rate = if sample_count > 0 {
+                (Decimal::from(win_count) / Decimal::from(sample_count)) * Decimal::new(100, 0)
+            } else {
+                Decimal::ZERO
+            };
+            let recommendation = if sample_count < i64::from(min_samples_per_bucket) {
+                StrategySignalFeatureRecommendation::InsufficientSamples
+            } else if avg_net_pnl_pct > Decimal::ZERO && win_rate >= Decimal::new(50, 0) {
+                StrategySignalFeatureRecommendation::Promising
+            } else if avg_net_pnl_pct < Decimal::ZERO && total_net_pnl_pct < Decimal::ZERO {
+                StrategySignalFeatureRecommendation::Avoid
+            } else {
+                StrategySignalFeatureRecommendation::Weak
+            };
+            StrategySignalFeatureBucket {
+                feature_name,
+                bucket_label,
+                sample_count,
+                win_rate,
+                avg_net_pnl_pct,
+                median_net_pnl_pct: replay_median_decimal(&values),
+                best_net_pnl_pct: values.last().copied().unwrap_or(Decimal::ZERO),
+                worst_net_pnl_pct: values.first().copied().unwrap_or(Decimal::ZERO),
+                total_net_pnl_pct,
+                recommendation,
+            }
+        })
+        .collect()
+}
+
+fn ranked_signal_feature_buckets(
+    buckets: &[StrategySignalFeatureBucket],
+    descending: bool,
+    preferred: StrategySignalFeatureRecommendation,
+) -> Vec<StrategySignalFeatureBucket> {
+    let mut ranked = buckets
+        .iter()
+        .filter(|bucket| bucket.recommendation == preferred)
+        .cloned()
+        .collect::<Vec<_>>();
+    if ranked.is_empty() {
+        ranked = buckets
+            .iter()
+            .filter(|bucket| {
+                bucket.recommendation != StrategySignalFeatureRecommendation::InsufficientSamples
+            })
+            .cloned()
+            .collect();
+    }
+    ranked.sort_by(|left, right| {
+        let ordering = left.avg_net_pnl_pct.cmp(&right.avg_net_pnl_pct);
+        let ordering = if descending {
+            ordering.reverse()
+        } else {
+            ordering
+        };
+        ordering
+            .then_with(|| right.sample_count.cmp(&left.sample_count))
+            .then_with(|| left.feature_name.cmp(&right.feature_name))
+            .then_with(|| left.bucket_label.cmp(&right.bucket_label))
+    });
+    ranked.into_iter().take(5).collect()
+}
+
+fn signal_feature_recommendations(
+    status: StrategySignalFeatureAttributionStatus,
+    best_buckets: &[StrategySignalFeatureBucket],
+    worst_buckets: &[StrategySignalFeatureBucket],
+) -> Vec<String> {
+    match status {
+        StrategySignalFeatureAttributionStatus::PromisingFeaturesFound => best_buckets
+            .iter()
+            .take(3)
+            .map(|bucket| {
+                format!(
+                    "Prefer {}={} only for further research; bucket avg net PnL {}% across {} samples.",
+                    bucket.feature_name,
+                    bucket.bucket_label,
+                    bucket.avg_net_pnl_pct.round_dp(4),
+                    bucket.sample_count
+                )
+            })
+            .collect(),
+        StrategySignalFeatureAttributionStatus::NoPromisingFeatures => {
+            let mut messages = vec![
+                "No feature bucket met positive average net PnL and win-rate thresholds.".to_string(),
+            ];
+            if let Some(bucket) = worst_buckets.first() {
+                messages.push(format!(
+                    "Avoid or investigate {}={} first; bucket avg net PnL {}% across {} samples.",
+                    bucket.feature_name,
+                    bucket.bucket_label,
+                    bucket.avg_net_pnl_pct.round_dp(4),
+                    bucket.sample_count
+                ));
+            }
+            messages
+        }
+        StrategySignalFeatureAttributionStatus::InsufficientData => vec![
+            "Insufficient executable signals with forward candles for feature attribution.".to_string(),
+        ],
+        StrategySignalFeatureAttributionStatus::DataQualityDegraded => vec![
+            "Data quality degraded in at least one attributed forward window; repair/backfill before trusting feature buckets.".to_string(),
+        ],
+    }
+}
+
+fn decimal_feature_metric(feature_name: &str, value: Decimal) -> StrategySignalFeatureMetric {
+    feature_metric(
+        feature_name,
+        value,
+        bucket_label_for_feature(feature_name, value),
+    )
+}
+
+fn feature_metric(
+    feature_name: &str,
+    value: Decimal,
+    bucket_label: String,
+) -> StrategySignalFeatureMetric {
+    StrategySignalFeatureMetric {
+        feature_name: feature_name.to_string(),
+        value,
+        bucket_label,
+    }
+}
+
+fn bucket_label_for_feature(feature_name: &str, value: Decimal) -> String {
+    match feature_name {
+        "range_position_pct" => {
+            if value < Decimal::new(20, 0) {
+                "0-20".to_string()
+            } else if value < Decimal::new(40, 0) {
+                "20-40".to_string()
+            } else if value < Decimal::new(60, 0) {
+                "40-60".to_string()
+            } else if value < Decimal::new(80, 0) {
+                "60-80".to_string()
+            } else {
+                "80-100".to_string()
+            }
+        }
+        "close_vs_sma_pct" => {
+            if value < Decimal::new(-1, 0) {
+                "below -1%".to_string()
+            } else if value < Decimal::ZERO {
+                "-1% to 0%".to_string()
+            } else if value <= Decimal::new(1, 0) {
+                "0% to 1%".to_string()
+            } else {
+                "above 1%".to_string()
+            }
+        }
+        _ => {
+            if value < Decimal::ZERO {
+                "LOW".to_string()
+            } else if value < Decimal::new(1, 0) {
+                "MID".to_string()
+            } else if value < Decimal::new(3, 0) {
+                "HIGH".to_string()
+            } else {
+                "EXTREME".to_string()
+            }
+        }
+    }
+}
+
+fn pct_change(value: Decimal, reference: Decimal) -> Decimal {
+    if reference > Decimal::ZERO {
+        ((value - reference) / reference) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    }
+}
+
+fn candle_body_pct(candle: &Candle) -> Decimal {
+    if candle.open > Decimal::ZERO {
+        ((candle.close - candle.open).abs() / candle.open) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    }
+}
+
+fn candle_range_pct(candle: &Candle) -> Decimal {
+    if candle.open > Decimal::ZERO {
+        ((candle.high - candle.low) / candle.open) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    }
+}
+
+fn average_decimal_replay(values: impl IntoIterator<Item = Decimal>) -> Decimal {
+    let mut count = Decimal::ZERO;
+    let mut total = Decimal::ZERO;
+    for value in values {
+        total += value;
+        count += Decimal::ONE;
+    }
+    if count > Decimal::ZERO {
+        total / count
+    } else {
+        Decimal::ZERO
+    }
 }
 
 fn replay_median_decimal(values: &[Decimal]) -> Decimal {
@@ -2659,9 +3286,10 @@ fn deterministic_point_id(run_id: Uuid, timestamp: DateTime<Utc>) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_global_ranking, build_strategy_experiment_execution,
-        build_strategy_walk_forward_execution, calculate_exit_attribution,
-        calculate_fee_slippage_drag_pct, calculate_strategy_experiment_score,
+        bucket_label_for_feature, build_global_ranking, build_signal_feature_buckets,
+        build_strategy_experiment_execution, build_strategy_walk_forward_execution,
+        calculate_exit_attribution, calculate_fee_slippage_drag_pct,
+        calculate_signal_feature_attribution, calculate_strategy_experiment_score,
         calculate_walk_forward_robustness_score, experiment_strategy_override, experiment_warnings,
         generate_walk_forward_windows, global_ranking_entry, median_decimal,
         rank_strategy_experiment_runs, simulate_backtest, skipped_strategy_experiment_result,
@@ -2671,8 +3299,11 @@ mod tests {
         BacktestRequest, Candle, CandleInterval, MarketDataSource, ReplaySuppressionReason,
         StrategyConfig, StrategyExitAttributionRecommendation, StrategyExitAttributionRequest,
         StrategyExitAttributionStatus, StrategyExperimentRequest, StrategyExperimentRun,
-        StrategyExperimentStatus, StrategyId, StrategyMode, StrategyWalkForwardCandidate,
-        StrategyWalkForwardRequest, StrategyWalkForwardRobustnessSummary, Symbol,
+        StrategyExperimentStatus, StrategyId, StrategyMode,
+        StrategySignalFeatureAttributionRequest, StrategySignalFeatureMetric,
+        StrategySignalFeatureRecommendation, StrategySignalFeatureSample,
+        StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
+        StrategyWalkForwardRobustnessSummary, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -2776,6 +3407,83 @@ mod tests {
             holding_windows,
             fee_bps: Decimal::ZERO,
             slippage_bps: Decimal::ZERO,
+        }
+    }
+
+    fn signal_feature_attribution_request(
+        strategy_id: &str,
+    ) -> StrategySignalFeatureAttributionRequest {
+        StrategySignalFeatureAttributionRequest {
+            strategy_id: strategy_id.to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 1, 1, 0, 0).unwrap(),
+            config_json: None,
+            experiment_run_id: None,
+            holding_window: 1,
+            fee_bps: Decimal::ZERO,
+            slippage_bps: Decimal::ZERO,
+            min_samples_per_bucket: 1,
+        }
+    }
+
+    fn trend_filter_feature_strategy_config() -> StrategyConfig {
+        let mut config = sample_strategy_config();
+        config.strategy_id = StrategyId::TrendFilterMomentumV1;
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        config.trend_lookback_candles = Some(3);
+        config.momentum_lookback_candles = Some(2);
+        config
+    }
+
+    fn range_reversion_feature_strategy_config() -> StrategyConfig {
+        let mut config = sample_strategy_config();
+        config.strategy_id = StrategyId::RangeReversionV1;
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        config.lookback_candles = 3;
+        config.lower_band_pct = Some(Decimal::new(80, 0));
+        config.min_range_width_pct = Some(Decimal::ZERO);
+        config.max_range_width_pct = Some(Decimal::new(10, 0));
+        config
+    }
+
+    fn range_reversion_feature_candles() -> Vec<Candle> {
+        vec![
+            candle(0, 100, 102, 99, 100),
+            candle(1, 100, 102, 99, 99),
+            candle(2, 99, 102, 99, 100),
+            candle(3, 100, 102, 100, 100),
+            candle(4, 100, 102, 100, 101),
+            candle(5, 101, 103, 101, 102),
+            candle(6, 102, 104, 102, 103),
+        ]
+    }
+
+    fn feature_sample(
+        feature_name: &str,
+        bucket_label: &str,
+        pnl: Decimal,
+    ) -> StrategySignalFeatureSample {
+        let time = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
+        StrategySignalFeatureSample {
+            strategy_id: "trend_filter_momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            signal_time: time,
+            entry_candle_open_time: time + Duration::minutes(1),
+            exit_candle_open_time: time + Duration::minutes(2),
+            forward_net_pnl_pct: pnl,
+            regime_label: None,
+            hour_of_day_utc: 0,
+            day_of_week: "Fri".to_string(),
+            metrics: vec![StrategySignalFeatureMetric {
+                feature_name: feature_name.to_string(),
+                value: Decimal::ZERO,
+                bucket_label: bucket_label.to_string(),
+            }],
         }
     }
 
@@ -3784,6 +4492,149 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.best_holding_window, Some(1));
+    }
+
+    #[test]
+    fn signal_feature_extracts_trend_filter_momentum_features() {
+        let result = calculate_signal_feature_attribution(
+            &signal_feature_attribution_request("trend_filter_momentum_v1"),
+            &trend_filter_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            long_trending_candles(12),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            result.attributed_signals > 0,
+            "raw={} executable={} attributed={} status={:?}",
+            result.total_raw_signals,
+            result.executable_signals,
+            result.attributed_signals,
+            result.status
+        );
+        let sample = result.samples.first().expect("sample");
+        assert!(sample
+            .metrics
+            .iter()
+            .any(|metric| metric.feature_name == "close_vs_sma_pct"));
+        assert!(sample
+            .metrics
+            .iter()
+            .any(|metric| metric.feature_name == "momentum_return_pct"));
+        assert!(sample
+            .metrics
+            .iter()
+            .any(|metric| metric.feature_name == "distance_from_recent_high_pct"));
+    }
+
+    #[test]
+    fn signal_feature_extracts_range_reversion_features() {
+        let result = calculate_signal_feature_attribution(
+            &signal_feature_attribution_request("range_reversion_v1"),
+            &range_reversion_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            range_reversion_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert!(result.attributed_signals > 0);
+        let sample = result.samples.first().expect("sample");
+        assert!(sample
+            .metrics
+            .iter()
+            .any(|metric| metric.feature_name == "range_position_pct"));
+        assert!(sample
+            .metrics
+            .iter()
+            .any(|metric| metric.feature_name == "latest_low_vs_previous_low_pct"));
+        assert!(sample
+            .metrics
+            .iter()
+            .any(|metric| metric.feature_name == "reversal_strength_pct"));
+    }
+
+    #[test]
+    fn signal_feature_bucket_assignment_is_deterministic() {
+        assert_eq!(
+            bucket_label_for_feature("range_position_pct", Decimal::new(19, 0)),
+            "0-20"
+        );
+        assert_eq!(
+            bucket_label_for_feature("range_position_pct", Decimal::new(20, 0)),
+            "20-40"
+        );
+        assert_eq!(
+            bucket_label_for_feature("close_vs_sma_pct", Decimal::new(-2, 0)),
+            "below -1%"
+        );
+        assert_eq!(
+            bucket_label_for_feature("close_vs_sma_pct", Decimal::new(1, 0)),
+            "0% to 1%"
+        );
+        assert_eq!(
+            bucket_label_for_feature("candle_body_pct", Decimal::new(4, 0)),
+            "EXTREME"
+        );
+    }
+
+    #[test]
+    fn signal_feature_bucket_metrics_calculate_avg_median_and_win_rate() {
+        let buckets = build_signal_feature_buckets(
+            &[
+                feature_sample("momentum_return_pct", "HIGH", Decimal::new(100, 2)),
+                feature_sample("momentum_return_pct", "HIGH", Decimal::new(-50, 2)),
+                feature_sample("momentum_return_pct", "HIGH", Decimal::new(200, 2)),
+            ],
+            1,
+        );
+
+        let bucket = buckets
+            .iter()
+            .find(|bucket| bucket.feature_name == "momentum_return_pct")
+            .expect("bucket");
+        assert_eq!(bucket.sample_count, 3);
+        assert_eq!(bucket.total_net_pnl_pct, Decimal::new(250, 2));
+        assert_eq!(bucket.avg_net_pnl_pct.round_dp(4), Decimal::new(8333, 4));
+        assert_eq!(bucket.median_net_pnl_pct, Decimal::new(100, 2));
+        assert_eq!(bucket.win_rate.round_dp(2), Decimal::new(6667, 2));
+    }
+
+    #[test]
+    fn signal_feature_marks_insufficient_promising_and_avoid_buckets() {
+        let insufficient = build_signal_feature_buckets(
+            &[feature_sample("close_vs_sma_pct", "above 1%", Decimal::ONE)],
+            2,
+        );
+        assert_eq!(
+            insufficient[0].recommendation,
+            StrategySignalFeatureRecommendation::InsufficientSamples
+        );
+
+        let promising = build_signal_feature_buckets(
+            &[
+                feature_sample("close_vs_sma_pct", "above 1%", Decimal::ONE),
+                feature_sample("close_vs_sma_pct", "above 1%", Decimal::new(2, 0)),
+            ],
+            2,
+        );
+        assert_eq!(
+            promising[0].recommendation,
+            StrategySignalFeatureRecommendation::Promising
+        );
+
+        let avoid = build_signal_feature_buckets(
+            &[
+                feature_sample("close_vs_sma_pct", "-1% to 0%", Decimal::new(-1, 0)),
+                feature_sample("close_vs_sma_pct", "-1% to 0%", Decimal::new(-2, 0)),
+            ],
+            2,
+        );
+        assert_eq!(
+            avoid[0].recommendation,
+            StrategySignalFeatureRecommendation::Avoid
+        );
     }
 
     #[test]

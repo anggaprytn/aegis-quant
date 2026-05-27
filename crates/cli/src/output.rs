@@ -38,10 +38,11 @@ use crate::api::{
     StrategyDecisionBreakdownResponse, StrategyDiagnosticsResponse, StrategyDryRunResponse,
     StrategyExitAttributionResponse, StrategyListResponse, StrategyOpportunityAnalysisResponse,
     StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
-    StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
-    TestnetPromotionFunnelRowsResponse, TestnetPromotionFunnelSummaryResponse,
-    TestnetShadowPromotionsResponse, TestnetShadowRunnerControlResponse,
-    TestnetShadowRunnerStatusResponse, TestnetShadowRunsResponse,
+    StrategySignalFeatureAttributionResponse, StrategyStatusResponse,
+    TestnetPromotionFunnelOutcomesResponse, TestnetPromotionFunnelRowsResponse,
+    TestnetPromotionFunnelSummaryResponse, TestnetShadowPromotionsResponse,
+    TestnetShadowRunnerControlResponse, TestnetShadowRunnerStatusResponse,
+    TestnetShadowRunsResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -1337,6 +1338,59 @@ pub fn print_strategy_exit_attribution(response: &StrategyExitAttributionRespons
             row.fee_drag_pct.round_dp(4),
             row.recommendation.as_str()
         );
+    }
+}
+
+pub fn print_strategy_signal_feature_attribution(
+    response: &StrategySignalFeatureAttributionResponse,
+) {
+    let result = &response.result;
+    println!("Strategy ID: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Status: {}", result.status.as_str());
+    println!(
+        "Signals: raw={} executable={} attributed={} insufficient_forward_data={}",
+        result.total_raw_signals,
+        result.executable_signals,
+        result.attributed_signals,
+        result.insufficient_forward_data_count
+    );
+    println!("Best buckets:");
+    for bucket in &result.best_buckets {
+        println!(
+            "  - {}={}: samples={} win_rate={} avg={} median={} total={} recommendation={}",
+            bucket.feature_name,
+            bucket.bucket_label,
+            bucket.sample_count,
+            bucket.win_rate.round_dp(2),
+            bucket.avg_net_pnl_pct.round_dp(4),
+            bucket.median_net_pnl_pct.round_dp(4),
+            bucket.total_net_pnl_pct.round_dp(4),
+            bucket.recommendation.as_str()
+        );
+    }
+    println!("Worst buckets:");
+    for bucket in &result.worst_buckets {
+        println!(
+            "  - {}={}: samples={} win_rate={} avg={} median={} total={} recommendation={}",
+            bucket.feature_name,
+            bucket.bucket_label,
+            bucket.sample_count,
+            bucket.win_rate.round_dp(2),
+            bucket.avg_net_pnl_pct.round_dp(4),
+            bucket.median_net_pnl_pct.round_dp(4),
+            bucket.total_net_pnl_pct.round_dp(4),
+            bucket.recommendation.as_str()
+        );
+    }
+    println!("Recommendations:");
+    if result.recommendations.is_empty() {
+        println!("  - N/A");
+    } else {
+        for recommendation in &result.recommendations {
+            println!("  - {}", recommendation);
+        }
     }
 }
 
