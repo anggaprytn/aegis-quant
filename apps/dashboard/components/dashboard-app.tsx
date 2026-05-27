@@ -52,6 +52,7 @@ import type {
   ResearchRegimeDiscoveryCandidateWindow,
   ResearchRegimeDiscoveryRequest,
   ResearchRegimeDiscoveryResult,
+  ResearchRegimeStrategyLeaderboard,
   ResearchRegimeWindow,
   ResearchCandidateObservationHistoryItem,
   ResearchCandidateQualificationResult,
@@ -1479,6 +1480,11 @@ function AuthenticatedDashboard({
     queryFn: () => api.getResearchCampaignFailureAttribution(selectedResearchCampaignId ?? ""),
     enabled: Boolean(selectedResearchCampaignId),
   });
+  const selectedResearchCampaignRegimeLeaderboardQuery = useQuery({
+    queryKey: ["research-campaign-regime-leaderboard", selectedResearchCampaignId],
+    queryFn: () => api.getResearchCampaignRegimeLeaderboard(selectedResearchCampaignId ?? ""),
+    enabled: Boolean(selectedResearchCampaignId),
+  });
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
     queryFn: () => api.getMarketBackfillRuns(20),
@@ -2798,6 +2804,8 @@ function AuthenticatedDashboard({
     selectedResearchCampaignQuery.data?.campaign ?? lastResearchCampaign;
   const selectedResearchCampaignFailureAttribution =
     selectedResearchCampaignFailureAttributionQuery.data?.attribution ?? null;
+  const selectedResearchCampaignRegimeLeaderboard =
+    selectedResearchCampaignRegimeLeaderboardQuery.data?.leaderboard ?? null;
   const selectedExperiment =
     selectedExperimentQuery.data?.experiment ?? null;
   const strategyExperimentRuns =
@@ -6337,6 +6345,21 @@ function AuthenticatedDashboard({
                   />
                   <ResearchCampaignRegimeSummaryTable
                     attribution={selectedResearchCampaignFailureAttribution}
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <ResearchCampaignRegimeLeaderboardCard
+                    leaderboard={selectedResearchCampaignRegimeLeaderboard}
+                    loading={selectedResearchCampaignRegimeLeaderboardQuery.isLoading}
+                    error={getErrorMessage(selectedResearchCampaignRegimeLeaderboardQuery.error)}
+                  />
+                  <ResearchCampaignRegimeLeaderboardTable
+                    leaderboard={selectedResearchCampaignRegimeLeaderboard}
+                  />
+                </div>
+                <div className="mt-4">
+                  <ResearchCampaignOverallLeaderboardTable
+                    leaderboard={selectedResearchCampaignRegimeLeaderboard}
                   />
                 </div>
                 <div className="mt-4">
@@ -10738,6 +10761,100 @@ function ResearchCampaignRegimeSummaryTable({
           regime.avg_return_pct,
           regime.avg_realized_volatility,
           regime.failure_reasons.join(", ") || "-",
+        ])}
+      />
+    </div>
+  );
+}
+
+function ResearchCampaignRegimeLeaderboardCard({
+  leaderboard,
+  loading,
+  error,
+}: {
+  leaderboard: ResearchRegimeStrategyLeaderboard | null;
+  loading: boolean;
+  error?: string;
+}) {
+  const top = leaderboard?.overall_rankings[0];
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Regime Leaderboard
+      </div>
+      <KeyValue
+        items={[
+          ["Overall Top", top ? `${top.strategy_id} ${top.symbol} ${top.timeframe}` : "-"],
+          ["Status", top?.status ?? "-"],
+          ["Median PnL %", top?.median_pnl_pct ?? "-"],
+          ["Robustness", top ? String(top.robustness_score) : "-"],
+          ["Generated", leaderboard ? formatDateTime(leaderboard.generated_at) : "-"],
+        ]}
+        loading={loading}
+        error={error}
+      />
+      <SimpleList
+        items={(leaderboard?.recommendations ?? []).map(
+          (recommendation) =>
+            `${recommendation.priority} ${recommendation.code}: ${recommendation.message}`,
+        )}
+      />
+    </div>
+  );
+}
+
+function ResearchCampaignRegimeLeaderboardTable({
+  leaderboard,
+}: {
+  leaderboard: ResearchRegimeStrategyLeaderboard | null;
+}) {
+  const rows =
+    leaderboard?.per_regime.flatMap((cell) =>
+      cell.rankings.slice(0, 5).map((ranking) => [
+        cell.regime_label,
+        String(ranking.rank),
+        ranking.strategy_id,
+        `${ranking.symbol} ${ranking.timeframe}`,
+        ranking.status,
+        ranking.median_pnl_pct,
+        String(ranking.robustness_score),
+        `${ranking.actionable_count}/${ranking.weak_count}/${ranking.overfit_count}`,
+      ]),
+    ) ?? [];
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Per-Regime Ranking
+      </div>
+      <Table
+        headers={["Regime", "Rank", "Strategy", "Market", "Status", "Median PnL %", "Score", "A/W/O"]}
+        rows={rows}
+      />
+    </div>
+  );
+}
+
+function ResearchCampaignOverallLeaderboardTable({
+  leaderboard,
+}: {
+  leaderboard: ResearchRegimeStrategyLeaderboard | null;
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Overall Ranking
+      </div>
+      <Table
+        headers={["Rank", "Strategy", "Market", "Status", "Median PnL %", "Avg PnL %", "Candidates", "Score"]}
+        rows={(leaderboard?.overall_rankings ?? []).slice(0, 10).map((ranking) => [
+          String(ranking.rank),
+          ranking.strategy_id,
+          `${ranking.symbol} ${ranking.timeframe}`,
+          ranking.status,
+          ranking.median_pnl_pct,
+          ranking.avg_pnl_pct,
+          String(ranking.candidate_count),
+          String(ranking.robustness_score),
         ])}
       />
     </div>

@@ -1045,10 +1045,22 @@ pub struct ResearchBatchListArgs {
 pub enum ResearchCampaignCommands {
     Run(ResearchCampaignRunArgs),
     List(ResearchBatchListArgs),
-    Get { campaign_id: Uuid },
-    Batches { campaign_id: Uuid },
-    Summary { campaign_id: Uuid },
-    FailureAttribution { campaign_id: Uuid },
+    Get {
+        campaign_id: Uuid,
+    },
+    Batches {
+        campaign_id: Uuid,
+    },
+    Summary {
+        campaign_id: Uuid,
+    },
+    FailureAttribution {
+        campaign_id: Uuid,
+    },
+    #[command(name = "regime-leaderboard")]
+    RegimeLeaderboard {
+        campaign_id: Uuid,
+    },
 }
 
 #[derive(Debug, Args)]

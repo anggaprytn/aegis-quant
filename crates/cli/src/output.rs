@@ -12,9 +12,9 @@ use aegis_core::{
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
     ResearchCandidateWatchlistEntry, ResearchRegimeCalibrationCandidateResult,
     ResearchRegimeCalibrationResult, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult, ResearchRegimeWindow,
-    ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
-    StrategyRobustnessMatrixResult, User,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult,
+    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
+    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -655,6 +655,74 @@ pub fn print_research_campaign_failure_attribution(
     if !attribution.recommendations.is_empty() {
         println!("Recommendations:");
         for recommendation in &attribution.recommendations {
+            println!(
+                "  {} {}: {}",
+                recommendation.priority, recommendation.code, recommendation.message
+            );
+        }
+    }
+}
+
+pub fn print_research_regime_strategy_leaderboard(leaderboard: &ResearchRegimeStrategyLeaderboard) {
+    println!("Regime strategy leaderboard: {}", leaderboard.campaign_id);
+    if let Some(top) = leaderboard.overall_rankings.first() {
+        println!(
+            "Overall top strategy: {} {} {} status={} median_pnl_pct={} robustness_score={}",
+            top.strategy_id,
+            top.symbol,
+            top.timeframe,
+            top.status.as_str(),
+            top.median_pnl_pct,
+            top.robustness_score
+        );
+    } else {
+        println!("Overall top strategy: -");
+    }
+    if !leaderboard.best_strategy_by_regime.is_empty() {
+        println!("Per-regime top strategy:");
+        for selection in &leaderboard.best_strategy_by_regime {
+            println!(
+                "  {} {} {} {} status={} median_pnl_pct={} robustness_score={}",
+                selection.regime_label.as_str(),
+                selection.strategy_id,
+                selection.symbol,
+                selection.timeframe,
+                selection.status.as_str(),
+                selection.median_pnl_pct,
+                selection.robustness_score
+            );
+        }
+    }
+    if !leaderboard.per_regime.is_empty() {
+        println!("Per-regime weak/negative/overfit counts:");
+        for cell in &leaderboard.per_regime {
+            let weak = cell
+                .rankings
+                .iter()
+                .filter(|ranking| ranking.status.as_str() == "WEAK")
+                .count();
+            let negative = cell
+                .rankings
+                .iter()
+                .filter(|ranking| ranking.status.as_str() == "NEGATIVE")
+                .count();
+            let overfit = cell
+                .rankings
+                .iter()
+                .filter(|ranking| ranking.status.as_str() == "OVERFIT")
+                .count();
+            println!(
+                "  {} weak={} negative={} overfit={}",
+                cell.regime_label.as_str(),
+                weak,
+                negative,
+                overfit
+            );
+        }
+    }
+    if !leaderboard.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &leaderboard.recommendations {
             println!(
                 "  {} {}: {}",
                 recommendation.priority, recommendation.code, recommendation.message

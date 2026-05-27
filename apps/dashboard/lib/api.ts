@@ -78,6 +78,7 @@ import type {
   ResearchCampaignResponse,
   ResearchCampaignsResponse,
   ResearchCampaignFailureAttributionResponse,
+  ResearchRegimeStrategyLeaderboardResponse,
   ResearchCampaignSummaryResponse,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
@@ -530,6 +531,10 @@ export const api = {
   getResearchCampaignFailureAttribution: (id: string) =>
     request<ResearchCampaignFailureAttributionResponse>(
       `/research/campaigns/${id}/failure-attribution`,
+    ),
+  getResearchCampaignRegimeLeaderboard: (id: string) =>
+    request<ResearchRegimeStrategyLeaderboardResponse>(
+      `/research/campaigns/${id}/regime-leaderboard`,
     ),
   createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
     request<ResearchCandidateResponse>("/research/candidates", {

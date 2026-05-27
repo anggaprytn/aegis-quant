@@ -1429,6 +1429,94 @@ export type ResearchCampaignFailureAttributionResponse = {
   timestamp: string;
 };
 
+export type ResearchRegimeStrategyStatus =
+  | "PROMISING"
+  | "WEAK"
+  | "NEGATIVE"
+  | "OVERFIT"
+  | "INSUFFICIENT_DATA"
+  | "DATA_QUALITY_BLOCKED";
+
+export type ResearchRegimeStrategyRanking = {
+  rank: number;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  status: ResearchRegimeStrategyStatus;
+  candidate_count: number;
+  batch_count: number;
+  avg_pnl_pct: string;
+  median_pnl_pct: string;
+  best_pnl_pct: string;
+  worst_pnl_pct: string;
+  profitable_candidate_ratio: string;
+  overfit_count: number;
+  weak_count: number;
+  actionable_count: number;
+  avg_walk_forward_score: string | null;
+  avg_trade_count: string;
+  avg_fee_drag_pct: string | null;
+  data_quality_warning_count: number;
+  robustness_score: number;
+  ranking_score: string;
+};
+
+export type ResearchRegimeStrategyCell = {
+  regime_label: ResearchRegimeLabel;
+  rankings: ResearchRegimeStrategyRanking[];
+};
+
+export type ResearchRegimeStrategySelection = {
+  regime_label: ResearchRegimeLabel;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  status: ResearchRegimeStrategyStatus;
+  robustness_score: number;
+  median_pnl_pct: string;
+};
+
+export type ResearchRegimeSymbolTimeframeSelection = {
+  regime_label: ResearchRegimeLabel;
+  symbol: string;
+  timeframe: string;
+  strategy_id: string;
+  status: ResearchRegimeStrategyStatus;
+  robustness_score: number;
+  median_pnl_pct: string;
+};
+
+export type ResearchRegimeStrategyFinding = {
+  severity: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchRegimeStrategyRecommendation = {
+  priority: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchRegimeStrategyLeaderboard = {
+  campaign_id: string;
+  generated_at: string;
+  per_regime: ResearchRegimeStrategyCell[];
+  overall_rankings: ResearchRegimeStrategyRanking[];
+  best_strategy_by_regime: ResearchRegimeStrategySelection[];
+  worst_strategy_by_regime: ResearchRegimeStrategySelection[];
+  best_symbol_timeframe_by_regime: ResearchRegimeSymbolTimeframeSelection[];
+  findings: ResearchRegimeStrategyFinding[];
+  recommendations: ResearchRegimeStrategyRecommendation[];
+};
+
+export type ResearchRegimeStrategyLeaderboardResponse = {
+  leaderboard: ResearchRegimeStrategyLeaderboard;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCampaignResult = {
   campaign_id: string;
   status: ResearchCampaignStatus;

@@ -26,9 +26,10 @@ use uuid::Uuid;
 
 use crate::AppState;
 use db::{
-    get_research_candidate, get_research_candidate_shadow_pnl_attribution,
-    list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
-    list_research_candidates, research_candidate_from_record,
+    get_research_campaign, get_research_candidate, get_research_candidate_shadow_pnl_attribution,
+    list_research_campaign_batches, list_research_candidate_qualification_evaluations,
+    list_research_candidate_reviews, list_research_candidates,
+    research_campaign_result_from_records, research_candidate_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     summarize_candle_continuity_report, ResearchCandidateListFilters,
 };
@@ -97,6 +98,9 @@ struct ResearchCampaignReportSnapshot {
     regime_mismatch_count: i64,
     data_quality_blocked_count: i64,
     top_strategy_symbol_timeframe: Option<String>,
+    best_strategy_by_regime: Vec<String>,
+    regimes_with_no_promising_strategy: Vec<String>,
+    overfit_heavy_regimes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1420,6 +1424,68 @@ async fn load_research_campaign_snapshot(
     .fetch_one(pool)
     .await?;
 
+    let campaign_ids = query_scalar::<_, Uuid>(
+        r#"
+        SELECT id
+        FROM research_campaigns
+        WHERE created_at >= $1
+          AND created_at <= $2
+        ORDER BY created_at DESC, id DESC
+        LIMIT 5
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_all(pool)
+    .await?;
+    let mut best_strategy_by_regime = Vec::new();
+    let mut regimes_with_no_promising_strategy = Vec::new();
+    let mut overfit_heavy_regimes = Vec::new();
+    for campaign_id in campaign_ids {
+        let Some(campaign_record) = get_research_campaign(pool, campaign_id).await? else {
+            continue;
+        };
+        let batch_records = list_research_campaign_batches(pool, campaign_id).await?;
+        let campaign = research_campaign_result_from_records(&campaign_record, &batch_records)?;
+        let leaderboard =
+            aegis_core::build_research_regime_strategy_leaderboard(&campaign, window.generated_at);
+        for selection in leaderboard.best_strategy_by_regime {
+            best_strategy_by_regime.push(format!(
+                "{}={} {} {} median_pnl_pct={} score={}",
+                selection.regime_label.as_str(),
+                selection.strategy_id,
+                selection.symbol,
+                selection.timeframe,
+                selection.median_pnl_pct,
+                selection.robustness_score
+            ));
+        }
+        for cell in leaderboard.per_regime {
+            if !cell
+                .rankings
+                .iter()
+                .any(|ranking| ranking.status.as_str() == "PROMISING")
+            {
+                regimes_with_no_promising_strategy.push(cell.regime_label.as_str().to_string());
+            }
+            if cell
+                .rankings
+                .iter()
+                .filter(|ranking| ranking.status.as_str() == "OVERFIT")
+                .count()
+                > 0
+            {
+                overfit_heavy_regimes.push(cell.regime_label.as_str().to_string());
+            }
+        }
+    }
+    best_strategy_by_regime.sort();
+    best_strategy_by_regime.dedup();
+    regimes_with_no_promising_strategy.sort();
+    regimes_with_no_promising_strategy.dedup();
+    overfit_heavy_regimes.sort();
+    overfit_heavy_regimes.dedup();
+
     Ok(ResearchCampaignReportSnapshot {
         run_count: row.get("run_count"),
         actionable_campaign_count: row.get("actionable_campaign_count"),
@@ -1446,6 +1512,9 @@ async fn load_research_campaign_snapshot(
         regime_mismatch_count: row.get("regime_mismatch_count"),
         data_quality_blocked_count: row.get("data_quality_blocked_count"),
         top_strategy_symbol_timeframe: row.get("top_strategy_symbol_timeframe"),
+        best_strategy_by_regime,
+        regimes_with_no_promising_strategy,
+        overfit_heavy_regimes,
     })
 }
 
@@ -2160,6 +2229,36 @@ fn build_findings(
             "research_campaigns",
         ));
     }
+    if !research_campaigns.best_strategy_by_regime.is_empty() {
+        findings.push(finding(
+            "research_regime_strategy_promising",
+            OperatorReportSeverity::Low,
+            "Regime leaderboard has top strategies",
+            "Recent regime-balanced campaigns produced best strategy by regime summaries.",
+            "research_campaigns",
+        ));
+    }
+    if !research_campaigns
+        .regimes_with_no_promising_strategy
+        .is_empty()
+    {
+        findings.push(finding(
+            "research_regime_no_promising_strategy",
+            OperatorReportSeverity::Medium,
+            "Regime has no promising strategy",
+            "The regime leaderboard found one or more regimes without a promising strategy.",
+            "research_campaigns",
+        ));
+    }
+    if !research_campaigns.overfit_heavy_regimes.is_empty() {
+        findings.push(finding(
+            "research_regime_overfit_heavy",
+            OperatorReportSeverity::Medium,
+            "Regime leaderboard is overfit-heavy",
+            "One or more regimes have overfit-heavy strategy rankings.",
+            "research_campaigns",
+        ));
+    }
 
     if system_market.market.stale_feed_count == 0 {
         let threshold = i64::from(system_market.stale_threshold_seconds);
@@ -2783,6 +2882,8 @@ fn build_sections(
             if research_campaigns.failed_campaign_count > 0
                 || research_campaigns.partial_success_campaign_count > 0
                 || research_campaigns.overfit_only_campaign_count > 0
+                || !research_campaigns.regimes_with_no_promising_strategy.is_empty()
+                || !research_campaigns.overfit_heavy_regimes.is_empty()
             {
                 OperatorReportStatus::Warning
             } else {
@@ -2830,6 +2931,35 @@ fn build_sections(
                         .top_strategy_symbol_timeframe
                         .clone()
                         .unwrap_or_else(|| "-".to_string()),
+                ),
+                highlight(
+                    "Best Strategy By Regime",
+                    if research_campaigns.best_strategy_by_regime.is_empty() {
+                        "-".to_string()
+                    } else {
+                        research_campaigns.best_strategy_by_regime.join(" | ")
+                    },
+                ),
+                highlight(
+                    "Regimes With No Promising Strategy",
+                    if research_campaigns
+                        .regimes_with_no_promising_strategy
+                        .is_empty()
+                    {
+                        "-".to_string()
+                    } else {
+                        research_campaigns
+                            .regimes_with_no_promising_strategy
+                            .join(", ")
+                    },
+                ),
+                highlight(
+                    "Overfit-heavy Regimes",
+                    if research_campaigns.overfit_heavy_regimes.is_empty() {
+                        "-".to_string()
+                    } else {
+                        research_campaigns.overfit_heavy_regimes.join(", ")
+                    },
                 ),
             ],
             research_campaigns,

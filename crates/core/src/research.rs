@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -639,6 +639,110 @@ pub struct ResearchCampaignRegimePerformance {
     pub actionable_batches: i32,
     pub weak_batches: i32,
     pub candidates_created: i32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchRegimeStrategyStatus {
+    Promising,
+    Weak,
+    Negative,
+    Overfit,
+    InsufficientData,
+    DataQualityBlocked,
+}
+
+impl ResearchRegimeStrategyStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Promising => "PROMISING",
+            Self::Weak => "WEAK",
+            Self::Negative => "NEGATIVE",
+            Self::Overfit => "OVERFIT",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::DataQualityBlocked => "DATA_QUALITY_BLOCKED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeStrategyRanking {
+    pub rank: i32,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub status: ResearchRegimeStrategyStatus,
+    pub candidate_count: i32,
+    pub batch_count: i32,
+    pub avg_pnl_pct: Decimal,
+    pub median_pnl_pct: Decimal,
+    pub best_pnl_pct: Decimal,
+    pub worst_pnl_pct: Decimal,
+    pub profitable_candidate_ratio: Decimal,
+    pub overfit_count: i32,
+    pub weak_count: i32,
+    pub actionable_count: i32,
+    pub avg_walk_forward_score: Option<Decimal>,
+    pub avg_trade_count: Decimal,
+    pub avg_fee_drag_pct: Option<Decimal>,
+    pub data_quality_warning_count: i32,
+    pub robustness_score: i32,
+    pub ranking_score: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeStrategyCell {
+    pub regime_label: ResearchRegimeLabel,
+    pub rankings: Vec<ResearchRegimeStrategyRanking>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchRegimeStrategyFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchRegimeStrategyRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeStrategySelection {
+    pub regime_label: ResearchRegimeLabel,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub status: ResearchRegimeStrategyStatus,
+    pub robustness_score: i32,
+    pub median_pnl_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeSymbolTimeframeSelection {
+    pub regime_label: ResearchRegimeLabel,
+    pub symbol: String,
+    pub timeframe: String,
+    pub strategy_id: String,
+    pub status: ResearchRegimeStrategyStatus,
+    pub robustness_score: i32,
+    pub median_pnl_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeStrategyLeaderboard {
+    pub campaign_id: Uuid,
+    pub generated_at: DateTime<Utc>,
+    pub per_regime: Vec<ResearchRegimeStrategyCell>,
+    pub overall_rankings: Vec<ResearchRegimeStrategyRanking>,
+    pub best_strategy_by_regime: Vec<ResearchRegimeStrategySelection>,
+    pub worst_strategy_by_regime: Vec<ResearchRegimeStrategySelection>,
+    pub best_symbol_timeframe_by_regime: Vec<ResearchRegimeSymbolTimeframeSelection>,
+    pub findings: Vec<ResearchRegimeStrategyFinding>,
+    pub recommendations: Vec<ResearchRegimeStrategyRecommendation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -4020,6 +4124,524 @@ fn summarize_research_campaign_regimes(
         entry.candidates_created += batch.candidates_created;
     }
     by_regime.into_values().collect()
+}
+
+#[derive(Debug, Clone)]
+struct RegimeStrategyGroup {
+    strategy_id: String,
+    symbol: String,
+    timeframe: String,
+    batch_indices: BTreeSet<i32>,
+    pnl_values: Vec<Decimal>,
+    trade_counts: Vec<i32>,
+    walk_forward_scores: Vec<Decimal>,
+    overfit_count: i32,
+    weak_count: i32,
+    actionable_count: i32,
+    data_quality_warning_count: i32,
+}
+
+impl RegimeStrategyGroup {
+    fn new(strategy_id: String, symbol: String, timeframe: String) -> Self {
+        Self {
+            strategy_id,
+            symbol,
+            timeframe,
+            batch_indices: BTreeSet::new(),
+            pnl_values: Vec::new(),
+            trade_counts: Vec::new(),
+            walk_forward_scores: Vec::new(),
+            overfit_count: 0,
+            weak_count: 0,
+            actionable_count: 0,
+            data_quality_warning_count: 0,
+        }
+    }
+
+    fn push_batch(&mut self, batch: &ResearchCampaignBatchResult) {
+        self.batch_indices.insert(batch.plan.plan_index);
+        match batch.triage_status {
+            ResearchBatchTriageStatus::Actionable => self.actionable_count += 1,
+            ResearchBatchTriageStatus::DataQualityBlocked | ResearchBatchTriageStatus::Failed => {
+                self.data_quality_warning_count += 1
+            }
+            ResearchBatchTriageStatus::Weak
+            | ResearchBatchTriageStatus::OverfitOnly
+            | ResearchBatchTriageStatus::NoCandidates
+            | ResearchBatchTriageStatus::Unknown => {}
+        }
+    }
+
+    fn push_candidate(&mut self, candidate: &ResearchBatchCandidateSummary) {
+        self.pnl_values.push(candidate.pnl_pct);
+        self.trade_counts.push(candidate.trade_count);
+        if let Some(status) = candidate.robustness_status {
+            self.walk_forward_scores
+                .push(walk_forward_status_score(status));
+            match status {
+                StrategyWalkForwardRobustnessStatus::OverfitRisk => self.overfit_count += 1,
+                StrategyWalkForwardRobustnessStatus::Weak
+                | StrategyWalkForwardRobustnessStatus::InsufficientData
+                | StrategyWalkForwardRobustnessStatus::Failed => self.weak_count += 1,
+                StrategyWalkForwardRobustnessStatus::Robust => {}
+            }
+        }
+    }
+}
+
+pub fn build_research_regime_strategy_leaderboard(
+    campaign: &ResearchCampaignResult,
+    generated_at: DateTime<Utc>,
+) -> ResearchRegimeStrategyLeaderboard {
+    let per_regime_groups = build_regime_strategy_groups(&campaign.batches, true);
+    let overall_groups = build_regime_strategy_groups(&campaign.batches, false);
+    let mut per_regime = Vec::new();
+    for (regime_label, groups) in per_regime_groups {
+        let rankings = rank_regime_strategy_groups(groups);
+        per_regime.push(ResearchRegimeStrategyCell {
+            regime_label,
+            rankings,
+        });
+    }
+    let overall_rankings =
+        rank_regime_strategy_groups(overall_groups.into_values().flatten().collect());
+    let best_strategy_by_regime = per_regime
+        .iter()
+        .filter_map(|cell| {
+            cell.rankings
+                .first()
+                .map(|ranking| regime_strategy_selection(cell.regime_label, ranking))
+        })
+        .collect::<Vec<_>>();
+    let worst_strategy_by_regime = per_regime
+        .iter()
+        .filter_map(|cell| {
+            cell.rankings
+                .last()
+                .map(|ranking| regime_strategy_selection(cell.regime_label, ranking))
+        })
+        .collect::<Vec<_>>();
+    let best_symbol_timeframe_by_regime = per_regime
+        .iter()
+        .filter_map(|cell| {
+            cell.rankings
+                .first()
+                .map(|ranking| ResearchRegimeSymbolTimeframeSelection {
+                    regime_label: cell.regime_label,
+                    symbol: ranking.symbol.clone(),
+                    timeframe: ranking.timeframe.clone(),
+                    strategy_id: ranking.strategy_id.clone(),
+                    status: ranking.status,
+                    robustness_score: ranking.robustness_score,
+                    median_pnl_pct: ranking.median_pnl_pct,
+                })
+        })
+        .collect::<Vec<_>>();
+    let (findings, recommendations) = build_regime_strategy_leaderboard_guidance(&per_regime);
+
+    ResearchRegimeStrategyLeaderboard {
+        campaign_id: campaign.campaign_id,
+        generated_at,
+        per_regime,
+        overall_rankings,
+        best_strategy_by_regime,
+        worst_strategy_by_regime,
+        best_symbol_timeframe_by_regime,
+        findings,
+        recommendations,
+    }
+}
+
+fn build_regime_strategy_groups(
+    batches: &[ResearchCampaignBatchResult],
+    split_by_regime: bool,
+) -> BTreeMap<ResearchRegimeLabel, Vec<RegimeStrategyGroup>> {
+    let mut groups =
+        BTreeMap::<(ResearchRegimeLabel, String, String, String), RegimeStrategyGroup>::new();
+    for batch in batches {
+        let regime_label = if split_by_regime {
+            batch
+                .plan
+                .regime_label
+                .unwrap_or(ResearchRegimeLabel::Unknown)
+        } else {
+            ResearchRegimeLabel::Mixed
+        };
+        let key = (
+            regime_label,
+            batch.plan.strategy_id.clone(),
+            batch.plan.symbol.clone(),
+            batch.plan.timeframe.clone(),
+        );
+        let entry = groups.entry(key).or_insert_with(|| {
+            RegimeStrategyGroup::new(
+                batch.plan.strategy_id.clone(),
+                batch.plan.symbol.clone(),
+                batch.plan.timeframe.clone(),
+            )
+        });
+        entry.push_batch(batch);
+        for candidate in &batch.top_candidates {
+            entry.push_candidate(candidate);
+        }
+    }
+
+    let mut by_regime = BTreeMap::<ResearchRegimeLabel, Vec<RegimeStrategyGroup>>::new();
+    for ((regime_label, _, _, _), group) in groups {
+        by_regime.entry(regime_label).or_default().push(group);
+    }
+    by_regime
+}
+
+fn rank_regime_strategy_groups(
+    groups: Vec<RegimeStrategyGroup>,
+) -> Vec<ResearchRegimeStrategyRanking> {
+    let mut rankings = groups
+        .into_iter()
+        .map(regime_strategy_ranking_from_group)
+        .collect::<Vec<_>>();
+    rankings.sort_by(|left, right| {
+        right
+            .ranking_score
+            .cmp(&left.ranking_score)
+            .then_with(|| right.median_pnl_pct.cmp(&left.median_pnl_pct))
+            .then_with(|| right.robustness_score.cmp(&left.robustness_score))
+            .then_with(|| right.actionable_count.cmp(&left.actionable_count))
+            .then_with(|| left.overfit_count.cmp(&right.overfit_count))
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id))
+            .then_with(|| left.symbol.cmp(&right.symbol))
+            .then_with(|| left.timeframe.cmp(&right.timeframe))
+    });
+    for (index, ranking) in rankings.iter_mut().enumerate() {
+        ranking.rank = i32::try_from(index + 1).unwrap_or(i32::MAX);
+    }
+    rankings
+}
+
+fn regime_strategy_ranking_from_group(group: RegimeStrategyGroup) -> ResearchRegimeStrategyRanking {
+    let candidate_count = i32::try_from(group.pnl_values.len()).unwrap_or(i32::MAX);
+    let batch_count = i32::try_from(group.batch_indices.len()).unwrap_or(i32::MAX);
+    let avg_pnl_pct = avg_decimal(&group.pnl_values).unwrap_or(Decimal::ZERO);
+    let median_pnl_pct = median_decimal_option(group.pnl_values.clone()).unwrap_or(Decimal::ZERO);
+    let best_pnl_pct = group
+        .pnl_values
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(Decimal::ZERO);
+    let worst_pnl_pct = group
+        .pnl_values
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or(Decimal::ZERO);
+    let profitable_candidate_ratio = if candidate_count > 0 {
+        Decimal::from(
+            i32::try_from(
+                group
+                    .pnl_values
+                    .iter()
+                    .filter(|value| **value > Decimal::ZERO)
+                    .count(),
+            )
+            .unwrap_or(i32::MAX),
+        ) / Decimal::from(candidate_count)
+    } else {
+        Decimal::ZERO
+    };
+    let avg_walk_forward_score = avg_decimal(&group.walk_forward_scores);
+    let avg_trade_count = if group.trade_counts.is_empty() {
+        Decimal::ZERO
+    } else {
+        Decimal::from(group.trade_counts.iter().sum::<i32>())
+            / Decimal::from(i32::try_from(group.trade_counts.len()).unwrap_or(1))
+    };
+    let status = regime_strategy_status(
+        candidate_count,
+        batch_count,
+        median_pnl_pct,
+        group.overfit_count,
+        group.weak_count,
+        group.actionable_count,
+        group.data_quality_warning_count,
+    );
+    let robustness_score = regime_strategy_robustness_score(
+        median_pnl_pct,
+        profitable_candidate_ratio,
+        candidate_count,
+        batch_count,
+        group.overfit_count,
+        group.weak_count,
+        group.data_quality_warning_count,
+        avg_walk_forward_score,
+    );
+    let ranking_score = Decimal::from(robustness_score) + (median_pnl_pct / Decimal::new(10, 0));
+
+    ResearchRegimeStrategyRanking {
+        rank: 0,
+        strategy_id: group.strategy_id,
+        symbol: group.symbol,
+        timeframe: group.timeframe,
+        status,
+        candidate_count,
+        batch_count,
+        avg_pnl_pct,
+        median_pnl_pct,
+        best_pnl_pct,
+        worst_pnl_pct,
+        profitable_candidate_ratio,
+        overfit_count: group.overfit_count,
+        weak_count: group.weak_count,
+        actionable_count: group.actionable_count,
+        avg_walk_forward_score,
+        avg_trade_count,
+        avg_fee_drag_pct: None,
+        data_quality_warning_count: group.data_quality_warning_count,
+        robustness_score,
+        ranking_score,
+    }
+}
+
+fn regime_strategy_status(
+    candidate_count: i32,
+    batch_count: i32,
+    median_pnl_pct: Decimal,
+    overfit_count: i32,
+    weak_count: i32,
+    actionable_count: i32,
+    data_quality_warning_count: i32,
+) -> ResearchRegimeStrategyStatus {
+    if data_quality_warning_count > 0 && data_quality_warning_count >= batch_count.max(1) {
+        return ResearchRegimeStrategyStatus::DataQualityBlocked;
+    }
+    if candidate_count < 2 || batch_count < 2 {
+        return ResearchRegimeStrategyStatus::InsufficientData;
+    }
+    if median_pnl_pct < Decimal::ZERO {
+        return ResearchRegimeStrategyStatus::Negative;
+    }
+    if overfit_count > actionable_count && overfit_count >= weak_count {
+        return ResearchRegimeStrategyStatus::Overfit;
+    }
+    if actionable_count > 0 && median_pnl_pct > Decimal::ZERO {
+        return ResearchRegimeStrategyStatus::Promising;
+    }
+    ResearchRegimeStrategyStatus::Weak
+}
+
+fn regime_strategy_robustness_score(
+    median_pnl_pct: Decimal,
+    profitable_candidate_ratio: Decimal,
+    candidate_count: i32,
+    batch_count: i32,
+    overfit_count: i32,
+    weak_count: i32,
+    data_quality_warning_count: i32,
+    avg_walk_forward_score: Option<Decimal>,
+) -> i32 {
+    let mut score = Decimal::new(50, 0);
+    score += median_pnl_pct * Decimal::new(5, 0);
+    score += profitable_candidate_ratio * Decimal::new(20, 0);
+    if let Some(walk_forward_score) = avg_walk_forward_score {
+        score += (walk_forward_score - Decimal::new(50, 0)) / Decimal::new(5, 0);
+    }
+    if candidate_count < 2 {
+        score -= Decimal::new(30, 0);
+    } else if candidate_count < 5 {
+        score -= Decimal::new(10, 0);
+    }
+    if batch_count < 2 {
+        score -= Decimal::new(30, 0);
+    } else if batch_count < 5 {
+        score -= Decimal::new(10, 0);
+    }
+    score -= Decimal::from(overfit_count) * Decimal::new(15, 0);
+    score -= Decimal::from(weak_count) * Decimal::new(5, 0);
+    score -= Decimal::from(data_quality_warning_count) * Decimal::new(20, 0);
+    if median_pnl_pct < Decimal::ZERO {
+        score -= Decimal::new(25, 0);
+    }
+    if candidate_count < 2 || batch_count < 2 {
+        score = score.min(Decimal::new(20, 0));
+    }
+    let clamped = score.clamp(Decimal::ZERO, Decimal::new(100, 0));
+    clamped.round().to_i32().unwrap_or(0)
+}
+
+fn walk_forward_status_score(status: StrategyWalkForwardRobustnessStatus) -> Decimal {
+    Decimal::from(match status {
+        StrategyWalkForwardRobustnessStatus::Robust => 100,
+        StrategyWalkForwardRobustnessStatus::Weak => 40,
+        StrategyWalkForwardRobustnessStatus::OverfitRisk => 20,
+        StrategyWalkForwardRobustnessStatus::InsufficientData => 10,
+        StrategyWalkForwardRobustnessStatus::Failed => 0,
+    })
+}
+
+fn avg_decimal(values: &[Decimal]) -> Option<Decimal> {
+    if values.is_empty() {
+        return None;
+    }
+    Some(
+        values.iter().copied().sum::<Decimal>()
+            / Decimal::from(i32::try_from(values.len()).unwrap_or(1)),
+    )
+}
+
+fn median_decimal_option(mut values: Vec<Decimal>) -> Option<Decimal> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort();
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        Some((values[mid - 1] + values[mid]) / Decimal::new(2, 0))
+    } else {
+        Some(values[mid])
+    }
+}
+
+fn regime_strategy_selection(
+    regime_label: ResearchRegimeLabel,
+    ranking: &ResearchRegimeStrategyRanking,
+) -> ResearchRegimeStrategySelection {
+    ResearchRegimeStrategySelection {
+        regime_label,
+        strategy_id: ranking.strategy_id.clone(),
+        symbol: ranking.symbol.clone(),
+        timeframe: ranking.timeframe.clone(),
+        status: ranking.status,
+        robustness_score: ranking.robustness_score,
+        median_pnl_pct: ranking.median_pnl_pct,
+    }
+}
+
+fn build_regime_strategy_leaderboard_guidance(
+    per_regime: &[ResearchRegimeStrategyCell],
+) -> (
+    Vec<ResearchRegimeStrategyFinding>,
+    Vec<ResearchRegimeStrategyRecommendation>,
+) {
+    let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
+    for cell in per_regime {
+        let promising = cell
+            .rankings
+            .iter()
+            .filter(|ranking| ranking.status == ResearchRegimeStrategyStatus::Promising)
+            .count();
+        if let Some(top) = cell
+            .rankings
+            .first()
+            .filter(|ranking| ranking.status == ResearchRegimeStrategyStatus::Promising)
+        {
+            findings.push(regime_strategy_finding(
+                "LOW",
+                "regime_strategy_promising",
+                format!(
+                    "{} appears promising in {} with median_pnl_pct={} and robustness_score={}.",
+                    top.strategy_id,
+                    cell.regime_label.as_str(),
+                    top.median_pnl_pct,
+                    top.robustness_score
+                ),
+            ));
+        }
+        if promising == 0 {
+            findings.push(regime_strategy_finding(
+                "MEDIUM",
+                "regime_no_promising_strategy",
+                format!(
+                    "No promising strategy found for {}.",
+                    cell.regime_label.as_str()
+                ),
+            ));
+            recommendations.push(regime_strategy_recommendation(
+                "MEDIUM",
+                "expand_regime_research",
+                format!(
+                    "Expand deterministic research coverage before using {} candidates for shadow review.",
+                    cell.regime_label.as_str()
+                ),
+            ));
+        }
+        let overfit_heavy = cell
+            .rankings
+            .iter()
+            .filter(|ranking| ranking.status == ResearchRegimeStrategyStatus::Overfit)
+            .count();
+        if overfit_heavy > 0 {
+            findings.push(regime_strategy_finding(
+                "MEDIUM",
+                "regime_overfit_heavy",
+                format!(
+                    "{} has {} overfit-heavy strategy cells.",
+                    cell.regime_label.as_str(),
+                    overfit_heavy
+                ),
+            ));
+            recommendations.push(regime_strategy_recommendation(
+                "MEDIUM",
+                "tighten_walk_forward_validation",
+                format!(
+                    "Prioritize walk-forward and out-of-sample validation for {}.",
+                    cell.regime_label.as_str()
+                ),
+            ));
+        }
+        if cell
+            .rankings
+            .iter()
+            .any(|ranking| ranking.status == ResearchRegimeStrategyStatus::DataQualityBlocked)
+        {
+            findings.push(regime_strategy_finding(
+                "HIGH",
+                "regime_leaderboard_data_quality_blocked",
+                format!(
+                    "Data quality blocks regime leaderboard interpretation for {}.",
+                    cell.regime_label.as_str()
+                ),
+            ));
+            recommendations.push(regime_strategy_recommendation(
+                "HIGH",
+                "repair_regime_market_data",
+                format!(
+                    "Repair market data and rerun research before ranking {}.",
+                    cell.regime_label.as_str()
+                ),
+            ));
+        }
+    }
+    recommendations.push(regime_strategy_recommendation(
+        "LOW",
+        "research_only_no_auto_promotion",
+        "Use regime leaderboard as research evidence only; do not auto-promote or submit orders.",
+    ));
+    (findings, recommendations)
+}
+
+fn regime_strategy_finding(
+    severity: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchRegimeStrategyFinding {
+    ResearchRegimeStrategyFinding {
+        severity: severity.into(),
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn regime_strategy_recommendation(
+    priority: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchRegimeStrategyRecommendation {
+    ResearchRegimeStrategyRecommendation {
+        priority: priority.into(),
+        code: code.into(),
+        message: message.into(),
+    }
 }
 
 pub fn status_from_campaign_summary(summary: &ResearchCampaignSummary) -> ResearchCampaignStatus {
@@ -11244,6 +11866,43 @@ mod tests {
         }
     }
 
+    fn leaderboard_batch(
+        plan_index: i32,
+        strategy_id: &str,
+        symbol: &str,
+        timeframe: &str,
+        regime_label: ResearchRegimeLabel,
+        triage_status: ResearchBatchTriageStatus,
+        pnl_pct: Decimal,
+        robustness_status: Option<StrategyWalkForwardRobustnessStatus>,
+    ) -> ResearchCampaignBatchResult {
+        let mut batch = campaign_batch(plan_index, triage_status, pnl_pct, pnl_pct);
+        batch.plan.strategy_id = strategy_id.to_string();
+        batch.plan.symbol = symbol.to_string();
+        batch.plan.timeframe = timeframe.to_string();
+        batch.plan.regime_label = Some(regime_label);
+        batch.candidates_created = 1;
+        batch.top_candidates[0].strategy_id = strategy_id.to_string();
+        batch.top_candidates[0].symbol = symbol.to_string();
+        batch.top_candidates[0].timeframe = timeframe.to_string();
+        batch.top_candidates[0].pnl_pct = pnl_pct;
+        batch.top_candidates[0].score = pnl_pct;
+        batch.top_candidates[0].robustness_status = robustness_status;
+        batch
+    }
+
+    fn leaderboard_campaign(batches: Vec<ResearchCampaignBatchResult>) -> ResearchCampaignResult {
+        ResearchCampaignResult {
+            campaign_id: Uuid::from_u128(42),
+            status: ResearchCampaignStatus::Completed,
+            request: sample_campaign_request(),
+            summary: summarize_research_campaign(batches.len(), &batches),
+            batches,
+            created_at: ts(0, 0, 0),
+            completed_at: Some(ts(3, 0, 0)),
+        }
+    }
+
     fn regime_candles(closes: &[i64]) -> Vec<Candle> {
         closes
             .windows(2)
@@ -11538,6 +12197,305 @@ mod tests {
                 Uuid::from_u128(202)
             ]
         );
+    }
+
+    #[test]
+    fn regime_leaderboard_median_ranks_above_single_best_outlier() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "steady_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendUp,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(4, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                2,
+                "steady_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendUp,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(5, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                3,
+                "outlier_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendUp,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(100, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+        let rankings = &leaderboard.per_regime[0].rankings;
+
+        assert_eq!(rankings[0].strategy_id, "steady_strategy");
+        assert_eq!(rankings[1].strategy_id, "outlier_strategy");
+        assert_eq!(
+            rankings[1].status,
+            ResearchRegimeStrategyStatus::InsufficientData
+        );
+    }
+
+    #[test]
+    fn regime_leaderboard_overfit_penalty_lowers_rank() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "robust_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(2, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                2,
+                "robust_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(2, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                3,
+                "overfit_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::OverfitOnly,
+                Decimal::new(2, 0),
+                Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+            ),
+            leaderboard_batch(
+                4,
+                "overfit_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::OverfitOnly,
+                Decimal::new(2, 0),
+                Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+        let rankings = &leaderboard.per_regime[0].rankings;
+
+        assert_eq!(rankings[0].strategy_id, "robust_strategy");
+        assert_eq!(rankings[1].strategy_id, "overfit_strategy");
+        assert_eq!(rankings[1].status, ResearchRegimeStrategyStatus::Overfit);
+    }
+
+    #[test]
+    fn regime_leaderboard_insufficient_samples_are_penalized() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "sampled_strategy",
+                "BTCUSDT",
+                "15m",
+                ResearchRegimeLabel::HighVolatility,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                2,
+                "sampled_strategy",
+                "BTCUSDT",
+                "15m",
+                ResearchRegimeLabel::HighVolatility,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                3,
+                "thin_strategy",
+                "BTCUSDT",
+                "15m",
+                ResearchRegimeLabel::HighVolatility,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(20, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+        let thin = leaderboard.per_regime[0]
+            .rankings
+            .iter()
+            .find(|ranking| ranking.strategy_id == "thin_strategy")
+            .unwrap();
+
+        assert_eq!(thin.status, ResearchRegimeStrategyStatus::InsufficientData);
+        assert!(thin.rank > 1);
+    }
+
+    #[test]
+    fn regime_leaderboard_negative_median_yields_negative() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "losing_strategy",
+                "ETHUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendDown,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(-2, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Weak),
+            ),
+            leaderboard_batch(
+                2,
+                "losing_strategy",
+                "ETHUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendDown,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(-1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Weak),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+
+        assert_eq!(
+            leaderboard.per_regime[0].rankings[0].status,
+            ResearchRegimeStrategyStatus::Negative
+        );
+    }
+
+    #[test]
+    fn regime_leaderboard_ranking_order_is_deterministic() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                2,
+                "alpha_b",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::LowVolatility,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                1,
+                "alpha_a",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::LowVolatility,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                4,
+                "alpha_b",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::LowVolatility,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                3,
+                "alpha_a",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::LowVolatility,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(1, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        ]);
+
+        let first = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+        let second = build_research_regime_strategy_leaderboard(&campaign, ts(5, 0, 0));
+
+        assert_eq!(
+            first.per_regime[0]
+                .rankings
+                .iter()
+                .map(|ranking| ranking.strategy_id.clone())
+                .collect::<Vec<_>>(),
+            second.per_regime[0]
+                .rankings
+                .iter()
+                .map(|ranking| ranking.strategy_id.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(first.per_regime[0].rankings[0].strategy_id, "alpha_a");
+    }
+
+    #[test]
+    fn regime_leaderboard_selects_per_regime_best() {
+        let campaign = leaderboard_campaign(vec![
+            leaderboard_batch(
+                1,
+                "trend_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendUp,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(3, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                2,
+                "trend_strategy",
+                "BTCUSDT",
+                "5m",
+                ResearchRegimeLabel::TrendUp,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(3, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                3,
+                "range_strategy",
+                "ETHUSDT",
+                "15m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(4, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+            leaderboard_batch(
+                4,
+                "range_strategy",
+                "ETHUSDT",
+                "15m",
+                ResearchRegimeLabel::Range,
+                ResearchBatchTriageStatus::Actionable,
+                Decimal::new(4, 0),
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        ]);
+
+        let leaderboard = build_research_regime_strategy_leaderboard(&campaign, ts(4, 0, 0));
+
+        assert_eq!(leaderboard.best_strategy_by_regime.len(), 2);
+        assert!(leaderboard.best_strategy_by_regime.iter().any(|selection| {
+            selection.regime_label == ResearchRegimeLabel::TrendUp
+                && selection.strategy_id == "trend_strategy"
+        }));
+        assert!(leaderboard.best_strategy_by_regime.iter().any(|selection| {
+            selection.regime_label == ResearchRegimeLabel::Range
+                && selection.strategy_id == "range_strategy"
+        }));
     }
 
     #[test]

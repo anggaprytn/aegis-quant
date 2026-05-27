@@ -68,14 +68,15 @@ use aegis_core::{
     ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeWindow,
-    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult, RiskCheckContext,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
-    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult,
+    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
+    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExitAttributionRequest,
     StrategyExitAttributionResult, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
@@ -1650,6 +1651,14 @@ struct ResearchCampaignFailureAttributionResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchRegimeStrategyLeaderboardResponse {
+    leaderboard: ResearchRegimeStrategyLeaderboard,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchRegimeDatasetResponse {
     dataset: ResearchRegimeDatasetResult,
     request_id: String,
@@ -2987,6 +2996,10 @@ async fn main() {
         .route(
             "/research/campaigns/:id/failure-attribution",
             get(get_research_campaign_failure_attribution_handler),
+        )
+        .route(
+            "/research/campaigns/:id/regime-leaderboard",
+            get(get_research_campaign_regime_leaderboard_handler),
         )
         .route(
             "/research/campaigns/:id",
@@ -18128,6 +18141,51 @@ async fn get_research_campaign_failure_attribution_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_build_research_campaign_failure_attribution",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_campaign_regime_leaderboard_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match research_campaign_read_model(&state, id).await {
+        Ok(Some(campaign)) => (
+            StatusCode::OK,
+            Json(ResearchRegimeStrategyLeaderboardResponse {
+                leaderboard: aegis_core::build_research_regime_strategy_leaderboard(
+                    &campaign,
+                    Utc::now(),
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_campaign_not_found",
+                message: "Research campaign was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_research_campaign_regime_leaderboard",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

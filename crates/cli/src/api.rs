@@ -26,8 +26,8 @@ use aegis_core::{
     ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
     ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
-    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeWindow,
-    ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
+    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeStrategyLeaderboard,
+    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
@@ -812,6 +812,17 @@ impl ApiClient {
     ) -> Result<ResearchCampaignFailureAttributionResponse, ApiClientError> {
         self.get(
             &format!("/research/campaigns/{campaign_id}/failure-attribution"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_research_campaign_regime_leaderboard(
+        &self,
+        campaign_id: Uuid,
+    ) -> Result<ResearchRegimeStrategyLeaderboardResponse, ApiClientError> {
+        self.get(
+            &format!("/research/campaigns/{campaign_id}/regime-leaderboard"),
             &[],
         )
         .await
@@ -2679,6 +2690,14 @@ pub struct ResearchCampaignSummaryResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchCampaignFailureAttributionResponse {
     pub attribution: ResearchCampaignFailureAttribution,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeStrategyLeaderboardResponse {
+    pub leaderboard: ResearchRegimeStrategyLeaderboard,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

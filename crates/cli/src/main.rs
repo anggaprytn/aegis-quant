@@ -793,6 +793,16 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_campaign_failure_attribution(&response.attribution);
                     }
                 }
+                ResearchCampaignCommands::RegimeLeaderboard { campaign_id } => {
+                    let response = client
+                        .get_research_campaign_regime_leaderboard(campaign_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_strategy_leaderboard(&response.leaderboard);
+                    }
+                }
             },
             ResearchCommands::Batches(command) => match command {
                 ResearchBatchCommands::Run(args) => {
