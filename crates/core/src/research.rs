@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::{
     calculate_strategy_rejection_rate, Candle, CandleInterval, CoreError, ExecutionReadinessStatus,
-    MarketDataSource, StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
+    MarketDataQualityReport, MarketDataSource, MarketProviderHealth,
+    StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
 };
 
 fn default_required_coverage_pct() -> Decimal {
@@ -29,6 +30,228 @@ fn default_shadow_pnl_slippage_bps() -> Decimal {
 
 fn default_shadow_pnl_extreme_threshold_pct() -> Decimal {
     Decimal::new(5, 0)
+}
+
+fn default_research_batch_base_interval() -> String {
+    "1m".to_string()
+}
+
+fn default_research_batch_walk_forward_top_n() -> u32 {
+    3
+}
+
+fn default_research_batch_repair_degraded_data() -> bool {
+    true
+}
+
+fn default_research_batch_create_candidates() -> bool {
+    true
+}
+
+fn default_research_batch_max_candidates() -> u32 {
+    3
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchBatchStatus {
+    Started,
+    Partial,
+    Completed,
+    Failed,
+}
+
+impl ResearchBatchStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "STARTED",
+            Self::Partial => "PARTIAL",
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchBatchStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "STARTED" => Ok(Self::Started),
+            "PARTIAL" => Ok(Self::Partial),
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedResearchBatchStatus(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchBatchStepStatus {
+    Pending,
+    Running,
+    Completed,
+    Skipped,
+    Failed,
+}
+
+impl ResearchBatchStepStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Skipped => "SKIPPED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchBatchStepStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PENDING" => Ok(Self::Pending),
+            "RUNNING" => Ok(Self::Running),
+            "COMPLETED" => Ok(Self::Completed),
+            "SKIPPED" => Ok(Self::Skipped),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedResearchBatchStepStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    #[serde(default = "default_research_batch_base_interval")]
+    pub base_interval: String,
+    pub target_intervals: Vec<String>,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub experiment_timeframes: Vec<String>,
+    pub lookback_candidates: Vec<u32>,
+    pub trend_lookback_candidates: Option<Vec<u32>>,
+    pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub holding_candles_candidates: Option<Vec<u32>>,
+    #[serde(default = "default_research_batch_walk_forward_top_n")]
+    pub walk_forward_top_n: u32,
+    #[serde(default = "default_research_batch_repair_degraded_data")]
+    pub repair_degraded_data: bool,
+    #[serde(default = "default_research_batch_create_candidates")]
+    pub create_candidates: bool,
+    #[serde(default = "default_research_batch_max_candidates")]
+    pub max_candidates: u32,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl ResearchBatchRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategy_id.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentStrategyId);
+        }
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentSymbol);
+        }
+        self.base_interval.parse::<CandleInterval>()?;
+        for interval in self
+            .target_intervals
+            .iter()
+            .chain(self.experiment_timeframes.iter())
+        {
+            if interval.trim().is_empty() {
+                return Err(CoreError::EmptyStrategyExperimentTimeframe);
+            }
+            interval.parse::<CandleInterval>()?;
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidStrategyExperimentTimeRange);
+        }
+        if self.initial_capital <= Decimal::ZERO {
+            return Err(CoreError::InvalidStrategyExperimentInitialCapital);
+        }
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        if self.experiment_timeframes.is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentTimeframes);
+        }
+        if self.lookback_candidates.is_empty() {
+            return Err(CoreError::EmptyStrategyExperimentCandidates);
+        }
+        if self.walk_forward_top_n == 0 || self.max_candidates == 0 {
+            return Err(CoreError::InvalidStrategyExperimentMaxRuns);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchStep {
+    pub id: Uuid,
+    pub batch_id: Uuid,
+    pub step_name: String,
+    pub status: ResearchBatchStepStatus,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub result: Option<Value>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchCandidateSummary {
+    pub experiment_id: Uuid,
+    pub experiment_run_id: Uuid,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub candidate_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub score: Decimal,
+    pub pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub trade_count: i32,
+    pub win_rate: Decimal,
+    pub robustness_status: Option<StrategyWalkForwardRobustnessStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchBatchRecommendation {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchResult {
+    pub batch_id: Uuid,
+    pub status: ResearchBatchStatus,
+    pub steps: Vec<ResearchBatchStep>,
+    pub provider_health_summary: Option<MarketProviderHealth>,
+    pub backfill_summary: Option<Value>,
+    pub quality_before: Option<MarketDataQualityReport>,
+    pub repair_summary: Option<Value>,
+    pub quality_after: Option<MarketDataQualityReport>,
+    pub aggregation_summary: Option<Value>,
+    pub experiment_ids: Vec<Uuid>,
+    pub walk_forward_run_ids: Vec<Uuid>,
+    pub created_candidate_ids: Vec<Uuid>,
+    pub top_candidates: Vec<ResearchBatchCandidateSummary>,
+    pub recommendations: Vec<ResearchBatchRecommendation>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

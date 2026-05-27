@@ -41,7 +41,9 @@ use aegis_core::{
     MarketProviderAttempt, MarketProviderHealth, OperatorReport, OperatorReportRequest,
     OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
     PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, ResearchCandidate, ResearchCandidateDecision,
+    PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchRecommendation,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus, ResearchBatchStep,
+    ResearchBatchStepStatus, ResearchCandidate, ResearchCandidateDecision,
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
@@ -114,7 +116,8 @@ use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
     apply_research_candidate_review, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, complete_market_data_repair_run,
-    connect_pool, count_users, create_paper_order, create_research_candidate, ensure_system_state,
+    complete_research_batch_step, connect_pool, count_users, create_paper_order,
+    create_research_candidate, ensure_system_state,
     get_active_strategy_research_candidate_promotion,
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
@@ -123,7 +126,7 @@ use db::{
     get_latest_research_candidate_qualification_evaluation,
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
-    get_recent_closed_candles, get_research_candidate,
+    get_recent_closed_candles, get_research_batch, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
@@ -136,23 +139,23 @@ use db::{
     get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
     insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
     insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
-    insert_paper_equity_snapshot, insert_research_candidate_qualification_evaluation,
-    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
-    insert_strategy_config_audit, insert_strategy_research_candidate,
-    insert_strategy_research_candidate_promotion, insert_system_event,
-    insert_testnet_shadow_promotion, insert_user, link_research_candidate_walk_forward_run,
-    list_backtest_runs, list_candle_backfill_runs, list_candles,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
+    insert_research_candidate_qualification_evaluation, insert_risk_config_audit,
+    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
+    insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
+    insert_system_event, insert_testnet_shadow_promotion, insert_user,
+    link_research_candidate_walk_forward_run, list_backtest_runs, list_candle_backfill_runs,
+    list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions,
     list_market_data_repair_runs, list_market_feed_statuses, list_open_paper_positions,
     list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
     list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_research_candidate_events, list_research_candidate_qualification_evaluations,
-    list_research_candidate_reviews, list_research_candidate_shadow_runs,
-    list_research_candidate_walk_forward_evidence, list_research_candidate_watchlist_rows,
-    list_research_candidates, list_risk_config_audit, list_risk_config_versions,
-    list_strategy_candidate_observations, list_strategy_config_audit,
+    list_research_batch_steps, list_research_batches, list_research_candidate_events,
+    list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
+    list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
+    list_research_candidate_watchlist_rows, list_research_candidates, list_risk_config_audit,
+    list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
     list_strategy_research_candidates, list_strategy_status, list_strategy_walk_forward_runs,
@@ -161,6 +164,7 @@ use db::{
     mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
     paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
     persist_risk_config_version, persist_strategy_config_version,
+    research_batch_result_from_records, research_batch_step_from_record,
     research_candidate_event_from_record, research_candidate_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row, revoke_session,
@@ -172,7 +176,8 @@ use db::{
     strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
-    summarize_candle_continuity_report, update_research_candidate_status, update_strategy_state,
+    summarize_candle_continuity_report, update_research_batch_summary,
+    update_research_candidate_status, update_strategy_state,
     update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
     upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
@@ -1403,6 +1408,11 @@ struct ResearchDatasetBuildsQuery {
 }
 
 #[derive(Deserialize)]
+struct ResearchBatchesQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct StrategyResearchCandidatesQuery {
     strategy_id: Option<String>,
     symbol: Option<String>,
@@ -1534,6 +1544,30 @@ struct ResearchCandidateResponse {
 struct ResearchCandidateWalkForwardEvidenceResponse {
     evidence: Vec<ResearchCandidateWalkForwardEvidence>,
     latest: Option<ResearchCandidateWalkForwardEvidence>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchBatchResponse {
+    batch: ResearchBatchResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchBatchesResponse {
+    batches: Vec<ResearchBatchResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchBatchStepsResponse {
+    steps: Vec<ResearchBatchStep>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2568,6 +2602,13 @@ async fn main() {
         .route("/research/data/build", post(post_research_data_build))
         .route("/research/data/builds", get(list_research_data_builds))
         .route("/research/data/builds/:id", get(get_research_data_build))
+        .route("/research/batches/run", post(run_research_batch_handler))
+        .route("/research/batches", get(list_research_batches_handler))
+        .route("/research/batches/:id", get(get_research_batch_handler))
+        .route(
+            "/research/batches/:id/steps",
+            get(get_research_batch_steps_handler),
+        )
         .route(
             "/research/candidates/from-experiment-run",
             post(create_research_candidate_from_experiment_run_handler),
@@ -15243,6 +15284,794 @@ fn normalize_candidate_config(
     }
 }
 
+async fn persist_research_batch_snapshot(
+    state: &AppState,
+    result: &ResearchBatchResult,
+) -> anyhow::Result<()> {
+    let summary = serde_json::to_value(result)?;
+    update_research_batch_summary(
+        &state.db_pool,
+        result.batch_id,
+        result.status,
+        &summary,
+        result.completed_at,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn start_research_batch_step(
+    state: &AppState,
+    result: &mut ResearchBatchResult,
+    name: &str,
+) -> anyhow::Result<Uuid> {
+    let record = insert_research_batch_step(
+        &state.db_pool,
+        result.batch_id,
+        name,
+        ResearchBatchStepStatus::Running,
+        &json!({}),
+        None,
+    )
+    .await?;
+    result.steps.push(research_batch_step_from_record(&record)?);
+    persist_research_batch_snapshot(state, result).await?;
+    Ok(record.id)
+}
+
+async fn finish_research_batch_step(
+    state: &AppState,
+    result: &mut ResearchBatchResult,
+    step_id: Uuid,
+    status: ResearchBatchStepStatus,
+    value: Value,
+    error: Option<String>,
+) -> anyhow::Result<()> {
+    let record =
+        complete_research_batch_step(&state.db_pool, step_id, status, &value, error.as_deref())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("research batch step disappeared"))?;
+    let step = research_batch_step_from_record(&record)?;
+    if let Some(existing) = result.steps.iter_mut().find(|item| item.id == step.id) {
+        *existing = step;
+    } else {
+        result.steps.push(step);
+    }
+    persist_research_batch_snapshot(state, result).await?;
+    Ok(())
+}
+
+async fn run_batch_aggregation(
+    state: &AppState,
+    payload: CandleAggregationRequest,
+) -> anyhow::Result<CandleAggregationResult> {
+    payload.validate()?;
+    let symbol = payload.normalized_symbol()?;
+    let target_interval = payload.target_interval.parse::<CandleInterval>()?;
+    let source_candles = get_closed_1m_candles_range(
+        &state.db_pool,
+        payload.exchange,
+        &symbol,
+        payload.start_time,
+        payload.end_time,
+    )
+    .await?;
+    let aggregated = aggregate_closed_1m_candles(&source_candles, target_interval);
+    let upsert = upsert_aggregated_candles(&state.db_pool, &aggregated.candles).await?;
+    Ok(CandleAggregationResult {
+        exchange: payload.exchange,
+        symbol: symbol.as_str().to_string(),
+        source_interval: payload.source_interval,
+        target_interval: payload.target_interval,
+        start_time: payload.start_time,
+        end_time: payload.end_time,
+        source_candles: i32::try_from(source_candles.len()).unwrap_or(i32::MAX),
+        aggregated_candles: i32::try_from(aggregated.candles.len()).unwrap_or(i32::MAX),
+        inserted: upsert.inserted_candles,
+        updated: upsert.updated_candles,
+        skipped_incomplete: aggregated.skipped_incomplete_buckets,
+        correlation_id: payload.correlation_id,
+    })
+}
+
+fn batch_walk_forward_window_hours(start: DateTime<Utc>, end: DateTime<Utc>) -> (i64, i64, i64) {
+    let total_hours = end.signed_duration_since(start).num_hours().max(1);
+    let test_hours = (total_hours / 3).max(1);
+    (0, test_hours, test_hours)
+}
+
+fn ranked_research_batch_candidates(
+    mut candidates: Vec<ResearchBatchCandidateSummary>,
+) -> Vec<ResearchBatchCandidateSummary> {
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.pnl_pct.cmp(&left.pnl_pct))
+            .then_with(|| left.max_drawdown_pct.cmp(&right.max_drawdown_pct))
+            .then_with(|| right.win_rate.cmp(&left.win_rate))
+            .then_with(|| right.trade_count.cmp(&left.trade_count))
+            .then_with(|| left.timeframe.cmp(&right.timeframe))
+            .then_with(|| left.experiment_run_id.cmp(&right.experiment_run_id))
+    });
+    candidates
+}
+
+fn batch_recommendations(result: &ResearchBatchResult) -> Vec<ResearchBatchRecommendation> {
+    let mut recommendations = Vec::new();
+    if result.status == ResearchBatchStatus::Completed {
+        recommendations.push(ResearchBatchRecommendation {
+            severity: "LOW".to_string(),
+            code: "research_batch_completed".to_string(),
+            message: "Research batch completed.".to_string(),
+        });
+    }
+    if result.status == ResearchBatchStatus::Failed {
+        recommendations.push(ResearchBatchRecommendation {
+            severity: "MEDIUM".to_string(),
+            code: "research_batch_failed".to_string(),
+            message: "Research batch failed.".to_string(),
+        });
+    }
+    if !result.created_candidate_ids.is_empty() {
+        recommendations.push(ResearchBatchRecommendation {
+            severity: "LOW".to_string(),
+            code: "research_batch_candidates_for_review".to_string(),
+            message: "Research batch produced candidates for review.".to_string(),
+        });
+    }
+    if !result.top_candidates.is_empty()
+        && result.top_candidates.iter().all(|candidate| {
+            candidate.robustness_status == Some(StrategyWalkForwardRobustnessStatus::OverfitRisk)
+        })
+    {
+        recommendations.push(ResearchBatchRecommendation {
+            severity: "MEDIUM".to_string(),
+            code: "research_batch_only_overfit_candidates".to_string(),
+            message: "Research batch produced only overfit candidates.".to_string(),
+        });
+    }
+    recommendations
+}
+
+async fn execute_research_batch(
+    state: &AppState,
+    mut payload: ResearchBatchRequest,
+    actor_id: Option<Uuid>,
+    correlation_id: Uuid,
+) -> anyhow::Result<ResearchBatchResult> {
+    payload.correlation_id = Some(correlation_id);
+    payload.validate()?;
+    let now = Utc::now();
+    let mut result = ResearchBatchResult {
+        batch_id: Uuid::new_v4(),
+        status: ResearchBatchStatus::Started,
+        steps: Vec::new(),
+        provider_health_summary: None,
+        backfill_summary: None,
+        quality_before: None,
+        repair_summary: None,
+        quality_after: None,
+        aggregation_summary: None,
+        experiment_ids: Vec::new(),
+        walk_forward_run_ids: Vec::new(),
+        created_candidate_ids: Vec::new(),
+        top_candidates: Vec::new(),
+        recommendations: Vec::new(),
+        created_at: now,
+        completed_at: None,
+    };
+    let request_json = serde_json::to_value(&payload)?;
+    let summary = serde_json::to_value(&result)?;
+    insert_research_batch(
+        &state.db_pool,
+        &result,
+        &request_json,
+        &summary,
+        Some(correlation_id),
+    )
+    .await?;
+
+    let provider_step = start_research_batch_step(state, &mut result, "provider_health").await?;
+    let health = check_binance_provider_health(
+        &state.market_config.binance_rest_base_url,
+        &state.market_config.binance_rest_fallback_base_urls,
+    )
+    .await;
+    result.provider_health_summary = Some(health.clone());
+    finish_research_batch_step(
+        state,
+        &mut result,
+        provider_step,
+        ResearchBatchStepStatus::Completed,
+        serde_json::to_value(&health)?,
+        None,
+    )
+    .await?;
+
+    let backfill_step = start_research_batch_step(state, &mut result, "backfill").await?;
+    let backfill_service = HistoricalCandleBackfillService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        &state.market_config.binance_rest_base_url,
+    )?
+    .with_fallback_base_urls(state.market_config.binance_rest_fallback_base_urls.clone());
+    let backfill = backfill_service
+        .run(CandleBackfillRequest {
+            exchange: state.market_config.exchange,
+            symbol: payload.symbol.clone(),
+            interval: payload.base_interval.clone(),
+            start_time: payload.start_time,
+            end_time: payload.end_time,
+            limit_per_request: Some(1000),
+            correlation_id: Some(correlation_id),
+        })
+        .await?;
+    result.backfill_summary = Some(serde_json::to_value(&backfill)?);
+    finish_research_batch_step(
+        state,
+        &mut result,
+        backfill_step,
+        ResearchBatchStepStatus::Completed,
+        serde_json::to_value(&backfill)?,
+        None,
+    )
+    .await?;
+
+    let quality_before_step =
+        start_research_batch_step(state, &mut result, "candle_quality_before").await?;
+    let quality_request = MarketDataQualityRequest {
+        exchange: state.market_config.exchange,
+        symbol: payload.symbol.clone(),
+        interval: payload.base_interval.clone(),
+        start_time: payload.start_time,
+        end_time: payload.end_time,
+        expected_interval_seconds: None,
+        max_allowed_gap_count: None,
+        max_allowed_gap_pct: None,
+    };
+    let quality_before =
+        summarize_candle_continuity_report(&state.db_pool, &quality_request).await?;
+    result.quality_before = Some(quality_before.clone());
+    finish_research_batch_step(
+        state,
+        &mut result,
+        quality_before_step,
+        ResearchBatchStepStatus::Completed,
+        serde_json::to_value(&quality_before)?,
+        None,
+    )
+    .await?;
+
+    let repair_needed = matches!(
+        quality_before.status,
+        aegis_core::MarketDataQualityStatus::Degraded | aegis_core::MarketDataQualityStatus::Bad
+    );
+    let repair_step = start_research_batch_step(state, &mut result, "repair_degraded_data").await?;
+    if repair_needed && payload.repair_degraded_data {
+        let repair = run_market_data_repair(
+            state,
+            MarketDataRepairPlanRequest {
+                exchange: state.market_config.exchange,
+                symbol: payload.symbol.clone(),
+                interval: payload.base_interval.clone(),
+                start_time: payload.start_time,
+                end_time: payload.end_time,
+                repair_mode: aegis_core::MarketDataRepairMode::Repair,
+                max_ranges: 100,
+                reaggregate_derived_intervals: false,
+                correlation_id: Some(correlation_id),
+            },
+        )
+        .await?;
+        result.repair_summary = Some(serde_json::to_value(&repair)?);
+        finish_research_batch_step(
+            state,
+            &mut result,
+            repair_step,
+            ResearchBatchStepStatus::Completed,
+            serde_json::to_value(&repair)?,
+            None,
+        )
+        .await?;
+    } else {
+        let skipped = json!({
+            "repair_needed": repair_needed,
+            "repair_degraded_data": payload.repair_degraded_data
+        });
+        finish_research_batch_step(
+            state,
+            &mut result,
+            repair_step,
+            ResearchBatchStepStatus::Skipped,
+            skipped,
+            None,
+        )
+        .await?;
+    }
+
+    let quality_after_step =
+        start_research_batch_step(state, &mut result, "candle_quality_after").await?;
+    let quality_after =
+        summarize_candle_continuity_report(&state.db_pool, &quality_request).await?;
+    result.quality_after = Some(quality_after.clone());
+    finish_research_batch_step(
+        state,
+        &mut result,
+        quality_after_step,
+        ResearchBatchStepStatus::Completed,
+        serde_json::to_value(&quality_after)?,
+        None,
+    )
+    .await?;
+
+    let aggregation_step =
+        start_research_batch_step(state, &mut result, "aggregate_timeframes").await?;
+    let mut aggregations = Vec::new();
+    for target_interval in &payload.target_intervals {
+        if target_interval == &payload.base_interval {
+            continue;
+        }
+        let aggregation = run_batch_aggregation(
+            state,
+            CandleAggregationRequest {
+                exchange: state.market_config.exchange,
+                symbol: payload.symbol.clone(),
+                source_interval: payload.base_interval.clone(),
+                target_interval: target_interval.clone(),
+                start_time: payload.start_time,
+                end_time: payload.end_time,
+                correlation_id: Some(correlation_id),
+            },
+        )
+        .await?;
+        aggregations.push(aggregation);
+    }
+    result.aggregation_summary = Some(serde_json::to_value(&aggregations)?);
+    finish_research_batch_step(
+        state,
+        &mut result,
+        aggregation_step,
+        ResearchBatchStepStatus::Completed,
+        serde_json::to_value(&aggregations)?,
+        None,
+    )
+    .await?;
+
+    let experiment_step =
+        start_research_batch_step(state, &mut result, "experiment_sweeps").await?;
+    let strategy_id = payload.strategy_id.parse::<StrategyId>()?;
+    ensure_strategy_config(state, strategy_id).await?;
+    let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+    let mut ranked = Vec::new();
+    for timeframe in &payload.experiment_timeframes {
+        let execution = engine
+            .run_strategy_experiment(StrategyExperimentRequest {
+                strategy_id: payload.strategy_id.clone(),
+                symbol: payload.symbol.clone(),
+                timeframe: timeframe.clone(),
+                start_time: payload.start_time,
+                end_time: payload.end_time,
+                initial_capital: payload.initial_capital,
+                fee_bps: payload.fee_bps,
+                slippage_bps: payload.slippage_bps,
+                lookback_candidates: payload.lookback_candidates.clone(),
+                trend_lookback_candidates: payload.trend_lookback_candidates.clone(),
+                momentum_lookback_candidates: payload.momentum_lookback_candidates.clone(),
+                breakout_lookback_candidates: payload.breakout_lookback_candidates.clone(),
+                holding_candles_candidates: payload.holding_candles_candidates.clone(),
+                stop_loss_pct_candidates: None,
+                take_profit_pct_candidates: None,
+                max_signal_age_ms: None,
+                max_runs: None,
+                correlation_id: Some(correlation_id),
+            })
+            .await?;
+        result.experiment_ids.push(execution.result.experiment_id);
+        for run in execution.runs {
+            ranked.push(ResearchBatchCandidateSummary {
+                experiment_id: execution.result.experiment_id,
+                experiment_run_id: run.id,
+                walk_forward_run_id: None,
+                candidate_id: None,
+                strategy_id: execution.result.strategy_id.clone(),
+                symbol: execution.result.symbol.clone(),
+                timeframe: execution.result.timeframe.clone(),
+                score: run.score,
+                pnl_pct: run.pnl_pct,
+                max_drawdown_pct: run.max_drawdown_pct,
+                trade_count: run.trade_count,
+                win_rate: run.win_rate,
+                robustness_status: None,
+            });
+        }
+    }
+    ranked = ranked_research_batch_candidates(ranked);
+    let experiment_step_summary = json!({
+        "experiment_ids": result.experiment_ids.clone(),
+        "ranked_run_count": ranked.len()
+    });
+    finish_research_batch_step(
+        state,
+        &mut result,
+        experiment_step,
+        ResearchBatchStepStatus::Completed,
+        experiment_step_summary,
+        None,
+    )
+    .await?;
+
+    let walk_forward_step =
+        start_research_batch_step(state, &mut result, "walk_forward_top_candidates").await?;
+    let (train_hours, test_hours, step_hours) =
+        batch_walk_forward_window_hours(payload.start_time, payload.end_time);
+    let top_n = usize::try_from(payload.walk_forward_top_n).unwrap_or(usize::MAX);
+    let mut top_candidates = ranked.into_iter().take(top_n).collect::<Vec<_>>();
+    for candidate in &mut top_candidates {
+        let run_record = get_strategy_experiment_run(&state.db_pool, candidate.experiment_run_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("strategy experiment run was not found"))?;
+        let experiment_run = strategy_experiment_run_from_record(&run_record)?;
+        let execution = engine
+            .run_strategy_walk_forward(StrategyWalkForwardRequest {
+                strategy_id: candidate.strategy_id.clone(),
+                symbol: candidate.symbol.clone(),
+                timeframe: candidate.timeframe.clone(),
+                config: None,
+                experiment_run_id: Some(candidate.experiment_run_id),
+                start_time: payload.start_time,
+                end_time: payload.end_time,
+                window_train_size_hours: train_hours,
+                window_test_size_hours: test_hours,
+                step_size_hours: step_hours,
+                initial_capital: payload.initial_capital,
+                fee_bps: payload.fee_bps,
+                slippage_bps: payload.slippage_bps,
+                candidate_config: aegis_core::StrategyWalkForwardCandidate {
+                    lookback_candles: experiment_run.candidate.lookback_candles,
+                    trend_lookback_candles: experiment_run.candidate.trend_lookback_candles,
+                    momentum_lookback_candles: experiment_run.candidate.momentum_lookback_candles,
+                    breakout_lookback_candles: experiment_run.candidate.breakout_lookback_candles,
+                    holding_candles: experiment_run.candidate.holding_candles,
+                    stop_loss_pct: experiment_run.candidate.stop_loss_pct,
+                    take_profit_pct: experiment_run.candidate.take_profit_pct,
+                    max_signal_age_ms: experiment_run.candidate.max_signal_age_ms,
+                },
+                min_required_test_windows: Some(1),
+                correlation_id: Some(correlation_id),
+            })
+            .await?;
+        candidate.walk_forward_run_id = Some(execution.result.walk_forward_id);
+        candidate.robustness_status = Some(execution.result.robustness_status);
+        result
+            .walk_forward_run_ids
+            .push(execution.result.walk_forward_id);
+    }
+    result.top_candidates = top_candidates;
+    let walk_forward_step_summary = json!({
+        "walk_forward_run_ids": result.walk_forward_run_ids.clone(),
+        "top_candidates": result.top_candidates.clone()
+    });
+    finish_research_batch_step(
+        state,
+        &mut result,
+        walk_forward_step,
+        ResearchBatchStepStatus::Completed,
+        walk_forward_step_summary,
+        None,
+    )
+    .await?;
+
+    let candidate_step =
+        start_research_batch_step(state, &mut result, "create_research_candidates").await?;
+    if payload.create_candidates {
+        let max_candidates = usize::try_from(payload.max_candidates).unwrap_or(usize::MAX);
+        for candidate in result.top_candidates.iter_mut().take(max_candidates) {
+            let lifecycle = lifecycle_candidate_from_experiment_run(
+                state,
+                candidate.experiment_run_id,
+                Some(format!("created by research batch {}", result.batch_id)),
+                correlation_id,
+            )
+            .await?;
+            let (record, _) = create_research_candidate(
+                &state.db_pool,
+                &lifecycle,
+                actor_id,
+                ResearchCandidateDecision::Reopen,
+                Some("research_batch"),
+                lifecycle.notes.as_deref(),
+                &json!({
+                    "batch_id": result.batch_id,
+                    "experiment_run_id": candidate.experiment_run_id,
+                    "walk_forward_run_id": candidate.walk_forward_run_id
+                }),
+            )
+            .await?;
+            if let Some(walk_forward_run_id) = candidate.walk_forward_run_id {
+                link_research_candidate_walk_forward_run(
+                    &state.db_pool,
+                    record.id,
+                    walk_forward_run_id,
+                )
+                .await?;
+            }
+            candidate.candidate_id = Some(record.id);
+            result.created_candidate_ids.push(record.id);
+        }
+        let candidate_step_summary =
+            json!({ "created_candidate_ids": result.created_candidate_ids.clone() });
+        finish_research_batch_step(
+            state,
+            &mut result,
+            candidate_step,
+            ResearchBatchStepStatus::Completed,
+            candidate_step_summary,
+            None,
+        )
+        .await?;
+    } else {
+        finish_research_batch_step(
+            state,
+            &mut result,
+            candidate_step,
+            ResearchBatchStepStatus::Skipped,
+            json!({ "create_candidates": false }),
+            None,
+        )
+        .await?;
+    }
+
+    result.status = ResearchBatchStatus::Completed;
+    result.completed_at = Some(Utc::now());
+    result.recommendations = batch_recommendations(&result);
+    persist_research_batch_snapshot(state, &result).await?;
+    Ok(result)
+}
+
+async fn run_research_batch_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchBatchRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    if let Some(actor) = actor.as_ref() {
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            "research.batch.run",
+            "research/batches/run",
+            &json!({ "actor_id": actor.user_id }),
+        )
+        .await;
+    }
+
+    match execute_research_batch(
+        &state,
+        payload,
+        actor.as_ref().map(|actor| actor.user_id),
+        correlation_id,
+    )
+    .await
+    {
+        Ok(batch) => (
+            StatusCode::OK,
+            Json(ResearchBatchResponse {
+                batch,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(error = %err, "failed to run research batch");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_run_research_batch",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_research_batches_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchBatchesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_batches(&state.db_pool, bounded_backfill_runs_limit(query.limit)).await {
+        Ok(records) => {
+            let mut batches = Vec::new();
+            for record in records {
+                let steps = match list_research_batch_steps(&state.db_pool, record.id).await {
+                    Ok(steps) => steps,
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_query_research_batch_steps",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                };
+                match research_batch_result_from_records(&record, &steps) {
+                    Ok(batch) => batches.push(batch),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_research_batch",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(ResearchBatchesResponse {
+                    batches,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_batches",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_batch_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_research_batch(&state.db_pool, id).await {
+        Ok(Some(record)) => match list_research_batch_steps(&state.db_pool, id).await {
+            Ok(steps) => match research_batch_result_from_records(&record, &steps) {
+                Ok(batch) => (
+                    StatusCode::OK,
+                    Json(ResearchBatchResponse {
+                        batch,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_batch",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            },
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_batch_steps",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_batch_not_found",
+                message: "Research batch was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_batch",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_batch_steps_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_batch_steps(&state.db_pool, id).await {
+        Ok(records) => match records
+            .iter()
+            .map(research_batch_step_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(steps) => (
+                StatusCode::OK,
+                Json(ResearchBatchStepsResponse {
+                    steps,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_batch_steps",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_batch_steps",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn candidate_from_experiment_run_source(
     state: &AppState,
     run_id: Uuid,
@@ -21379,10 +22208,11 @@ mod tests {
         parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
         parse_risk_check_context, preview_exchange_testnet_pipeline,
         preview_exchange_testnet_shadow_promotion_handler,
-        promote_strategy_research_candidate_handler, reconcile_exchange_testnet_orders_handler,
-        reconcile_testnet_orders, refresh, register_strategy_research_candidate_handler,
-        repair_exchange_testnet_order, request_context_middleware, risk_decision_not_found_error,
-        route_access, run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
+        promote_strategy_research_candidate_handler, ranked_research_batch_candidates,
+        reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
+        register_strategy_research_candidate_handler, repair_exchange_testnet_order,
+        request_context_middleware, risk_decision_not_found_error, route_access,
+        run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
         strategy_diagnostics_handler, submit_exchange_testnet_pipeline,
         submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
         ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
@@ -21403,11 +22233,12 @@ mod tests {
         ExchangeEnvironment, ExchangeOrderState, ExecutionReadinessCheckSeverity,
         ExecutionReadinessRecommendation, ExecutionReadinessStatus, ExecutionReadinessTarget,
         FeedStatus, MarketDataSource, MarketMode, MarketTick, OperatorReportRequest, PaperAccount,
-        PaperAccountStatus, ResearchCandidate, ResearchCandidateDecision,
-        ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationRecommendation,
-        ResearchCandidateQualificationStatus, ResearchCandidateQualificationThresholds,
-        ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
-        ResearchCandidateStatus, RiskConfig, Side, StrategyCandidateObservationDecision,
+        PaperAccountStatus, ResearchBatchCandidateSummary, ResearchCandidate,
+        ResearchCandidateDecision, ResearchCandidateQualificationEvaluation,
+        ResearchCandidateQualificationRecommendation, ResearchCandidateQualificationStatus,
+        ResearchCandidateQualificationThresholds, ResearchCandidateReview,
+        ResearchCandidateReviewAction, ResearchCandidateReviewStatus, ResearchCandidateStatus,
+        RiskConfig, Side, StrategyCandidateObservationDecision,
         StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
         StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
         StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
@@ -21471,6 +22302,42 @@ mod tests {
     use telemetry::telemetry;
     use tower::util::ServiceExt;
     use uuid::Uuid;
+
+    fn batch_candidate(
+        run_id: u128,
+        score: i64,
+        pnl: i64,
+        drawdown: i64,
+    ) -> ResearchBatchCandidateSummary {
+        ResearchBatchCandidateSummary {
+            experiment_id: Uuid::from_u128(1),
+            experiment_run_id: Uuid::from_u128(run_id),
+            walk_forward_run_id: None,
+            candidate_id: None,
+            strategy_id: "trend_filter_momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "5m".to_string(),
+            score: Decimal::new(score, 0),
+            pnl_pct: Decimal::new(pnl, 0),
+            max_drawdown_pct: Decimal::new(drawdown, 0),
+            trade_count: 10,
+            win_rate: Decimal::new(50, 0),
+            robustness_status: None,
+        }
+    }
+
+    #[test]
+    fn research_batch_top_candidate_selection_is_deterministic() {
+        let ranked = ranked_research_batch_candidates(vec![
+            batch_candidate(3, 10, 1, 2),
+            batch_candidate(2, 10, 1, 1),
+            batch_candidate(1, 12, 0, 5),
+        ]);
+
+        assert_eq!(ranked[0].experiment_run_id, Uuid::from_u128(1));
+        assert_eq!(ranked[1].experiment_run_id, Uuid::from_u128(2));
+        assert_eq!(ranked[2].experiment_run_id, Uuid::from_u128(3));
+    }
 
     #[test]
     fn recent_events_limit_defaults_when_missing_or_invalid() {

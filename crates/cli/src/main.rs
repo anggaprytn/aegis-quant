@@ -11,19 +11,19 @@ use cli::api::{
     build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
     build_market_data_quality_query, build_market_data_repair_plan_request,
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
-    build_research_data_build_request, build_research_data_coverage_query,
-    build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
-    build_strategy_walk_forward_request, ApiClient, ApiClientError,
-    CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
-    RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
+    build_research_batch_request, build_research_data_build_request,
+    build_research_data_coverage_query, build_risk_config_request, build_strategy_config_request,
+    build_strategy_experiment_request, build_strategy_walk_forward_request, ApiClient,
+    ApiClientError, CreateResearchCandidateFromExperimentRunRequest,
+    CreateResearchCandidateRequest, RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
     BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
-    ReadinessCommands, ReportsCommands, ResearchCandidateCommands, ResearchCommands,
-    ResearchDataCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
+    ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCandidateCommands,
+    ResearchCommands, ResearchDataCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
     StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
     TESTNET_ORDER_CONFIRMATION_TEXT,
 };
@@ -547,6 +547,41 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_dataset_build(&response.build);
+                    }
+                }
+            },
+            ResearchCommands::Batches(command) => match command {
+                ResearchBatchCommands::Run(args) => {
+                    let request = build_research_batch_request(&args)?;
+                    let response = client.run_research_batch(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_batch(&response.batch);
+                    }
+                }
+                ResearchBatchCommands::List(args) => {
+                    let response = client.list_research_batches(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_batches(&response.batches);
+                    }
+                }
+                ResearchBatchCommands::Get { batch_id } => {
+                    let response = client.get_research_batch(batch_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_batch(&response.batch);
+                    }
+                }
+                ResearchBatchCommands::Steps { batch_id } => {
+                    let response = client.get_research_batch_steps(batch_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_batch_steps(&response.steps);
                     }
                 }
             },

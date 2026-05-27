@@ -8,7 +8,8 @@ use aegis_core::{
     MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
     MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
     OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ResearchCandidate, ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchCandidate,
+    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
@@ -715,6 +716,37 @@ impl ApiClient {
         build_id: Uuid,
     ) -> Result<ResearchDatasetBuildResponse, ApiClientError> {
         self.get(&format!("/research/data/builds/{build_id}"), &[])
+            .await
+    }
+
+    pub async fn run_research_batch(
+        &self,
+        request: &ResearchBatchRequest,
+    ) -> Result<ResearchBatchResponse, ApiClientError> {
+        self.post("/research/batches/run", request).await
+    }
+
+    pub async fn list_research_batches(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchBatchesResponse, ApiClientError> {
+        self.get("/research/batches", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_research_batch(
+        &self,
+        batch_id: Uuid,
+    ) -> Result<ResearchBatchResponse, ApiClientError> {
+        self.get(&format!("/research/batches/{batch_id}"), &[])
+            .await
+    }
+
+    pub async fn get_research_batch_steps(
+        &self,
+        batch_id: Uuid,
+    ) -> Result<ResearchBatchStepsResponse, ApiClientError> {
+        self.get(&format!("/research/batches/{batch_id}/steps"), &[])
             .await
     }
 
@@ -2258,6 +2290,30 @@ pub struct ResearchDatasetBuildResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchBatchResponse {
+    pub batch: ResearchBatchResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchBatchesResponse {
+    pub batches: Vec<ResearchBatchResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchBatchStepsResponse {
+    pub steps: Vec<ResearchBatchStep>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidatesResponse {
     pub candidates: Vec<ResearchCandidate>,
@@ -3457,6 +3513,37 @@ pub fn build_strategy_walk_forward_request(
     request
         .validate()
         .context("invalid strategy walk-forward request")?;
+    Ok(request)
+}
+
+pub fn build_research_batch_request(
+    args: &crate::cli::ResearchBatchRunArgs,
+) -> anyhow::Result<ResearchBatchRequest> {
+    let request = ResearchBatchRequest {
+        strategy_id: args.strategy.clone(),
+        symbol: args.symbol.clone(),
+        base_interval: args.base_interval.clone(),
+        target_intervals: args.target_intervals.clone(),
+        start_time: args.start,
+        end_time: args.end,
+        initial_capital: args.initial_capital,
+        fee_bps: args.fee_bps,
+        slippage_bps: args.slippage_bps,
+        experiment_timeframes: args.experiment_timeframes.clone(),
+        lookback_candidates: args.lookbacks.clone(),
+        trend_lookback_candidates: args.trend_lookbacks.clone(),
+        momentum_lookback_candidates: args.momentum_lookbacks.clone(),
+        breakout_lookback_candidates: args.breakout_lookbacks.clone(),
+        holding_candles_candidates: args.holding_candles.clone(),
+        walk_forward_top_n: args.walk_forward_top_n,
+        repair_degraded_data: !args.no_repair_degraded_data,
+        create_candidates: !args.no_create_candidates,
+        max_candidates: args.max_candidates,
+        correlation_id: args.correlation_id,
+    };
+    request
+        .validate()
+        .context("invalid research batch request")?;
     Ok(request)
 }
 

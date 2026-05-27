@@ -72,6 +72,15 @@ struct BacktestActivity {
     run_count: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ResearchBatchReportSnapshot {
+    run_count: i64,
+    failed_count: i64,
+    candidates_created_count: i64,
+    overfit_candidate_count: i64,
+    robust_candidate_count: i64,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -152,6 +161,7 @@ pub async fn generate_operator_report(
         load_candidate_shadow_pnl_snapshot(state, &research_qualification, request, &window)
             .await?;
     let backtest = load_backtest_activity(&state.db_pool, request, &window).await?;
+    let research_batches = load_research_batch_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -164,6 +174,7 @@ pub async fn generate_operator_report(
         &research_qualification,
         shadow_pnl.as_ref(),
         &backtest,
+        &research_batches,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -199,6 +210,7 @@ pub async fn generate_operator_report(
             &testnet,
             &research_qualification,
             shadow_pnl.as_ref(),
+            &research_batches,
         )?,
         format: request.format,
         persisted: false,
@@ -1213,6 +1225,45 @@ async fn load_backtest_activity(
     Ok(BacktestActivity { run_count })
 }
 
+async fn load_research_batch_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<ResearchBatchReportSnapshot> {
+    let row = query(
+        r#"
+        SELECT
+            COUNT(*) AS run_count,
+            COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_count,
+            COALESCE(SUM(jsonb_array_length(COALESCE(summary->'created_candidate_ids', '[]'::jsonb))), 0) AS candidates_created_count,
+            COALESCE(SUM((
+                SELECT COUNT(*)
+                FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
+                WHERE candidate->>'robustness_status' = 'OVERFIT_RISK'
+            )), 0) AS overfit_candidate_count,
+            COALESCE(SUM((
+                SELECT COUNT(*)
+                FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
+                WHERE candidate->>'robustness_status' = 'ROBUST'
+            )), 0) AS robust_candidate_count
+        FROM research_batches
+        WHERE created_at >= $1
+          AND created_at <= $2
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ResearchBatchReportSnapshot {
+        run_count: row.get("run_count"),
+        failed_count: row.get("failed_count"),
+        candidates_created_count: row.get("candidates_created_count"),
+        overfit_candidate_count: row.get("overfit_candidate_count"),
+        robust_candidate_count: row.get("robust_candidate_count"),
+    })
+}
+
 async fn load_candidate_shadow_pnl_snapshot(
     state: &AppState,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
@@ -1269,6 +1320,7 @@ fn build_findings(
     research_qualification: &OperatorReportResearchQualificationSnapshot,
     shadow_pnl: Option<&CandidateShadowPnlReportSnapshot>,
     backtest: &BacktestActivity,
+    research_batches: &ResearchBatchReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -1438,6 +1490,44 @@ fn build_findings(
             "No backtest runs in window",
             "No persisted backtest runs were recorded for the selected window.",
             "strategy_behavior",
+        ));
+    }
+
+    if research_batches.run_count > 0 && research_batches.failed_count == 0 {
+        findings.push(finding(
+            "research_batch_completed",
+            OperatorReportSeverity::Low,
+            "Research batch completed",
+            "At least one research batch completed in the selected window.",
+            "research_batches",
+        ));
+    }
+    if research_batches.failed_count > 0 {
+        findings.push(finding(
+            "research_batch_failed",
+            OperatorReportSeverity::Medium,
+            "Research batch failed",
+            "At least one research batch failed in the selected window.",
+            "research_batches",
+        ));
+    }
+    if research_batches.candidates_created_count > 0 {
+        findings.push(finding(
+            "research_batch_candidates_for_review",
+            OperatorReportSeverity::Low,
+            "Research batch produced candidates for review",
+            "Research batch candidate creation is research-only and requires explicit review before any promotion path.",
+            "research_batches",
+        ));
+    }
+    if research_batches.overfit_candidate_count > 0 && research_batches.robust_candidate_count == 0
+    {
+        findings.push(finding(
+            "research_batch_only_overfit_candidates",
+            OperatorReportSeverity::Medium,
+            "Research batch produced only overfit candidates",
+            "Research batch top candidates include OVERFIT_RISK evidence and no ROBUST evidence.",
+            "research_batches",
         ));
     }
 
@@ -1822,6 +1912,7 @@ fn build_sections(
     testnet: &OperatorReportTestnetSnapshot,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
     shadow_pnl: Option<&CandidateShadowPnlReportSnapshot>,
+    research_batches: &ResearchBatchReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -1989,6 +2080,36 @@ fn build_sections(
                 ),
             ],
             shadow,
+        )?,
+        section(
+            "research_batches",
+            "Research Batches",
+            if research_batches.failed_count > 0
+                || (research_batches.overfit_candidate_count > 0
+                    && research_batches.robust_candidate_count == 0)
+            {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Read-only/data-only research batch activity in the selected window.",
+            vec![
+                highlight("Batches Run", research_batches.run_count.to_string()),
+                highlight("Failed", research_batches.failed_count.to_string()),
+                highlight(
+                    "Candidates Created",
+                    research_batches.candidates_created_count.to_string(),
+                ),
+                highlight(
+                    "Overfit Candidates",
+                    research_batches.overfit_candidate_count.to_string(),
+                ),
+                highlight(
+                    "Robust Candidates",
+                    research_batches.robust_candidate_count.to_string(),
+                ),
+            ],
+            research_batches,
         )?,
         section(
             "research_candidate_qualification",
@@ -2502,7 +2623,7 @@ fn yes_no(value: bool) -> &'static str {
 mod tests {
     use super::{
         build_findings, build_recommendations, status_from_findings, BacktestActivity,
-        StrategyBehaviorData, SystemAndMarketData,
+        ResearchBatchReportSnapshot, StrategyBehaviorData, SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
@@ -2668,6 +2789,7 @@ mod tests {
             &base_research_qualification(),
             None,
             &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2697,6 +2819,7 @@ mod tests {
             &base_research_qualification(),
             None,
             &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2721,6 +2844,7 @@ mod tests {
             &base_research_qualification(),
             None,
             &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2745,6 +2869,7 @@ mod tests {
             &base_research_qualification(),
             None,
             &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2795,6 +2920,7 @@ mod tests {
             &base_research_qualification(),
             None,
             &BacktestActivity { run_count: 0 },
+            &ResearchBatchReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -2830,6 +2956,7 @@ mod tests {
             &research,
             None,
             &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -2862,6 +2989,7 @@ mod tests {
             &research,
             None,
             &BacktestActivity { run_count: 1 },
+            &ResearchBatchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {

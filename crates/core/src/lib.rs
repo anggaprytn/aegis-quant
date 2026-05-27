@@ -7085,6 +7085,10 @@ pub enum CoreError {
     UnsupportedResearchCandidateShadowPerformanceStatus(String),
     #[error("unsupported research candidate shadow performance recommendation: {0}")]
     UnsupportedResearchCandidateShadowPerformanceRecommendation(String),
+    #[error("unsupported research batch status: {0}")]
+    UnsupportedResearchBatchStatus(String),
+    #[error("unsupported research batch step status: {0}")]
+    UnsupportedResearchBatchStepStatus(String),
     #[error("invalid research candidate transition from {0} using decision {1}")]
     InvalidResearchCandidateTransition(String, String),
     #[error("invalid research candidate review action {1} for status {0}")]

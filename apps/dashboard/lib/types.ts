@@ -1070,6 +1070,110 @@ export type ResearchDatasetBuildsResponse = {
   timestamp: string;
 };
 
+export type ResearchBatchStatus = "STARTED" | "PARTIAL" | "COMPLETED" | "FAILED";
+export type ResearchBatchStepStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "SKIPPED"
+  | "FAILED";
+
+export type ResearchBatchRequest = {
+  strategy_id: string;
+  symbol: string;
+  base_interval?: string;
+  target_intervals: string[];
+  start_time: string;
+  end_time: string;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  experiment_timeframes: string[];
+  lookback_candidates: number[];
+  trend_lookback_candidates?: number[] | null;
+  momentum_lookback_candidates?: number[] | null;
+  breakout_lookback_candidates?: number[] | null;
+  holding_candles_candidates?: number[] | null;
+  walk_forward_top_n?: number;
+  repair_degraded_data?: boolean;
+  create_candidates?: boolean;
+  max_candidates?: number;
+  correlation_id?: string | null;
+};
+
+export type ResearchBatchStep = {
+  id: string;
+  batch_id: string;
+  step_name: string;
+  status: ResearchBatchStepStatus;
+  started_at: string;
+  completed_at: string | null;
+  result: unknown | null;
+  error: string | null;
+};
+
+export type ResearchBatchCandidateSummary = {
+  experiment_id: string;
+  experiment_run_id: string;
+  walk_forward_run_id: string | null;
+  candidate_id: string | null;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  score: string;
+  pnl_pct: string;
+  max_drawdown_pct: string;
+  trade_count: number;
+  win_rate: string;
+  robustness_status: string | null;
+};
+
+export type ResearchBatchRecommendation = {
+  severity: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchBatchResult = {
+  batch_id: string;
+  status: ResearchBatchStatus;
+  steps: ResearchBatchStep[];
+  provider_health_summary: MarketProviderHealth | null;
+  backfill_summary: unknown | null;
+  quality_before: MarketDataQualityReport | null;
+  repair_summary: unknown | null;
+  quality_after: MarketDataQualityReport | null;
+  aggregation_summary: unknown | null;
+  experiment_ids: string[];
+  walk_forward_run_ids: string[];
+  created_candidate_ids: string[];
+  top_candidates: ResearchBatchCandidateSummary[];
+  recommendations: ResearchBatchRecommendation[];
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type ResearchBatchResponse = {
+  batch: ResearchBatchResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchBatchesResponse = {
+  batches: ResearchBatchResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchBatchStepsResponse = {
+  steps: ResearchBatchStep[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateStatus =
   | "DISCOVERED"
   | "OBSERVING"

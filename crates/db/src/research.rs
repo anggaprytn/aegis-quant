@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use aegis_core::{
     calculate_research_shadow_pnl_attribution, evaluate_research_candidate_shadow_performance,
-    Candle, CandleInterval, ExecutionReadinessStatus, MarketDataSource, ResearchCandidate,
+    Candle, CandleInterval, ExecutionReadinessStatus, MarketDataSource, ResearchBatchResult,
+    ResearchBatchStatus, ResearchBatchStep, ResearchBatchStepStatus, ResearchCandidate,
     ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
     ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationRecommendation,
     ResearchCandidateQualificationStatus, ResearchCandidateQualificationThresholds,
@@ -56,6 +57,29 @@ pub struct ResearchDatasetBuildStepRecord {
     pub details: Option<Value>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchBatchRecord {
+    pub id: Uuid,
+    pub request: Value,
+    pub status: String,
+    pub summary: Value,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchBatchStepRecord {
+    pub id: Uuid,
+    pub batch_id: Uuid,
+    pub step_name: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub result: Value,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,6 +407,298 @@ fn map_research_candidate_review(row: sqlx::postgres::PgRow) -> ResearchCandidat
         correlation_id: row.get("correlation_id"),
         qualification_evaluation_id: row.get("qualification_evaluation_id"),
     }
+}
+
+fn map_research_batch(row: sqlx::postgres::PgRow) -> ResearchBatchRecord {
+    ResearchBatchRecord {
+        id: row.get("id"),
+        request: row.get("request"),
+        status: row.get("status"),
+        summary: row.get("summary"),
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_research_batch_step(row: sqlx::postgres::PgRow) -> ResearchBatchStepRecord {
+    ResearchBatchStepRecord {
+        id: row.get("id"),
+        batch_id: row.get("batch_id"),
+        step_name: row.get("step_name"),
+        status: row.get("status"),
+        started_at: row.get("started_at"),
+        completed_at: row.get("completed_at"),
+        result: row.get("result"),
+        error: row.get("error"),
+    }
+}
+
+pub fn research_batch_step_from_record(
+    record: &ResearchBatchStepRecord,
+) -> Result<ResearchBatchStep> {
+    Ok(ResearchBatchStep {
+        id: record.id,
+        batch_id: record.batch_id,
+        step_name: record.step_name.clone(),
+        status: record.status.parse::<ResearchBatchStepStatus>()?,
+        started_at: record.started_at,
+        completed_at: record.completed_at,
+        result: Some(record.result.clone()).filter(|value| !value.is_null()),
+        error: record.error.clone(),
+    })
+}
+
+pub fn research_batch_result_from_records(
+    record: &ResearchBatchRecord,
+    step_records: &[ResearchBatchStepRecord],
+) -> Result<ResearchBatchResult> {
+    let mut result: ResearchBatchResult = serde_json::from_value(record.summary.clone())?;
+    result.batch_id = record.id;
+    result.status = record.status.parse::<ResearchBatchStatus>()?;
+    result.steps = step_records
+        .iter()
+        .map(research_batch_step_from_record)
+        .collect::<Result<Vec<_>>>()?;
+    result.created_at = record.created_at;
+    result.completed_at = record.completed_at;
+    Ok(result)
+}
+
+pub async fn insert_research_batch(
+    pool: &PgPool,
+    result: &ResearchBatchResult,
+    request: &Value,
+    summary: &Value,
+    correlation_id: Option<Uuid>,
+) -> Result<ResearchBatchRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_batches (
+            id,
+            request,
+            status,
+            summary,
+            created_at,
+            completed_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING
+            id,
+            request,
+            status,
+            summary,
+            created_at,
+            completed_at,
+            correlation_id
+        "#,
+    )
+    .bind(result.batch_id)
+    .bind(request)
+    .bind(result.status.as_str())
+    .bind(summary)
+    .bind(result.created_at)
+    .bind(result.completed_at)
+    .bind(correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_research_batch(row))
+}
+
+pub async fn update_research_batch_summary(
+    pool: &PgPool,
+    batch_id: Uuid,
+    status: ResearchBatchStatus,
+    summary: &Value,
+    completed_at: Option<DateTime<Utc>>,
+) -> Result<Option<ResearchBatchRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE research_batches
+        SET status = $2,
+            summary = $3,
+            completed_at = $4
+        WHERE id = $1
+        RETURNING
+            id,
+            request,
+            status,
+            summary,
+            created_at,
+            completed_at,
+            correlation_id
+        "#,
+    )
+    .bind(batch_id)
+    .bind(status.as_str())
+    .bind(summary)
+    .bind(completed_at)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_batch))
+}
+
+pub async fn get_research_batch(
+    pool: &PgPool,
+    batch_id: Uuid,
+) -> Result<Option<ResearchBatchRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            request,
+            status,
+            summary,
+            created_at,
+            completed_at,
+            correlation_id
+        FROM research_batches
+        WHERE id = $1
+        "#,
+    )
+    .bind(batch_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_batch))
+}
+
+pub async fn list_research_batches(pool: &PgPool, limit: i64) -> Result<Vec<ResearchBatchRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            request,
+            status,
+            summary,
+            created_at,
+            completed_at,
+            correlation_id
+        FROM research_batches
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(map_research_batch).collect())
+}
+
+pub async fn insert_research_batch_step(
+    pool: &PgPool,
+    batch_id: Uuid,
+    step_name: &str,
+    status: ResearchBatchStepStatus,
+    result: &Value,
+    error: Option<&str>,
+) -> Result<ResearchBatchStepRecord> {
+    let completed_at: Option<DateTime<Utc>> = match status {
+        ResearchBatchStepStatus::Running | ResearchBatchStepStatus::Pending => None,
+        _ => Some(Utc::now()),
+    };
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_batch_steps (
+            id,
+            batch_id,
+            step_name,
+            status,
+            started_at,
+            completed_at,
+            result,
+            error
+        )
+        VALUES ($1, $2, $3, $4, NOW(), $5, $6, $7)
+        RETURNING
+            id,
+            batch_id,
+            step_name,
+            status,
+            started_at,
+            completed_at,
+            result,
+            error
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(batch_id)
+    .bind(step_name)
+    .bind(status.as_str())
+    .bind(completed_at)
+    .bind(result)
+    .bind(error)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_research_batch_step(row))
+}
+
+pub async fn complete_research_batch_step(
+    pool: &PgPool,
+    step_id: Uuid,
+    status: ResearchBatchStepStatus,
+    result: &Value,
+    error: Option<&str>,
+) -> Result<Option<ResearchBatchStepRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE research_batch_steps
+        SET status = $2,
+            completed_at = NOW(),
+            result = $3,
+            error = $4
+        WHERE id = $1
+        RETURNING
+            id,
+            batch_id,
+            step_name,
+            status,
+            started_at,
+            completed_at,
+            result,
+            error
+        "#,
+    )
+    .bind(step_id)
+    .bind(status.as_str())
+    .bind(result)
+    .bind(error)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_batch_step))
+}
+
+pub async fn list_research_batch_steps(
+    pool: &PgPool,
+    batch_id: Uuid,
+) -> Result<Vec<ResearchBatchStepRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            batch_id,
+            step_name,
+            status,
+            started_at,
+            completed_at,
+            result,
+            error
+        FROM research_batch_steps
+        WHERE batch_id = $1
+        ORDER BY started_at ASC, id ASC
+        "#,
+    )
+    .bind(batch_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(map_research_batch_step).collect())
 }
 
 fn parse_qualification_status(value: &str) -> Result<ResearchCandidateQualificationStatus> {

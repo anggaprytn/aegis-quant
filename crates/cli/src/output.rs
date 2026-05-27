@@ -1,14 +1,15 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchCandidateDecisionRejection,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult, User,
+    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
+    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
+    ResearchShadowPnlAttributionResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -44,6 +45,70 @@ use crate::api::{
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+pub fn print_research_batch(batch: &ResearchBatchResult) {
+    println!("Batch: {}", batch.batch_id);
+    println!("Status: {}", batch.status.as_str());
+    println!("Created: {}", batch.created_at);
+    println!("Completed: {}", display_option(batch.completed_at));
+    println!("Experiments: {}", batch.experiment_ids.len());
+    println!("Walk-forward runs: {}", batch.walk_forward_run_ids.len());
+    println!("Candidates created: {}", batch.created_candidate_ids.len());
+    println!("Steps:");
+    print_research_batch_steps(&batch.steps);
+    if !batch.top_candidates.is_empty() {
+        println!("Top candidates:");
+        for candidate in &batch.top_candidates {
+            println!(
+                "  {} {} run={} score={} pnl_pct={} wf={} candidate={}",
+                candidate.symbol,
+                candidate.timeframe,
+                candidate.experiment_run_id,
+                candidate.score,
+                candidate.pnl_pct,
+                display_option(candidate.walk_forward_run_id),
+                display_option(candidate.candidate_id)
+            );
+        }
+    }
+    if !batch.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &batch.recommendations {
+            println!(
+                "  {} {}: {}",
+                recommendation.severity, recommendation.code, recommendation.message
+            );
+        }
+    }
+}
+
+pub fn print_research_batches(batches: &[ResearchBatchResult]) {
+    println!("Research batches:");
+    for batch in batches {
+        println!(
+            "  {} status={} experiments={} wf={} candidates={} created={}",
+            batch.batch_id,
+            batch.status.as_str(),
+            batch.experiment_ids.len(),
+            batch.walk_forward_run_ids.len(),
+            batch.created_candidate_ids.len(),
+            batch.created_at
+        );
+    }
+}
+
+pub fn print_research_batch_steps(steps: &[ResearchBatchStep]) {
+    for step in steps {
+        println!(
+            "  {} status={} started={} completed={} error={}",
+            step.step_name,
+            step.status.as_str(),
+            step.started_at,
+            display_option(step.completed_at),
+            step.error.as_deref().unwrap_or("-")
+        );
+    }
 }
 
 pub fn print_status(

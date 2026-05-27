@@ -737,6 +737,8 @@ pub enum ResearchCommands {
     #[command(subcommand)]
     Data(ResearchDataCommands),
     #[command(subcommand)]
+    Batches(ResearchBatchCommands),
+    #[command(subcommand)]
     Candidates(ResearchCandidateCommands),
 }
 
@@ -746,6 +748,64 @@ pub enum ResearchDataCommands {
     Build(ResearchDataBuildArgs),
     Builds(ResearchDataBuildsArgs),
     BuildGet { build_id: Uuid },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchBatchCommands {
+    Run(ResearchBatchRunArgs),
+    List(ResearchBatchListArgs),
+    Get { batch_id: Uuid },
+    Steps { batch_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchBatchRunArgs {
+    #[arg(long = "strategy")]
+    pub strategy: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long = "base-interval", default_value = "1m")]
+    pub base_interval: String,
+    #[arg(long = "target-intervals", value_delimiter = ',')]
+    pub target_intervals: Vec<String>,
+    #[arg(long = "start")]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "initial-capital", default_value = "10000")]
+    pub initial_capital: rust_decimal::Decimal,
+    #[arg(long = "fee-bps", default_value = "10")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps", default_value = "5")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "experiment-timeframes", value_delimiter = ',')]
+    pub experiment_timeframes: Vec<String>,
+    #[arg(long = "lookbacks", value_delimiter = ',')]
+    pub lookbacks: Vec<u32>,
+    #[arg(long = "trend-lookbacks", value_delimiter = ',')]
+    pub trend_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "momentum-lookbacks", value_delimiter = ',')]
+    pub momentum_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
+    pub breakout_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "holding-candles", value_delimiter = ',')]
+    pub holding_candles: Option<Vec<u32>>,
+    #[arg(long = "walk-forward-top-n", default_value_t = 3)]
+    pub walk_forward_top_n: u32,
+    #[arg(long = "max-candidates", default_value_t = 3)]
+    pub max_candidates: u32,
+    #[arg(long = "no-repair-degraded-data", default_value_t = false)]
+    pub no_repair_degraded_data: bool,
+    #[arg(long = "no-create-candidates", default_value_t = false)]
+    pub no_create_candidates: bool,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchBatchListArgs {
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
 }
 
 #[derive(Debug, Subcommand)]

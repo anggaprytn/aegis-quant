@@ -68,6 +68,10 @@ import type {
   PaperTradeJournalResponse,
   RecentSignalsResponse,
   ResearchDataCoverageResponse,
+  ResearchBatchRequest,
+  ResearchBatchResponse,
+  ResearchBatchesResponse,
+  ResearchBatchStepsResponse,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
@@ -429,6 +433,17 @@ export const api = {
     request<ResearchDatasetBuildsResponse>("/research/data/builds", undefined, { limit }),
   getResearchDatasetBuild: (id: string) =>
     request<ResearchDatasetBuildResponse>(`/research/data/builds/${id}`),
+  runResearchBatch: (payload: ResearchBatchRequest) =>
+    request<ResearchBatchResponse>("/research/batches/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchBatches: (limit = 20) =>
+    request<ResearchBatchesResponse>("/research/batches", undefined, { limit }),
+  getResearchBatch: (id: string) =>
+    request<ResearchBatchResponse>(`/research/batches/${id}`),
+  getResearchBatchSteps: (id: string) =>
+    request<ResearchBatchStepsResponse>(`/research/batches/${id}/steps`),
   createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
     request<ResearchCandidateResponse>("/research/candidates", {
       method: "POST",

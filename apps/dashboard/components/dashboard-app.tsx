@@ -34,6 +34,8 @@ import type {
   OperatorReportListItem,
   PaperPositionRecord,
   ResearchDataCoverageResult,
+  ResearchBatchRequest,
+  ResearchBatchResult,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
   ResearchCandidateObservationHistoryItem,
@@ -333,6 +335,26 @@ const DEFAULT_RESEARCH_DATA_FORM: ResearchDatasetBuildRequest = {
   required_coverage_pct: "95",
 };
 
+const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
+  strategy_id: "trend_filter_momentum_v1",
+  symbol: "BTCUSDT",
+  base_interval: "1m",
+  target_intervals: ["5m", "15m", "1h"],
+  start_time: "2026-05-23T00:00:00Z",
+  end_time: "2026-05-24T00:00:00Z",
+  initial_capital: "10000",
+  fee_bps: "10",
+  slippage_bps: "5",
+  experiment_timeframes: ["5m", "15m"],
+  lookback_candidates: [10, 20, 50],
+  momentum_lookback_candidates: [2, 3, 5],
+  holding_candles_candidates: [3, 5, 10],
+  walk_forward_top_n: 3,
+  repair_degraded_data: true,
+  create_candidates: true,
+  max_candidates: 3,
+};
+
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
   start_time: "2026-05-24T00:00:00Z",
   end_time: "2026-05-24T23:59:59Z",
@@ -390,6 +412,13 @@ function parseIntegerList(value: string) {
     .filter(Boolean)
     .map((entry) => Number(entry))
     .filter((entry) => Number.isFinite(entry) && entry > 0);
+}
+
+function parseStringList(value: string) {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function parseDecimalList(value: string) {
@@ -785,6 +814,10 @@ function AuthenticatedDashboard({
     useState<ResearchDataCoverageResult | null>(null);
   const [lastResearchBuild, setLastResearchBuild] =
     useState<ResearchDatasetBuildResult | null>(null);
+  const [researchBatchForm, setResearchBatchForm] =
+    useState<ResearchBatchRequest>(DEFAULT_RESEARCH_BATCH_FORM);
+  const [selectedResearchBatchId, setSelectedResearchBatchId] = useState<string | null>(null);
+  const [lastResearchBatch, setLastResearchBatch] = useState<ResearchBatchResult | null>(null);
   const [strategyConfigForm, setStrategyConfigForm] =
     useState<StrategyConfigUpdateRequest>(strategyConfigFormFromStatus());
   const [strategyDiagnosticsForm, setStrategyDiagnosticsForm] = useState(
@@ -1170,6 +1203,17 @@ function AuthenticatedDashboard({
     queryFn: () => api.getResearchDatasetBuild(selectedResearchBuildId ?? ""),
     enabled: Boolean(selectedResearchBuildId),
   });
+  const researchBatchesQuery = useQuery({
+    queryKey: ["research-batches"],
+    queryFn: () => api.listResearchBatches(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchBatchQuery = useQuery({
+    queryKey: ["research-batch", selectedResearchBatchId],
+    queryFn: () => api.getResearchBatch(selectedResearchBatchId ?? ""),
+    enabled: Boolean(selectedResearchBatchId),
+  });
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
     queryFn: () => api.getMarketBackfillRuns(20),
@@ -1540,6 +1584,12 @@ function AuthenticatedDashboard({
       setSelectedResearchBuildId(researchBuildsQuery.data.builds[0].build_id);
     }
   }, [researchBuildsQuery.data?.builds, selectedResearchBuildId]);
+
+  useEffect(() => {
+    if (!selectedResearchBatchId && researchBatchesQuery.data?.batches[0]) {
+      setSelectedResearchBatchId(researchBatchesQuery.data.batches[0].batch_id);
+    }
+  }, [researchBatchesQuery.data?.batches, selectedResearchBatchId]);
 
   const refreshOperationalData = async () => {
     await Promise.all([
@@ -2099,6 +2149,17 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["candle-coverage"] });
     },
   });
+  const researchBatchMutation = useMutation({
+    mutationFn: () => api.runResearchBatch(researchBatchForm),
+    onSuccess: async (response) => {
+      setLastResearchBatch(response.batch);
+      setSelectedResearchBatchId(response.batch.batch_id);
+      await queryClient.invalidateQueries({ queryKey: ["research-batches"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-batch"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-candidates"] });
+      await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
+    },
+  });
   const paperMarkMutation = useMutation({
     mutationFn: api.markPaperToMarket,
     onSuccess: () => {
@@ -2278,6 +2339,9 @@ function AuthenticatedDashboard({
   const backtestRuns = backtestRunsQuery.data?.runs ?? [];
   const strategyExperiments = strategyExperimentsQuery.data?.experiments ?? [];
   const strategyWalkForwards = strategyWalkForwardsQuery.data?.walk_forwards ?? [];
+  const researchBatches = researchBatchesQuery.data?.batches ?? [];
+  const selectedResearchBatch: ResearchBatchResult | null =
+    selectedResearchBatchQuery.data?.batch ?? lastResearchBatch;
   const selectedExperiment =
     selectedExperimentQuery.data?.experiment ?? null;
   const strategyExperimentRuns =
@@ -4638,6 +4702,151 @@ function AuthenticatedDashboard({
 
           {section === "experiments" && (
             <section className="grid gap-4 xl:grid-cols-12">
+              <Panel className="xl:col-span-12" title="Research Batches">
+                <div className="grid gap-3 md:grid-cols-4">
+                  {(
+                    [
+                      ["strategy_id", "Strategy ID"],
+                      ["symbol", "Symbol"],
+                      ["base_interval", "Base Interval"],
+                      ["start_time", "Start Time"],
+                      ["end_time", "End Time"],
+                      ["initial_capital", "Initial Capital"],
+                      ["fee_bps", "Fee Bps"],
+                      ["slippage_bps", "Slippage Bps"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <Field
+                      key={key}
+                      label={label}
+                      value={String(researchBatchForm[key] ?? "")}
+                      onChange={(value) =>
+                        setResearchBatchForm((current) => ({ ...current, [key]: value }))
+                      }
+                    />
+                  ))}
+                  <Field
+                    label="Target Intervals"
+                    value={researchBatchForm.target_intervals.join(",")}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        target_intervals: parseStringList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Experiment Timeframes"
+                    value={researchBatchForm.experiment_timeframes.join(",")}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        experiment_timeframes: parseStringList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Lookbacks"
+                    value={researchBatchForm.lookback_candidates.join(",")}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        lookback_candidates: parseIntegerList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Momentum Lookbacks"
+                    value={researchBatchForm.momentum_lookback_candidates?.join(",") ?? ""}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        momentum_lookback_candidates: parseIntegerList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Holding Candles"
+                    value={researchBatchForm.holding_candles_candidates?.join(",") ?? ""}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        holding_candles_candidates: parseIntegerList(value),
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Walk-forward Top N"
+                    value={String(researchBatchForm.walk_forward_top_n ?? 3)}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        walk_forward_top_n: Number(value) || 3,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Candidates"
+                    value={String(researchBatchForm.max_candidates ?? 3)}
+                    onChange={(value) =>
+                      setResearchBatchForm((current) => ({
+                        ...current,
+                        max_candidates: Number(value) || 3,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={researchBatchForm.repair_degraded_data ?? true}
+                      onChange={(event) =>
+                        setResearchBatchForm((current) => ({
+                          ...current,
+                          repair_degraded_data: event.target.checked,
+                        }))
+                      }
+                    />
+                    Repair degraded data
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={researchBatchForm.create_candidates ?? true}
+                      onChange={(event) =>
+                        setResearchBatchForm((current) => ({
+                          ...current,
+                          create_candidates: event.target.checked,
+                        }))
+                      }
+                    />
+                    Create candidates
+                  </label>
+                  <ActionButton
+                    label="Run Batch"
+                    onClick={() => researchBatchMutation.mutate()}
+                    busy={researchBatchMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(researchBatchMutation.error)}
+                    success={
+                      lastResearchBatch
+                        ? `Batch ${shortenId(lastResearchBatch.batch_id)} ${lastResearchBatch.status}`
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <ResearchBatchesTable
+                    batches={researchBatches}
+                    selectedId={selectedResearchBatchId}
+                    onSelect={setSelectedResearchBatchId}
+                  />
+                  <ResearchBatchDetail batch={selectedResearchBatch} />
+                </div>
+              </Panel>
               <Panel className="xl:col-span-7" title="Strategy Experiment Form">
                 <div className="grid gap-3 md:grid-cols-3">
                   {(
@@ -8274,6 +8483,98 @@ function BacktestEquityTable({
         point.drawdown_pct,
       ])}
     />
+  );
+}
+
+function ResearchBatchesTable({
+  batches,
+  selectedId,
+  onSelect,
+}: {
+  batches: ResearchBatchResult[];
+  selectedId: string | null;
+  onSelect: (batchId: string) => void;
+}) {
+  if (!batches.length) {
+    return <EmptyState label="No research batches found." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {batches.map((batch) => (
+        <button
+          key={batch.batch_id}
+          className={cn(
+            "w-full rounded-xl border p-3 text-left",
+            batch.batch_id === selectedId ? "border-accent bg-accent/5" : "border-border bg-surface/60",
+          )}
+          onClick={() => onSelect(batch.batch_id)}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-mono text-xs">{shortenId(batch.batch_id)}</span>
+            <span className="text-xs uppercase text-muted">{batch.status}</span>
+          </div>
+          <div className="mt-1 text-xs text-slate-300">
+            experiments={batch.experiment_ids.length} wf={batch.walk_forward_run_ids.length} candidates={batch.created_candidate_ids.length}
+          </div>
+          <div className="mt-1 text-xs text-muted">{formatDateTime(batch.created_at)}</div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ResearchBatchDetail({ batch }: { batch: ResearchBatchResult | null }) {
+  if (!batch) {
+    return <EmptyState label="No research batch selected." />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <KeyValue
+        items={[
+          ["Batch", shortenId(batch.batch_id)],
+          ["Status", batch.status],
+          ["Provider", batch.provider_health_summary?.status ?? "-"],
+          ["Quality Before", batch.quality_before?.status ?? "-"],
+          ["Quality After", batch.quality_after?.status ?? "-"],
+          ["Experiments", String(batch.experiment_ids.length)],
+          ["Walk-forward", String(batch.walk_forward_run_ids.length)],
+          ["Candidates", String(batch.created_candidate_ids.length)],
+        ]}
+      />
+      <Table
+        headers={["Step", "Status", "Started", "Completed", "Error"]}
+        rows={batch.steps.map((step) => [
+          step.step_name,
+          step.status,
+          formatDateTime(step.started_at),
+          step.completed_at ? formatDateTime(step.completed_at) : "-",
+          step.error ?? "-",
+        ])}
+      />
+      <Table
+        headers={["Timeframe", "Run", "WF", "Candidate", "Score", "PnL %", "Robustness"]}
+        rows={batch.top_candidates.map((candidate) => [
+          candidate.timeframe,
+          shortenId(candidate.experiment_run_id),
+          candidate.walk_forward_run_id ? shortenId(candidate.walk_forward_run_id) : "-",
+          candidate.candidate_id ? shortenId(candidate.candidate_id) : "-",
+          candidate.score,
+          candidate.pnl_pct,
+          candidate.robustness_status ?? "-",
+        ])}
+      />
+      {batch.recommendations.length ? (
+        <div className="space-y-2">
+          {batch.recommendations.map((item) => (
+            <div key={item.code} className="rounded-xl border border-border bg-surface/50 p-3 text-sm">
+              <span className="font-semibold">{item.severity}</span> {item.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
