@@ -1472,6 +1472,7 @@ fn build_strategy_walk_forward_result(
         robustness_status,
         robustness_summary,
         recommendation,
+        warnings: Vec::new(),
         created_at,
         correlation_id,
     }

@@ -1,13 +1,14 @@
 use aegis_core::{
-    CandleAggregationResult, MarketCandleCoverageSummary, ResearchCandidateDecisionRejection,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult, User,
+    CandleAggregationResult, MarketCandleCoverageSummary, MarketDataQualityReport,
+    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
+    ResearchShadowPnlAttributionResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1493,6 +1494,49 @@ pub fn print_candle_coverage(coverage: &MarketCandleCoverageSummary) {
     println!("Symbol: {}", coverage.symbol);
     for interval in &coverage.intervals {
         println!("{}: {}", interval.interval, interval.candle_count);
+    }
+}
+
+pub fn print_market_data_quality_report(report: &MarketDataQualityReport) {
+    println!("Status: {}", report.status.as_str());
+    println!("Exchange: {}", report.exchange.as_str());
+    println!("Symbol: {}", report.symbol);
+    println!("Interval: {}", report.interval);
+    println!("Window: {} -> {}", report.window_start, report.window_end);
+    println!(
+        "Candles: expected={} actual={} closed={} open={} missing={} coverage={}%",
+        report.expected_candle_count,
+        report.actual_candle_count,
+        report.closed_candle_count,
+        report.open_candle_count,
+        report.missing_candle_count,
+        report.coverage_pct
+    );
+    println!("Gap count: {}", report.gap_count);
+    println!("Largest gap seconds: {}", report.largest_gap_seconds);
+    if !report.gaps.is_empty() {
+        println!("Gaps:");
+        for gap in &report.gaps {
+            println!(
+                "- {} -> {} missing={} seconds={}",
+                gap.start_time, gap.end_time, gap.missing_candle_count, gap.gap_seconds
+            );
+        }
+    }
+    if !report.findings.is_empty() {
+        println!("Findings:");
+        for finding in &report.findings {
+            println!(
+                "- [{}] {}: {}",
+                finding.severity, finding.code, finding.message
+            );
+        }
+    }
+    if !report.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &report.recommendations {
+            println!("- {}: {}", recommendation.code, recommendation.message);
+        }
     }
 }
 

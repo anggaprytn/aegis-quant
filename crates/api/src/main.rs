@@ -33,7 +33,8 @@ use aegis_core::{
     ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
     ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary, MarketMode,
+    ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
+    MarketDataQualityReport, MarketDataQualityRequest, MarketDataSource, MarketMode,
     OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
     PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
     PaperTradingPipelineRequest, ResearchCandidate, ResearchCandidateDecision,
@@ -164,7 +165,7 @@ use db::{
     strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
-    update_research_candidate_status, update_strategy_state,
+    summarize_candle_continuity_report, update_research_candidate_status, update_strategy_state,
     update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
     upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
     upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
@@ -1348,6 +1349,18 @@ struct CandleCoverageQuery {
 }
 
 #[derive(Deserialize)]
+struct CandleQualityQuery {
+    symbol: String,
+    interval: String,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    exchange: Option<String>,
+    expected_interval_seconds: Option<i64>,
+    max_allowed_gap_count: Option<i64>,
+    max_allowed_gap_pct: Option<Decimal>,
+}
+
+#[derive(Deserialize)]
 struct ResearchDataCoverageQuery {
     symbol: String,
     intervals: String,
@@ -1560,6 +1573,14 @@ struct CandleBackfillRunResponse {
 #[derive(Serialize)]
 struct CandleCoverageResponse {
     coverage: MarketCandleCoverageSummary,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CandleQualityResponse {
+    report: MarketDataQualityReport,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2463,6 +2484,7 @@ async fn main() {
         .route("/market/ticks/latest", get(get_latest_tick))
         .route("/market/candles", get(get_market_candles))
         .route("/market/candles/coverage", get(get_market_candle_coverage))
+        .route("/market/candles/quality", get(get_market_candle_quality))
         .route(
             "/market/candles/aggregate",
             post(post_market_aggregate_candles),
@@ -11059,16 +11081,32 @@ async fn run_strategy_experiment_handler(
         .await;
     }
 
+    let quality_warning = research_window_quality_warning(
+        &state,
+        &payload.symbol,
+        &payload.timeframe,
+        payload.start_time,
+        payload.end_time,
+    )
+    .await;
     let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
     match engine.run_strategy_experiment(payload).await {
-        Ok(execution) => (
-            StatusCode::OK,
-            Json(StrategyExperimentRunAcceptedResponse {
-                experiment: execution.result,
-                runs: execution.runs,
-            }),
-        )
-            .into_response(),
+        Ok(execution) => {
+            let mut result = execution.result;
+            if let Some(warning) = quality_warning {
+                if !result.warnings.contains(&warning) {
+                    result.warnings.push(warning);
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(StrategyExperimentRunAcceptedResponse {
+                    experiment: result,
+                    runs: execution.runs,
+                }),
+            )
+                .into_response()
+        }
         Err(err) => {
             let message = err.to_string();
             let status = if message.contains("invalid")
@@ -11214,6 +11252,52 @@ async fn run_multi_timeframe_strategy_experiment_handler(
     }
 }
 
+async fn research_window_quality_warning(
+    state: &AppState,
+    symbol: &str,
+    timeframe: &str,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) -> Option<String> {
+    let request = MarketDataQualityRequest {
+        exchange: state.market_config.exchange,
+        symbol: symbol.to_string(),
+        interval: timeframe.to_string(),
+        start_time,
+        end_time,
+        expected_interval_seconds: None,
+        max_allowed_gap_count: None,
+        max_allowed_gap_pct: None,
+    };
+    match summarize_candle_continuity_report(&state.db_pool, &request).await {
+        Ok(report)
+            if matches!(
+                report.status,
+                aegis_core::MarketDataQualityStatus::Degraded
+                    | aegis_core::MarketDataQualityStatus::Bad
+            ) =>
+        {
+            Some(format!(
+                "market_data_quality_{}: {} {} coverage={} gap_count={} largest_gap_seconds={}",
+                report.status.as_str(),
+                report.symbol,
+                report.interval,
+                report.coverage_pct,
+                report.gap_count,
+                report.largest_gap_seconds
+            ))
+        }
+        Ok(_) => None,
+        Err(err) => {
+            warn!(error = %err, symbol = %symbol, timeframe = %timeframe, "failed to inspect market data quality for research warning");
+            Some(
+                "market_data_quality_UNKNOWN: quality report failed before research execution"
+                    .to_string(),
+            )
+        }
+    }
+}
+
 async fn run_strategy_walk_forward_handler(
     State(state): State<AppState>,
     request: Option<Extension<RequestContext>>,
@@ -11277,16 +11361,33 @@ async fn run_strategy_walk_forward_handler(
         .await;
     }
 
+    let quality_warning = research_window_quality_warning(
+        &state,
+        &payload.symbol,
+        &payload.timeframe,
+        payload.start_time,
+        payload.end_time,
+    )
+    .await;
     let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
     match engine.run_strategy_walk_forward(payload).await {
-        Ok(execution) => (
-            StatusCode::OK,
-            Json(StrategyWalkForwardAcceptedResponse {
-                walk_forward: execution.result,
-                windows: execution.windows,
-            }),
-        )
-            .into_response(),
+        Ok(execution) => {
+            let mut result = execution.result;
+            if let Some(warning) = quality_warning {
+                warn!(warning = %warning, "walk-forward completed with market data quality warning");
+                if !result.warnings.contains(&warning) {
+                    result.warnings.push(warning);
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(StrategyWalkForwardAcceptedResponse {
+                    walk_forward: result,
+                    windows: execution.windows,
+                }),
+            )
+                .into_response()
+        }
         Err(err) => {
             let message = err.to_string();
             let status = if message.contains("invalid")
@@ -14039,6 +14140,88 @@ async fn get_market_candle_coverage(
                     message: "Failed to query candle coverage.".to_string(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn get_market_candle_quality(
+    State(state): State<AppState>,
+    Query(query): Query<CandleQualityQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    let exchange = match query.exchange.as_deref() {
+        Some(raw) => match raw.parse::<MarketDataSource>() {
+            Ok(exchange) => exchange,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_exchange",
+                        message: err.to_string(),
+                        request_id: request_context.request_id,
+                        correlation_id: request_context.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => state.market_config.exchange,
+    };
+    let payload = MarketDataQualityRequest {
+        exchange,
+        symbol: query.symbol,
+        interval: query.interval,
+        start_time: query.start_time,
+        end_time: query.end_time,
+        expected_interval_seconds: query.expected_interval_seconds,
+        max_allowed_gap_count: query.max_allowed_gap_count,
+        max_allowed_gap_pct: query.max_allowed_gap_pct,
+    };
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_market_data_quality_request",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match summarize_candle_continuity_report(&state.db_pool, &payload).await {
+        Ok(report) => (
+            StatusCode::OK,
+            Json(CandleQualityResponse {
+                report,
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!(
+                request_id = %request_context.request_id,
+                correlation_id = %request_context.correlation_id,
+                error = %err,
+                "failed to build market data quality report"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_build_market_data_quality_report",
+                    message: "Failed to build market data quality report.".to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
                     timestamp: Utc::now(),
                 }),
             )

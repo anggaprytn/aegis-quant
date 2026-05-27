@@ -5,20 +5,21 @@ use aegis_core::{
     ExchangeExecutionStatus, ExchangeName, ExchangeOrderSide, ExchangeOrderState,
     ExchangeOrderStatus, ExchangeOrderTimeInForce, ExchangeOrderType, ExchangeReconciliationAction,
     ExchangeReconciliationMismatchKind, ExchangeReconciliationSummary, ExecutionReadinessStatus,
-    FeeModel, MarketDataSource, OrderIntent, PaperAccount, PaperAccountStatus, PaperPosition,
-    PaperPriceStatus, PositionSide, PositionStatus, ReplayMode, ReplayRunStatus, ResearchCandidate,
-    ResearchCandidateDecision, ResearchCandidateLifecycleEvent, ResearchCandidateStatus,
-    ResearchDataCoverageResult, ResearchDataReadinessStatus, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
-    ResearchShadowPnlAttributionRequest, ResearchShadowPnlStatus, RiskCheckContext,
-    RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
-    SignalConfidence, SignalReason, SignalSide, StrategyCandidateObservationDecision,
-    StrategyCandidateObservationFinding, StrategyCandidateObservationRequirement,
-    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
-    StrategyCandidateObservationSummary, StrategyCandidateRunnerAlignment, StrategyConfig,
-    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
-    StrategyMode, StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
+    FeeModel, MarketDataQualityRequest, MarketDataQualityStatus, MarketDataSource, OrderIntent,
+    PaperAccount, PaperAccountStatus, PaperPosition, PaperPriceStatus, PositionSide,
+    PositionStatus, ReplayMode, ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision,
+    ResearchCandidateLifecycleEvent, ResearchCandidateStatus, ResearchDataCoverageResult,
+    ResearchDataReadinessStatus, ResearchDatasetBuildRequest, ResearchDatasetBuildStatus,
+    ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
+    StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
+    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
+    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
+    StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
+    StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
+    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
     StrategyResearchCandidateEvidence, StrategyResearchCandidateScore,
     StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategySignal,
     StrategyWalkForwardCandidate, StrategyWalkForwardRequest, StrategyWalkForwardResult,
@@ -32,15 +33,16 @@ use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
     count_candles_by_interval, count_candles_range, create_paper_order, create_research_candidate,
     fail_exchange_reconciliation_run, get_aggregated_candle_coverage, get_backtest_equity_curve,
-    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
-    get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
-    get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key,
-    get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
-    get_research_dataset_build, get_risk_decision, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_shadow_decision_breakdown, get_system_state,
-    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
-    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_candles_for_quality_report,
+    get_closed_1m_candles_range, get_closed_candles_range, get_exchange_private_stream_state,
+    get_exchange_reconciliation_run, get_exchange_testnet_order_by_client_order_id,
+    get_order_by_idempotency_key, get_research_candidate_shadow_performance,
+    get_research_candidate_shadow_pnl_attribution, get_research_dataset_build, get_risk_decision,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_shadow_run_by_id,
+    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
+    insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_paper_account, insert_research_candidate_shadow_run_link, insert_research_dataset_build,
@@ -62,12 +64,13 @@ use db::{
     resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
     strategy_research_candidate_from_record, strategy_walk_forward_result_from_records,
-    strategy_walk_forward_window_from_record, test_support::TestDatabase,
-    testnet_shadow_runner_config_from_record, testnet_shadow_runner_state_from_record,
-    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
-    upsert_candle, upsert_candles_batch, upsert_exchange_private_stream_state,
-    upsert_paper_position, upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state,
-    CreateOrderError, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    strategy_walk_forward_window_from_record, summarize_candle_continuity_report,
+    test_support::TestDatabase, testnet_shadow_runner_config_from_record,
+    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
+    update_exchange_testnet_order_status, upsert_aggregated_candles, upsert_candle,
+    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
@@ -476,6 +479,7 @@ fn sample_strategy_walk_forward_result(walk_forward_id: Uuid) -> StrategyWalkFor
             recommendation: aegis_core::StrategyWalkForwardRecommendation::default(),
         },
         recommendation: aegis_core::StrategyWalkForwardRecommendation::default(),
+        warnings: Vec::new(),
         created_at: fixed_time(),
         correlation_id: Some(Uuid::from_u128(0x9902)),
     }
@@ -1372,6 +1376,64 @@ async fn candle_count_range_returns_closed_candle_count() {
     .expect("count should work");
 
     assert_eq!(count, 2);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn candle_quality_report_detects_gap_and_is_read_only() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    for index in [0_i64, 1, 3] {
+        upsert_candle(&test_db.pool, &sample_backtest_candle(index, 100 + index))
+            .await
+            .expect("candle persists");
+    }
+
+    let request = MarketDataQualityRequest {
+        exchange: MarketDataSource::Binance,
+        symbol: "BTCUSDT".to_string(),
+        interval: "1m".to_string(),
+        start_time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        end_time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 4, 0).unwrap(),
+        expected_interval_seconds: None,
+        max_allowed_gap_count: None,
+        max_allowed_gap_pct: None,
+    };
+    let before_paper_orders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM paper_orders")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("paper order count should work");
+    let before_testnet_orders: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM exchange_testnet_orders")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("testnet order count should work");
+
+    let candles = get_candles_for_quality_report(&test_db.pool, &request)
+        .await
+        .expect("quality candles should load");
+    let report = summarize_candle_continuity_report(&test_db.pool, &request)
+        .await
+        .expect("quality report should build");
+
+    let after_paper_orders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM paper_orders")
+        .fetch_one(&test_db.pool)
+        .await
+        .expect("paper order count should work");
+    let after_testnet_orders: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM exchange_testnet_orders")
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("testnet order count should work");
+
+    assert_eq!(candles.len(), 3);
+    assert_eq!(report.status, MarketDataQualityStatus::Bad);
+    assert_eq!(report.gap_count, 1);
+    assert_eq!(report.gaps.len(), 1);
+    assert_eq!(report.gaps[0].missing_candle_count, 1);
+    assert_eq!(before_paper_orders, after_paper_orders);
+    assert_eq!(before_testnet_orders, after_testnet_orders);
 }
 
 #[tokio::test]

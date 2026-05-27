@@ -1,19 +1,20 @@
 use std::cmp::Reverse;
 
 use aegis_core::{
-    AuthenticatedActor, OperatorReport, OperatorReportFinding, OperatorReportFormat,
-    OperatorReportHighlight, OperatorReportMarketFeedSnapshot, OperatorReportMarketSnapshot,
-    OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot, OperatorReportReasonCount,
-    OperatorReportRecommendation, OperatorReportRequest,
-    OperatorReportResearchQualificationSnapshot, OperatorReportResearchQualificationTopCandidate,
-    OperatorReportRiskSnapshot, OperatorReportSection, OperatorReportSeverity,
-    OperatorReportShadowSnapshot, OperatorReportStatus, OperatorReportStrategySnapshot,
-    OperatorReportSummary, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
-    OperatorReportTopPairCount, ResearchCandidateQualificationStatus,
-    ResearchCandidateQualificationThresholds, ResearchCandidateStatus,
-    ResearchCandidateTestnetReviewStatus, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, ResearchShadowPnlRecommendation, StrategyPerformanceMode,
-    StrategyPerformanceRequest, TestnetPromotionFunnelRequest,
+    AuthenticatedActor, MarketDataQualityRequest, MarketDataQualityStatus, OperatorReport,
+    OperatorReportFinding, OperatorReportFormat, OperatorReportHighlight,
+    OperatorReportMarketFeedSnapshot, OperatorReportMarketSnapshot, OperatorReportPaperSnapshot,
+    OperatorReportPromotionSnapshot, OperatorReportReasonCount, OperatorReportRecommendation,
+    OperatorReportRequest, OperatorReportResearchQualificationSnapshot,
+    OperatorReportResearchQualificationTopCandidate, OperatorReportRiskSnapshot,
+    OperatorReportSection, OperatorReportSeverity, OperatorReportShadowSnapshot,
+    OperatorReportStatus, OperatorReportStrategySnapshot, OperatorReportSummary,
+    OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot, OperatorReportTopPairCount,
+    ResearchCandidateQualificationStatus, ResearchCandidateQualificationThresholds,
+    ResearchCandidateStatus, ResearchCandidateTestnetReviewStatus,
+    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
+    ResearchShadowPnlRecommendation, StrategyPerformanceMode, StrategyPerformanceRequest,
+    TestnetPromotionFunnelRequest,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -29,7 +30,7 @@ use db::{
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidates, research_candidate_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
-    ResearchCandidateListFilters,
+    summarize_candle_continuity_report, ResearchCandidateListFilters,
 };
 
 const DEFAULT_REPORT_WINDOW_HOURS: i64 = 24;
@@ -383,6 +384,25 @@ async fn load_system_and_market_data(
     .fetch_one(&state.db_pool)
     .await?;
 
+    let data_quality = match (request.symbol.as_deref(), request.interval.as_deref()) {
+        (Some(symbol), Some(interval)) => {
+            let quality_request = MarketDataQualityRequest {
+                exchange: state.market_config.exchange,
+                symbol: symbol.to_string(),
+                interval: interval.to_string(),
+                start_time: window.start,
+                end_time: window.end,
+                expected_interval_seconds: None,
+                max_allowed_gap_count: None,
+                max_allowed_gap_pct: None,
+            };
+            summarize_candle_continuity_report(&state.db_pool, &quality_request)
+                .await
+                .ok()
+        }
+        _ => None,
+    };
+
     Ok(SystemAndMarketData {
         system: OperatorReportSystemSnapshot {
             api_healthy: true,
@@ -403,6 +423,7 @@ async fn load_system_and_market_data(
             backfill_completed_count: backfill_row.get::<i64, _>("completed_count"),
             backfill_failed_count: backfill_row.get::<i64, _>("failed_count"),
             candle_count_in_window,
+            data_quality,
         },
         stale_threshold_seconds,
     })
@@ -1224,6 +1245,50 @@ fn build_findings(
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
+    if let Some(quality) = system_market.market.data_quality.as_ref() {
+        match quality.status {
+            MarketDataQualityStatus::Bad => findings.push(finding(
+                "market_data_quality_bad",
+                OperatorReportSeverity::High,
+                "Market data quality BAD",
+                &format!(
+                    "{} {} coverage={}%, gaps={}, largest_gap_seconds={}",
+                    quality.symbol,
+                    quality.interval,
+                    quality.coverage_pct,
+                    quality.gap_count,
+                    quality.largest_gap_seconds
+                ),
+                "market_data_quality",
+            )),
+            MarketDataQualityStatus::Degraded => findings.push(finding(
+                "market_data_quality_degraded",
+                OperatorReportSeverity::Medium,
+                "Market data quality DEGRADED",
+                &format!(
+                    "{} {} coverage={}%, gaps={}, largest_gap_seconds={}",
+                    quality.symbol,
+                    quality.interval,
+                    quality.coverage_pct,
+                    quality.gap_count,
+                    quality.largest_gap_seconds
+                ),
+                "market_data_quality",
+            )),
+            MarketDataQualityStatus::Good if quality.gap_count > 0 => findings.push(finding(
+                "minor_candle_gaps_detected",
+                OperatorReportSeverity::Low,
+                "Minor candle gaps detected",
+                &format!(
+                    "{} {} has {} gaps in the selected window.",
+                    quality.symbol, quality.interval, quality.gap_count
+                ),
+                "market_data_quality",
+            )),
+            _ => {}
+        }
+    }
+
     if system_market.system.kill_switch_active {
         findings.push(finding(
             "kill_switch_active",
@@ -1657,6 +1722,23 @@ fn build_recommendations(findings: &[OperatorReportFinding]) -> Vec<OperatorRepo
         ));
     }
 
+    if findings.iter().any(|finding| {
+        finding.code == "market_data_quality_bad"
+            || finding.code == "market_data_quality_degraded"
+            || finding.code == "minor_candle_gaps_detected"
+    }) {
+        recommendations.push(recommendation(
+            "repair_market_data_quality",
+            OperatorReportSeverity::Medium,
+            "Backfill or exclude gappy candle windows before trusting research and promotion evidence.",
+            &[
+                "market_data_quality_bad",
+                "market_data_quality_degraded",
+                "minor_candle_gaps_detected",
+            ],
+        ));
+    }
+
     recommendations
 }
 
@@ -1991,6 +2073,34 @@ fn build_sections(
             research_qualification,
         )?,
     ];
+
+    if let Some(quality) = market.data_quality.as_ref() {
+        sections.push(section(
+            "market_data_quality",
+            "Market Data Quality",
+            match quality.status {
+                MarketDataQualityStatus::Good => OperatorReportStatus::Ok,
+                MarketDataQualityStatus::Degraded => OperatorReportStatus::Warning,
+                MarketDataQualityStatus::Bad | MarketDataQualityStatus::InsufficientData => {
+                    OperatorReportStatus::Warning
+                }
+                MarketDataQualityStatus::Unknown => OperatorReportStatus::Warning,
+            },
+            "Candle coverage and continuity for the selected symbol, timeframe, and report window.",
+            vec![
+                highlight("Status", quality.status.as_str()),
+                highlight("Symbol", quality.symbol.clone()),
+                highlight("Interval", quality.interval.clone()),
+                highlight("Coverage %", quality.coverage_pct.to_string()),
+                highlight("Gap Count", quality.gap_count.to_string()),
+                highlight(
+                    "Largest Gap Seconds",
+                    quality.largest_gap_seconds.to_string(),
+                ),
+            ],
+            quality,
+        )?);
+    }
 
     if let Some(shadow_pnl) = shadow_pnl {
         sections.push(section(
@@ -2350,6 +2460,7 @@ mod tests {
                 backfill_completed_count: 0,
                 backfill_failed_count: 0,
                 candle_count_in_window: 0,
+                data_quality: None,
             },
             stale_threshold_seconds: 10,
         }

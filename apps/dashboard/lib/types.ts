@@ -376,6 +376,7 @@ export type OperatorReportRequest = {
   start_time?: string;
   end_time?: string;
   symbol?: string;
+  interval?: string;
   strategy_id?: string;
   format?: OperatorReportFormat;
   persist?: boolean;
@@ -758,6 +759,71 @@ export type CandleCoverageSummary = MarketCandleCoverageSummary;
 
 export type CandleCoverageResponse = {
   coverage: MarketCandleCoverageSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type MarketDataQualityStatus =
+  | "GOOD"
+  | "DEGRADED"
+  | "BAD"
+  | "INSUFFICIENT_DATA"
+  | "UNKNOWN";
+
+export type MarketDataQualityRequest = {
+  exchange?: string;
+  symbol: string;
+  interval: string;
+  start_time: string;
+  end_time: string;
+  expected_interval_seconds?: number | null;
+  max_allowed_gap_count?: number | null;
+  max_allowed_gap_pct?: string | null;
+};
+
+export type MarketDataGap = {
+  start_time: string;
+  end_time: string;
+  missing_candle_count: number;
+  gap_seconds: number;
+};
+
+export type MarketDataQualityFinding = {
+  severity: string;
+  code: string;
+  message: string;
+};
+
+export type MarketDataQualityRecommendation = {
+  code: string;
+  message: string;
+};
+
+export type MarketDataQualityReport = {
+  exchange: string;
+  symbol: string;
+  interval: string;
+  window_start: string;
+  window_end: string;
+  expected_candle_count: number;
+  actual_candle_count: number;
+  closed_candle_count: number;
+  open_candle_count: number;
+  missing_candle_count: number;
+  coverage_pct: string;
+  gap_count: number;
+  largest_gap_seconds: number;
+  gaps: MarketDataGap[];
+  first_candle_time: string | null;
+  last_candle_time: string | null;
+  status: MarketDataQualityStatus;
+  findings: MarketDataQualityFinding[];
+  recommendations: MarketDataQualityRecommendation[];
+};
+
+export type MarketDataQualityResponse = {
+  report: MarketDataQualityReport;
   request_id: string;
   correlation_id: string;
   timestamp: string;
@@ -3070,6 +3136,7 @@ export type StrategyWalkForwardResult = {
   robustness_status: StrategyWalkForwardRobustnessStatus;
   robustness_summary: StrategyWalkForwardRobustnessSummary;
   recommendation: StrategyWalkForwardRecommendation;
+  warnings: string[];
   created_at: string;
   correlation_id: string | null;
 };

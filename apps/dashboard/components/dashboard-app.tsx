@@ -19,6 +19,8 @@ import type {
   CandleBackfillRequest,
   CandleBackfillResult,
   CandleCoverageSummary,
+  MarketDataQualityReport,
+  MarketDataQualityRequest,
   ExecutionReadinessRequest,
   ExecutionReadinessResult,
   ExecutionReadinessSnapshot,
@@ -312,6 +314,14 @@ const DEFAULT_AGGREGATION_FORM: CandleAggregationRequest = {
   end_time: "2026-05-24T00:00:00Z",
 };
 
+const DEFAULT_MARKET_DATA_QUALITY_FORM: MarketDataQualityRequest = {
+  exchange: "binance",
+  symbol: "BTCUSDT",
+  interval: "15m",
+  start_time: "2024-05-01T00:00:00Z",
+  end_time: "2024-05-06T00:00:00Z",
+};
+
 const DEFAULT_RESEARCH_DATA_FORM: ResearchDatasetBuildRequest = {
   exchange: "binance",
   symbol: "BTCUSDT",
@@ -325,6 +335,7 @@ const DEFAULT_REPORT_FORM: OperatorReportRequest = {
   start_time: "2026-05-24T00:00:00Z",
   end_time: "2026-05-24T23:59:59Z",
   symbol: "BTCUSDT",
+  interval: "15m",
   strategy_id: "momentum_v1",
   format: "MARKDOWN",
   persist: false,
@@ -752,11 +763,15 @@ function AuthenticatedDashboard({
     useState<CandleBackfillRequest>(DEFAULT_BACKFILL_FORM);
   const [aggregationForm, setAggregationForm] =
     useState<CandleAggregationRequest>(DEFAULT_AGGREGATION_FORM);
+  const [marketDataQualityForm, setMarketDataQualityForm] =
+    useState<MarketDataQualityRequest>(DEFAULT_MARKET_DATA_QUALITY_FORM);
   const [selectedBackfillRunId, setSelectedBackfillRunId] = useState<string | null>(null);
   const [lastBackfillResult, setLastBackfillResult] =
     useState<CandleBackfillResult | null>(null);
   const [lastAggregationResult, setLastAggregationResult] =
     useState<CandleAggregationResult | null>(null);
+  const [lastMarketDataQualityReport, setLastMarketDataQualityReport] =
+    useState<MarketDataQualityReport | null>(null);
   const [researchDataForm, setResearchDataForm] =
     useState<ResearchDatasetBuildRequest>(DEFAULT_RESEARCH_DATA_FORM);
   const [selectedResearchBuildId, setSelectedResearchBuildId] = useState<string | null>(null);
@@ -2008,6 +2023,12 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["candle-coverage"] });
     },
   });
+  const marketDataQualityMutation = useMutation({
+    mutationFn: () => api.getMarketCandleQuality(marketDataQualityForm),
+    onSuccess: (response) => {
+      setLastMarketDataQualityReport(response.report);
+    },
+  });
   const researchCoverageMutation = useMutation({
     mutationFn: () =>
       api.getResearchDataCoverage({
@@ -2898,6 +2919,51 @@ function AuthenticatedDashboard({
                   loading={candleCoverageQuery.isLoading}
                   error={getErrorMessage(candleCoverageQuery.error)}
                 />
+              </Panel>
+              <Panel className="xl:col-span-7" title="Market Data Quality">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field
+                    label="Symbol"
+                    as="select"
+                    value={marketDataQualityForm.symbol}
+                    onChange={(value) =>
+                      setMarketDataQualityForm((current) => ({ ...current, symbol: value }))
+                    }
+                    options={dataSymbols}
+                  />
+                  <Field
+                    label="Interval"
+                    as="select"
+                    value={marketDataQualityForm.interval}
+                    onChange={(value) =>
+                      setMarketDataQualityForm((current) => ({ ...current, interval: value }))
+                    }
+                    options={["1m", "5m", "15m", "1h"]}
+                  />
+                  <Field
+                    label="Start"
+                    value={marketDataQualityForm.start_time}
+                    onChange={(value) =>
+                      setMarketDataQualityForm((current) => ({ ...current, start_time: value }))
+                    }
+                  />
+                  <Field
+                    label="End"
+                    value={marketDataQualityForm.end_time}
+                    onChange={(value) =>
+                      setMarketDataQualityForm((current) => ({ ...current, end_time: value }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <ActionButton
+                    label="Inspect Quality"
+                    onClick={() => marketDataQualityMutation.mutate()}
+                    busy={marketDataQualityMutation.isPending}
+                  />
+                  <InlineStatus error={getErrorMessage(marketDataQualityMutation.error)} />
+                </div>
+                <MarketDataQualityPanel report={lastMarketDataQualityReport} />
               </Panel>
               <Panel className="xl:col-span-7" title="Research Data">
                 <div className="grid gap-3 md:grid-cols-2">
@@ -4229,6 +4295,13 @@ function AuthenticatedDashboard({
                         ...current,
                         strategy_id: value || undefined,
                       }))
+                    }
+                  />
+                  <Field
+                    label="Interval"
+                    value={reportForm.interval ?? ""}
+                    onChange={(value) =>
+                      setReportForm((current) => ({ ...current, interval: value || undefined }))
                     }
                   />
                   <Field
@@ -7447,6 +7520,97 @@ function CandleCoverageTable({
       headers={["Interval", "Closed Candles"]}
       rows={coverage.intervals.map((entry) => [entry.interval, formatNumber(entry.candle_count)])}
     />
+  );
+}
+
+function MarketDataQualityPanel({ report }: { report: MarketDataQualityReport | null }) {
+  if (!report) {
+    return <EmptyState label="No quality report yet." />;
+  }
+
+  const tone =
+    report.status === "GOOD"
+      ? "ok"
+      : report.status === "DEGRADED"
+        ? "warning"
+        : report.status === "UNKNOWN"
+          ? "neutral"
+          : "danger";
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <span
+          className={cn(
+            "rounded-md border px-2 py-1 text-xs font-semibold",
+            tone === "ok" && "border-success/40 bg-success/10 text-emerald-200",
+            tone === "warning" && "border-warning/40 bg-warning/10 text-amber-200",
+            tone === "danger" && "border-danger/40 bg-danger/10 text-red-200",
+            tone === "neutral" && "border-border bg-surface text-slate-200",
+          )}
+        >
+          {report.status}
+        </span>
+        <span className="text-sm text-muted">
+          {report.symbol} {report.interval} coverage {formatNumber(report.coverage_pct)}%
+        </span>
+      </div>
+      <KeyValue
+        items={[
+          ["Expected", formatNumber(report.expected_candle_count)],
+          ["Actual", formatNumber(report.actual_candle_count)],
+          ["Closed", formatNumber(report.closed_candle_count)],
+          ["Open", formatNumber(report.open_candle_count)],
+          ["Missing", formatNumber(report.missing_candle_count)],
+          ["Gaps", formatNumber(report.gap_count)],
+          ["Largest Gap", `${formatNumber(report.largest_gap_seconds)}s`],
+          ["First Candle", report.first_candle_time ? formatDateTime(report.first_candle_time) : "-"],
+          ["Last Candle", report.last_candle_time ? formatDateTime(report.last_candle_time) : "-"],
+        ]}
+      />
+      <div>
+        <h4 className="mb-2 text-sm font-semibold text-foreground">Gaps</h4>
+        {report.gaps.length ? (
+          <Table
+            headers={["Start", "End", "Missing", "Seconds"]}
+            rows={report.gaps.map((gap) => [
+              formatDateTime(gap.start_time),
+              formatDateTime(gap.end_time),
+              formatNumber(gap.missing_candle_count),
+              formatNumber(gap.gap_seconds),
+            ])}
+          />
+        ) : (
+          <EmptyState label="No gaps returned." />
+        )}
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <div>
+          <h4 className="mb-2 text-sm font-semibold text-foreground">Findings</h4>
+          {report.findings.length ? (
+            <SimpleList
+              items={report.findings.map(
+                (finding) => `${finding.severity} ${finding.code}: ${finding.message}`,
+              )}
+            />
+          ) : (
+            <EmptyState label="No findings." />
+          )}
+        </div>
+        <div>
+          <h4 className="mb-2 text-sm font-semibold text-foreground">Recommendations</h4>
+          {report.recommendations.length ? (
+            <SimpleList
+              items={report.recommendations.map(
+                (recommendation) => `${recommendation.code}: ${recommendation.message}`,
+              )}
+            />
+          ) : (
+            <EmptyState label="No recommendations." />
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

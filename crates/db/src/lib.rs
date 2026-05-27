@@ -1,24 +1,26 @@
 use aegis_core::{
     calculate_average_duration_seconds, calculate_strategy_rejection_rate,
     calculate_strategy_win_rate, calculate_testnet_promotion_rate,
-    combine_strategy_performance_summaries, BacktestConfig, BacktestEquityPoint, BacktestResult,
+    combine_strategy_performance_summaries, count_expected_candles_for_window,
+    summarize_candle_continuity, BacktestConfig, BacktestEquityPoint, BacktestResult,
     BacktestTrade, Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult,
     CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
     ExchangeReconciliationStatus, ExecutionReadinessBlockingReason, ExecutionReadinessCheck,
     ExecutionReadinessRecommendation, ExecutionReadinessSnapshot, ExecutionReadinessStatus,
     ExecutionReadinessTarget, ExecutionState, FeedStatus, MarketCandleCoverageSummary,
-    MarketCandleIntervalCoverage, MarketDataSource, MarketTick, OrderIntent, OrderStatus,
-    PaperAccount, PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus,
-    PaperEquitySnapshot, PaperFill, PaperOrder, PaperPosition, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradeJournalEntry, PositionSide,
-    PositionStatus, ReplayRunStatus, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, Session, Side, SignalReason,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry, StrategyConfigVersion,
-    StrategyDecisionBreakdown, StrategyExperimentCandidate, StrategyExperimentComparison,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyId, StrategyPerformanceMode,
-    StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
-    StrategyRiskBreakdown, StrategySignal, StrategyStatus, StrategyWalkForwardRecommendation,
-    StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardWindow,
+    MarketCandleIntervalCoverage, MarketDataQualityReport, MarketDataQualityRequest,
+    MarketDataSource, MarketTick, OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus,
+    PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder,
+    PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
+    RiskEvaluationResult, Session, Side, SignalReason, StrategyComparisonSummary, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigVersion, StrategyDecisionBreakdown,
+    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
+    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyRiskBreakdown, StrategySignal,
+    StrategyStatus, StrategyWalkForwardRecommendation, StrategyWalkForwardResult,
+    StrategyWalkForwardRobustnessSummary, StrategyWalkForwardWindow,
     StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
     TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
     TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
@@ -5088,6 +5090,67 @@ pub async fn get_closed_1m_candles_range(
     .await?;
 
     Ok(rows.iter().map(map_candle_domain).collect())
+}
+
+pub async fn get_candles_for_quality_report(
+    pool: &PgPool,
+    request: &MarketDataQualityRequest,
+) -> Result<Vec<Candle>> {
+    let symbol = request.normalized_symbol()?;
+    let interval = request.parsed_interval()?;
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            exchange,
+            symbol,
+            interval,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            is_closed,
+            created_at,
+            updated_at
+        FROM candles
+        WHERE exchange = $1
+          AND symbol = $2
+          AND interval = $3
+          AND open_time >= $4
+          AND open_time < $5
+        ORDER BY open_time ASC, updated_at ASC
+        "#,
+    )
+    .bind(request.exchange.as_str())
+    .bind(symbol.as_str())
+    .bind(interval.as_str())
+    .bind(request.start_time)
+    .bind(request.end_time)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(map_candle_domain).collect())
+}
+
+pub fn count_expected_candles(request: &MarketDataQualityRequest) -> Result<i64> {
+    Ok(count_expected_candles_for_window(
+        request.expected_interval_seconds()?,
+        request.start_time,
+        request.end_time,
+    ))
+}
+
+pub async fn summarize_candle_continuity_report(
+    pool: &PgPool,
+    request: &MarketDataQualityRequest,
+) -> Result<MarketDataQualityReport> {
+    let candles = get_candles_for_quality_report(pool, request).await?;
+    Ok(summarize_candle_continuity(request, &candles, 100)?)
 }
 
 pub async fn upsert_aggregated_candles(
@@ -10181,6 +10244,7 @@ pub fn strategy_walk_forward_result_from_records(
         robustness_status,
         robustness_summary,
         recommendation,
+        warnings: Vec::new(),
         created_at: record.created_at,
         correlation_id: record.correlation_id,
     })

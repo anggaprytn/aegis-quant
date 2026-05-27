@@ -481,6 +481,338 @@ pub struct MarketCandleCoverageSummary {
     pub intervals: Vec<MarketCandleIntervalCoverage>,
 }
 
+fn default_market_data_quality_exchange() -> MarketDataSource {
+    MarketDataSource::Binance
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataQualityRequest {
+    #[serde(default = "default_market_data_quality_exchange")]
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub expected_interval_seconds: Option<i64>,
+    pub max_allowed_gap_count: Option<i64>,
+    pub max_allowed_gap_pct: Option<Decimal>,
+}
+
+impl MarketDataQualityRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyCandleBackfillSymbol);
+        }
+        self.parsed_interval()?;
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidCandleBackfillTimeRange);
+        }
+        if let Some(seconds) = self.expected_interval_seconds {
+            if seconds <= 0 {
+                return Err(CoreError::InvalidCandleBackfillTimeRange);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn normalized_symbol(&self) -> Result<Symbol, CoreError> {
+        Symbol::new(self.symbol.clone())
+    }
+
+    pub fn parsed_interval(&self) -> Result<CandleInterval, CoreError> {
+        self.interval.parse::<CandleInterval>()
+    }
+
+    pub fn expected_interval_seconds(&self) -> Result<i64, CoreError> {
+        Ok(self.expected_interval_seconds.unwrap_or_else(|| {
+            self.parsed_interval()
+                .map_or(0, |interval| interval.duration().num_seconds())
+        }))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MarketDataQualityStatus {
+    Good,
+    Degraded,
+    Bad,
+    InsufficientData,
+    Unknown,
+}
+
+impl MarketDataQualityStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Good => "GOOD",
+            Self::Degraded => "DEGRADED",
+            Self::Bad => "BAD",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketDataGap {
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub missing_candle_count: i64,
+    pub gap_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataCoverageSummary {
+    pub expected_candle_count: i64,
+    pub actual_candle_count: i64,
+    pub closed_candle_count: i64,
+    pub open_candle_count: i64,
+    pub missing_candle_count: i64,
+    pub coverage_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketDataQualityFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketDataQualityRecommendation {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketDataQualityReport {
+    pub exchange: MarketDataSource,
+    pub symbol: String,
+    pub interval: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub expected_candle_count: i64,
+    pub actual_candle_count: i64,
+    pub closed_candle_count: i64,
+    pub open_candle_count: i64,
+    pub missing_candle_count: i64,
+    pub coverage_pct: Decimal,
+    pub gap_count: i64,
+    pub largest_gap_seconds: i64,
+    pub gaps: Vec<MarketDataGap>,
+    pub first_candle_time: Option<DateTime<Utc>>,
+    pub last_candle_time: Option<DateTime<Utc>>,
+    pub status: MarketDataQualityStatus,
+    pub findings: Vec<MarketDataQualityFinding>,
+    pub recommendations: Vec<MarketDataQualityRecommendation>,
+}
+
+pub fn count_expected_candles_for_window(
+    interval_seconds: i64,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) -> i64 {
+    if interval_seconds <= 0 || end_time <= start_time {
+        return 0;
+    }
+    end_time
+        .signed_duration_since(start_time)
+        .num_seconds()
+        .div_euclid(interval_seconds)
+        .max(0)
+}
+
+pub fn summarize_candle_continuity(
+    request: &MarketDataQualityRequest,
+    candles: &[Candle],
+    max_gaps_returned: usize,
+) -> Result<MarketDataQualityReport, CoreError> {
+    request.validate()?;
+    let symbol = request.normalized_symbol()?;
+    let interval = request.parsed_interval()?;
+    let interval_seconds = request.expected_interval_seconds()?;
+    let expected_candle_count =
+        count_expected_candles_for_window(interval_seconds, request.start_time, request.end_time);
+
+    let mut sorted = candles.to_vec();
+    sorted.sort_by_key(|candle| candle.open_time);
+
+    let actual_candle_count = i64::try_from(sorted.len()).unwrap_or(i64::MAX);
+    let closed_candle_count =
+        i64::try_from(sorted.iter().filter(|candle| candle.is_closed).count()).unwrap_or(i64::MAX);
+    let open_candle_count = actual_candle_count.saturating_sub(closed_candle_count);
+    let coverage_pct = if expected_candle_count > 0 {
+        Decimal::from(closed_candle_count.min(expected_candle_count)) * Decimal::new(100, 0)
+            / Decimal::from(expected_candle_count)
+    } else {
+        Decimal::ZERO
+    }
+    .round_dp(4);
+
+    let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
+    let mut gaps = Vec::new();
+    let mut duplicate_count = 0_i64;
+    let mut total_missing_from_gaps = 0_i64;
+    let mut gap_count = 0_i64;
+    let mut largest_gap_seconds = 0_i64;
+    let closed = sorted
+        .iter()
+        .filter(|candle| candle.is_closed)
+        .collect::<Vec<_>>();
+
+    for pair in closed.windows(2) {
+        let previous = pair[0];
+        let next = pair[1];
+        let expected_next = previous.open_time + Duration::seconds(interval_seconds);
+        if next.open_time == previous.open_time {
+            duplicate_count += 1;
+        } else if next.open_time > expected_next {
+            let gap_seconds = next
+                .open_time
+                .signed_duration_since(expected_next)
+                .num_seconds()
+                .max(0);
+            let missing = gap_seconds.div_euclid(interval_seconds).max(1);
+            gap_count += 1;
+            total_missing_from_gaps += missing;
+            largest_gap_seconds = largest_gap_seconds.max(gap_seconds);
+            if gaps.len() < max_gaps_returned {
+                gaps.push(MarketDataGap {
+                    start_time: expected_next,
+                    end_time: next.open_time,
+                    missing_candle_count: missing,
+                    gap_seconds,
+                });
+            }
+        }
+    }
+
+    let missing_candle_count = expected_candle_count
+        .saturating_sub(closed_candle_count)
+        .max(total_missing_from_gaps);
+    let gap_pct = if expected_candle_count > 0 {
+        Decimal::from(total_missing_from_gaps) * Decimal::new(100, 0)
+            / Decimal::from(expected_candle_count)
+    } else {
+        Decimal::ZERO
+    };
+    let max_allowed_gap_count = request.max_allowed_gap_count.unwrap_or(0).max(0);
+    let max_allowed_gap_pct = request.max_allowed_gap_pct.unwrap_or(Decimal::ZERO);
+
+    if actual_candle_count == 0 {
+        findings.push(MarketDataQualityFinding {
+            severity: "HIGH".to_string(),
+            code: "no_candles".to_string(),
+            message: "No candles exist for the requested market data window.".to_string(),
+        });
+        recommendations.push(MarketDataQualityRecommendation {
+            code: "backfill_market_data".to_string(),
+            message:
+                "Backfill the requested symbol and interval before using this window for research."
+                    .to_string(),
+        });
+    }
+
+    if gap_count > 0 {
+        findings.push(MarketDataQualityFinding {
+            severity: if gap_pct > Decimal::new(5, 0) {
+                "HIGH"
+            } else {
+                "MEDIUM"
+            }
+            .to_string(),
+            code: "candle_gaps_detected".to_string(),
+            message: format!(
+                "{gap_count} expected candle slots are missing from the closed-candle sequence."
+            ),
+        });
+        recommendations.push(MarketDataQualityRecommendation {
+            code: "repair_candle_gaps".to_string(),
+            message: "Backfill or exclude gap windows before trusting experiments, walk-forward validation, attribution, qualification, or dossiers.".to_string(),
+        });
+    }
+
+    if duplicate_count > 0 {
+        findings.push(MarketDataQualityFinding {
+            severity: "MEDIUM".to_string(),
+            code: "duplicate_open_times_detected".to_string(),
+            message: format!("{duplicate_count} duplicate closed candle open times were detected."),
+        });
+    }
+
+    if open_candle_count > 0 && request.end_time < Utc::now() {
+        findings.push(MarketDataQualityFinding {
+            severity: "MEDIUM".to_string(),
+            code: "open_candles_in_historical_window".to_string(),
+            message: format!(
+                "{open_candle_count} open candles were found inside a completed historical window."
+            ),
+        });
+    }
+
+    if expected_candle_count > 0 && coverage_pct < Decimal::new(95, 0) {
+        findings.push(MarketDataQualityFinding {
+            severity: "HIGH".to_string(),
+            code: "coverage_below_95_pct".to_string(),
+            message: format!("Closed-candle coverage is {coverage_pct}% for the requested window."),
+        });
+    } else if expected_candle_count > 0 && coverage_pct < Decimal::new(99, 0) {
+        findings.push(MarketDataQualityFinding {
+            severity: "MEDIUM".to_string(),
+            code: "coverage_below_99_pct".to_string(),
+            message: format!("Closed-candle coverage is {coverage_pct}% for the requested window."),
+        });
+    }
+
+    let status = if actual_candle_count == 0 {
+        MarketDataQualityStatus::InsufficientData
+    } else if expected_candle_count == 0 {
+        MarketDataQualityStatus::Unknown
+    } else if coverage_pct < Decimal::new(95, 0) || gap_pct > Decimal::new(5, 0) {
+        MarketDataQualityStatus::Bad
+    } else if coverage_pct < Decimal::new(99, 0)
+        || gap_count > max_allowed_gap_count
+        || gap_pct > max_allowed_gap_pct
+        || duplicate_count > 0
+        || open_candle_count > 0
+    {
+        MarketDataQualityStatus::Degraded
+    } else {
+        MarketDataQualityStatus::Good
+    };
+
+    if status == MarketDataQualityStatus::Good {
+        findings.push(MarketDataQualityFinding {
+            severity: "INFO".to_string(),
+            code: "market_data_quality_good".to_string(),
+            message: "Closed candles are continuous for the requested window.".to_string(),
+        });
+    }
+
+    Ok(MarketDataQualityReport {
+        exchange: request.exchange,
+        symbol: symbol.as_str().to_string(),
+        interval: interval.as_str().to_string(),
+        window_start: request.start_time,
+        window_end: request.end_time,
+        expected_candle_count,
+        actual_candle_count,
+        closed_candle_count,
+        open_candle_count,
+        missing_candle_count,
+        coverage_pct,
+        gap_count,
+        largest_gap_seconds,
+        gaps,
+        first_candle_time: sorted.first().map(|candle| candle.open_time),
+        last_candle_time: sorted.last().map(|candle| candle.open_time),
+        status,
+        findings,
+        recommendations,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CandleAggregationOutcome {
     pub candles: Vec<Candle>,
@@ -1928,6 +2260,8 @@ pub struct StrategyWalkForwardResult {
     pub robustness_status: StrategyWalkForwardRobustnessStatus,
     pub robustness_summary: StrategyWalkForwardRobustnessSummary,
     pub recommendation: StrategyWalkForwardRecommendation,
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
 }
@@ -2479,6 +2813,7 @@ pub struct OperatorReportRequest {
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
     pub symbol: Option<String>,
+    pub interval: Option<String>,
     pub strategy_id: Option<String>,
     #[serde(default)]
     pub format: OperatorReportFormat,
@@ -2493,6 +2828,7 @@ impl Default for OperatorReportRequest {
             start_time: None,
             end_time: None,
             symbol: None,
+            interval: None,
             strategy_id: None,
             format: OperatorReportFormat::Json,
             persist: false,
@@ -2893,6 +3229,7 @@ pub struct OperatorReportMarketSnapshot {
     pub backfill_completed_count: i64,
     pub backfill_failed_count: i64,
     pub candle_count_in_window: i64,
+    pub data_quality: Option<MarketDataQualityReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6479,14 +6816,15 @@ mod tests {
         ExchangeOrderSide, ExchangeOrderState, ExchangeOrderType, ExchangePrivateStreamEvent,
         ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
         ExecutionReadinessCheck, ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
-        ExecutionReadinessStatus, ExecutionState, MarketDataSource, OperatorReport,
-        OperatorReportFinding, OperatorReportFormat, OperatorReportRecommendation,
-        OperatorReportRequest, OperatorReportSection, OperatorReportSeverity, OperatorReportStatus,
-        OperatorReportSummary, OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
+        ExecutionReadinessStatus, ExecutionState, MarketDataQualityRequest,
+        MarketDataQualityStatus, MarketDataSource, OperatorReport, OperatorReportFinding,
+        OperatorReportFormat, OperatorReportRecommendation, OperatorReportRequest,
+        OperatorReportSection, OperatorReportSeverity, OperatorReportStatus, OperatorReportSummary,
+        OrderIntent, PaperOrder, Permission, Side, StrategyPerformanceMode,
         StrategyPerformanceSummary, Symbol, TestnetExecutionState, TestnetRepairAction,
         TestnetRepairRequest, UserRole,
     };
-    use chrono::{Duration, TimeZone, Utc};
+    use chrono::{DateTime, Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
     use serde_json::json;
     use uuid::Uuid;
@@ -7271,5 +7609,165 @@ mod tests {
         let second = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
 
         assert_eq!(first, second);
+    }
+
+    fn quality_request(start: DateTime<Utc>, end: DateTime<Utc>) -> MarketDataQualityRequest {
+        MarketDataQualityRequest {
+            exchange: MarketDataSource::Binance,
+            symbol: "BTCUSDT".to_string(),
+            interval: "1m".to_string(),
+            start_time: start,
+            end_time: end,
+            expected_interval_seconds: None,
+            max_allowed_gap_count: None,
+            max_allowed_gap_pct: None,
+        }
+    }
+
+    fn quality_candle(open_time: DateTime<Utc>, is_closed: bool) -> Candle {
+        Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new("BTCUSDT").unwrap(),
+            interval: CandleInterval::OneMinute,
+            open_time,
+            close_time: open_time + Duration::minutes(1) - Duration::milliseconds(1),
+            open: Decimal::new(100, 0),
+            high: Decimal::new(101, 0),
+            low: Decimal::new(99, 0),
+            close: Decimal::new(100, 0),
+            volume: Decimal::new(1, 0),
+            quote_volume: Some(Decimal::new(100, 0)),
+            trade_count: 1,
+            is_closed,
+            created_at: open_time,
+            updated_at: open_time,
+        }
+    }
+
+    #[test]
+    fn market_data_quality_perfect_continuity_is_good() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(3);
+        let candles = (0..3)
+            .map(|minute| quality_candle(start + Duration::minutes(minute), true))
+            .collect::<Vec<_>>();
+
+        let report =
+            super::summarize_candle_continuity(&quality_request(start, end), &candles, 100)
+                .unwrap();
+
+        assert_eq!(report.status, MarketDataQualityStatus::Good);
+        assert_eq!(report.expected_candle_count, 3);
+        assert_eq!(report.coverage_pct, Decimal::new(100, 0));
+        assert_eq!(report.gap_count, 0);
+    }
+
+    #[test]
+    fn market_data_quality_one_missing_candle_detects_gap() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(3);
+        let candles = vec![
+            quality_candle(start, true),
+            quality_candle(start + Duration::minutes(2), true),
+        ];
+
+        let report =
+            super::summarize_candle_continuity(&quality_request(start, end), &candles, 100)
+                .unwrap();
+
+        assert_eq!(report.status, MarketDataQualityStatus::Bad);
+        assert_eq!(report.gap_count, 1);
+        assert_eq!(report.missing_candle_count, 1);
+        assert_eq!(report.gaps[0].missing_candle_count, 1);
+    }
+
+    #[test]
+    fn market_data_quality_duplicates_detected() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(2);
+        let candles = vec![
+            quality_candle(start, true),
+            quality_candle(start, true),
+            quality_candle(start + Duration::minutes(1), true),
+        ];
+
+        let report =
+            super::summarize_candle_continuity(&quality_request(start, end), &candles, 100)
+                .unwrap();
+
+        assert_eq!(report.status, MarketDataQualityStatus::Degraded);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "duplicate_open_times_detected"));
+    }
+
+    #[test]
+    fn market_data_quality_no_candles_is_insufficient_data() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(2);
+
+        let report =
+            super::summarize_candle_continuity(&quality_request(start, end), &[], 100).unwrap();
+
+        assert_eq!(report.status, MarketDataQualityStatus::InsufficientData);
+        assert_eq!(report.coverage_pct, Decimal::ZERO);
+    }
+
+    #[test]
+    fn market_data_quality_calculates_coverage() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(4);
+        let candles = vec![
+            quality_candle(start, true),
+            quality_candle(start + Duration::minutes(1), true),
+            quality_candle(start + Duration::minutes(2), true),
+        ];
+
+        let report =
+            super::summarize_candle_continuity(&quality_request(start, end), &candles, 100)
+                .unwrap();
+
+        assert_eq!(report.coverage_pct, Decimal::new(75, 0));
+        assert_eq!(report.missing_candle_count, 1);
+    }
+
+    #[test]
+    fn market_data_quality_calculates_largest_gap() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(8);
+        let candles = vec![
+            quality_candle(start, true),
+            quality_candle(start + Duration::minutes(2), true),
+            quality_candle(start + Duration::minutes(7), true),
+        ];
+
+        let report =
+            super::summarize_candle_continuity(&quality_request(start, end), &candles, 100)
+                .unwrap();
+
+        assert_eq!(report.gap_count, 2);
+        assert_eq!(report.largest_gap_seconds, 240);
+    }
+
+    #[test]
+    fn market_data_quality_warns_on_open_candle_in_historical_window() {
+        let start = Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap();
+        let end = start + Duration::minutes(2);
+        let candles = vec![
+            quality_candle(start, true),
+            quality_candle(start + Duration::minutes(1), false),
+        ];
+
+        let report =
+            super::summarize_candle_continuity(&quality_request(start, end), &candles, 100)
+                .unwrap();
+
+        assert_eq!(report.status, MarketDataQualityStatus::Bad);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "open_candles_in_historical_window"));
     }
 }

@@ -235,6 +235,8 @@ pub struct OperatorReportDailyArgs {
     pub end_time: Option<chrono::DateTime<chrono::Utc>>,
     #[arg(long)]
     pub symbol: Option<String>,
+    #[arg(long)]
+    pub interval: Option<String>,
     #[arg(long = "strategy")]
     pub strategy_id: Option<String>,
     #[arg(long, default_value = "json")]
@@ -253,6 +255,7 @@ impl TryFrom<&OperatorReportDailyArgs> for OperatorReportRequest {
             start_time: value.start_time,
             end_time: value.end_time,
             symbol: value.symbol.clone(),
+            interval: value.interval.clone(),
             strategy_id: value.strategy_id.clone(),
             format: value.format.parse::<OperatorReportFormat>()?,
             persist: value.persist,
@@ -721,6 +724,7 @@ pub enum MarketCommands {
     BackfillGet { run_id: Uuid },
     AggregateCandles(MarketAggregateCandlesArgs),
     CandleCoverage(MarketCandleCoverageArgs),
+    CandleQuality(MarketCandleQualityArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -1040,6 +1044,26 @@ pub struct MarketAggregateCandlesArgs {
 pub struct MarketCandleCoverageArgs {
     #[arg(long)]
     pub symbol: String,
+}
+
+#[derive(Debug, Args)]
+pub struct MarketCandleQualityArgs {
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub interval: String,
+    #[arg(long = "start")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "expected-interval-seconds")]
+    pub expected_interval_seconds: Option<i64>,
+    #[arg(long = "max-allowed-gap-count")]
+    pub max_allowed_gap_count: Option<i64>,
+    #[arg(long = "max-allowed-gap-pct")]
+    pub max_allowed_gap_pct: Option<rust_decimal::Decimal>,
 }
 
 #[derive(Debug, Args)]

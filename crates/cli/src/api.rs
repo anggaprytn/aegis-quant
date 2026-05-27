@@ -4,9 +4,9 @@ use aegis_core::{
     BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest,
     CandleBackfillResult, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, OperatorReport, OperatorReportRequest,
-    PaperTradingPipelineRequest, PaperTradingPipelineResult, ResearchCandidate,
-    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
+    OperatorReport, OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
+    ResearchCandidate, ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
@@ -599,6 +599,29 @@ impl ApiClient {
             &[("symbol", symbol.to_string())],
         )
         .await
+    }
+
+    pub async fn candle_quality(
+        &self,
+        query: &MarketDataQualityQuery,
+    ) -> Result<CandleQualityResponse, ApiClientError> {
+        let mut params = vec![
+            ("symbol", query.symbol.clone()),
+            ("interval", query.interval.clone()),
+            ("start_time", query.start_time.to_rfc3339()),
+            ("end_time", query.end_time.to_rfc3339()),
+            ("exchange", query.exchange.clone()),
+        ];
+        if let Some(value) = query.expected_interval_seconds {
+            params.push(("expected_interval_seconds", value.to_string()));
+        }
+        if let Some(value) = query.max_allowed_gap_count {
+            params.push(("max_allowed_gap_count", value.to_string()));
+        }
+        if let Some(value) = query.max_allowed_gap_pct {
+            params.push(("max_allowed_gap_pct", value.to_string()));
+        }
+        self.get("/market/candles/quality", &params).await
     }
 
     pub async fn get_research_data_coverage(
@@ -2121,6 +2144,14 @@ pub struct CandleCoverageResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct CandleQualityResponse {
+    pub report: MarketDataQualityReport,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ResearchDataCoverageResponse {
     pub coverage: ResearchDataCoverageResult,
     pub request_id: String,
@@ -3429,6 +3460,33 @@ pub fn build_candle_aggregation_request(
         .validate()
         .context("invalid candle aggregation request")?;
     Ok(request)
+}
+
+#[derive(Debug, Clone)]
+pub struct MarketDataQualityQuery {
+    pub exchange: String,
+    pub symbol: String,
+    pub interval: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub expected_interval_seconds: Option<i64>,
+    pub max_allowed_gap_count: Option<i64>,
+    pub max_allowed_gap_pct: Option<Decimal>,
+}
+
+pub fn build_market_data_quality_query(
+    args: &crate::cli::MarketCandleQualityArgs,
+) -> MarketDataQualityQuery {
+    MarketDataQualityQuery {
+        exchange: args.exchange.clone(),
+        symbol: args.symbol.clone(),
+        interval: args.interval.clone(),
+        start_time: args.start_time,
+        end_time: args.end_time,
+        expected_interval_seconds: args.expected_interval_seconds,
+        max_allowed_gap_count: args.max_allowed_gap_count,
+        max_allowed_gap_pct: args.max_allowed_gap_pct,
+    }
 }
 
 pub fn build_research_data_coverage_query(

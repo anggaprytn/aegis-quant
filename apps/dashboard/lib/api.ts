@@ -19,6 +19,8 @@ import type {
   CandleAggregationResult,
   CandleCoverageResponse,
   CandlesResponse,
+  MarketDataQualityRequest,
+  MarketDataQualityResponse,
   EvaluateStrategyResponse,
   ExchangeReconciliationMismatchesResponse,
   ExchangePrivateStreamEventsResponse,
@@ -373,6 +375,21 @@ export const api = {
     }),
   getMarketCandleCoverage: (symbol: string) =>
     request<CandleCoverageResponse>("/market/candles/coverage", undefined, { symbol }),
+  getMarketCandleQuality: (query: MarketDataQualityRequest) =>
+    request<MarketDataQualityResponse>("/market/candles/quality", undefined, {
+      symbol: query.symbol,
+      interval: query.interval,
+      start_time: query.start_time,
+      end_time: query.end_time,
+      exchange: query.exchange ?? "binance",
+      ...(query.expected_interval_seconds
+        ? { expected_interval_seconds: query.expected_interval_seconds }
+        : {}),
+      ...(query.max_allowed_gap_count !== undefined && query.max_allowed_gap_count !== null
+        ? { max_allowed_gap_count: query.max_allowed_gap_count }
+        : {}),
+      ...(query.max_allowed_gap_pct ? { max_allowed_gap_pct: query.max_allowed_gap_pct } : {}),
+    }),
   getResearchDataCoverage: (query: {
     exchange?: string;
     symbol: string;
