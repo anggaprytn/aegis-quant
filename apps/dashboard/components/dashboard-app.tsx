@@ -70,6 +70,7 @@ import type {
   StrategyDiagnosticsResult,
   StrategyExperimentResult,
   StrategyExperimentRun,
+  StrategyExitAttributionResult,
   StrategyMultiTimeframeExperimentAcceptedResponse,
   StrategyMultiTimeframeExperimentRequest,
   StrategyMultiTimeframeExperimentResult,
@@ -453,6 +454,21 @@ function strategyOpportunityFormFromStatus(strategy?: StrategyStatusView) {
     start_time: start.toISOString(),
     end_time: end.toISOString(),
     limit_samples: 5,
+  };
+}
+
+function strategyExitAttributionFormFromStatus(strategy?: StrategyStatusView) {
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  return {
+    symbol: strategy?.symbols[0] ?? "BTCUSDT",
+    timeframe: strategy?.timeframe ?? "15m",
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    experiment_run_id: "",
+    holding_windows: "1,3,5,10,20",
+    fee_bps: "10",
+    slippage_bps: "5",
   };
 }
 
@@ -889,6 +905,11 @@ function AuthenticatedDashboard({
   );
   const [strategyOpportunityResult, setStrategyOpportunityResult] =
     useState<StrategyOpportunityAnalysisResult | null>(null);
+  const [strategyExitAttributionForm, setStrategyExitAttributionForm] = useState(
+    strategyExitAttributionFormFromStatus(),
+  );
+  const [strategyExitAttributionResult, setStrategyExitAttributionResult] =
+    useState<StrategyExitAttributionResult | null>(null);
   const [riskConfigForm, setRiskConfigForm] = useState<RiskConfig>(riskConfigFormFromView());
 
   useEffect(() => {
@@ -1599,8 +1620,12 @@ function AuthenticatedDashboard({
       setStrategyOpportunityForm(
         strategyOpportunityFormFromStatus(selectedStrategyStatusQuery.data.strategy),
       );
+      setStrategyExitAttributionForm(
+        strategyExitAttributionFormFromStatus(selectedStrategyStatusQuery.data.strategy),
+      );
       setStrategyDiagnosticsResult(null);
       setStrategyOpportunityResult(null);
+      setStrategyExitAttributionResult(null);
     }
   }, [selectedStrategyStatusQuery.data?.strategy]);
 
@@ -1860,6 +1885,23 @@ function AuthenticatedDashboard({
       }),
     onSuccess: (response) => {
       setStrategyOpportunityResult(response.result);
+    },
+  });
+
+  const strategyExitAttributionMutation = useMutation({
+    mutationFn: () =>
+      api.getStrategyExitAttribution(selectedStrategyId, {
+        symbol: strategyExitAttributionForm.symbol,
+        timeframe: strategyExitAttributionForm.timeframe,
+        start_time: strategyExitAttributionForm.start_time,
+        end_time: strategyExitAttributionForm.end_time,
+        experiment_run_id: strategyExitAttributionForm.experiment_run_id || undefined,
+        holding_windows: strategyExitAttributionForm.holding_windows,
+        fee_bps: strategyExitAttributionForm.fee_bps,
+        slippage_bps: strategyExitAttributionForm.slippage_bps,
+      }),
+    onSuccess: (response) => {
+      setStrategyExitAttributionResult(response.result);
     },
   });
 
@@ -4111,6 +4153,147 @@ function AuthenticatedDashboard({
                           {formatDateTime(window.source_candle_open_time)}
                         </div>
                       ))}
+                    </div>
+                  </div>
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-12" title="Strategy Exit Attribution">
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <Field
+                      label="Symbol"
+                      value={strategyExitAttributionForm.symbol}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, symbol: value }))
+                      }
+                    />
+                    <Field
+                      label="Timeframe"
+                      value={strategyExitAttributionForm.timeframe}
+                      as="select"
+                      options={TIMEFRAME_OPTIONS}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, timeframe: value }))
+                      }
+                    />
+                    <Field
+                      label="Start"
+                      value={strategyExitAttributionForm.start_time}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, start_time: value }))
+                      }
+                    />
+                    <Field
+                      label="End"
+                      value={strategyExitAttributionForm.end_time}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, end_time: value }))
+                      }
+                    />
+                    <Field
+                      label="Experiment Run ID"
+                      value={strategyExitAttributionForm.experiment_run_id}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, experiment_run_id: value }))
+                      }
+                    />
+                    <Field
+                      label="Holding Windows"
+                      value={strategyExitAttributionForm.holding_windows}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, holding_windows: value }))
+                      }
+                    />
+                    <Field
+                      label="Fee Bps"
+                      value={strategyExitAttributionForm.fee_bps}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, fee_bps: value }))
+                      }
+                    />
+                    <Field
+                      label="Slippage Bps"
+                      value={strategyExitAttributionForm.slippage_bps}
+                      onChange={(value) =>
+                        setStrategyExitAttributionForm((current) => ({ ...current, slippage_bps: value }))
+                      }
+                    />
+                  </div>
+                  <ActionButton
+                    label="Run Exit Attribution"
+                    onClick={() => strategyExitAttributionMutation.mutate()}
+                    busy={strategyExitAttributionMutation.isPending}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(strategyExitAttributionMutation.error)}
+                    success={
+                      strategyExitAttributionResult
+                        ? `exit attribution: ${strategyExitAttributionResult.status}`
+                        : undefined
+                    }
+                  />
+                  <KeyValue
+                    items={[
+                      ["Status", strategyExitAttributionResult?.status ?? "N/A"],
+                      ["Recommendation", strategyExitAttributionResult?.recommendation ?? "N/A"],
+                      [
+                        "Best Holding",
+                        strategyExitAttributionResult?.best_holding_window
+                          ? String(strategyExitAttributionResult.best_holding_window)
+                          : "N/A",
+                      ],
+                      [
+                        "Worst Holding",
+                        strategyExitAttributionResult?.worst_holding_window
+                          ? String(strategyExitAttributionResult.worst_holding_window)
+                          : "N/A",
+                      ],
+                      [
+                        "Signals",
+                        strategyExitAttributionResult
+                          ? `${strategyExitAttributionResult.total_executable_signals} / raw ${strategyExitAttributionResult.total_raw_signals}`
+                          : "N/A",
+                      ],
+                    ]}
+                    loading={strategyExitAttributionMutation.isPending}
+                    error={undefined}
+                  />
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                      <div className="font-medium text-slate-100">Suppression Breakdown</div>
+                      {(strategyExitAttributionResult?.suppression_breakdown ?? []).map((row) => (
+                        <div key={row.reason} className="mt-2">
+                          {row.reason}: {row.count}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="overflow-x-auto rounded-xl border border-border bg-surface/40">
+                      <table className="min-w-full text-left text-xs text-slate-300">
+                        <thead className="text-slate-100">
+                          <tr>
+                            <th className="px-3 py-2">Hold</th>
+                            <th className="px-3 py-2">Trades</th>
+                            <th className="px-3 py-2">Win</th>
+                            <th className="px-3 py-2">Avg</th>
+                            <th className="px-3 py-2">Median</th>
+                            <th className="px-3 py-2">Total</th>
+                            <th className="px-3 py-2">Recommendation</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(strategyExitAttributionResult?.per_holding_window ?? []).map((row) => (
+                            <tr key={row.holding_candles} className="border-t border-border">
+                              <td className="px-3 py-2">{row.holding_candles}</td>
+                              <td className="px-3 py-2">{row.trade_count}</td>
+                              <td className="px-3 py-2">{formatNumber(row.win_rate)}%</td>
+                              <td className="px-3 py-2">{formatNumber(row.avg_net_pnl_pct)}%</td>
+                              <td className="px-3 py-2">{formatNumber(row.median_net_pnl_pct)}%</td>
+                              <td className="px-3 py-2">{formatNumber(row.total_net_pnl_pct)}%</td>
+                              <td className="px-3 py-2">{row.recommendation}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 </div>

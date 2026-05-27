@@ -142,6 +142,7 @@ import type {
   StrategyConfigVersionsResponse,
   StrategyDryRunResponse,
   StrategyStatusResponse,
+  StrategyExitAttributionResponse,
   StrategyOpportunityAnalysisResponse,
   StrategyToggleResponse,
   SystemEventRecord,
@@ -809,6 +810,24 @@ export const api = {
   ) =>
     request<StrategyOpportunityAnalysisResponse>(
       `/strategy/${id}/opportunity-analysis`,
+      undefined,
+      params,
+    ),
+  getStrategyExitAttribution: (
+    id: string,
+    params: {
+      symbol: string;
+      timeframe: string;
+      start_time: string;
+      end_time: string;
+      experiment_run_id?: string;
+      holding_windows?: string;
+      fee_bps: string;
+      slippage_bps: string;
+    },
+  ) =>
+    request<StrategyExitAttributionResponse>(
+      `/strategy/${id}/exit-attribution`,
       undefined,
       params,
     ),

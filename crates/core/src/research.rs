@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::{
     calculate_strategy_rejection_rate, Candle, CandleInterval, CoreError, ExecutionReadinessStatus,
     MarketDataQualityReport, MarketDataQualityStatus, MarketDataSource, MarketProviderHealth,
-    StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
+    StrategyExitAttributionResult, StrategyWalkForwardRobustnessStatus, Symbol,
+    TestnetShadowRunnerConfig,
 };
 
 const REGIME_MIN_CANDLES: usize = 5;
@@ -3893,6 +3894,7 @@ pub struct ResearchCandidateTestnetReviewEvidence {
     pub experiment_run_id: Option<Uuid>,
     pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
     pub shadow_pnl_attribution: Option<ResearchShadowPnlAttributionResult>,
+    pub exit_attribution: Option<StrategyExitAttributionResult>,
     #[serde(default)]
     pub operator_report_findings: Vec<ResearchCandidateTestnetReviewFinding>,
 }
@@ -3937,6 +3939,7 @@ pub struct ResearchCandidateTestnetReviewRequest {
     pub readiness_snapshot: Option<ResearchCandidatePromotionReadiness>,
     pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
     pub shadow_pnl_attribution: Option<ResearchShadowPnlAttributionResult>,
+    pub exit_attribution: Option<StrategyExitAttributionResult>,
     pub private_stream_stale_warning: bool,
     pub require_ready_review_action: bool,
     pub no_execution_table_mutation: bool,
@@ -4705,6 +4708,7 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             experiment_run_id: candidate.and_then(|value| value.experiment_run_id),
             walk_forward_evidence: request.walk_forward_evidence.clone(),
             shadow_pnl_attribution: request.shadow_pnl_attribution.clone(),
+            exit_attribution: request.exit_attribution.clone(),
             operator_report_findings: request.operator_report_findings.clone(),
         },
         checklist,
@@ -7496,6 +7500,7 @@ mod tests {
                 StrategyWalkForwardRobustnessStatus::Robust,
             )),
             shadow_pnl_attribution: None,
+            exit_attribution: None,
             private_stream_stale_warning: false,
             require_ready_review_action: true,
             no_execution_table_mutation: true,

@@ -2,10 +2,12 @@ use aegis_core::{
     BacktestEquityPoint, BacktestPosition, BacktestRequest, BacktestResult, BacktestTrade, Candle,
     CandleInterval, EventEnvelope, ReplayRunStatus, ReplaySuppressionCount,
     ReplaySuppressionReason, Side, StrategyConfig, StrategyConfigUpdateRequest,
-    StrategyEvaluationContext, StrategyExperimentCandidate, StrategyExperimentComparison,
-    StrategyExperimentGlobalRanking, StrategyExperimentGlobalRankingEntry,
-    StrategyExperimentMetric, StrategyExperimentRequest, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+    StrategyEvaluationContext, StrategyExitAttributionHoldingWindow,
+    StrategyExitAttributionRecommendation, StrategyExitAttributionRequest,
+    StrategyExitAttributionResult, StrategyExitAttributionStatus, StrategyExitAttributionTrade,
+    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentGlobalRanking,
+    StrategyExperimentGlobalRankingEntry, StrategyExperimentMetric, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyTimeframeCandidate, StrategyTimeframeComparison, StrategyWalkForwardCandidate,
     StrategyWalkForwardRecommendation, StrategyWalkForwardRequest, StrategyWalkForwardResult,
@@ -236,6 +238,61 @@ impl ReplayEngine {
             .context("failed to insert strategy experiment runs")?;
 
         Ok(execution)
+    }
+
+    pub async fn run_exit_attribution(
+        &self,
+        request: StrategyExitAttributionRequest,
+    ) -> Result<StrategyExitAttributionResult> {
+        request.validate()?;
+        let (base_config, symbol) = self
+            .load_strategy_experiment_context(&request.strategy_id, &request.symbol)
+            .await?;
+        let timeframe = parse_strategy_timeframe(&request.timeframe)?;
+        let mut strategy_config = match request.config_json.clone() {
+            Some(value) => {
+                let mut update = serde_json::from_value::<StrategyConfigUpdateRequest>(value)
+                    .context("failed to decode exit attribution config_json")?;
+                update.strategy_id = request.strategy_id.clone();
+                validate_strategy_config(&update, &StrategyValidationContext::default())
+                    .normalized_config
+                    .ok_or_else(|| anyhow!("invalid exit attribution config_json"))?
+            }
+            None => match request.experiment_run_id {
+                Some(run_id) => {
+                    let run = get_strategy_experiment_run(&self.pool, run_id)
+                        .await?
+                        .ok_or_else(|| anyhow!("strategy experiment run not found"))?;
+                    let candidate = serde_json::from_value::<StrategyExperimentCandidate>(
+                        run.candidate_config.clone(),
+                    )
+                    .context("failed to decode experiment run candidate config")?;
+                    let update = strategy_config_update_from_candidate(
+                        &base_config,
+                        &request.strategy_id,
+                        &request.symbol,
+                        &request.timeframe,
+                        &candidate,
+                    );
+                    validate_strategy_config(&update, &StrategyValidationContext::default())
+                        .normalized_config
+                        .ok_or_else(|| anyhow!("invalid experiment run candidate config"))?
+                }
+                None => base_config,
+            },
+        };
+        strategy_config.timeframe = timeframe;
+        strategy_config.symbols = vec![symbol.clone()];
+        let candles = get_closed_candles_range(
+            &self.pool,
+            &symbol,
+            timeframe,
+            request.start_time,
+            request.end_time,
+        )
+        .await
+        .context("failed to load closed candles range")?;
+        calculate_exit_attribution(&request, &strategy_config, &symbol, candles, Utc::now())
     }
 
     pub async fn run_multi_timeframe_strategy_experiment(
@@ -683,17 +740,339 @@ pub fn simulate_backtest(
     })
 }
 
+pub fn calculate_exit_attribution(
+    request: &StrategyExitAttributionRequest,
+    strategy_config: &StrategyConfig,
+    symbol: &Symbol,
+    mut candles: Vec<Candle>,
+    computed_at: DateTime<Utc>,
+) -> Result<StrategyExitAttributionResult> {
+    request.validate()?;
+    candles.sort_by_key(|candle| candle.open_time);
+    let strategy_id: StrategyId = request.strategy_id.parse()?;
+    let holding_windows = request.normalized_holding_windows();
+    let suppression_holding_candles = strategy_config.holding_candles.unwrap_or(3);
+    let fee_drag_pct = (request.fee_bps + request.slippage_bps) / Decimal::new(100, 0);
+    let interval = request.timeframe.parse::<CandleInterval>()?;
+    let gap_tolerance_seconds = interval.duration().num_seconds() + 1;
+    let correlation_id = Uuid::new_v4();
+    let mut raw_signal_count = 0_i64;
+    let mut executable_signal_count = 0_i64;
+    let mut suppression_counts = BTreeMap::<ReplaySuppressionReason, i32>::new();
+    let mut last_executed_entry_time = None;
+    let mut open_until_signal_index: Option<usize> = None;
+    let mut trades = Vec::new();
+    let mut data_quality_degraded = false;
+
+    for index in 0..candles.len() {
+        if open_until_signal_index.is_some_and(|close_index| index >= close_index) {
+            open_until_signal_index = None;
+        }
+
+        let candle = &candles[index];
+        let evaluation = evaluate_strategy(StrategyEvaluationContext {
+            correlation_id,
+            strategy_id,
+            symbol: symbol.clone(),
+            config: strategy_config.clone(),
+            candles: candles[..=index].to_vec(),
+            evaluated_at: candle.close_time,
+        })?;
+
+        let Some(signal) = evaluation.signal else {
+            continue;
+        };
+        raw_signal_count += 1;
+
+        if signal.side != aegis_core::SignalSide::Buy {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::InvalidSignal)
+                .or_insert(0) += 1;
+            continue;
+        }
+        if cooldown_active(
+            last_executed_entry_time,
+            candle.close_time,
+            strategy_config.cooldown_seconds,
+        ) {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::CooldownActive)
+                .or_insert(0) += 1;
+            continue;
+        }
+        if open_until_signal_index.is_some() {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::PositionAlreadyOpen)
+                .or_insert(0) += 1;
+            continue;
+        }
+        let entry_index = index + 1;
+        let Some(entry) = candles.get(entry_index) else {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::InsufficientForwardData)
+                .or_insert(0) += 1;
+            continue;
+        };
+
+        executable_signal_count += 1;
+        *suppression_counts
+            .entry(ReplaySuppressionReason::None)
+            .or_insert(0) += 1;
+        last_executed_entry_time = Some(entry.open_time);
+        open_until_signal_index = Some(index.saturating_add(suppression_holding_candles as usize));
+
+        for holding_candles in holding_windows.iter().copied() {
+            let exit_index = entry_index + holding_candles as usize;
+            let Some(exit) = candles.get(exit_index) else {
+                trades.push(StrategyExitAttributionTrade {
+                    strategy_id: request.strategy_id.clone(),
+                    symbol: request.symbol.clone(),
+                    timeframe: request.timeframe.clone(),
+                    signal_time: candle.close_time,
+                    entry_candle_open_time: entry.open_time,
+                    entry_candle_close_time: entry.close_time,
+                    entry_price: entry.open,
+                    holding_candles,
+                    exit_candle_open_time: None,
+                    exit_candle_close_time: None,
+                    exit_price: None,
+                    gross_pnl_pct: None,
+                    net_pnl_pct: None,
+                    fee_drag_pct,
+                    status: StrategyExitAttributionRecommendation::InsufficientData,
+                });
+                continue;
+            };
+
+            let max_gap_seconds = candles[entry_index..=exit_index]
+                .windows(2)
+                .map(|pair| pair[1].open_time.signed_duration_since(pair[0].open_time))
+                .map(|duration| duration.num_seconds())
+                .max()
+                .unwrap_or(interval.duration().num_seconds());
+            let gap_detected = max_gap_seconds > gap_tolerance_seconds;
+            data_quality_degraded |= gap_detected;
+            let gross_pnl_pct = if entry.open > Decimal::ZERO {
+                ((exit.close - entry.open) / entry.open) * Decimal::new(100, 0)
+            } else {
+                Decimal::ZERO
+            };
+            let net_pnl_pct = gross_pnl_pct - fee_drag_pct;
+            trades.push(StrategyExitAttributionTrade {
+                strategy_id: request.strategy_id.clone(),
+                symbol: request.symbol.clone(),
+                timeframe: request.timeframe.clone(),
+                signal_time: candle.close_time,
+                entry_candle_open_time: entry.open_time,
+                entry_candle_close_time: entry.close_time,
+                entry_price: entry.open,
+                holding_candles,
+                exit_candle_open_time: Some(exit.open_time),
+                exit_candle_close_time: Some(exit.close_time),
+                exit_price: Some(exit.close),
+                gross_pnl_pct: Some(gross_pnl_pct),
+                net_pnl_pct: Some(net_pnl_pct),
+                fee_drag_pct,
+                status: if gap_detected {
+                    StrategyExitAttributionRecommendation::DataQualityDegraded
+                } else if net_pnl_pct > Decimal::ZERO {
+                    StrategyExitAttributionRecommendation::Promising
+                } else {
+                    StrategyExitAttributionRecommendation::Negative
+                },
+            });
+        }
+    }
+
+    let per_holding_window = holding_windows
+        .iter()
+        .copied()
+        .map(|holding_candles| {
+            let mut values = trades
+                .iter()
+                .filter(|trade| trade.holding_candles == holding_candles)
+                .filter(|trade| {
+                    trade.status != StrategyExitAttributionRecommendation::DataQualityDegraded
+                })
+                .filter_map(|trade| trade.net_pnl_pct)
+                .collect::<Vec<_>>();
+            values.sort();
+            let trade_count = values.len() as i64;
+            let total_net_pnl_pct = values.iter().copied().sum::<Decimal>();
+            let win_count = values
+                .iter()
+                .filter(|value| **value > Decimal::ZERO)
+                .count() as i64;
+            let avg_net_pnl_pct = if trade_count > 0 {
+                total_net_pnl_pct / Decimal::from(trade_count)
+            } else {
+                Decimal::ZERO
+            };
+            let win_rate = if trade_count > 0 {
+                (Decimal::from(win_count) / Decimal::from(trade_count)) * Decimal::new(100, 0)
+            } else {
+                Decimal::ZERO
+            };
+            let recommendation = if trade_count < 3 {
+                StrategyExitAttributionRecommendation::InsufficientData
+            } else if avg_net_pnl_pct > Decimal::ZERO && win_rate >= Decimal::new(50, 0) {
+                StrategyExitAttributionRecommendation::Promising
+            } else if avg_net_pnl_pct < Decimal::ZERO && total_net_pnl_pct < Decimal::ZERO {
+                StrategyExitAttributionRecommendation::Negative
+            } else {
+                StrategyExitAttributionRecommendation::Weak
+            };
+
+            StrategyExitAttributionHoldingWindow {
+                holding_candles,
+                trade_count,
+                win_rate,
+                avg_net_pnl_pct,
+                median_net_pnl_pct: replay_median_decimal(&values),
+                total_net_pnl_pct,
+                best_net_pnl_pct: values.last().copied().unwrap_or(Decimal::ZERO),
+                worst_net_pnl_pct: values.first().copied().unwrap_or(Decimal::ZERO),
+                max_drawdown_pct: if values.is_empty() {
+                    None
+                } else {
+                    Some(max_drawdown_from_pct_series(&values))
+                },
+                fee_drag_pct: fee_drag_pct * Decimal::from(trade_count),
+                recommendation,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let best_holding_window = per_holding_window
+        .iter()
+        .filter(|window| window.trade_count > 0)
+        .max_by(|left, right| {
+            left.avg_net_pnl_pct
+                .cmp(&right.avg_net_pnl_pct)
+                .then_with(|| right.holding_candles.cmp(&left.holding_candles))
+        })
+        .map(|window| window.holding_candles);
+    let worst_holding_window = per_holding_window
+        .iter()
+        .filter(|window| window.trade_count > 0)
+        .min_by(|left, right| {
+            left.avg_net_pnl_pct
+                .cmp(&right.avg_net_pnl_pct)
+                .then_with(|| left.holding_candles.cmp(&right.holding_candles))
+        })
+        .map(|window| window.holding_candles);
+    let all_negative = !per_holding_window.is_empty()
+        && per_holding_window
+            .iter()
+            .filter(|window| window.trade_count > 0)
+            .all(|window| window.recommendation == StrategyExitAttributionRecommendation::Negative);
+    let any_promising = per_holding_window
+        .iter()
+        .any(|window| window.recommendation == StrategyExitAttributionRecommendation::Promising);
+    let status = if data_quality_degraded {
+        StrategyExitAttributionStatus::DataQualityDegraded
+    } else if executable_signal_count == 0
+        || per_holding_window
+            .iter()
+            .all(|window| window.trade_count == 0)
+    {
+        StrategyExitAttributionStatus::InsufficientData
+    } else if any_promising {
+        StrategyExitAttributionStatus::Promising
+    } else if all_negative {
+        StrategyExitAttributionStatus::Negative
+    } else {
+        StrategyExitAttributionStatus::Weak
+    };
+    let recommendation = match status {
+        StrategyExitAttributionStatus::Promising => {
+            StrategyExitAttributionRecommendation::Promising
+        }
+        StrategyExitAttributionStatus::Weak => StrategyExitAttributionRecommendation::Weak,
+        StrategyExitAttributionStatus::Negative => StrategyExitAttributionRecommendation::Negative,
+        StrategyExitAttributionStatus::InsufficientData => {
+            StrategyExitAttributionRecommendation::InsufficientData
+        }
+        StrategyExitAttributionStatus::DataQualityDegraded => {
+            StrategyExitAttributionRecommendation::DataQualityDegraded
+        }
+    };
+
+    Ok(StrategyExitAttributionResult {
+        strategy_id: request.strategy_id.clone(),
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        start_time: request.start_time,
+        end_time: request.end_time,
+        total_raw_signals: raw_signal_count,
+        total_executable_signals: executable_signal_count,
+        suppression_breakdown: suppression_breakdown(&suppression_counts),
+        per_holding_window,
+        best_holding_window,
+        worst_holding_window,
+        status,
+        recommendation,
+        trades,
+        computed_at,
+    })
+}
+
+fn replay_median_decimal(values: &[Decimal]) -> Decimal {
+    if values.is_empty() {
+        return Decimal::ZERO;
+    }
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        values[mid]
+    } else {
+        (values[mid - 1] + values[mid]) / Decimal::new(2, 0)
+    }
+}
+
+fn max_drawdown_from_pct_series(values: &[Decimal]) -> Decimal {
+    let mut cumulative = Decimal::ZERO;
+    let mut peak = Decimal::ZERO;
+    let mut max_drawdown = Decimal::ZERO;
+    for value in values {
+        cumulative += *value;
+        if cumulative > peak {
+            peak = cumulative;
+        }
+        let drawdown = peak - cumulative;
+        if drawdown > max_drawdown {
+            max_drawdown = drawdown;
+        }
+    }
+    max_drawdown
+}
+
 fn experiment_strategy_override(
     base_config: &StrategyConfig,
     request: &StrategyExperimentRequest,
     candidate: &StrategyExperimentCandidate,
 ) -> StrategyConfigUpdateRequest {
+    strategy_config_update_from_candidate(
+        base_config,
+        &request.strategy_id,
+        &request.symbol,
+        &request.timeframe,
+        candidate,
+    )
+}
+
+fn strategy_config_update_from_candidate(
+    base_config: &StrategyConfig,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+    candidate: &StrategyExperimentCandidate,
+) -> StrategyConfigUpdateRequest {
     StrategyConfigUpdateRequest {
-        strategy_id: request.strategy_id.clone(),
+        strategy_id: strategy_id.to_string(),
         enabled: base_config.enabled,
         mode: base_config.mode,
-        symbols: vec![request.symbol.clone()],
-        timeframe: request.timeframe.clone(),
+        symbols: vec![symbol.to_string()],
+        timeframe: timeframe.to_string(),
         suggested_notional: base_config.suggested_notional,
         max_signal_age_ms: candidate
             .max_signal_age_ms
@@ -703,32 +1082,32 @@ fn experiment_strategy_override(
         trend_lookback_candles: candidate
             .trend_lookback_candles
             .or(Some(candidate.lookback_candles))
-            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .filter(|_| strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
             .or(base_config.trend_lookback_candles),
         momentum_lookback_candles: candidate
             .momentum_lookback_candles
-            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .filter(|_| strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
             .or(base_config.momentum_lookback_candles),
         breakout_lookback_candles: candidate
             .breakout_lookback_candles
             .or(Some(candidate.lookback_candles))
-            .filter(|_| request.strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
+            .filter(|_| strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
             .or(base_config.breakout_lookback_candles),
         lower_band_pct: candidate
             .lower_band_pct
-            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .filter(|_| strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.lower_band_pct),
         upper_band_pct: candidate
             .upper_band_pct
-            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .filter(|_| strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.upper_band_pct),
         min_range_width_pct: candidate
             .min_range_width_pct
-            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .filter(|_| strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.min_range_width_pct),
         max_range_width_pct: candidate
             .max_range_width_pct
-            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .filter(|_| strategy_id == StrategyId::RangeReversionV1.as_str())
             .or(base_config.max_range_width_pct),
         confidence_floor: base_config.confidence_floor,
         stop_loss_pct: candidate.stop_loss_pct.or(base_config.stop_loss_pct),
@@ -2281,17 +2660,19 @@ fn deterministic_point_id(run_id: Uuid, timestamp: DateTime<Utc>) -> Uuid {
 mod tests {
     use super::{
         build_global_ranking, build_strategy_experiment_execution,
-        build_strategy_walk_forward_execution, calculate_fee_slippage_drag_pct,
-        calculate_strategy_experiment_score, calculate_walk_forward_robustness_score,
-        experiment_strategy_override, experiment_warnings, generate_walk_forward_windows,
-        global_ranking_entry, median_decimal, rank_strategy_experiment_runs, simulate_backtest,
-        skipped_strategy_experiment_result, timeframe_comparison_from_result,
+        build_strategy_walk_forward_execution, calculate_exit_attribution,
+        calculate_fee_slippage_drag_pct, calculate_strategy_experiment_score,
+        calculate_walk_forward_robustness_score, experiment_strategy_override, experiment_warnings,
+        generate_walk_forward_windows, global_ranking_entry, median_decimal,
+        rank_strategy_experiment_runs, simulate_backtest, skipped_strategy_experiment_result,
+        timeframe_comparison_from_result,
     };
     use aegis_core::{
         BacktestRequest, Candle, CandleInterval, MarketDataSource, ReplaySuppressionReason,
-        StrategyConfig, StrategyExperimentRequest, StrategyExperimentRun, StrategyExperimentStatus,
-        StrategyId, StrategyMode, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
-        StrategyWalkForwardRobustnessSummary, Symbol,
+        StrategyConfig, StrategyExitAttributionRecommendation, StrategyExitAttributionRequest,
+        StrategyExitAttributionStatus, StrategyExperimentRequest, StrategyExperimentRun,
+        StrategyExperimentStatus, StrategyId, StrategyMode, StrategyWalkForwardCandidate,
+        StrategyWalkForwardRequest, StrategyWalkForwardRobustnessSummary, Symbol,
     };
     use chrono::{Duration, TimeZone, Utc};
     use rust_decimal::Decimal;
@@ -2381,6 +2762,33 @@ mod tests {
         (0..count)
             .map(|index| candle(index, 100 + index, 101 + index, 99 + index, 100 + index))
             .collect()
+    }
+
+    fn exit_attribution_request(holding_windows: Vec<u32>) -> StrategyExitAttributionRequest {
+        StrategyExitAttributionRequest {
+            strategy_id: "momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 1, 1, 0, 0).unwrap(),
+            config_json: None,
+            experiment_run_id: None,
+            holding_windows,
+            fee_bps: Decimal::ZERO,
+            slippage_bps: Decimal::ZERO,
+        }
+    }
+
+    fn exit_suppression_count(
+        result: &aegis_core::StrategyExitAttributionResult,
+        reason: ReplaySuppressionReason,
+    ) -> i32 {
+        result
+            .suppression_breakdown
+            .iter()
+            .find(|item| item.reason == reason)
+            .map(|item| item.count)
+            .unwrap_or_default()
     }
 
     fn suppression_count(
@@ -3208,6 +3616,174 @@ mod tests {
         ]);
 
         assert_eq!(median, Decimal::new(6, 0));
+    }
+
+    #[test]
+    fn exit_attribution_holding_windows_use_expected_exit_candles() {
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        let result = calculate_exit_attribution(
+            &exit_attribution_request(vec![1, 3, 5]),
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            long_trending_candles(12),
+            Utc::now(),
+        )
+        .unwrap();
+
+        let first_entry = result.trades[0].entry_candle_open_time;
+        for holding in [1_u32, 3, 5] {
+            let trade = result
+                .trades
+                .iter()
+                .find(|trade| trade.holding_candles == holding)
+                .expect("holding window trade");
+            assert_eq!(
+                trade.exit_candle_open_time,
+                Some(first_entry + Duration::minutes(i64::from(holding)))
+            );
+        }
+    }
+
+    #[test]
+    fn exit_attribution_subtracts_fee_and_slippage_drag() {
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        let mut request = exit_attribution_request(vec![1]);
+        request.fee_bps = Decimal::new(10, 0);
+        request.slippage_bps = Decimal::new(5, 0);
+        let result = calculate_exit_attribution(
+            &request,
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            long_trending_candles(8),
+            Utc::now(),
+        )
+        .unwrap();
+        let trade = result
+            .trades
+            .iter()
+            .find(|trade| trade.net_pnl_pct.is_some())
+            .expect("attributed trade");
+
+        assert_eq!(trade.fee_drag_pct, Decimal::new(15, 2));
+        assert_eq!(
+            trade.net_pnl_pct,
+            Some(trade.gross_pnl_pct.unwrap() - Decimal::new(15, 2))
+        );
+    }
+
+    #[test]
+    fn exit_attribution_reuses_cooldown_and_open_position_suppression() {
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 900;
+        config.holding_candles = Some(5);
+        let result = calculate_exit_attribution(
+            &exit_attribution_request(vec![1]),
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            long_trending_candles(16),
+            Utc::now(),
+        )
+        .unwrap();
+
+        assert!(result.total_raw_signals > result.total_executable_signals);
+        assert!(
+            exit_suppression_count(&result, ReplaySuppressionReason::CooldownActive) > 0
+                || exit_suppression_count(&result, ReplaySuppressionReason::PositionAlreadyOpen)
+                    > 0
+        );
+    }
+
+    #[test]
+    fn exit_attribution_marks_insufficient_forward_candles() {
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        let result = calculate_exit_attribution(
+            &exit_attribution_request(vec![5]),
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            trending_candles(),
+            Utc::now(),
+        )
+        .unwrap();
+
+        assert!(result
+            .trades
+            .iter()
+            .any(|trade| trade.status == StrategyExitAttributionRecommendation::InsufficientData));
+    }
+
+    #[test]
+    fn exit_attribution_classifies_negative_and_promising_windows() {
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        let negative_candles = vec![
+            candle(0, 100, 101, 99, 100),
+            candle(1, 101, 102, 100, 101),
+            candle(2, 102, 103, 101, 102),
+            candle(3, 103, 104, 102, 103),
+            candle(4, 150, 151, 80, 90),
+            candle(5, 91, 92, 90, 91),
+            candle(6, 92, 93, 91, 92),
+            candle(7, 93, 94, 92, 93),
+            candle(8, 140, 141, 70, 80),
+            candle(9, 81, 82, 80, 81),
+            candle(10, 82, 83, 81, 82),
+            candle(11, 83, 84, 82, 83),
+            candle(12, 130, 131, 60, 70),
+            candle(13, 70, 71, 69, 70),
+        ];
+        let negative = calculate_exit_attribution(
+            &exit_attribution_request(vec![1]),
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            negative_candles,
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(negative.status, StrategyExitAttributionStatus::Negative);
+
+        let promising = calculate_exit_attribution(
+            &exit_attribution_request(vec![1]),
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            long_trending_candles(12),
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(promising.status, StrategyExitAttributionStatus::Promising);
+    }
+
+    #[test]
+    fn exit_attribution_best_window_tie_uses_shorter_holding_window() {
+        let mut config = sample_strategy_config();
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        let flat_after_entry = vec![
+            candle(0, 100, 101, 99, 100),
+            candle(1, 100, 102, 99, 101),
+            candle(2, 101, 103, 100, 102),
+            candle(3, 102, 104, 101, 103),
+            candle(4, 100, 101, 99, 100),
+            candle(5, 100, 101, 99, 100),
+            candle(6, 100, 101, 99, 100),
+            candle(7, 100, 101, 99, 100),
+        ];
+        let result = calculate_exit_attribution(
+            &exit_attribution_request(vec![1, 3]),
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            flat_after_entry,
+            Utc::now(),
+        )
+        .unwrap();
+
+        assert_eq!(result.best_holding_window, Some(1));
     }
 
     #[test]

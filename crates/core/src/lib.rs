@@ -1711,6 +1711,10 @@ fn default_strategy_opportunity_include_examples() -> bool {
     true
 }
 
+fn default_strategy_exit_attribution_holding_windows() -> Vec<u32> {
+    vec![1, 3, 5, 10, 20]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyOpportunityAnalysisRequest {
     pub strategy_id: String,
@@ -1799,6 +1803,158 @@ pub struct StrategyOpportunityAnalysisResult {
     pub recommendation: StrategyOpportunityRecommendation,
     pub data_quality_status: StrategyOpportunityStatus,
     pub analyzed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExitAttributionRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub config_json: Option<Value>,
+    pub experiment_run_id: Option<Uuid>,
+    #[serde(default = "default_strategy_exit_attribution_holding_windows")]
+    pub holding_windows: Vec<u32>,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+}
+
+impl StrategyExitAttributionRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategy_id.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestStrategyId);
+        }
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestSymbol);
+        }
+        if self.timeframe.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestTimeframe);
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidBacktestTimeRange);
+        }
+        self.timeframe.parse::<CandleInterval>()?;
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn normalized_holding_windows(&self) -> Vec<u32> {
+        let mut windows = self
+            .holding_windows
+            .iter()
+            .copied()
+            .filter(|window| *window > 0)
+            .collect::<Vec<_>>();
+        if windows.is_empty() {
+            windows = default_strategy_exit_attribution_holding_windows();
+        }
+        windows.sort_unstable();
+        windows.dedup();
+        windows
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyExitAttributionStatus {
+    Promising,
+    Weak,
+    Negative,
+    InsufficientData,
+    DataQualityDegraded,
+}
+
+impl StrategyExitAttributionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Promising => "PROMISING",
+            Self::Weak => "WEAK",
+            Self::Negative => "NEGATIVE",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::DataQualityDegraded => "DATA_QUALITY_DEGRADED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyExitAttributionRecommendation {
+    Promising,
+    Weak,
+    Negative,
+    InsufficientData,
+    DataQualityDegraded,
+}
+
+impl StrategyExitAttributionRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Promising => "PROMISING",
+            Self::Weak => "WEAK",
+            Self::Negative => "NEGATIVE",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::DataQualityDegraded => "DATA_QUALITY_DEGRADED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExitAttributionTrade {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub signal_time: DateTime<Utc>,
+    pub entry_candle_open_time: DateTime<Utc>,
+    pub entry_candle_close_time: DateTime<Utc>,
+    pub entry_price: Decimal,
+    pub holding_candles: u32,
+    pub exit_candle_open_time: Option<DateTime<Utc>>,
+    pub exit_candle_close_time: Option<DateTime<Utc>>,
+    pub exit_price: Option<Decimal>,
+    pub gross_pnl_pct: Option<Decimal>,
+    pub net_pnl_pct: Option<Decimal>,
+    pub fee_drag_pct: Decimal,
+    pub status: StrategyExitAttributionRecommendation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExitAttributionHoldingWindow {
+    pub holding_candles: u32,
+    pub trade_count: i64,
+    pub win_rate: Decimal,
+    pub avg_net_pnl_pct: Decimal,
+    pub median_net_pnl_pct: Decimal,
+    pub total_net_pnl_pct: Decimal,
+    pub best_net_pnl_pct: Decimal,
+    pub worst_net_pnl_pct: Decimal,
+    pub max_drawdown_pct: Option<Decimal>,
+    pub fee_drag_pct: Decimal,
+    pub recommendation: StrategyExitAttributionRecommendation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyExitAttributionResult {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub total_raw_signals: i64,
+    pub total_executable_signals: i64,
+    pub suppression_breakdown: Vec<ReplaySuppressionCount>,
+    pub per_holding_window: Vec<StrategyExitAttributionHoldingWindow>,
+    pub best_holding_window: Option<u32>,
+    pub worst_holding_window: Option<u32>,
+    pub status: StrategyExitAttributionStatus,
+    pub recommendation: StrategyExitAttributionRecommendation,
+    pub trades: Vec<StrategyExitAttributionTrade>,
+    pub computed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

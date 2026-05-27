@@ -577,6 +577,7 @@ pub enum StrategyCommands {
     DryRun(StrategyDryRunArgs),
     Diagnostics(StrategyDiagnosticsArgs),
     OpportunityAnalysis(StrategyOpportunityAnalysisArgs),
+    ExitAttribution(StrategyExitAttributionArgs),
     Enable {
         strategy_id: String,
     },
@@ -666,6 +667,31 @@ pub struct StrategyOpportunityAnalysisArgs {
     pub limit_samples: Option<usize>,
     #[arg(long = "include-examples", default_value_t = true)]
     pub include_examples: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct StrategyExitAttributionArgs {
+    pub strategy_id: String,
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "experiment-run-id")]
+    pub experiment_run_id: Option<Uuid>,
+    #[arg(
+        long = "holding-windows",
+        value_delimiter = ',',
+        default_value = "1,3,5,10,20"
+    )]
+    pub holding_windows: Vec<u32>,
+    #[arg(long = "fee-bps")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps")]
+    pub slippage_bps: rust_decimal::Decimal,
 }
 
 #[derive(Debug, Subcommand)]

@@ -308,6 +308,26 @@ async fn main() -> anyhow::Result<()> {
                     output::print_strategy_opportunity_analysis(&response);
                 }
             }
+            StrategyCommands::ExitAttribution(args) => {
+                let response = client
+                    .strategy_exit_attribution(
+                        &args.strategy_id,
+                        args.symbol,
+                        args.timeframe,
+                        args.start_time,
+                        args.end_time,
+                        args.experiment_run_id,
+                        args.holding_windows,
+                        args.fee_bps,
+                        args.slippage_bps,
+                    )
+                    .await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_strategy_exit_attribution(&response);
+                }
+            }
             StrategyCommands::Enable { strategy_id } => {
                 let response = client.enable_strategy(&strategy_id).await?;
                 if cli.json {

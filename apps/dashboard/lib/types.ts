@@ -2592,6 +2592,51 @@ export type StrategyOpportunityAnalysisResponse = {
   timestamp: string;
 };
 
+export type StrategyExitAttributionStatus =
+  | "PROMISING"
+  | "WEAK"
+  | "NEGATIVE"
+  | "INSUFFICIENT_DATA"
+  | "DATA_QUALITY_DEGRADED";
+
+export type StrategyExitAttributionHoldingWindow = {
+  holding_candles: number;
+  trade_count: number;
+  win_rate: string;
+  avg_net_pnl_pct: string;
+  median_net_pnl_pct: string;
+  total_net_pnl_pct: string;
+  best_net_pnl_pct: string;
+  worst_net_pnl_pct: string;
+  max_drawdown_pct: string | null;
+  fee_drag_pct: string;
+  recommendation: StrategyExitAttributionStatus;
+};
+
+export type StrategyExitAttributionResult = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  total_raw_signals: number;
+  total_executable_signals: number;
+  suppression_breakdown: ReplaySuppressionCount[];
+  per_holding_window: StrategyExitAttributionHoldingWindow[];
+  best_holding_window: number | null;
+  worst_holding_window: number | null;
+  status: StrategyExitAttributionStatus;
+  recommendation: StrategyExitAttributionStatus;
+  computed_at: string;
+};
+
+export type StrategyExitAttributionResponse = {
+  result: StrategyExitAttributionResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type EvaluateStrategyResponse = {
   strategy_id: string;
   symbol: string;

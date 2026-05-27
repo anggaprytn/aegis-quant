@@ -36,12 +36,12 @@ use crate::api::{
     RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
     StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDiagnosticsResponse, StrategyDryRunResponse,
-    StrategyListResponse, StrategyOpportunityAnalysisResponse, StrategyPerformanceRankingsResponse,
-    StrategyPerformanceSummaryResponse, StrategyStatusResponse,
-    TestnetPromotionFunnelOutcomesResponse, TestnetPromotionFunnelRowsResponse,
-    TestnetPromotionFunnelSummaryResponse, TestnetShadowPromotionsResponse,
-    TestnetShadowRunnerControlResponse, TestnetShadowRunnerStatusResponse,
-    TestnetShadowRunsResponse,
+    StrategyExitAttributionResponse, StrategyListResponse, StrategyOpportunityAnalysisResponse,
+    StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
+    StrategyStatusResponse, TestnetPromotionFunnelOutcomesResponse,
+    TestnetPromotionFunnelRowsResponse, TestnetPromotionFunnelSummaryResponse,
+    TestnetShadowPromotionsResponse, TestnetShadowRunnerControlResponse,
+    TestnetShadowRunnerStatusResponse, TestnetShadowRunsResponse,
 };
 
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -1290,6 +1290,53 @@ pub fn print_strategy_opportunity_analysis(response: &StrategyOpportunityAnalysi
         for window in &result.example_pass_windows {
             println!("  - {}", window.source_candle_open_time.to_rfc3339());
         }
+    }
+}
+
+pub fn print_strategy_exit_attribution(response: &StrategyExitAttributionResponse) {
+    let result = &response.result;
+    println!("Strategy ID: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Status: {}", result.status.as_str());
+    println!("Recommendation: {}", result.recommendation.as_str());
+    println!(
+        "Signals: raw={} executable={}",
+        result.total_raw_signals, result.total_executable_signals
+    );
+    println!(
+        "Best holding window: {}",
+        result
+            .best_holding_window
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!(
+        "Worst holding window: {}",
+        result
+            .worst_holding_window
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!("Suppression breakdown:");
+    for row in &result.suppression_breakdown {
+        println!("  - {}: {}", row.reason.as_str(), row.count);
+    }
+    println!("Holding windows:");
+    for row in &result.per_holding_window {
+        println!(
+            "  - {} candles: trades={} win_rate={} avg={} median={} total={} best={} worst={} fee_drag={} recommendation={}",
+            row.holding_candles,
+            row.trade_count,
+            row.win_rate.round_dp(2),
+            row.avg_net_pnl_pct.round_dp(4),
+            row.median_net_pnl_pct.round_dp(4),
+            row.total_net_pnl_pct.round_dp(4),
+            row.best_net_pnl_pct.round_dp(4),
+            row.worst_net_pnl_pct.round_dp(4),
+            row.fee_drag_pct.round_dp(4),
+            row.recommendation.as_str()
+        );
     }
 }
 

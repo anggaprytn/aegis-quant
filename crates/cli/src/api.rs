@@ -27,15 +27,16 @@ use aegis_core::{
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
     StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyOpportunityAnalysisResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    StrategyExitAttributionResult, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    StrategyMultiTimeframeExperimentResult, StrategyOpportunityAnalysisResult,
+    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -1239,6 +1240,41 @@ impl ApiClient {
             &query,
         )
         .await
+    }
+
+    pub async fn strategy_exit_attribution(
+        &self,
+        strategy_id: &str,
+        symbol: String,
+        timeframe: String,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        experiment_run_id: Option<Uuid>,
+        holding_windows: Vec<u32>,
+        fee_bps: Decimal,
+        slippage_bps: Decimal,
+    ) -> Result<StrategyExitAttributionResponse, ApiClientError> {
+        let mut query = vec![
+            ("symbol", symbol),
+            ("timeframe", timeframe),
+            ("start_time", start_time.to_rfc3339()),
+            ("end_time", end_time.to_rfc3339()),
+            (
+                "holding_windows",
+                holding_windows
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            ("fee_bps", fee_bps.to_string()),
+            ("slippage_bps", slippage_bps.to_string()),
+        ];
+        if let Some(experiment_run_id) = experiment_run_id {
+            query.push(("experiment_run_id", experiment_run_id.to_string()));
+        }
+        self.get(&format!("/strategy/{strategy_id}/exit-attribution"), &query)
+            .await
     }
 
     pub async fn enable_strategy(
@@ -2689,6 +2725,14 @@ pub struct StrategyDiagnosticsResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyOpportunityAnalysisResponse {
     pub result: StrategyOpportunityAnalysisResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyExitAttributionResponse {
+    pub result: StrategyExitAttributionResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
