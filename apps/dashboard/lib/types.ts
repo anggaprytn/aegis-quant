@@ -933,7 +933,27 @@ export type ResearchCandidateDecisionRequest = {
   reason?: string | null;
   notes?: string | null;
   acknowledge_runner_mismatch?: boolean;
+  acknowledge_overfit_risk?: boolean;
   correlation_id?: string | null;
+};
+
+export type ResearchCandidateWalkForwardEvidence = {
+  walk_forward_run_id: string;
+  robustness_status: StrategyWalkForwardRobustnessStatus;
+  status: string;
+  recommendation_action: string | null;
+  recommendation_reason: string | null;
+  total_windows: number;
+  completed_windows: number;
+  profitable_windows: number;
+  losing_windows: number;
+  avg_pnl_pct: string;
+  worst_pnl_pct: string;
+  best_pnl_pct: string;
+  robustness_score: string;
+  consistency_score: string;
+  created_at: string;
+  linked_at: string;
 };
 
 export type StrategyCandidateObservationStatus =
@@ -1070,6 +1090,15 @@ export type ResearchCandidatesResponse = {
 
 export type ResearchCandidateResponse = {
   candidate: ResearchCandidate;
+  walk_forward_evidence: ResearchCandidateWalkForwardEvidence | null;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateWalkForwardEvidenceResponse = {
+  evidence: ResearchCandidateWalkForwardEvidence[];
+  latest: ResearchCandidateWalkForwardEvidence | null;
   request_id: string;
   correlation_id: string;
   timestamp: string;
@@ -1235,6 +1264,13 @@ export type ResearchCandidateQualificationResult = {
   fresh_observation: boolean;
   runner_alignment_valid: boolean;
   latest_readiness_status: ExecutionReadinessStatus | null;
+  walk_forward_status: StrategyWalkForwardRobustnessStatus | null;
+  walk_forward_run_id: string | null;
+  walk_forward_score: string | null;
+  walk_forward_consistency_score: string | null;
+  walk_forward_recommendation: string | null;
+  walk_forward_blockers: string[];
+  walk_forward_warnings: string[];
   readiness_penalty_points: number;
   threshold_override_below_default: boolean;
   threshold_override_penalty_points: number;
@@ -1282,6 +1318,13 @@ export type ResearchCandidateQualificationEvaluation = {
   total_shadow_runs: number;
   would_submit_count: number;
   risk_rejection_rate_pct: string | null;
+  walk_forward_status: StrategyWalkForwardRobustnessStatus | null;
+  walk_forward_run_id: string | null;
+  walk_forward_score: string | null;
+  walk_forward_consistency_score: string | null;
+  walk_forward_recommendation: string | null;
+  walk_forward_blockers: string[];
+  walk_forward_warnings: string[];
   warnings: string[];
   blockers: string[];
   recommendations: ResearchCandidateQualificationRecommendation[];
@@ -1316,6 +1359,7 @@ export type ResearchCandidateWatchlistEntry = {
   timeframe: string;
   candidate_status: ResearchCandidateStatus;
   latest_evaluation: ResearchCandidateQualificationEvaluation | null;
+  walk_forward_evidence: ResearchCandidateWalkForwardEvidence | null;
   latest_change: ResearchCandidateQualificationChange | null;
   trend: ResearchCandidateQualificationTrend;
   watchlist_status: ResearchCandidateWatchlistStatus;
@@ -1353,6 +1397,7 @@ export type ResearchCandidateTestnetReviewSection =
   | "RUNNER_ALIGNMENT"
   | "READINESS"
   | "PROVENANCE"
+  | "WALK_FORWARD"
   | "OPERATOR_REVIEW"
   | "CONTROLS";
 
@@ -1410,6 +1455,7 @@ export type ResearchCandidateTestnetReviewEvidence = {
   candidate_fee_drag: string | null;
   experiment_id: string | null;
   experiment_run_id: string | null;
+  walk_forward_evidence: ResearchCandidateWalkForwardEvidence | null;
   operator_report_findings: ResearchCandidateTestnetReviewFinding[];
 };
 

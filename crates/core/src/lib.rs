@@ -3015,6 +3015,9 @@ pub struct OperatorReportResearchQualificationSnapshot {
     pub rejected_from_watchlist_count: i64,
     pub archived_from_watchlist_count: i64,
     pub candidates_needing_review_count: i64,
+    pub walk_forward_overfit_risk_count: i64,
+    pub walk_forward_missing_count: i64,
+    pub walk_forward_robust_count: i64,
     pub top_candidate: Option<OperatorReportResearchQualificationTopCandidate>,
 }
 

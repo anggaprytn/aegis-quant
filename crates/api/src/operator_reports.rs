@@ -913,6 +913,9 @@ async fn load_research_candidate_qualification_snapshot(
         rejected_from_watchlist_count: 0,
         archived_from_watchlist_count: 0,
         candidates_needing_review_count: 0,
+        walk_forward_overfit_risk_count: 0,
+        walk_forward_missing_count: 0,
+        walk_forward_robust_count: 0,
         top_candidate: None,
     };
 
@@ -959,6 +962,20 @@ async fn load_research_candidate_qualification_snapshot(
         }
         if qualification.threshold_override_below_default {
             summary.below_default_threshold_override_count += 1;
+        }
+        match qualification.walk_forward_status {
+            Some(aegis_core::StrategyWalkForwardRobustnessStatus::OverfitRisk) => {
+                summary.walk_forward_overfit_risk_count += 1;
+                summary.candidates_needing_review_count += 1;
+            }
+            Some(aegis_core::StrategyWalkForwardRobustnessStatus::Robust) => {
+                summary.walk_forward_robust_count += 1;
+            }
+            None => {
+                summary.walk_forward_missing_count += 1;
+                summary.candidates_needing_review_count += 1;
+            }
+            _ => {}
         }
 
         let evaluation_history =
@@ -1301,6 +1318,36 @@ fn build_findings(
             OperatorReportSeverity::Medium,
             "Candidate lost qualification",
             "At least one persisted qualification evaluation shows a candidate lost qualified status.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.walk_forward_overfit_risk_count > 0 {
+        findings.push(finding(
+            "candidate_walk_forward_overfit_risk",
+            OperatorReportSeverity::High,
+            "Candidate has OVERFIT_RISK walk-forward result",
+            "One or more research candidates have OVERFIT_RISK walk-forward evidence and should not advance toward testnet review.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.walk_forward_missing_count > 0 {
+        findings.push(finding(
+            "candidate_walk_forward_missing",
+            OperatorReportSeverity::Medium,
+            "Candidate missing walk-forward validation",
+            "One or more research candidates are missing linked walk-forward evidence.",
+            "research_candidate_qualification",
+        ));
+    }
+
+    if research_qualification.walk_forward_robust_count > 0 {
+        findings.push(finding(
+            "candidate_walk_forward_robust",
+            OperatorReportSeverity::Low,
+            "Candidate has ROBUST walk-forward evidence",
+            "One or more research candidates have ROBUST linked walk-forward evidence.",
             "research_candidate_qualification",
         ));
     }
@@ -2243,6 +2290,9 @@ mod tests {
             rejected_from_watchlist_count: 0,
             archived_from_watchlist_count: 0,
             candidates_needing_review_count: 0,
+            walk_forward_overfit_risk_count: 0,
+            walk_forward_missing_count: 0,
+            walk_forward_robust_count: 0,
             top_candidate: None,
         }
     }

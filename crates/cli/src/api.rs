@@ -15,13 +15,14 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
-    ResearchCandidateWatchlistEntry, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
-    RiskConfigVersion, StrategyCandidateObservationResult, StrategyComparisonSummary,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
-    StrategyDryRunRequest, StrategyDryRunResult, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
     StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
     StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
     TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
@@ -673,6 +674,29 @@ impl ApiClient {
     ) -> Result<ResearchCandidateResponse, ApiClientError> {
         self.post("/research/candidates/from-experiment-run", request)
             .await
+    }
+
+    pub async fn get_research_candidate_walk_forward(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateWalkForwardEvidenceResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/walk-forward"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn link_research_candidate_walk_forward(
+        &self,
+        candidate_id: Uuid,
+        walk_forward_run_id: Uuid,
+    ) -> Result<ResearchCandidateWalkForwardEvidenceResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidates/{candidate_id}/walk-forward/link"),
+            &serde_json::json!({ "walk_forward_run_id": walk_forward_run_id }),
+        )
+        .await
     }
 
     pub async fn observe_research_candidate(
@@ -1810,6 +1834,7 @@ pub struct CreateResearchCandidateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateResearchCandidateFromExperimentRunRequest {
     pub experiment_run_id: Uuid,
+    pub walk_forward_run_id: Option<Uuid>,
     pub notes: Option<String>,
     pub correlation_id: Option<Uuid>,
 }
@@ -2106,6 +2131,16 @@ pub struct ResearchCandidatesResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateResponse {
     pub candidate: ResearchCandidate,
+    pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateWalkForwardEvidenceResponse {
+    pub evidence: Vec<ResearchCandidateWalkForwardEvidence>,
+    pub latest: Option<ResearchCandidateWalkForwardEvidence>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -3996,6 +4031,7 @@ mod tests {
             .create_research_candidate_from_experiment_run(
                 &CreateResearchCandidateFromExperimentRunRequest {
                     experiment_run_id,
+                    walk_forward_run_id: None,
                     notes: None,
                     correlation_id: None,
                 },
@@ -4278,6 +4314,7 @@ mod tests {
                     reason: Some("bad drawdown".to_string()),
                     notes: None,
                     acknowledge_runner_mismatch: false,
+                    acknowledge_overfit_risk: false,
                     correlation_id: None,
                 },
             )

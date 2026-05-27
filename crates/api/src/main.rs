@@ -51,14 +51,15 @@ use aegis_core::{
     ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
     ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
-    ResearchCandidateWatchlistEntry, ResearchDataCoverageRequest, ResearchDataCoverageResult,
-    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, RiskCheckContext, RiskConfig,
-    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
-    StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
-    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
+    ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
+    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExperimentGlobalRanking,
     StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun, StrategyId,
@@ -68,9 +69,10 @@ use aegis_core::{
     StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionRequest,
     StrategyResearchCandidatePromotionResult, StrategyResearchCandidateRejectionReason,
     StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategyStatus,
-    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardWindowResult, Symbol,
-    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
-    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardRobustnessStatus,
+    StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
+    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetRepairAction, TestnetRepairActionStatus,
     TestnetRepairRequest, TestnetRepairResult, TestnetRepairValidationIssue,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -113,8 +115,8 @@ use db::{
     get_closed_1m_candles_range, get_default_paper_account, get_exchange_private_stream_state,
     get_exchange_testnet_order_by_client_order_id, get_latest_market_tick,
     get_latest_research_candidate_qualification_evaluation,
-    get_latest_strategy_candidate_observation, get_order_by_id, get_paper_position_by_id,
-    get_recent_closed_candles, get_research_candidate,
+    get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
+    get_order_by_id, get_paper_position_by_id, get_recent_closed_candles, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_risk_config, get_risk_decision_by_id,
     get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
@@ -129,15 +131,16 @@ use db::{
     insert_research_candidate_qualification_evaluation, insert_risk_config_audit,
     insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
     insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
-    insert_system_event, insert_testnet_shadow_promotion, insert_user, list_backtest_runs,
-    list_candle_backfill_runs, list_candles, list_exchange_private_stream_events,
-    list_exchange_reconciliation_mismatches, list_exchange_reconciliation_runs,
-    list_exchange_testnet_order_lifecycle_events, list_exchange_testnet_orders,
-    list_exchange_testnet_repair_actions, list_market_feed_statuses, list_open_paper_positions,
-    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
-    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
-    list_research_candidate_events, list_research_candidate_qualification_evaluations,
-    list_research_candidate_reviews, list_research_candidate_shadow_runs,
+    insert_system_event, insert_testnet_shadow_promotion, insert_user,
+    link_research_candidate_walk_forward_run, list_backtest_runs, list_candle_backfill_runs,
+    list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
+    list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
+    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
+    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
+    list_recent_system_events_filtered, list_research_candidate_events,
+    list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
+    list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
     list_research_candidate_watchlist_rows, list_research_candidates, list_risk_config_audit,
     list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
@@ -149,12 +152,14 @@ use db::{
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
     persist_strategy_config_version, research_candidate_event_from_record,
     research_candidate_from_record, research_candidate_qualification_evaluation_from_record,
-    research_candidate_review_from_record, revoke_session, risk_config_audit_from_record,
-    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
-    set_kill_switch_state, strategy_candidate_observation_result_from_record,
-    strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, strategy_experiment_result_from_records,
-    strategy_experiment_run_from_record, strategy_research_candidate_from_record,
+    research_candidate_review_from_record,
+    research_candidate_walk_forward_evidence_from_watchlist_row, revoke_session,
+    risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
+    rotate_session_refresh_token, set_kill_switch_state,
+    strategy_candidate_observation_result_from_record, strategy_config_audit_from_record,
+    strategy_config_from_record, strategy_config_version_from_record,
+    strategy_experiment_result_from_records, strategy_experiment_run_from_record,
+    strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
     update_research_candidate_status, update_strategy_state,
@@ -1445,8 +1450,14 @@ struct CreateResearchCandidateRequest {
 #[derive(Deserialize)]
 struct CreateResearchCandidateFromExperimentRunRequest {
     experiment_run_id: Uuid,
+    walk_forward_run_id: Option<Uuid>,
     notes: Option<String>,
     correlation_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+struct LinkResearchCandidateWalkForwardRequest {
+    walk_forward_run_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -1460,6 +1471,16 @@ struct ResearchCandidatesResponse {
 #[derive(Serialize)]
 struct ResearchCandidateResponse {
     candidate: ResearchCandidate,
+    walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateWalkForwardEvidenceResponse {
+    evidence: Vec<ResearchCandidateWalkForwardEvidence>,
+    latest: Option<ResearchCandidateWalkForwardEvidence>,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2504,6 +2525,14 @@ async fn main() {
         .route(
             "/research/candidates/:id/testnet-review-dossier",
             get(get_research_candidate_testnet_review_dossier_handler),
+        )
+        .route(
+            "/research/candidates/:id/walk-forward",
+            get(get_research_candidate_walk_forward_handler),
+        )
+        .route(
+            "/research/candidates/:id/walk-forward/link",
+            post(link_research_candidate_walk_forward_handler),
         )
         .route(
             "/research/candidates/:id/shadow-runs",
@@ -14702,6 +14731,8 @@ async fn build_research_candidate_qualification(
         now,
     )
     .await?;
+    let walk_forward_evidence =
+        get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id).await?;
 
     Ok(aegis_core::evaluate_research_candidate_qualification(
         &ResearchCandidateQualificationRequest {
@@ -14720,11 +14751,49 @@ async fn build_research_candidate_qualification(
             latest_readiness_status: latest_observation
                 .as_ref()
                 .and_then(|observation| observation.summary.latest_readiness_status),
+            walk_forward_evidence,
             shadow_performance: Some(shadow_performance),
             thresholds,
             computed_at: now,
         },
     ))
+}
+
+async fn link_candidate_walk_forward_evidence(
+    state: &AppState,
+    candidate: &ResearchCandidate,
+    walk_forward_run_id: Uuid,
+) -> anyhow::Result<ResearchCandidateWalkForwardEvidence> {
+    let run = get_strategy_walk_forward_run(&state.db_pool, walk_forward_run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("strategy walk-forward run was not found"))?;
+    if run.strategy_id != candidate.strategy_id
+        || !run.symbol.eq_ignore_ascii_case(&candidate.symbol)
+        || run.timeframe != candidate.timeframe
+    {
+        anyhow::bail!(
+            "walk-forward run does not match candidate strategy/symbol/timeframe: run={}/{}/{} candidate={}/{}/{}",
+            run.strategy_id,
+            run.symbol,
+            run.timeframe,
+            candidate.strategy_id,
+            candidate.symbol,
+            candidate.timeframe
+        );
+    }
+
+    if let (Some(candidate_run_id), Some(walk_forward_experiment_run_id)) =
+        (candidate.experiment_run_id, run.experiment_run_id)
+    {
+        if candidate_run_id != walk_forward_experiment_run_id {
+            anyhow::bail!(
+                "walk-forward experiment_run_id does not match candidate experiment_run_id"
+            );
+        }
+    }
+
+    link_research_candidate_walk_forward_run(&state.db_pool, candidate.id, walk_forward_run_id)
+        .await
 }
 
 fn build_research_candidate_qualification_history(
@@ -14839,6 +14908,8 @@ async fn build_research_candidate_testnet_review_dossier(
     let readiness_snapshot = latest_observation
         .as_ref()
         .map(|value| candidate_promotion_readiness(candidate.id, value, now));
+    let walk_forward_evidence =
+        get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id).await?;
 
     let private_stream_stale_warning = match get_exchange_private_stream_state(
         &state.db_pool,
@@ -14867,6 +14938,7 @@ async fn build_research_candidate_testnet_review_dossier(
                 observation_age_seconds,
                 runner_alignment: Some(runner_alignment),
                 readiness_snapshot,
+                walk_forward_evidence,
                 private_stream_stale_warning,
                 require_ready_review_action: true,
                 no_execution_table_mutation: true,
@@ -14883,6 +14955,7 @@ fn watchlist_entry_from_row(
     previous: Option<&ResearchCandidateQualificationEvaluation>,
     now: DateTime<Utc>,
 ) -> anyhow::Result<ResearchCandidateWatchlistEntry> {
+    let walk_forward_evidence = research_candidate_walk_forward_evidence_from_watchlist_row(&row)?;
     let latest_evaluation = match row.evaluation_id {
         Some(id) => Some(ResearchCandidateQualificationEvaluation {
             id,
@@ -14901,6 +14974,13 @@ fn watchlist_entry_from_row(
             total_shadow_runs: row.total_shadow_runs.unwrap_or_default(),
             would_submit_count: row.would_submit_count.unwrap_or_default(),
             risk_rejection_rate_pct: row.risk_rejection_rate_pct,
+            walk_forward_status: None,
+            walk_forward_run_id: None,
+            walk_forward_score: None,
+            walk_forward_consistency_score: None,
+            walk_forward_recommendation: None,
+            walk_forward_blockers: Vec::new(),
+            walk_forward_warnings: Vec::new(),
             warnings: serde_json::from_value(
                 row.warnings.unwrap_or_else(|| serde_json::json!([])),
             )?,
@@ -14942,6 +15022,7 @@ fn watchlist_entry_from_row(
         timeframe: row.timeframe,
         candidate_status: row.candidate_status.parse()?,
         latest_evaluation,
+        walk_forward_evidence,
         latest_change,
         trend,
         watchlist_status,
@@ -15300,10 +15381,36 @@ async fn create_research_candidate_from_experiment_run_handler(
         Ok((record, _)) => {
             telemetry().set_research_candidate_total(candidate.status.as_str(), 1);
             let candidate = research_candidate_from_record(&record).expect("candidate should map");
+            let walk_forward_evidence = match payload.walk_forward_run_id {
+                Some(walk_forward_run_id) => match link_candidate_walk_forward_evidence(
+                    &state,
+                    &candidate,
+                    walk_forward_run_id,
+                )
+                .await
+                {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: "invalid_walk_forward_link",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response()
+                    }
+                },
+                None => None,
+            };
             (
                 StatusCode::OK,
                 Json(ResearchCandidateResponse {
                     candidate,
+                    walk_forward_evidence,
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -15386,6 +15493,7 @@ async fn create_research_candidate_handler(
                 StatusCode::OK,
                 Json(ResearchCandidateResponse {
                     candidate,
+                    walk_forward_evidence: None,
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -15479,6 +15587,13 @@ async fn get_research_candidate_handler(
                 StatusCode::OK,
                 Json(ResearchCandidateResponse {
                     candidate,
+                    walk_forward_evidence: get_latest_research_candidate_walk_forward_evidence(
+                        &state.db_pool,
+                        candidate_id,
+                    )
+                    .await
+                    .ok()
+                    .flatten(),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -16299,6 +16414,64 @@ async fn decide_research_candidate_handler(
                 &request,
             );
         }
+
+        match get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id)
+            .await
+        {
+            Ok(Some(evidence))
+                if evidence.robustness_status
+                    == StrategyWalkForwardRobustnessStatus::OverfitRisk
+                    && !payload.acknowledge_overfit_risk =>
+            {
+                return decision_rejection_response(
+                    StatusCode::CONFLICT,
+                    "walk_forward_overfit_risk",
+                    "Latest walk-forward robustness is OVERFIT_RISK.",
+                    observation_rejection(
+                        "WALK_FORWARD_OVERFIT_RISK",
+                        "Do not accept candidate until walk-forward robustness improves.",
+                        Some(observation),
+                        now,
+                    ),
+                    &request,
+                );
+            }
+            Ok(Some(evidence))
+                if matches!(
+                    evidence.robustness_status,
+                    StrategyWalkForwardRobustnessStatus::Failed
+                        | StrategyWalkForwardRobustnessStatus::InsufficientData
+                ) =>
+            {
+                return decision_rejection_response(
+                    StatusCode::CONFLICT,
+                    "walk_forward_not_validated",
+                    "Latest walk-forward evidence is failed or insufficient.",
+                    observation_rejection(
+                        "WALK_FORWARD_NOT_VALIDATED",
+                        "Run walk-forward validation before accepting candidate.",
+                        Some(observation),
+                        now,
+                    ),
+                    &request,
+                );
+            }
+            Ok(None) => {}
+            Ok(Some(_)) => {}
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_candidate_walk_forward",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
     }
 
     let updated_at = Utc::now();
@@ -16358,6 +16531,7 @@ async fn decide_research_candidate_handler(
             actor_id: Some(actor.user_id),
             payload: json!({
                 "acknowledge_runner_mismatch": payload.acknowledge_runner_mismatch,
+                "acknowledge_overfit_risk": payload.acknowledge_overfit_risk,
                 "promotion_readiness": latest_observation.as_ref().map(|observation| candidate_promotion_readiness(candidate.id, observation, updated_at)),
             }),
             created_at: updated_at,
@@ -16374,6 +16548,13 @@ async fn decide_research_candidate_handler(
         StatusCode::OK,
         Json(ResearchCandidateResponse {
             candidate,
+            walk_forward_evidence: get_latest_research_candidate_walk_forward_evidence(
+                &state.db_pool,
+                candidate_id,
+            )
+            .await
+            .ok()
+            .flatten(),
             request_id: request.request_id,
             correlation_id: request.correlation_id,
             timestamp: Utc::now(),
@@ -17460,6 +17641,193 @@ async fn get_research_candidate_testnet_review_dossier_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_build_research_candidate_testnet_review_dossier",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_walk_forward_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message:
+                        "Only VIEWER, OPERATOR, or OWNER can read candidate walk-forward evidence."
+                            .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    match list_research_candidate_walk_forward_evidence(&state.db_pool, candidate_id).await {
+        Ok(evidence) => (
+            StatusCode::OK,
+            Json(ResearchCandidateWalkForwardEvidenceResponse {
+                latest: evidence.first().cloned(),
+                evidence,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_candidate_walk_forward",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn link_research_candidate_walk_forward_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<LinkResearchCandidateWalkForwardRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can link candidate walk-forward evidence."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let candidate = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match link_candidate_walk_forward_evidence(&state, &candidate, payload.walk_forward_run_id)
+        .await
+    {
+        Ok(latest) => (
+            StatusCode::OK,
+            Json(ResearchCandidateWalkForwardEvidenceResponse {
+                evidence: vec![latest.clone()],
+                latest: Some(latest),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_walk_forward_link",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
@@ -25972,6 +26340,13 @@ mod tests {
             total_shadow_runs: 35,
             would_submit_count: 35,
             risk_rejection_rate_pct: Some(Decimal::ZERO),
+            walk_forward_status: None,
+            walk_forward_run_id: None,
+            walk_forward_score: None,
+            walk_forward_consistency_score: None,
+            walk_forward_recommendation: None,
+            walk_forward_blockers: Vec::new(),
+            walk_forward_warnings: Vec::new(),
             warnings: Vec::new(),
             blockers: Vec::new(),
             recommendations: vec![
@@ -26235,6 +26610,13 @@ mod tests {
                 total_shadow_runs: 12,
                 would_submit_count: 2,
                 risk_rejection_rate_pct: Some(Decimal::new(10, 0)),
+                walk_forward_status: None,
+                walk_forward_run_id: None,
+                walk_forward_score: None,
+                walk_forward_consistency_score: None,
+                walk_forward_recommendation: None,
+                walk_forward_blockers: Vec::new(),
+                walk_forward_warnings: Vec::new(),
                 warnings: vec!["Earlier evaluation needed more shadow data.".to_string()],
                 blockers: vec!["Persisted for trend fixture".to_string()],
                 recommendations: vec![],
@@ -26254,6 +26636,13 @@ mod tests {
             total_shadow_runs: 35,
             would_submit_count: 35,
             risk_rejection_rate_pct: Some(Decimal::new(5, 0)),
+            walk_forward_status: None,
+            walk_forward_run_id: None,
+            walk_forward_score: None,
+            walk_forward_consistency_score: None,
+            walk_forward_recommendation: None,
+            walk_forward_blockers: Vec::new(),
+            walk_forward_warnings: Vec::new(),
             warnings: vec![],
             blockers: vec![],
             recommendations: vec![],
@@ -26295,6 +26684,13 @@ mod tests {
                 total_shadow_runs: 30,
                 would_submit_count: 6,
                 risk_rejection_rate_pct: Some(Decimal::new(8, 0)),
+                walk_forward_status: None,
+                walk_forward_run_id: None,
+                walk_forward_score: None,
+                walk_forward_consistency_score: None,
+                walk_forward_recommendation: None,
+                walk_forward_blockers: Vec::new(),
+                walk_forward_warnings: Vec::new(),
                 warnings: vec![],
                 blockers: vec![],
                 recommendations: vec![],
@@ -26316,6 +26712,13 @@ mod tests {
                 total_shadow_runs: 30,
                 would_submit_count: 6,
                 risk_rejection_rate_pct: Some(Decimal::new(8, 0)),
+                walk_forward_status: None,
+                walk_forward_run_id: None,
+                walk_forward_score: None,
+                walk_forward_consistency_score: None,
+                walk_forward_recommendation: None,
+                walk_forward_blockers: Vec::new(),
+                walk_forward_warnings: Vec::new(),
                 warnings: vec!["Readiness regressed".to_string()],
                 blockers: vec!["NOT_READY".to_string()],
                 recommendations: vec![],

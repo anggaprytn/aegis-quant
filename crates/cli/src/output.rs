@@ -6,7 +6,8 @@ use aegis_core::{
     ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateTestnetReviewDossier, ResearchCandidateWatchlistEntry, User,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWatchlistEntry, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1621,6 +1622,42 @@ pub fn print_research_candidate(candidate: &aegis_core::ResearchCandidate) {
     );
 }
 
+pub fn print_research_candidate_walk_forward_evidence(
+    latest: Option<&ResearchCandidateWalkForwardEvidence>,
+    evidence: &[ResearchCandidateWalkForwardEvidence],
+) {
+    match latest {
+        Some(item) => {
+            println!("Latest walk-forward: {}", item.walk_forward_run_id);
+            println!("Robustness: {}", item.robustness_status.as_str());
+            println!(
+                "Windows: total={} completed={} profitable={} losing={}",
+                item.total_windows,
+                item.completed_windows,
+                item.profitable_windows,
+                item.losing_windows
+            );
+            println!(
+                "PnL pct: avg={} worst={} best={}",
+                item.avg_pnl_pct, item.worst_pnl_pct, item.best_pnl_pct
+            );
+            println!(
+                "Scores: robustness={} consistency={}",
+                item.robustness_score, item.consistency_score
+            );
+            println!(
+                "Recommendation: {}",
+                item.recommendation_reason
+                    .as_deref()
+                    .or(item.recommendation_action.as_deref())
+                    .unwrap_or("NONE")
+            );
+        }
+        None => println!("Latest walk-forward: none"),
+    }
+    println!("Linked walk-forward runs: {}", evidence.len());
+}
+
 pub fn print_research_candidate_events(events: &[aegis_core::ResearchCandidateLifecycleEvent]) {
     for event in events {
         println!(
@@ -1965,6 +2002,25 @@ pub fn print_research_candidate_qualification(
         qualification.readiness_penalty_points
     );
     println!(
+        "Walk-forward: status={} run={} score={} consistency={}",
+        qualification
+            .walk_forward_status
+            .map(|value| value.as_str())
+            .unwrap_or("MISSING"),
+        qualification
+            .walk_forward_run_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        qualification
+            .walk_forward_score
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        qualification
+            .walk_forward_consistency_score
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
         "Runner alignment: {}  Fresh observation: {}",
         if qualification.runner_alignment_valid {
             "VALID"
@@ -2152,6 +2208,17 @@ pub fn print_research_candidate_testnet_review_dossier(
         );
     } else {
         println!("Shadow summary: none");
+    }
+    if let Some(walk_forward) = &dossier.evidence.walk_forward_evidence {
+        println!(
+            "Walk-forward: run={} robustness={} avg_pnl_pct={} consistency={}",
+            walk_forward.walk_forward_run_id,
+            walk_forward.robustness_status.as_str(),
+            walk_forward.avg_pnl_pct,
+            walk_forward.consistency_score
+        );
+    } else {
+        println!("Walk-forward: none");
     }
     if dossier.blockers.is_empty() {
         println!("Blockers: none");

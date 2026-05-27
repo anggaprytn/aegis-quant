@@ -1064,6 +1064,12 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
+  const selectedResearchCandidateWalkForwardQuery = useQuery({
+    queryKey: ["research-candidate-walk-forward", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidateWalkForward(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const selectedResearchCandidateShadowPerformanceQuery = useQuery({
     queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
     queryFn: () => api.getResearchCandidateShadowPerformance(selectedResearchCandidateId ?? ""),
@@ -1702,6 +1708,32 @@ function AuthenticatedDashboard({
       });
     },
   });
+  const linkResearchCandidateWalkForwardMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedResearchCandidateId || !selectedWalkForward?.walk_forward_id) {
+        throw new Error("Select a candidate and walk-forward run first.");
+      }
+      return api.linkResearchCandidateWalkForward(
+        selectedResearchCandidateId,
+        selectedWalkForward.walk_forward_id,
+      );
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-walk-forward", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-qualification", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["research-candidate-watchlist"] });
+    },
+  });
   const decideResearchCandidateMutation = useMutation({
     mutationFn: async (decision: "ACCEPT_FOR_SHADOW" | "REJECT" | "ARCHIVE" | "REOPEN") => {
       if (!selectedResearchCandidateId) {
@@ -1711,6 +1743,7 @@ function AuthenticatedDashboard({
         decision,
         reason: researchCandidateDecisionReason || undefined,
         acknowledge_runner_mismatch: decision === "ACCEPT_FOR_SHADOW",
+        acknowledge_overfit_risk: false,
       });
     },
     onSuccess: async () => {
@@ -1738,6 +1771,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-walk-forward", selectedResearchCandidateId],
       });
       setResearchCandidateDecisionReason("");
     },
@@ -2188,6 +2224,10 @@ function AuthenticatedDashboard({
     selectedResearchCandidateQualificationHistoryQuery.data?.history ?? null;
   const researchCandidateTestnetReviewDossier: ResearchCandidateTestnetReviewDossier | null =
     selectedResearchCandidateTestnetReviewDossierQuery.data?.dossier ?? null;
+  const researchCandidateWalkForwardEvidence =
+    selectedResearchCandidateWalkForwardQuery.data?.latest ??
+    selectedResearchCandidateQuery.data?.walk_forward_evidence ??
+    null;
   const researchCandidateWatchlist: ResearchCandidateWatchlistEntry[] =
     researchCandidateWatchlistQuery.data?.watchlist ?? [];
   const researchCandidateReviews: ResearchCandidateReview[] =
@@ -4692,6 +4732,7 @@ function AuthenticatedDashboard({
                           "Candidate",
                           "Candidate Status",
                           "Qualification",
+                          "Walk-forward",
                           "Score",
                           "Trend",
                           "Last Evaluated",
@@ -4713,6 +4754,9 @@ function AuthenticatedDashboard({
                           <td className="px-3 py-2">{entry.candidate_status}</td>
                           <td className="px-3 py-2">
                             {entry.latest_evaluation?.status ?? "UNKNOWN"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {entry.walk_forward_evidence?.robustness_status ?? "MISSING"}
                           </td>
                           <td className="px-3 py-2">
                             {entry.latest_evaluation?.score ?? "-"}
@@ -4752,6 +4796,59 @@ function AuthenticatedDashboard({
                   loading={selectedResearchCandidateQuery.isLoading}
                   error={getErrorMessage(selectedResearchCandidateQuery.error)}
                 />
+                <div
+                  className={cn(
+                    "mt-4 rounded-xl border p-4 text-sm",
+                    researchCandidateWalkForwardEvidence?.robustness_status === "OVERFIT_RISK"
+                      ? "border-rose-400/40 bg-rose-500/10 text-rose-100"
+                      : researchCandidateWalkForwardEvidence?.robustness_status === "ROBUST"
+                        ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100"
+                        : "border-amber-400/40 bg-amber-500/10 text-amber-100",
+                  )}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="font-semibold">Walk-Forward Evidence</div>
+                    <div className="rounded-full border border-current/30 px-3 py-1 text-[11px] uppercase tracking-[0.2em]">
+                      {researchCandidateWalkForwardEvidence?.robustness_status ?? "MISSING"}
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div>Run: {researchCandidateWalkForwardEvidence?.walk_forward_run_id ?? "N/A"}</div>
+                    <div>Consistency: {researchCandidateWalkForwardEvidence?.consistency_score ?? "N/A"}</div>
+                    <div>Avg PnL %: {researchCandidateWalkForwardEvidence?.avg_pnl_pct ?? "N/A"}</div>
+                    <div>
+                      Profitable / Losing:{" "}
+                      {researchCandidateWalkForwardEvidence
+                        ? `${researchCandidateWalkForwardEvidence.profitable_windows} / ${researchCandidateWalkForwardEvidence.losing_windows}`
+                        : "N/A"}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs">
+                    {researchCandidateWalkForwardEvidence?.recommendation_reason ??
+                      "No linked walk-forward evidence. Testnet review remains blocked until evidence is linked."}
+                  </div>
+                  <div className="mt-3 flex items-center gap-3">
+                    <ActionButton
+                      label="Link Selected Walk-forward"
+                      onClick={() => linkResearchCandidateWalkForwardMutation.mutate()}
+                      busy={linkResearchCandidateWalkForwardMutation.isPending}
+                      disabled={
+                        (user.role !== "OWNER" && user.role !== "OPERATOR") ||
+                        !selectedResearchCandidate ||
+                        !selectedWalkForward
+                      }
+                    />
+                    <InlineStatus
+                      error={getErrorMessage(linkResearchCandidateWalkForwardMutation.error)}
+                      success={
+                        linkResearchCandidateWalkForwardMutation.data?.latest
+                          ? "linked"
+                          : undefined
+                      }
+                    />
+                  </div>
+                  <InlineStatus error={getErrorMessage(selectedResearchCandidateWalkForwardQuery.error)} />
+                </div>
                 <div className="mt-4 grid gap-4 xl:grid-cols-3">
                   <div className="rounded-2xl border border-border bg-surface/40 p-4">
                     <div className="text-xs uppercase tracking-[0.2em] text-muted">Config</div>
@@ -5167,6 +5264,13 @@ function AuthenticatedDashboard({
                           {researchCandidateQualification?.readiness_penalty_points ?? 0}
                         </div>
                         <div>
+                          Walk-forward:{" "}
+                          {researchCandidateQualification?.walk_forward_status ?? "MISSING"}
+                        </div>
+                        <div>
+                          WF score: {researchCandidateQualification?.walk_forward_score ?? "-"}
+                        </div>
+                        <div>
                           Linked runs:{" "}
                           {researchCandidateQualification?.shadow_performance?.total_shadow_runs ??
                             0}
@@ -5206,6 +5310,12 @@ function AuthenticatedDashboard({
                         <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-100">
                           Qualification threshold override is below default; treat result as
                           exploratory.
+                        </div>
+                      ) : null}
+                      {researchCandidateQualification?.walk_forward_status === "OVERFIT_RISK" ? (
+                        <div className="mt-3 rounded-xl border border-rose-400/40 bg-rose-500/10 p-3 text-rose-100">
+                          Walk-forward robustness is OVERFIT_RISK. Do not advance this candidate
+                          toward testnet review.
                         </div>
                       ) : null}
                       {qualificationNeedsMoreData ? (
@@ -5292,6 +5402,16 @@ function AuthenticatedDashboard({
                               Recommendation:{" "}
                               {researchCandidateTestnetReviewDossier.recommendations[0] ??
                                 "NONE"}
+                            </div>
+                            <div>
+                              Walk-forward:{" "}
+                              {researchCandidateTestnetReviewDossier.evidence.walk_forward_evidence
+                                ?.robustness_status ?? "MISSING"}
+                            </div>
+                            <div>
+                              WF run:{" "}
+                              {researchCandidateTestnetReviewDossier.evidence.walk_forward_evidence
+                                ?.walk_forward_run_id ?? "N/A"}
                             </div>
                           </div>
                           <div className="mt-3 rounded-xl border border-border/70 bg-surface/40 p-3">

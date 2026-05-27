@@ -752,6 +752,8 @@ pub enum ResearchCandidateCommands {
     QualificationEvaluate(ResearchCandidateQualificationArgs),
     QualificationHistory(ResearchCandidateQualificationHistoryArgs),
     TestnetReviewDossier { candidate_id: Uuid },
+    WalkForward { candidate_id: Uuid },
+    LinkWalkForward(ResearchCandidateLinkWalkForwardArgs),
     ShadowPerformance(ResearchCandidateShadowWindowArgs),
     ShadowRuns(ResearchCandidateShadowRunsArgs),
     Create(ResearchCandidateCreateArgs),
@@ -794,8 +796,17 @@ pub struct ResearchCandidateCreateArgs {
 #[derive(Debug, Args)]
 pub struct ResearchCandidateFromExperimentRunArgs {
     pub run_id: Uuid,
+    #[arg(long = "walk-forward-run-id")]
+    pub walk_forward_run_id: Option<Uuid>,
     #[arg(long)]
     pub notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateLinkWalkForwardArgs {
+    pub candidate_id: Uuid,
+    #[arg(long = "run-id")]
+    pub walk_forward_run_id: Uuid,
 }
 
 #[derive(Debug, Args)]
@@ -809,6 +820,8 @@ pub struct ResearchCandidateDecideArgs {
     pub notes: Option<String>,
     #[arg(long, default_value_t = false)]
     pub acknowledge_runner_mismatch: bool,
+    #[arg(long, default_value_t = false)]
+    pub acknowledge_overfit_risk: bool,
 }
 
 #[derive(Debug, Args)]

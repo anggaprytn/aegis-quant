@@ -606,6 +606,35 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_testnet_review_dossier(&response.dossier);
                     }
                 }
+                ResearchCandidateCommands::WalkForward { candidate_id } => {
+                    let response = client
+                        .get_research_candidate_walk_forward(candidate_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_walk_forward_evidence(
+                            response.latest.as_ref(),
+                            &response.evidence,
+                        );
+                    }
+                }
+                ResearchCandidateCommands::LinkWalkForward(args) => {
+                    let response = client
+                        .link_research_candidate_walk_forward(
+                            args.candidate_id,
+                            args.walk_forward_run_id,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_walk_forward_evidence(
+                            response.latest.as_ref(),
+                            &response.evidence,
+                        );
+                    }
+                }
                 ResearchCandidateCommands::ShadowPerformance(args) => {
                     let response = client
                         .get_research_candidate_shadow_performance(
@@ -659,6 +688,7 @@ async fn main() -> anyhow::Result<()> {
                         .create_research_candidate_from_experiment_run(
                             &CreateResearchCandidateFromExperimentRunRequest {
                                 experiment_run_id: args.run_id,
+                                walk_forward_run_id: args.walk_forward_run_id,
                                 notes: args.notes,
                                 correlation_id: None,
                             },
@@ -706,6 +736,7 @@ async fn main() -> anyhow::Result<()> {
                                 reason: args.reason,
                                 notes: args.notes,
                                 acknowledge_runner_mismatch: args.acknowledge_runner_mismatch,
+                                acknowledge_overfit_risk: args.acknowledge_overfit_risk,
                                 correlation_id: None,
                             },
                         )

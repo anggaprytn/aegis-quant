@@ -81,6 +81,7 @@ import type {
   ResearchCandidateShadowPromotionRequest,
   ResearchCandidateShadowPromotionResultResponse,
   ResearchCandidateShadowRunsResponse,
+  ResearchCandidateWalkForwardEvidenceResponse,
   ResearchCandidateWatchlistResponse,
   ResearchCandidateResponse,
   ResearchCandidatesResponse,
@@ -415,6 +416,18 @@ export const api = {
   getResearchCandidateTestnetReviewDossier: (id: string) =>
     request<ResearchCandidateTestnetReviewDossierResponse>(
       `/research/candidates/${id}/testnet-review-dossier`,
+    ),
+  getResearchCandidateWalkForward: (id: string) =>
+    request<ResearchCandidateWalkForwardEvidenceResponse>(
+      `/research/candidates/${id}/walk-forward`,
+    ),
+  linkResearchCandidateWalkForward: (id: string, walkForwardRunId: string) =>
+    request<ResearchCandidateWalkForwardEvidenceResponse>(
+      `/research/candidates/${id}/walk-forward/link`,
+      {
+        method: "POST",
+        body: JSON.stringify({ walk_forward_run_id: walkForwardRunId }),
+      },
     ),
   getResearchCandidateWatchlist: (limit = 50) =>
     request<ResearchCandidateWatchlistResponse>(

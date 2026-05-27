@@ -14,14 +14,15 @@ use aegis_core::{
     ResearchCandidateQualificationThresholds, ResearchCandidateReview,
     ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
-    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
-    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
-    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
-    StrategyCandidateObservationSummary, StrategyResearchCandidate,
-    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
-    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
-    StrategyResearchCandidateStatus, Symbol,
+    ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
+    ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
+    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
+    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
+    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus,
+    StrategyWalkForwardRecommendation, StrategyWalkForwardRobustnessStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -177,6 +178,13 @@ pub struct ResearchCandidateQualificationEvaluationRecord {
     pub total_shadow_runs: i64,
     pub would_submit_count: i64,
     pub risk_rejection_rate_pct: Option<Decimal>,
+    pub walk_forward_status: Option<String>,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub walk_forward_score: Option<Decimal>,
+    pub walk_forward_consistency_score: Option<Decimal>,
+    pub walk_forward_recommendation: Option<String>,
+    pub walk_forward_blockers: Value,
+    pub walk_forward_warnings: Value,
     pub warnings: Value,
     pub blockers: Value,
     pub recommendations: Value,
@@ -221,6 +229,21 @@ pub struct ResearchCandidateWatchlistRow {
     pub thresholds: Option<Value>,
     pub evaluated_at: Option<DateTime<Utc>>,
     pub correlation_id: Option<Uuid>,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub walk_forward_robustness_status: Option<String>,
+    pub walk_forward_status: Option<String>,
+    pub walk_forward_recommendation: Option<Value>,
+    pub walk_forward_total_windows: Option<i32>,
+    pub walk_forward_completed_windows: Option<i32>,
+    pub walk_forward_profitable_windows: Option<i32>,
+    pub walk_forward_losing_windows: Option<i32>,
+    pub walk_forward_avg_pnl_pct: Option<Decimal>,
+    pub walk_forward_worst_pnl_pct: Option<Decimal>,
+    pub walk_forward_best_pnl_pct: Option<Decimal>,
+    pub walk_forward_robustness_score: Option<Decimal>,
+    pub walk_forward_consistency_score: Option<Decimal>,
+    pub walk_forward_created_at: Option<DateTime<Utc>>,
+    pub walk_forward_linked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -287,6 +310,13 @@ fn map_research_candidate_qualification_evaluation(
         total_shadow_runs: row.get("total_shadow_runs"),
         would_submit_count: row.get("would_submit_count"),
         risk_rejection_rate_pct: row.get("risk_rejection_rate_pct"),
+        walk_forward_status: row.get("walk_forward_status"),
+        walk_forward_run_id: row.get("walk_forward_run_id"),
+        walk_forward_score: row.get("walk_forward_score"),
+        walk_forward_consistency_score: row.get("walk_forward_consistency_score"),
+        walk_forward_recommendation: row.get("walk_forward_recommendation"),
+        walk_forward_blockers: row.get("walk_forward_blockers"),
+        walk_forward_warnings: row.get("walk_forward_warnings"),
         warnings: row.get("warnings"),
         blockers: row.get("blockers"),
         recommendations: row.get("recommendations"),
@@ -318,6 +348,21 @@ fn map_research_candidate_watchlist_row(
         thresholds: row.get("thresholds"),
         evaluated_at: row.get("evaluated_at"),
         correlation_id: row.get("correlation_id"),
+        walk_forward_run_id: row.get("walk_forward_run_id"),
+        walk_forward_robustness_status: row.get("walk_forward_robustness_status"),
+        walk_forward_status: row.get("walk_forward_status"),
+        walk_forward_recommendation: row.get("walk_forward_recommendation"),
+        walk_forward_total_windows: row.get("walk_forward_total_windows"),
+        walk_forward_completed_windows: row.get("walk_forward_completed_windows"),
+        walk_forward_profitable_windows: row.get("walk_forward_profitable_windows"),
+        walk_forward_losing_windows: row.get("walk_forward_losing_windows"),
+        walk_forward_avg_pnl_pct: row.get("walk_forward_avg_pnl_pct"),
+        walk_forward_worst_pnl_pct: row.get("walk_forward_worst_pnl_pct"),
+        walk_forward_best_pnl_pct: row.get("walk_forward_best_pnl_pct"),
+        walk_forward_robustness_score: row.get("walk_forward_robustness_score"),
+        walk_forward_consistency_score: row.get("walk_forward_consistency_score"),
+        walk_forward_created_at: row.get("walk_forward_created_at"),
+        walk_forward_linked_at: row.get("walk_forward_linked_at"),
     }
 }
 
@@ -407,6 +452,100 @@ fn parse_execution_readiness_status(value: &str) -> Result<ExecutionReadinessSta
     }
 }
 
+fn walk_forward_evidence_from_parts(
+    walk_forward_run_id: Option<Uuid>,
+    robustness_status: Option<String>,
+    status: Option<String>,
+    recommendation: Option<Value>,
+    total_windows: Option<i32>,
+    completed_windows: Option<i32>,
+    profitable_windows: Option<i32>,
+    losing_windows: Option<i32>,
+    avg_pnl_pct: Option<Decimal>,
+    worst_pnl_pct: Option<Decimal>,
+    best_pnl_pct: Option<Decimal>,
+    robustness_score: Option<Decimal>,
+    consistency_score: Option<Decimal>,
+    created_at: Option<DateTime<Utc>>,
+    linked_at: Option<DateTime<Utc>>,
+) -> Result<Option<ResearchCandidateWalkForwardEvidence>> {
+    let Some(walk_forward_run_id) = walk_forward_run_id else {
+        return Ok(None);
+    };
+    let recommendation = recommendation
+        .and_then(|value| serde_json::from_value::<StrategyWalkForwardRecommendation>(value).ok());
+
+    Ok(Some(ResearchCandidateWalkForwardEvidence {
+        walk_forward_run_id,
+        robustness_status: robustness_status
+            .unwrap_or_else(|| {
+                StrategyWalkForwardRobustnessStatus::InsufficientData
+                    .as_str()
+                    .to_string()
+            })
+            .parse()?,
+        status: status.unwrap_or_else(|| "UNKNOWN".to_string()),
+        recommendation_action: recommendation.as_ref().map(|value| value.action.clone()),
+        recommendation_reason: recommendation.as_ref().map(|value| value.reason.clone()),
+        total_windows: total_windows.unwrap_or_default(),
+        completed_windows: completed_windows.unwrap_or_default(),
+        profitable_windows: profitable_windows.unwrap_or_default(),
+        losing_windows: losing_windows.unwrap_or_default(),
+        avg_pnl_pct: avg_pnl_pct.unwrap_or(Decimal::ZERO),
+        worst_pnl_pct: worst_pnl_pct.unwrap_or(Decimal::ZERO),
+        best_pnl_pct: best_pnl_pct.unwrap_or(Decimal::ZERO),
+        robustness_score: robustness_score.unwrap_or(Decimal::ZERO),
+        consistency_score: consistency_score.unwrap_or(Decimal::ZERO),
+        created_at: created_at.unwrap_or_else(Utc::now),
+        linked_at: linked_at.unwrap_or_else(Utc::now),
+    }))
+}
+
+fn walk_forward_evidence_from_row(
+    row: sqlx::postgres::PgRow,
+) -> Result<ResearchCandidateWalkForwardEvidence> {
+    walk_forward_evidence_from_parts(
+        Some(row.get("walk_forward_run_id")),
+        Some(row.get("walk_forward_robustness_status")),
+        Some(row.get("walk_forward_status")),
+        row.get("walk_forward_recommendation"),
+        Some(row.get("walk_forward_total_windows")),
+        Some(row.get("walk_forward_completed_windows")),
+        Some(row.get("walk_forward_profitable_windows")),
+        Some(row.get("walk_forward_losing_windows")),
+        Some(row.get("walk_forward_avg_pnl_pct")),
+        Some(row.get("walk_forward_worst_pnl_pct")),
+        Some(row.get("walk_forward_best_pnl_pct")),
+        Some(row.get("walk_forward_robustness_score")),
+        Some(row.get("walk_forward_consistency_score")),
+        Some(row.get("walk_forward_created_at")),
+        Some(row.get("walk_forward_linked_at")),
+    )?
+    .ok_or_else(|| anyhow::anyhow!("walk-forward evidence row was empty"))
+}
+
+pub fn research_candidate_walk_forward_evidence_from_watchlist_row(
+    row: &ResearchCandidateWatchlistRow,
+) -> Result<Option<ResearchCandidateWalkForwardEvidence>> {
+    walk_forward_evidence_from_parts(
+        row.walk_forward_run_id,
+        row.walk_forward_robustness_status.clone(),
+        row.walk_forward_status.clone(),
+        row.walk_forward_recommendation.clone(),
+        row.walk_forward_total_windows,
+        row.walk_forward_completed_windows,
+        row.walk_forward_profitable_windows,
+        row.walk_forward_losing_windows,
+        row.walk_forward_avg_pnl_pct,
+        row.walk_forward_worst_pnl_pct,
+        row.walk_forward_best_pnl_pct,
+        row.walk_forward_robustness_score,
+        row.walk_forward_consistency_score,
+        row.walk_forward_created_at,
+        row.walk_forward_linked_at,
+    )
+}
+
 pub fn research_candidate_qualification_evaluation_from_record(
     record: &ResearchCandidateQualificationEvaluationRecord,
 ) -> Result<ResearchCandidateQualificationEvaluation> {
@@ -423,6 +562,17 @@ pub fn research_candidate_qualification_evaluation_from_record(
         total_shadow_runs: record.total_shadow_runs,
         would_submit_count: record.would_submit_count,
         risk_rejection_rate_pct: record.risk_rejection_rate_pct,
+        walk_forward_status: record
+            .walk_forward_status
+            .as_deref()
+            .map(str::parse)
+            .transpose()?,
+        walk_forward_run_id: record.walk_forward_run_id,
+        walk_forward_score: record.walk_forward_score,
+        walk_forward_consistency_score: record.walk_forward_consistency_score,
+        walk_forward_recommendation: record.walk_forward_recommendation.clone(),
+        walk_forward_blockers: serde_json::from_value(record.walk_forward_blockers.clone())?,
+        walk_forward_warnings: serde_json::from_value(record.walk_forward_warnings.clone())?,
         warnings: serde_json::from_value(record.warnings.clone())?,
         blockers: serde_json::from_value(record.blockers.clone())?,
         recommendations: serde_json::from_value::<Vec<String>>(record.recommendations.clone())?
@@ -1905,6 +2055,122 @@ pub async fn list_research_candidate_shadow_runs(
         .collect())
 }
 
+pub async fn link_research_candidate_walk_forward_run(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    walk_forward_run_id: Uuid,
+) -> Result<ResearchCandidateWalkForwardEvidence> {
+    sqlx::query(
+        r#"
+        INSERT INTO research_candidate_walk_forward_runs (
+            candidate_id,
+            walk_forward_run_id
+        )
+        VALUES ($1, $2)
+        ON CONFLICT (candidate_id, walk_forward_run_id) DO NOTHING
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(walk_forward_run_id)
+    .execute(pool)
+    .await?;
+
+    get_research_candidate_walk_forward_evidence_by_run(pool, candidate_id, walk_forward_run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("linked walk-forward evidence was not found"))
+}
+
+pub async fn list_research_candidate_walk_forward_evidence(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Vec<ResearchCandidateWalkForwardEvidence>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            run.id AS walk_forward_run_id,
+            run.robustness_status AS walk_forward_robustness_status,
+            run.status AS walk_forward_status,
+            run.recommendation AS walk_forward_recommendation,
+            run.total_windows AS walk_forward_total_windows,
+            run.completed_windows AS walk_forward_completed_windows,
+            run.profitable_test_windows AS walk_forward_profitable_windows,
+            run.losing_test_windows AS walk_forward_losing_windows,
+            run.avg_test_pnl_pct AS walk_forward_avg_pnl_pct,
+            run.worst_test_pnl_pct AS walk_forward_worst_pnl_pct,
+            run.best_test_pnl_pct AS walk_forward_best_pnl_pct,
+            run.robustness_score AS walk_forward_robustness_score,
+            run.consistency_score AS walk_forward_consistency_score,
+            run.created_at AS walk_forward_created_at,
+            link.created_at AS walk_forward_linked_at
+        FROM research_candidate_walk_forward_runs link
+        INNER JOIN strategy_walk_forward_runs run
+            ON run.id = link.walk_forward_run_id
+        WHERE link.candidate_id = $1
+        ORDER BY
+            CASE WHEN run.status = 'COMPLETED' THEN 0 ELSE 1 END,
+            run.created_at DESC,
+            link.created_at DESC
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(walk_forward_evidence_from_row)
+        .collect()
+}
+
+pub async fn get_latest_research_candidate_walk_forward_evidence(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Option<ResearchCandidateWalkForwardEvidence>> {
+    Ok(
+        list_research_candidate_walk_forward_evidence(pool, candidate_id)
+            .await?
+            .into_iter()
+            .next(),
+    )
+}
+
+async fn get_research_candidate_walk_forward_evidence_by_run(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    walk_forward_run_id: Uuid,
+) -> Result<Option<ResearchCandidateWalkForwardEvidence>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            run.id AS walk_forward_run_id,
+            run.robustness_status AS walk_forward_robustness_status,
+            run.status AS walk_forward_status,
+            run.recommendation AS walk_forward_recommendation,
+            run.total_windows AS walk_forward_total_windows,
+            run.completed_windows AS walk_forward_completed_windows,
+            run.profitable_test_windows AS walk_forward_profitable_windows,
+            run.losing_test_windows AS walk_forward_losing_windows,
+            run.avg_test_pnl_pct AS walk_forward_avg_pnl_pct,
+            run.worst_test_pnl_pct AS walk_forward_worst_pnl_pct,
+            run.best_test_pnl_pct AS walk_forward_best_pnl_pct,
+            run.robustness_score AS walk_forward_robustness_score,
+            run.consistency_score AS walk_forward_consistency_score,
+            run.created_at AS walk_forward_created_at,
+            link.created_at AS walk_forward_linked_at
+        FROM research_candidate_walk_forward_runs link
+        INNER JOIN strategy_walk_forward_runs run
+            ON run.id = link.walk_forward_run_id
+        WHERE link.candidate_id = $1
+          AND link.walk_forward_run_id = $2
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(walk_forward_run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(walk_forward_evidence_from_row).transpose()
+}
+
 pub async fn insert_research_candidate_qualification_evaluation(
     pool: &PgPool,
     evaluation: &ResearchCandidateQualificationEvaluation,
@@ -1925,6 +2191,13 @@ pub async fn insert_research_candidate_qualification_evaluation(
             total_shadow_runs,
             would_submit_count,
             risk_rejection_rate_pct,
+            walk_forward_status,
+            walk_forward_run_id,
+            walk_forward_score,
+            walk_forward_consistency_score,
+            walk_forward_recommendation,
+            walk_forward_blockers,
+            walk_forward_warnings,
             warnings,
             blockers,
             recommendations,
@@ -1933,7 +2206,7 @@ pub async fn insert_research_candidate_qualification_evaluation(
             correlation_id
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
         )
         RETURNING
             id,
@@ -1944,6 +2217,13 @@ pub async fn insert_research_candidate_qualification_evaluation(
             total_shadow_runs::BIGINT AS total_shadow_runs,
             would_submit_count::BIGINT AS would_submit_count,
             risk_rejection_rate_pct,
+            walk_forward_status,
+            walk_forward_run_id,
+            walk_forward_score,
+            walk_forward_consistency_score,
+            walk_forward_recommendation,
+            walk_forward_blockers,
+            walk_forward_warnings,
             warnings,
             blockers,
             recommendations,
@@ -1964,6 +2244,13 @@ pub async fn insert_research_candidate_qualification_evaluation(
     .bind(evaluation.total_shadow_runs)
     .bind(evaluation.would_submit_count)
     .bind(evaluation.risk_rejection_rate_pct)
+    .bind(evaluation.walk_forward_status.map(|value| value.as_str().to_string()))
+    .bind(evaluation.walk_forward_run_id)
+    .bind(evaluation.walk_forward_score)
+    .bind(evaluation.walk_forward_consistency_score)
+    .bind(&evaluation.walk_forward_recommendation)
+    .bind(serde_json::to_value(&evaluation.walk_forward_blockers)?)
+    .bind(serde_json::to_value(&evaluation.walk_forward_warnings)?)
     .bind(serde_json::to_value(&evaluation.warnings)?)
     .bind(serde_json::to_value(&evaluation.blockers)?)
     .bind(serde_json::to_value(&recommendations)?)
@@ -1991,6 +2278,13 @@ pub async fn get_latest_research_candidate_qualification_evaluation(
             total_shadow_runs::BIGINT AS total_shadow_runs,
             would_submit_count::BIGINT AS would_submit_count,
             risk_rejection_rate_pct,
+            walk_forward_status,
+            walk_forward_run_id,
+            walk_forward_score,
+            walk_forward_consistency_score,
+            walk_forward_recommendation,
+            walk_forward_blockers,
+            walk_forward_warnings,
             warnings,
             blockers,
             recommendations,
@@ -2025,6 +2319,13 @@ pub async fn get_research_candidate_qualification_evaluation_by_id(
             total_shadow_runs::BIGINT AS total_shadow_runs,
             would_submit_count::BIGINT AS would_submit_count,
             risk_rejection_rate_pct,
+            walk_forward_status,
+            walk_forward_run_id,
+            walk_forward_score,
+            walk_forward_consistency_score,
+            walk_forward_recommendation,
+            walk_forward_blockers,
+            walk_forward_warnings,
             warnings,
             blockers,
             recommendations,
@@ -2058,6 +2359,13 @@ pub async fn list_research_candidate_qualification_evaluations(
             total_shadow_runs::BIGINT AS total_shadow_runs,
             would_submit_count::BIGINT AS would_submit_count,
             risk_rejection_rate_pct,
+            walk_forward_status,
+            walk_forward_run_id,
+            walk_forward_score,
+            walk_forward_consistency_score,
+            walk_forward_recommendation,
+            walk_forward_blockers,
+            walk_forward_warnings,
             warnings,
             blockers,
             recommendations,
@@ -2115,6 +2423,13 @@ pub async fn list_research_candidate_watchlist_rows(
                 total_shadow_runs::BIGINT AS total_shadow_runs,
                 would_submit_count::BIGINT AS would_submit_count,
                 risk_rejection_rate_pct,
+                walk_forward_status,
+                walk_forward_run_id,
+                walk_forward_score,
+                walk_forward_consistency_score,
+                walk_forward_recommendation,
+                walk_forward_blockers,
+                walk_forward_warnings,
                 warnings,
                 blockers,
                 recommendations,
@@ -2123,6 +2438,33 @@ pub async fn list_research_candidate_watchlist_rows(
                 correlation_id
             FROM research_candidate_qualification_evaluations
             ORDER BY candidate_id, evaluated_at DESC, id DESC
+        ),
+        latest_walk_forward AS (
+            SELECT DISTINCT ON (link.candidate_id)
+                link.candidate_id,
+                run.id AS walk_forward_run_id,
+                run.robustness_status AS walk_forward_robustness_status,
+                run.status AS walk_forward_status,
+                run.recommendation AS walk_forward_recommendation,
+                run.total_windows AS walk_forward_total_windows,
+                run.completed_windows AS walk_forward_completed_windows,
+                run.profitable_test_windows AS walk_forward_profitable_windows,
+                run.losing_test_windows AS walk_forward_losing_windows,
+                run.avg_test_pnl_pct AS walk_forward_avg_pnl_pct,
+                run.worst_test_pnl_pct AS walk_forward_worst_pnl_pct,
+                run.best_test_pnl_pct AS walk_forward_best_pnl_pct,
+                run.robustness_score AS walk_forward_robustness_score,
+                run.consistency_score AS walk_forward_consistency_score,
+                run.created_at AS walk_forward_created_at,
+                link.created_at AS walk_forward_linked_at
+            FROM research_candidate_walk_forward_runs link
+            INNER JOIN strategy_walk_forward_runs run
+                ON run.id = link.walk_forward_run_id
+            ORDER BY
+                link.candidate_id,
+                CASE WHEN run.status = 'COMPLETED' THEN 0 ELSE 1 END,
+                run.created_at DESC,
+                link.created_at DESC
         )
         SELECT
             candidate.id AS candidate_id,
@@ -2142,10 +2484,27 @@ pub async fn list_research_candidate_watchlist_rows(
             eval.recommendations,
             eval.thresholds,
             eval.evaluated_at,
-            eval.correlation_id
+            eval.correlation_id,
+            wf.walk_forward_run_id,
+            wf.walk_forward_robustness_status,
+            wf.walk_forward_status,
+            wf.walk_forward_recommendation,
+            wf.walk_forward_total_windows,
+            wf.walk_forward_completed_windows,
+            wf.walk_forward_profitable_windows,
+            wf.walk_forward_losing_windows,
+            wf.walk_forward_avg_pnl_pct,
+            wf.walk_forward_worst_pnl_pct,
+            wf.walk_forward_best_pnl_pct,
+            wf.walk_forward_robustness_score,
+            wf.walk_forward_consistency_score,
+            wf.walk_forward_created_at,
+            wf.walk_forward_linked_at
         FROM filtered_candidates candidate
         LEFT JOIN latest_evaluations eval
             ON eval.candidate_id = candidate.id
+        LEFT JOIN latest_walk_forward wf
+            ON wf.candidate_id = candidate.id
         ORDER BY
             eval.evaluated_at DESC NULLS LAST,
             candidate.status ASC,

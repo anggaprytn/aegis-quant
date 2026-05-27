@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     calculate_strategy_rejection_rate, Candle, CandleInterval, CoreError, ExecutionReadinessStatus,
-    MarketDataSource, Symbol, TestnetShadowRunnerConfig,
+    MarketDataSource, StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
 };
 
 fn default_required_coverage_pct() -> Decimal {
@@ -352,7 +352,29 @@ pub struct ResearchCandidateDecisionRequest {
     pub notes: Option<String>,
     #[serde(default)]
     pub acknowledge_runner_mismatch: bool,
+    #[serde(default)]
+    pub acknowledge_overfit_risk: bool,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateWalkForwardEvidence {
+    pub walk_forward_run_id: Uuid,
+    pub robustness_status: StrategyWalkForwardRobustnessStatus,
+    pub status: String,
+    pub recommendation_action: Option<String>,
+    pub recommendation_reason: Option<String>,
+    pub total_windows: i32,
+    pub completed_windows: i32,
+    pub profitable_windows: i32,
+    pub losing_windows: i32,
+    pub avg_pnl_pct: Decimal,
+    pub worst_pnl_pct: Decimal,
+    pub best_pnl_pct: Decimal,
+    pub robustness_score: Decimal,
+    pub consistency_score: Decimal,
+    pub created_at: DateTime<Utc>,
+    pub linked_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1632,6 +1654,7 @@ pub struct ResearchCandidateQualificationRequest {
     #[serde(default)]
     pub runner_mismatch_count: i64,
     pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
     pub shadow_performance: Option<ResearchCandidateShadowPerformance>,
     #[serde(default)]
     pub thresholds: ResearchCandidateQualificationThresholds,
@@ -1646,6 +1669,15 @@ pub struct ResearchCandidateQualificationResult {
     pub fresh_observation: bool,
     pub runner_alignment_valid: bool,
     pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub walk_forward_status: Option<StrategyWalkForwardRobustnessStatus>,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub walk_forward_score: Option<Decimal>,
+    pub walk_forward_consistency_score: Option<Decimal>,
+    pub walk_forward_recommendation: Option<String>,
+    #[serde(default)]
+    pub walk_forward_blockers: Vec<String>,
+    #[serde(default)]
+    pub walk_forward_warnings: Vec<String>,
     pub readiness_penalty_points: i32,
     pub threshold_override_below_default: bool,
     pub threshold_override_penalty_points: i32,
@@ -1669,6 +1701,15 @@ pub struct ResearchCandidateQualificationEvaluation {
     pub total_shadow_runs: i64,
     pub would_submit_count: i64,
     pub risk_rejection_rate_pct: Option<Decimal>,
+    pub walk_forward_status: Option<StrategyWalkForwardRobustnessStatus>,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub walk_forward_score: Option<Decimal>,
+    pub walk_forward_consistency_score: Option<Decimal>,
+    pub walk_forward_recommendation: Option<String>,
+    #[serde(default)]
+    pub walk_forward_blockers: Vec<String>,
+    #[serde(default)]
+    pub walk_forward_warnings: Vec<String>,
     pub warnings: Vec<String>,
     pub blockers: Vec<String>,
     pub recommendations: Vec<ResearchCandidateQualificationRecommendation>,
@@ -1730,6 +1771,7 @@ pub enum ResearchCandidateTestnetReviewSection {
     RunnerAlignment,
     Readiness,
     Provenance,
+    WalkForward,
     OperatorReview,
     Controls,
 }
@@ -1744,6 +1786,7 @@ impl ResearchCandidateTestnetReviewSection {
             Self::RunnerAlignment => "RUNNER_ALIGNMENT",
             Self::Readiness => "READINESS",
             Self::Provenance => "PROVENANCE",
+            Self::WalkForward => "WALK_FORWARD",
             Self::OperatorReview => "OPERATOR_REVIEW",
             Self::Controls => "CONTROLS",
         }
@@ -1860,6 +1903,7 @@ pub struct ResearchCandidateTestnetReviewEvidence {
     pub candidate_fee_drag: Option<Decimal>,
     pub experiment_id: Option<Uuid>,
     pub experiment_run_id: Option<Uuid>,
+    pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
     #[serde(default)]
     pub operator_report_findings: Vec<ResearchCandidateTestnetReviewFinding>,
 }
@@ -1902,6 +1946,7 @@ pub struct ResearchCandidateTestnetReviewRequest {
     pub observation_age_seconds: Option<i64>,
     pub runner_alignment: Option<StrategyCandidateRunnerAlignment>,
     pub readiness_snapshot: Option<ResearchCandidatePromotionReadiness>,
+    pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
     pub private_stream_stale_warning: bool,
     pub require_ready_review_action: bool,
     pub no_execution_table_mutation: bool,
@@ -1918,6 +1963,7 @@ pub struct ResearchCandidateWatchlistEntry {
     pub timeframe: String,
     pub candidate_status: ResearchCandidateStatus,
     pub latest_evaluation: Option<ResearchCandidateQualificationEvaluation>,
+    pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
     pub latest_change: Option<ResearchCandidateQualificationChange>,
     pub trend: ResearchCandidateQualificationTrend,
     pub watchlist_status: ResearchCandidateWatchlistStatus,
@@ -2170,6 +2216,7 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
         .unwrap_or(false);
     let readiness_status = readiness.and_then(|value| value.readiness_status);
     let latest_qualification_status = latest_qualification.map(|value| value.status);
+    let walk_forward = request.walk_forward_evidence.as_ref();
     let threshold_override_below_default = latest_qualification
         .map(|value| {
             value.thresholds.min_shadow_runs < default_thresholds.min_shadow_runs
@@ -2300,6 +2347,74 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             false,
         ));
         recommendations.insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+    }
+
+    match walk_forward.map(|value| value.robustness_status) {
+        Some(StrategyWalkForwardRobustnessStatus::Robust) => {}
+        Some(StrategyWalkForwardRobustnessStatus::OverfitRisk) => {
+            findings.push(testnet_review_finding(
+                ResearchCandidateTestnetReviewSection::WalkForward,
+                "walk_forward_overfit_risk",
+                "Walk-forward robustness is OVERFIT_RISK.",
+                walk_forward.map(|value| {
+                    format!(
+                        "run={} recommendation={}",
+                        value.walk_forward_run_id,
+                        value.recommendation_reason.clone().unwrap_or_else(|| {
+                            "Do not accept candidate until walk-forward robustness improves."
+                                .to_string()
+                        })
+                    )
+                }),
+                true,
+            ));
+            recommendations
+                .insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+        }
+        Some(StrategyWalkForwardRobustnessStatus::Failed) => {
+            findings.push(testnet_review_finding(
+                ResearchCandidateTestnetReviewSection::WalkForward,
+                "walk_forward_failed",
+                "Walk-forward validation failed.",
+                walk_forward.map(|value| format!("run={}", value.walk_forward_run_id)),
+                true,
+            ));
+            recommendations
+                .insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+        }
+        Some(StrategyWalkForwardRobustnessStatus::InsufficientData) => {
+            findings.push(testnet_review_finding(
+                ResearchCandidateTestnetReviewSection::WalkForward,
+                "walk_forward_insufficient_data",
+                "Walk-forward validation has insufficient data.",
+                walk_forward.map(|value| format!("run={}", value.walk_forward_run_id)),
+                true,
+            ));
+            recommendations
+                .insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+        }
+        Some(StrategyWalkForwardRobustnessStatus::Weak) => {
+            findings.push(testnet_review_finding(
+                ResearchCandidateTestnetReviewSection::WalkForward,
+                "walk_forward_weak",
+                "Walk-forward robustness is WEAK.",
+                walk_forward.map(|value| format!("run={}", value.walk_forward_run_id)),
+                false,
+            ));
+            recommendations
+                .insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+        }
+        None => {
+            findings.push(testnet_review_finding(
+                ResearchCandidateTestnetReviewSection::WalkForward,
+                "walk_forward_missing",
+                "Walk-forward evidence is missing.",
+                None,
+                true,
+            ));
+            recommendations
+                .insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+        }
     }
 
     if !runner_matches {
@@ -2510,6 +2625,23 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             ),
         ),
         testnet_review_checklist_item(
+            "walk_forward_validation_completed",
+            "Walk-forward validation completed",
+            matches!(
+                walk_forward.map(|value| value.robustness_status),
+                Some(
+                    StrategyWalkForwardRobustnessStatus::Robust
+                        | StrategyWalkForwardRobustnessStatus::Weak
+                        | StrategyWalkForwardRobustnessStatus::OverfitRisk
+                )
+            ),
+            checklist_summary(
+                walk_forward.is_some(),
+                "Walk-forward evidence is linked.",
+                "Walk-forward evidence is missing.",
+            ),
+        ),
+        testnet_review_checklist_item(
             "operator_reviewed",
             "Operator reviewed",
             latest_review.is_some(),
@@ -2581,6 +2713,7 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             candidate_fee_drag: candidate.and_then(|value| value.fee_drag),
             experiment_id: candidate.and_then(|value| value.experiment_id),
             experiment_run_id: candidate.and_then(|value| value.experiment_run_id),
+            walk_forward_evidence: request.walk_forward_evidence.clone(),
             operator_report_findings: request.operator_report_findings.clone(),
         },
         checklist,
@@ -2622,6 +2755,13 @@ pub fn research_candidate_qualification_evaluation_from_result(
         total_shadow_runs,
         would_submit_count,
         risk_rejection_rate_pct,
+        walk_forward_status: qualification.walk_forward_status,
+        walk_forward_run_id: qualification.walk_forward_run_id,
+        walk_forward_score: qualification.walk_forward_score,
+        walk_forward_consistency_score: qualification.walk_forward_consistency_score,
+        walk_forward_recommendation: qualification.walk_forward_recommendation.clone(),
+        walk_forward_blockers: qualification.walk_forward_blockers.clone(),
+        walk_forward_warnings: qualification.walk_forward_warnings.clone(),
         warnings: qualification.warnings.clone(),
         blockers: qualification.blockers.clone(),
         recommendations: qualification.recommendations.clone(),
@@ -2711,6 +2851,9 @@ pub fn evaluate_research_candidate_qualification(
     let mut readiness_penalty_points = 0;
     let mut threshold_override_penalty_points = 0;
     let mut degraded_status_trigger = false;
+    let mut needs_more_data_trigger = false;
+    let mut walk_forward_blockers = Vec::new();
+    let mut walk_forward_warnings = Vec::new();
 
     let threshold_override_below_default = thresholds.min_shadow_runs
         < default_thresholds.min_shadow_runs
@@ -2921,6 +3064,141 @@ pub fn evaluate_research_candidate_qualification(
         ));
         degraded_status_trigger = true;
         recommendations.insert(ResearchCandidateQualificationRecommendation::FixRunnerAlignment);
+    }
+
+    let walk_forward_evidence = request.walk_forward_evidence.clone();
+    match walk_forward_evidence
+        .as_ref()
+        .map(|value| value.robustness_status)
+    {
+        Some(StrategyWalkForwardRobustnessStatus::Robust) => {
+            checks.push(qualification_check(
+                "walk_forward_robustness",
+                "Walk-forward robustness is acceptable",
+                true,
+                true,
+                ResearchCandidateQualificationSeverity::Low,
+                "Walk-forward robustness is ROBUST.",
+                walk_forward_evidence.as_ref().map(|value| {
+                    serde_json::json!({
+                        "walk_forward_run_id": value.walk_forward_run_id,
+                        "robustness_score": value.robustness_score,
+                        "consistency_score": value.consistency_score,
+                    })
+                }),
+            ));
+        }
+        Some(StrategyWalkForwardRobustnessStatus::OverfitRisk) => {
+            let message = "Walk-forward robustness is OVERFIT_RISK.";
+            checks.push(qualification_check(
+                "walk_forward_robustness",
+                "Walk-forward robustness is acceptable",
+                false,
+                true,
+                ResearchCandidateQualificationSeverity::High,
+                message,
+                walk_forward_evidence.as_ref().map(|value| {
+                    serde_json::json!({
+                        "walk_forward_run_id": value.walk_forward_run_id,
+                        "robustness_score": value.robustness_score,
+                        "consistency_score": value.consistency_score,
+                        "recommendation": value.recommendation_reason,
+                    })
+                }),
+            ));
+            score -= 40;
+            score = score.min(40);
+            walk_forward_blockers.push(message.to_string());
+            score_explanation.push(
+                "Walk-forward OVERFIT_RISK blocks testnet promotion consideration. (-40 points, score capped at 40)"
+                    .to_string(),
+            );
+        }
+        Some(StrategyWalkForwardRobustnessStatus::Failed) => {
+            let message = "Walk-forward validation failed.";
+            checks.push(qualification_check(
+                "walk_forward_robustness",
+                "Walk-forward robustness is acceptable",
+                false,
+                true,
+                ResearchCandidateQualificationSeverity::High,
+                message,
+                walk_forward_evidence.as_ref().map(|value| {
+                    serde_json::json!({
+                        "walk_forward_run_id": value.walk_forward_run_id,
+                        "robustness_score": value.robustness_score,
+                    })
+                }),
+            ));
+            score -= 40;
+            score = score.min(40);
+            walk_forward_blockers.push(message.to_string());
+            score_explanation.push("Failed walk-forward validation blocks qualification. (-40 points, score capped at 40)".to_string());
+        }
+        Some(StrategyWalkForwardRobustnessStatus::InsufficientData) => {
+            let message = "Walk-forward validation has insufficient data.";
+            checks.push(qualification_check(
+                "walk_forward_robustness",
+                "Walk-forward robustness is acceptable",
+                false,
+                false,
+                ResearchCandidateQualificationSeverity::Medium,
+                message,
+                walk_forward_evidence.as_ref().map(|value| {
+                    serde_json::json!({
+                        "walk_forward_run_id": value.walk_forward_run_id,
+                        "robustness_score": value.robustness_score,
+                    })
+                }),
+            ));
+            score -= 20;
+            needs_more_data_trigger = true;
+            walk_forward_warnings.push(message.to_string());
+            score_explanation.push("Walk-forward evidence is insufficient; collect more data before testnet review. (-20 points)".to_string());
+        }
+        Some(StrategyWalkForwardRobustnessStatus::Weak) => {
+            let message = "Walk-forward robustness is WEAK.";
+            checks.push(qualification_check(
+                "walk_forward_robustness",
+                "Walk-forward robustness is acceptable",
+                false,
+                false,
+                ResearchCandidateQualificationSeverity::Medium,
+                message,
+                walk_forward_evidence.as_ref().map(|value| {
+                    serde_json::json!({
+                        "walk_forward_run_id": value.walk_forward_run_id,
+                        "robustness_score": value.robustness_score,
+                        "consistency_score": value.consistency_score,
+                    })
+                }),
+            ));
+            score -= 15;
+            degraded_status_trigger = true;
+            walk_forward_warnings.push(message.to_string());
+            score_explanation.push(
+                "Weak walk-forward robustness degrades qualification. (-15 points)".to_string(),
+            );
+        }
+        None => {
+            let message = "Candidate missing walk-forward validation.";
+            checks.push(qualification_check(
+                "walk_forward_robustness",
+                "Walk-forward robustness is acceptable",
+                false,
+                false,
+                ResearchCandidateQualificationSeverity::Medium,
+                message,
+                None,
+            ));
+            score -= 20;
+            needs_more_data_trigger = true;
+            walk_forward_warnings.push("NO_WALK_FORWARD_EVIDENCE".to_string());
+            score_explanation.push(
+                "Missing walk-forward evidence requires more data before testnet review. (-20 points)"
+                    .to_string(),
+            );
+        }
     }
 
     let shadow_performance = request.shadow_performance.clone();
@@ -3173,6 +3451,8 @@ pub fn evaluate_research_candidate_qualification(
         ResearchCandidateQualificationStatus::Unknown
     } else if !blockers.is_empty() {
         ResearchCandidateQualificationStatus::NotQualified
+    } else if needs_more_data_trigger {
+        ResearchCandidateQualificationStatus::NeedsMoreData
     } else if !status_is_promoted {
         ResearchCandidateQualificationStatus::NeedsMoreData
     } else if !enough_shadow_runs {
@@ -3206,6 +3486,26 @@ pub fn evaluate_research_candidate_qualification(
         fresh_observation: request.fresh_observation,
         runner_alignment_valid: request.runner_alignment_valid,
         latest_readiness_status: readiness_status,
+        walk_forward_status: walk_forward_evidence
+            .as_ref()
+            .map(|value| value.robustness_status),
+        walk_forward_run_id: walk_forward_evidence
+            .as_ref()
+            .map(|value| value.walk_forward_run_id),
+        walk_forward_score: walk_forward_evidence
+            .as_ref()
+            .map(|value| value.robustness_score),
+        walk_forward_consistency_score: walk_forward_evidence
+            .as_ref()
+            .map(|value| value.consistency_score),
+        walk_forward_recommendation: walk_forward_evidence.as_ref().and_then(|value| {
+            value
+                .recommendation_reason
+                .clone()
+                .or_else(|| value.recommendation_action.clone())
+        }),
+        walk_forward_blockers,
+        walk_forward_warnings,
         readiness_penalty_points,
         threshold_override_below_default,
         threshold_override_penalty_points,
@@ -4369,9 +4669,43 @@ mod tests {
             shadow_runner_covers_candidate: true,
             runner_mismatch_count: 0,
             latest_readiness_status: Some(ExecutionReadinessStatus::Ready),
+            walk_forward_evidence: Some(sample_walk_forward_evidence(
+                StrategyWalkForwardRobustnessStatus::Robust,
+            )),
             shadow_performance: performance,
             thresholds: ResearchCandidateQualificationThresholds::default(),
             computed_at: ts(1, 0, 0),
+        }
+    }
+
+    fn sample_walk_forward_evidence(
+        status: StrategyWalkForwardRobustnessStatus,
+    ) -> ResearchCandidateWalkForwardEvidence {
+        ResearchCandidateWalkForwardEvidence {
+            walk_forward_run_id: Uuid::from_u128(0x700),
+            robustness_status: status,
+            status: "COMPLETED".to_string(),
+            recommendation_action: Some(if status == StrategyWalkForwardRobustnessStatus::Robust {
+                "ACCEPT_FOR_REVIEW".to_string()
+            } else {
+                "DO_NOT_ACCEPT".to_string()
+            }),
+            recommendation_reason: Some(if status == StrategyWalkForwardRobustnessStatus::Robust {
+                "Walk-forward robustness is acceptable.".to_string()
+            } else {
+                "Do not accept candidate until walk-forward robustness improves.".to_string()
+            }),
+            total_windows: 12,
+            completed_windows: 12,
+            profitable_windows: 9,
+            losing_windows: 3,
+            avg_pnl_pct: Decimal::new(12, 2),
+            worst_pnl_pct: Decimal::new(-5, 2),
+            best_pnl_pct: Decimal::new(40, 2),
+            robustness_score: Decimal::new(75, 0),
+            consistency_score: Decimal::new(75, 0),
+            created_at: ts(1, 0, 0),
+            linked_at: ts(1, 0, 0),
         }
     }
 
@@ -4461,6 +4795,13 @@ mod tests {
             total_shadow_runs: performance.total_shadow_runs,
             would_submit_count: performance.would_submit_count,
             risk_rejection_rate_pct: Some(performance.risk_rejection_rate_pct),
+            walk_forward_status: Some(StrategyWalkForwardRobustnessStatus::Robust),
+            walk_forward_run_id: Some(Uuid::from_u128(0x700)),
+            walk_forward_score: Some(Decimal::new(75, 0)),
+            walk_forward_consistency_score: Some(Decimal::new(75, 0)),
+            walk_forward_recommendation: Some("Walk-forward robustness is acceptable.".to_string()),
+            walk_forward_blockers: Vec::new(),
+            walk_forward_warnings: Vec::new(),
             warnings: Vec::new(),
             blockers: Vec::new(),
             recommendations: vec![
@@ -4530,6 +4871,9 @@ mod tests {
             observation_age_seconds: Some(0),
             runner_alignment: Some(aligned_runner_alignment()),
             readiness_snapshot: Some(readiness),
+            walk_forward_evidence: Some(sample_walk_forward_evidence(
+                StrategyWalkForwardRobustnessStatus::Robust,
+            )),
             private_stream_stale_warning: false,
             require_ready_review_action: true,
             no_execution_table_mutation: true,
@@ -4673,6 +5017,45 @@ mod tests {
     }
 
     #[test]
+    fn qualification_not_qualified_when_walk_forward_overfit_risk() {
+        let mut request = qualification_request(Some(qualification_performance(40, 8, 0, 0, 0)));
+        request.walk_forward_evidence = Some(sample_walk_forward_evidence(
+            StrategyWalkForwardRobustnessStatus::OverfitRisk,
+        ));
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NotQualified
+        );
+        assert_eq!(
+            result.walk_forward_status,
+            Some(StrategyWalkForwardRobustnessStatus::OverfitRisk)
+        );
+        assert!(result
+            .walk_forward_blockers
+            .iter()
+            .any(|value| value.contains("OVERFIT_RISK")));
+    }
+
+    #[test]
+    fn qualification_needs_more_data_without_walk_forward_evidence() {
+        let mut request = qualification_request(Some(qualification_performance(40, 8, 0, 0, 0)));
+        request.walk_forward_evidence = None;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NeedsMoreData
+        );
+        assert!(result
+            .walk_forward_warnings
+            .contains(&"NO_WALK_FORWARD_EVIDENCE".to_string()));
+    }
+
+    #[test]
     fn qualification_degraded_readiness_cannot_score_hundred() {
         let mut request = qualification_request(Some(qualification_performance(40, 8, 8, 0, 0)));
         request.latest_readiness_status = Some(ExecutionReadinessStatus::Degraded);
@@ -4810,6 +5193,13 @@ mod tests {
             total_shadow_runs: 30,
             would_submit_count: 5,
             risk_rejection_rate_pct: Some(Decimal::new(10, 0)),
+            walk_forward_status: Some(StrategyWalkForwardRobustnessStatus::Robust),
+            walk_forward_run_id: Some(Uuid::from_u128(0x700)),
+            walk_forward_score: Some(Decimal::new(75, 0)),
+            walk_forward_consistency_score: Some(Decimal::new(75, 0)),
+            walk_forward_recommendation: Some("Walk-forward robustness is acceptable.".to_string()),
+            walk_forward_blockers: Vec::new(),
+            walk_forward_warnings: Vec::new(),
             warnings: Vec::new(),
             blockers: Vec::new(),
             recommendations: Vec::new(),
@@ -5441,6 +5831,7 @@ mod tests {
                 "candidate_promoted_to_shadow_runner_config",
                 "shadow_runs_linked",
                 "qualification_evaluated",
+                "walk_forward_validation_completed",
                 "operator_reviewed",
                 "no_execution_table_mutation",
                 "latest_readiness_not_not_ready",
