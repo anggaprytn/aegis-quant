@@ -39,6 +39,7 @@ import type {
   ResearchBatchResult,
   ResearchBatchTriage,
   ResearchCampaignBatchResult,
+  ResearchCampaignFailureAttribution,
   ResearchCampaignRequest,
   ResearchCampaignResult,
   ResearchDatasetBuildRequest,
@@ -1259,6 +1260,11 @@ function AuthenticatedDashboard({
     queryFn: () => api.getResearchCampaign(selectedResearchCampaignId ?? ""),
     enabled: Boolean(selectedResearchCampaignId),
   });
+  const selectedResearchCampaignFailureAttributionQuery = useQuery({
+    queryKey: ["research-campaign-failure-attribution", selectedResearchCampaignId],
+    queryFn: () => api.getResearchCampaignFailureAttribution(selectedResearchCampaignId ?? ""),
+    enabled: Boolean(selectedResearchCampaignId),
+  });
   const backfillRunsQuery = useQuery({
     queryKey: ["backfill-runs"],
     queryFn: () => api.getMarketBackfillRuns(20),
@@ -2408,6 +2414,8 @@ function AuthenticatedDashboard({
   const researchCampaigns = researchCampaignsQuery.data?.campaigns ?? [];
   const selectedResearchCampaign: ResearchCampaignResult | null =
     selectedResearchCampaignQuery.data?.campaign ?? lastResearchCampaign;
+  const selectedResearchCampaignFailureAttribution =
+    selectedResearchCampaignFailureAttributionQuery.data?.attribution ?? null;
   const selectedExperiment =
     selectedExperimentQuery.data?.experiment ?? null;
   const strategyExperimentRuns =
@@ -4980,6 +4988,21 @@ function AuthenticatedDashboard({
                       ]}
                     />
                   </div>
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <ResearchCampaignFailureAttributionCard
+                    attribution={selectedResearchCampaignFailureAttribution}
+                    loading={selectedResearchCampaignFailureAttributionQuery.isLoading}
+                    error={getErrorMessage(selectedResearchCampaignFailureAttributionQuery.error)}
+                  />
+                  <ResearchCampaignRegimeSummaryTable
+                    attribution={selectedResearchCampaignFailureAttribution}
+                  />
+                </div>
+                <div className="mt-4">
+                  <ResearchCampaignFailureReasonsTable
+                    attribution={selectedResearchCampaignFailureAttribution}
+                  />
                 </div>
                 <div className="mt-4 grid gap-4 xl:grid-cols-2">
                   <ResearchCampaignBatchTable
@@ -8876,6 +8899,92 @@ function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatc
         batch.error ?? "-",
       ])}
     />
+  );
+}
+
+function ResearchCampaignFailureAttributionCard({
+  attribution,
+  loading,
+  error,
+}: {
+  attribution: ResearchCampaignFailureAttribution | null;
+  loading: boolean;
+  error?: string;
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Failure Attribution
+      </div>
+      <KeyValue
+        items={[
+          ["Top Reasons", attribution?.overall_failure_reasons.join(", ") || "-"],
+          ["Findings", String(attribution?.findings.length ?? 0)],
+          ["Recommendations", String(attribution?.recommendations.length ?? 0)],
+          ["Generated", attribution ? formatDateTime(attribution.generated_at) : "-"],
+        ]}
+        loading={loading}
+        error={error}
+      />
+      <SimpleList
+        items={(attribution?.recommendations ?? []).map(
+          (recommendation) =>
+            `${recommendation.priority} ${recommendation.code}: ${recommendation.message}`,
+        )}
+      />
+    </div>
+  );
+}
+
+function ResearchCampaignRegimeSummaryTable({
+  attribution,
+}: {
+  attribution: ResearchCampaignFailureAttribution | null;
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Regime Summary
+      </div>
+      <Table
+        headers={["Regime", "Windows", "Candidates", "Return %", "Volatility", "Reasons"]}
+        rows={(attribution?.regime_summary ?? []).map((regime) => [
+          regime.label,
+          String(regime.window_count),
+          String(regime.candidate_count),
+          regime.avg_return_pct,
+          regime.avg_realized_volatility,
+          regime.failure_reasons.join(", ") || "-",
+        ])}
+      />
+    </div>
+  );
+}
+
+function ResearchCampaignFailureReasonsTable({
+  attribution,
+}: {
+  attribution: ResearchCampaignFailureAttribution | null;
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Candidate Failure Reasons
+      </div>
+      <Table
+        headers={["Strategy", "Symbol", "TF", "Regime", "PnL %", "Trades", "WF", "Reasons"]}
+        rows={(attribution?.candidate_failure_table ?? []).map((row) => [
+          row.strategy_id,
+          row.symbol,
+          row.timeframe,
+          row.regime_label,
+          row.pnl_pct ?? "-",
+          row.trade_count == null ? "-" : String(row.trade_count),
+          row.walk_forward_status ?? "-",
+          row.failure_reasons.join(", ") || "-",
+        ])}
+      />
+    </div>
   );
 }
 

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use rust_decimal::Decimal;
@@ -11,6 +11,10 @@ use crate::{
     MarketDataQualityReport, MarketDataQualityStatus, MarketDataSource, MarketProviderHealth,
     StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
 };
+
+const REGIME_MIN_CANDLES: usize = 5;
+const MANY_TRADES_PER_WINDOW_THRESHOLD: i32 = 20;
+const FEW_TRADES_THRESHOLD: i32 = 2;
 
 fn default_required_coverage_pct() -> Decimal {
     Decimal::new(95, 0)
@@ -569,6 +573,758 @@ pub struct ResearchCampaignResult {
     pub summary: ResearchCampaignSummary,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchRegimeLabel {
+    TrendUp,
+    TrendDown,
+    Range,
+    HighVolatility,
+    LowVolatility,
+    Mixed,
+    Unknown,
+}
+
+impl ResearchRegimeLabel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TrendUp => "TREND_UP",
+            Self::TrendDown => "TREND_DOWN",
+            Self::Range => "RANGE",
+            Self::HighVolatility => "HIGH_VOLATILITY",
+            Self::LowVolatility => "LOW_VOLATILITY",
+            Self::Mixed => "MIXED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateFailureReason {
+    OverfitRisk,
+    FeeDrag,
+    TooManyTrades,
+    TooFewTrades,
+    LowWinRate,
+    HighDrawdown,
+    WeakEdge,
+    DataQualityDegraded,
+    RegimeMismatch,
+    InsufficientData,
+}
+
+impl ResearchCandidateFailureReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OverfitRisk => "OVERFIT_RISK",
+            Self::FeeDrag => "FEE_DRAG",
+            Self::TooManyTrades => "TOO_MANY_TRADES",
+            Self::TooFewTrades => "TOO_FEW_TRADES",
+            Self::LowWinRate => "LOW_WIN_RATE",
+            Self::HighDrawdown => "HIGH_DRAWDOWN",
+            Self::WeakEdge => "WEAK_EDGE",
+            Self::DataQualityDegraded => "DATA_QUALITY_DEGRADED",
+            Self::RegimeMismatch => "REGIME_MISMATCH",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeMetric {
+    pub symbol: String,
+    pub timeframe: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub candle_count: i32,
+    pub return_pct: Decimal,
+    pub realized_volatility: Decimal,
+    pub average_candle_range_pct: Decimal,
+    pub close_vs_sma_pct: Decimal,
+    pub directional_movement_pct: Decimal,
+    pub choppiness_pct: Decimal,
+    pub label: ResearchRegimeLabel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignRegimeSummary {
+    pub label: ResearchRegimeLabel,
+    pub window_count: i32,
+    pub candidate_count: i32,
+    pub avg_return_pct: Decimal,
+    pub avg_realized_volatility: Decimal,
+    pub avg_candle_range_pct: Decimal,
+    pub failure_reasons: Vec<ResearchCandidateFailureReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCampaignFailureFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCampaignFailureRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateFailureAttributionRow {
+    pub candidate_id: Option<Uuid>,
+    pub experiment_run_id: Option<Uuid>,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub regime_label: ResearchRegimeLabel,
+    pub failure_reasons: Vec<ResearchCandidateFailureReason>,
+    pub pnl_pct: Option<Decimal>,
+    pub gross_pnl_pct: Option<Decimal>,
+    pub fee_drag_pct: Option<Decimal>,
+    pub trade_count: Option<i32>,
+    pub win_rate: Option<Decimal>,
+    pub max_drawdown_pct: Option<Decimal>,
+    pub walk_forward_status: Option<String>,
+    pub data_quality_status: Option<MarketDataQualityStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchStrategyTimeframeFailureBreakdown {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub candidate_count: i32,
+    pub dominant_regime: ResearchRegimeLabel,
+    pub top_failure_reasons: Vec<ResearchCandidateFailureReason>,
+    pub avg_pnl_pct: Option<Decimal>,
+    pub avg_trade_count: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignFailureAttribution {
+    pub campaign_id: Uuid,
+    pub overall_failure_reasons: Vec<ResearchCandidateFailureReason>,
+    pub regime_summary: Vec<ResearchCampaignRegimeSummary>,
+    pub candidate_failure_table: Vec<ResearchCandidateFailureAttributionRow>,
+    pub strategy_timeframe_breakdown: Vec<ResearchStrategyTimeframeFailureBreakdown>,
+    pub findings: Vec<ResearchCampaignFailureFinding>,
+    pub recommendations: Vec<ResearchCampaignFailureRecommendation>,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateFailureInput {
+    pub candidate_id: Option<Uuid>,
+    pub experiment_run_id: Option<Uuid>,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub regime_metric: ResearchRegimeMetric,
+    pub pnl_pct: Option<Decimal>,
+    pub gross_pnl_pct: Option<Decimal>,
+    pub fee_drag_pct: Option<Decimal>,
+    pub trade_count: Option<i32>,
+    pub win_rate: Option<Decimal>,
+    pub max_drawdown_pct: Option<Decimal>,
+    pub walk_forward_status: Option<String>,
+    pub walk_forward_profitable_windows: Option<i32>,
+    pub walk_forward_losing_windows: Option<i32>,
+    pub data_quality_status: Option<MarketDataQualityStatus>,
+}
+
+pub fn classify_research_regime(
+    symbol: impl Into<String>,
+    timeframe: impl Into<String>,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    candles: &[Candle],
+) -> ResearchRegimeMetric {
+    let symbol = symbol.into();
+    let timeframe = timeframe.into();
+    if candles.len() < REGIME_MIN_CANDLES {
+        return ResearchRegimeMetric {
+            symbol,
+            timeframe,
+            window_start,
+            window_end,
+            candle_count: i32::try_from(candles.len()).unwrap_or(i32::MAX),
+            return_pct: Decimal::ZERO,
+            realized_volatility: Decimal::ZERO,
+            average_candle_range_pct: Decimal::ZERO,
+            close_vs_sma_pct: Decimal::ZERO,
+            directional_movement_pct: Decimal::ZERO,
+            choppiness_pct: Decimal::ZERO,
+            label: ResearchRegimeLabel::Unknown,
+        };
+    }
+
+    let first_close = candles
+        .first()
+        .map(|candle| candle.close)
+        .unwrap_or_default();
+    let last_close = candles
+        .last()
+        .map(|candle| candle.close)
+        .unwrap_or_default();
+    let return_pct = pct_change(first_close, last_close);
+    let sma = decimal_avg(candles.iter().map(|candle| candle.close));
+    let close_vs_sma_pct = pct_change(sma, last_close);
+    let average_candle_range_pct = decimal_avg(candles.iter().map(|candle| {
+        let mid = (candle.high + candle.low) / Decimal::new(2, 0);
+        pct_ratio(candle.high - candle.low, mid)
+    }));
+
+    let mut absolute_returns = Vec::new();
+    let mut directional_moves = Decimal::ZERO;
+    for pair in candles.windows(2) {
+        let previous = pair[0].close;
+        let current = pair[1].close;
+        let change = current - previous;
+        absolute_returns.push(pct_ratio(change.abs(), previous));
+        if change > Decimal::ZERO {
+            directional_moves += Decimal::ONE;
+        } else if change < Decimal::ZERO {
+            directional_moves -= Decimal::ONE;
+        }
+    }
+    let realized_volatility = decimal_avg(absolute_returns.into_iter());
+    let directional_movement_pct = pct_ratio(
+        directional_moves.abs(),
+        Decimal::from(i64::try_from(candles.len().saturating_sub(1)).unwrap_or(i64::MAX)),
+    );
+    let path_pct = candles
+        .windows(2)
+        .map(|pair| (pct_change(pair[0].close, pair[1].close)).abs())
+        .fold(Decimal::ZERO, |sum, value| sum + value);
+    let choppiness_pct = if path_pct > Decimal::ZERO {
+        Decimal::new(100, 0) - pct_ratio(return_pct.abs(), path_pct).min(Decimal::new(100, 0))
+    } else {
+        Decimal::ZERO
+    };
+
+    let label = if realized_volatility >= Decimal::new(8, 0)
+        || average_candle_range_pct >= Decimal::new(8, 0)
+    {
+        ResearchRegimeLabel::HighVolatility
+    } else if return_pct >= Decimal::new(3, 0)
+        && close_vs_sma_pct > Decimal::ZERO
+        && directional_movement_pct >= Decimal::new(55, 0)
+    {
+        ResearchRegimeLabel::TrendUp
+    } else if return_pct <= -Decimal::new(3, 0)
+        && close_vs_sma_pct < Decimal::ZERO
+        && directional_movement_pct >= Decimal::new(55, 0)
+    {
+        ResearchRegimeLabel::TrendDown
+    } else if return_pct.abs() <= Decimal::ONE || choppiness_pct >= Decimal::new(65, 0) {
+        ResearchRegimeLabel::Range
+    } else if realized_volatility <= Decimal::new(15, 1)
+        && average_candle_range_pct <= Decimal::new(15, 1)
+    {
+        ResearchRegimeLabel::LowVolatility
+    } else {
+        ResearchRegimeLabel::Mixed
+    };
+
+    ResearchRegimeMetric {
+        symbol,
+        timeframe,
+        window_start,
+        window_end,
+        candle_count: i32::try_from(candles.len()).unwrap_or(i32::MAX),
+        return_pct,
+        realized_volatility,
+        average_candle_range_pct,
+        close_vs_sma_pct,
+        directional_movement_pct,
+        choppiness_pct,
+        label,
+    }
+}
+
+pub fn infer_research_candidate_failure_reasons(
+    input: &ResearchCandidateFailureInput,
+) -> Vec<ResearchCandidateFailureReason> {
+    let mut reasons = BTreeSet::new();
+    if input.regime_metric.label == ResearchRegimeLabel::Unknown
+        || input
+            .data_quality_status
+            .is_some_and(|status| status == MarketDataQualityStatus::InsufficientData)
+    {
+        reasons.insert(ResearchCandidateFailureReason::InsufficientData);
+    }
+    if input.data_quality_status.is_some_and(|status| {
+        matches!(
+            status,
+            MarketDataQualityStatus::Degraded
+                | MarketDataQualityStatus::Bad
+                | MarketDataQualityStatus::InsufficientData
+        )
+    }) {
+        reasons.insert(ResearchCandidateFailureReason::DataQualityDegraded);
+    }
+    if input
+        .walk_forward_status
+        .as_deref()
+        .is_some_and(|status| status == "OVERFIT_RISK")
+        || input
+            .walk_forward_losing_windows
+            .zip(input.walk_forward_profitable_windows)
+            .is_some_and(|(losing, profitable)| profitable <= 1 && losing >= 2)
+    {
+        reasons.insert(ResearchCandidateFailureReason::OverfitRisk);
+    }
+    if input
+        .trade_count
+        .is_some_and(|count| count <= FEW_TRADES_THRESHOLD)
+    {
+        reasons.insert(ResearchCandidateFailureReason::TooFewTrades);
+    }
+    if input
+        .trade_count
+        .is_some_and(|count| count >= MANY_TRADES_PER_WINDOW_THRESHOLD)
+        && input.pnl_pct.is_some_and(|pnl| pnl < Decimal::ZERO)
+    {
+        reasons.insert(ResearchCandidateFailureReason::TooManyTrades);
+    }
+    if input
+        .fee_drag_pct
+        .is_some_and(|fee_drag| fee_drag >= Decimal::new(20, 1))
+        || input
+            .gross_pnl_pct
+            .zip(input.pnl_pct)
+            .is_some_and(|(gross, net)| gross > Decimal::ZERO && net < Decimal::ZERO)
+    {
+        reasons.insert(ResearchCandidateFailureReason::FeeDrag);
+    }
+    if input
+        .win_rate
+        .is_some_and(|win_rate| win_rate < Decimal::new(40, 0))
+    {
+        reasons.insert(ResearchCandidateFailureReason::LowWinRate);
+    }
+    if input
+        .max_drawdown_pct
+        .is_some_and(|drawdown| drawdown >= Decimal::new(10, 0))
+    {
+        reasons.insert(ResearchCandidateFailureReason::HighDrawdown);
+    }
+    if input.pnl_pct.is_some_and(|pnl| pnl <= Decimal::ZERO)
+        && !reasons.contains(&ResearchCandidateFailureReason::OverfitRisk)
+    {
+        reasons.insert(ResearchCandidateFailureReason::WeakEdge);
+    }
+    if strategy_expects_trend(&input.strategy_id)
+        && matches!(
+            input.regime_metric.label,
+            ResearchRegimeLabel::Range | ResearchRegimeLabel::LowVolatility
+        )
+    {
+        reasons.insert(ResearchCandidateFailureReason::RegimeMismatch);
+    }
+    if reasons.is_empty() {
+        reasons.insert(ResearchCandidateFailureReason::WeakEdge);
+    }
+    reasons.into_iter().collect()
+}
+
+pub fn build_research_campaign_failure_attribution(
+    campaign_id: Uuid,
+    inputs: Vec<ResearchCandidateFailureInput>,
+    generated_at: DateTime<Utc>,
+) -> ResearchCampaignFailureAttribution {
+    let candidate_failure_table = inputs
+        .iter()
+        .map(|input| ResearchCandidateFailureAttributionRow {
+            candidate_id: input.candidate_id,
+            experiment_run_id: input.experiment_run_id,
+            walk_forward_run_id: input.walk_forward_run_id,
+            strategy_id: input.strategy_id.clone(),
+            symbol: input.symbol.clone(),
+            timeframe: input.timeframe.clone(),
+            window_start: input.window_start,
+            window_end: input.window_end,
+            regime_label: input.regime_metric.label,
+            failure_reasons: infer_research_candidate_failure_reasons(input),
+            pnl_pct: input.pnl_pct,
+            gross_pnl_pct: input.gross_pnl_pct,
+            fee_drag_pct: input.fee_drag_pct,
+            trade_count: input.trade_count,
+            win_rate: input.win_rate,
+            max_drawdown_pct: input.max_drawdown_pct,
+            walk_forward_status: input.walk_forward_status.clone(),
+            data_quality_status: input.data_quality_status,
+        })
+        .collect::<Vec<_>>();
+    let overall_failure_reasons = ranked_failure_reasons(
+        candidate_failure_table
+            .iter()
+            .flat_map(|row| row.failure_reasons.iter().copied()),
+    );
+    let regime_summary = build_regime_summary(&inputs, &candidate_failure_table);
+    let strategy_timeframe_breakdown =
+        build_strategy_timeframe_breakdown(&inputs, &candidate_failure_table);
+    let findings = build_failure_findings(&candidate_failure_table);
+    let recommendations = build_failure_recommendations(&candidate_failure_table);
+
+    ResearchCampaignFailureAttribution {
+        campaign_id,
+        overall_failure_reasons,
+        regime_summary,
+        candidate_failure_table,
+        strategy_timeframe_breakdown,
+        findings,
+        recommendations,
+        generated_at,
+    }
+}
+
+fn build_regime_summary(
+    inputs: &[ResearchCandidateFailureInput],
+    rows: &[ResearchCandidateFailureAttributionRow],
+) -> Vec<ResearchCampaignRegimeSummary> {
+    let mut by_label: BTreeMap<ResearchRegimeLabel, Vec<&ResearchCandidateFailureInput>> =
+        BTreeMap::new();
+    for input in inputs {
+        by_label
+            .entry(input.regime_metric.label)
+            .or_default()
+            .push(input);
+    }
+    by_label
+        .into_iter()
+        .map(|(label, inputs)| {
+            let candidate_count =
+                rows.iter().filter(|row| row.regime_label == label).count() as i32;
+            ResearchCampaignRegimeSummary {
+                label,
+                window_count: i32::try_from(inputs.len()).unwrap_or(i32::MAX),
+                candidate_count,
+                avg_return_pct: decimal_avg(
+                    inputs.iter().map(|input| input.regime_metric.return_pct),
+                ),
+                avg_realized_volatility: decimal_avg(
+                    inputs
+                        .iter()
+                        .map(|input| input.regime_metric.realized_volatility),
+                ),
+                avg_candle_range_pct: decimal_avg(
+                    inputs
+                        .iter()
+                        .map(|input| input.regime_metric.average_candle_range_pct),
+                ),
+                failure_reasons: ranked_failure_reasons(
+                    rows.iter()
+                        .filter(|row| row.regime_label == label)
+                        .flat_map(|row| row.failure_reasons.iter().copied()),
+                ),
+            }
+        })
+        .collect()
+}
+
+fn build_strategy_timeframe_breakdown(
+    inputs: &[ResearchCandidateFailureInput],
+    rows: &[ResearchCandidateFailureAttributionRow],
+) -> Vec<ResearchStrategyTimeframeFailureBreakdown> {
+    let mut keys = BTreeSet::new();
+    for row in rows {
+        keys.insert((
+            row.strategy_id.clone(),
+            row.symbol.clone(),
+            row.timeframe.clone(),
+        ));
+    }
+    keys.into_iter()
+        .map(|(strategy_id, symbol, timeframe)| {
+            let matching_rows = rows
+                .iter()
+                .filter(|row| {
+                    row.strategy_id == strategy_id
+                        && row.symbol == symbol
+                        && row.timeframe == timeframe
+                })
+                .collect::<Vec<_>>();
+            let matching_inputs = inputs
+                .iter()
+                .filter(|input| {
+                    input.strategy_id == strategy_id
+                        && input.symbol == symbol
+                        && input.timeframe == timeframe
+                })
+                .collect::<Vec<_>>();
+            let dominant_regime = ranked_regime_labels(
+                matching_inputs
+                    .iter()
+                    .map(|input| input.regime_metric.label),
+            )
+            .first()
+            .copied()
+            .unwrap_or(ResearchRegimeLabel::Unknown);
+            ResearchStrategyTimeframeFailureBreakdown {
+                strategy_id,
+                symbol,
+                timeframe,
+                candidate_count: i32::try_from(matching_rows.len()).unwrap_or(i32::MAX),
+                dominant_regime,
+                top_failure_reasons: ranked_failure_reasons(
+                    matching_rows
+                        .iter()
+                        .flat_map(|row| row.failure_reasons.iter().copied()),
+                ),
+                avg_pnl_pct: optional_decimal_avg(
+                    matching_rows.iter().filter_map(|row| row.pnl_pct),
+                ),
+                avg_trade_count: optional_decimal_avg(
+                    matching_rows
+                        .iter()
+                        .filter_map(|row| row.trade_count.map(Decimal::from)),
+                ),
+            }
+        })
+        .collect()
+}
+
+fn build_failure_findings(
+    rows: &[ResearchCandidateFailureAttributionRow],
+) -> Vec<ResearchCampaignFailureFinding> {
+    let overfit = count_reason(rows, ResearchCandidateFailureReason::OverfitRisk);
+    let fee_drag = count_reason(rows, ResearchCandidateFailureReason::FeeDrag);
+    let regime_mismatch = count_reason(rows, ResearchCandidateFailureReason::RegimeMismatch);
+    let actionable = rows
+        .iter()
+        .filter(|row| row.pnl_pct.is_some_and(|pnl| pnl > Decimal::ZERO))
+        .filter(|row| {
+            !row.failure_reasons
+                .contains(&ResearchCandidateFailureReason::OverfitRisk)
+        })
+        .count();
+    let mut findings = Vec::new();
+    if overfit > 0 {
+        findings.push(failure_finding(
+            "MEDIUM",
+            "campaign_candidates_mostly_overfit",
+            "Campaign candidates mostly failed due to overfit risk.",
+        ));
+    }
+    if fee_drag > 0 {
+        findings.push(failure_finding(
+            "MEDIUM",
+            "campaign_fee_drag_sensitive",
+            "Campaign candidates show fee-drag sensitivity.",
+        ));
+    }
+    if regime_mismatch > 0 {
+        findings.push(failure_finding(
+            "MEDIUM",
+            "strategy_regime_mismatch",
+            "Strategy appears mismatched to market regime.",
+        ));
+    }
+    if actionable == 0 {
+        findings.push(failure_finding(
+            "LOW",
+            "no_actionable_candidate_found",
+            "No actionable candidate found.",
+        ));
+    }
+    findings
+}
+
+fn build_failure_recommendations(
+    rows: &[ResearchCandidateFailureAttributionRow],
+) -> Vec<ResearchCampaignFailureRecommendation> {
+    let mut recommendations = Vec::new();
+    let reason_order = ranked_failure_reasons(
+        rows.iter()
+            .flat_map(|row| row.failure_reasons.iter().copied()),
+    );
+    for reason in reason_order {
+        match reason {
+            ResearchCandidateFailureReason::OverfitRisk => recommendations.push(
+                failure_recommendation(
+                    "HIGH",
+                    "widen_walk_forward_validation",
+                    "Reject overfit candidates and test broader windows before adding new strategy families.",
+                ),
+            ),
+            ResearchCandidateFailureReason::FeeDrag
+            | ResearchCandidateFailureReason::TooManyTrades => recommendations.push(
+                failure_recommendation(
+                    "HIGH",
+                    "reduce_turnover_before_expansion",
+                    "Prioritize lower-turnover parameters and fee sensitivity checks.",
+                ),
+            ),
+            ResearchCandidateFailureReason::RegimeMismatch => recommendations.push(
+                failure_recommendation(
+                    "MEDIUM",
+                    "separate_trend_and_range_campaigns",
+                    "Segment future campaigns by deterministic regime before comparing strategy families.",
+                ),
+            ),
+            ResearchCandidateFailureReason::DataQualityDegraded
+            | ResearchCandidateFailureReason::InsufficientData => recommendations.push(
+                failure_recommendation(
+                    "MEDIUM",
+                    "repair_data_before_research",
+                    "Repair or backfill degraded candle windows before trusting candidate evidence.",
+                ),
+            ),
+            ResearchCandidateFailureReason::TooFewTrades => recommendations.push(
+                failure_recommendation(
+                    "LOW",
+                    "extend_research_windows",
+                    "Extend campaign windows where trade counts are too low to evaluate edge.",
+                ),
+            ),
+            ResearchCandidateFailureReason::LowWinRate
+            | ResearchCandidateFailureReason::HighDrawdown
+            | ResearchCandidateFailureReason::WeakEdge => recommendations.push(
+                failure_recommendation(
+                    "LOW",
+                    "tighten_candidate_acceptance",
+                    "Keep weak-edge candidates in research only until win rate, drawdown, and net PnL improve together.",
+                ),
+            ),
+        }
+    }
+    recommendations.dedup_by(|left, right| left.code == right.code);
+    recommendations
+}
+
+fn ranked_failure_reasons(
+    reasons: impl IntoIterator<Item = ResearchCandidateFailureReason>,
+) -> Vec<ResearchCandidateFailureReason> {
+    let mut counts: BTreeMap<ResearchCandidateFailureReason, i32> = BTreeMap::new();
+    for reason in reasons {
+        *counts.entry(reason).or_default() += 1;
+    }
+    let mut ranked = counts.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|(left_reason, left_count), (right_reason, right_count)| {
+        right_count.cmp(left_count).then_with(|| {
+            failure_reason_rank(*left_reason).cmp(&failure_reason_rank(*right_reason))
+        })
+    });
+    ranked.into_iter().map(|(reason, _)| reason).collect()
+}
+
+fn ranked_regime_labels(
+    labels: impl IntoIterator<Item = ResearchRegimeLabel>,
+) -> Vec<ResearchRegimeLabel> {
+    let mut counts: BTreeMap<ResearchRegimeLabel, i32> = BTreeMap::new();
+    for label in labels {
+        *counts.entry(label).or_default() += 1;
+    }
+    let mut ranked = counts.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|(left_label, left_count), (right_label, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left_label.cmp(right_label))
+    });
+    ranked.into_iter().map(|(label, _)| label).collect()
+}
+
+fn failure_reason_rank(reason: ResearchCandidateFailureReason) -> i32 {
+    match reason {
+        ResearchCandidateFailureReason::OverfitRisk => 0,
+        ResearchCandidateFailureReason::FeeDrag => 1,
+        ResearchCandidateFailureReason::RegimeMismatch => 2,
+        ResearchCandidateFailureReason::TooManyTrades => 3,
+        ResearchCandidateFailureReason::TooFewTrades => 4,
+        ResearchCandidateFailureReason::LowWinRate => 5,
+        ResearchCandidateFailureReason::HighDrawdown => 6,
+        ResearchCandidateFailureReason::WeakEdge => 7,
+        ResearchCandidateFailureReason::DataQualityDegraded => 8,
+        ResearchCandidateFailureReason::InsufficientData => 9,
+    }
+}
+
+fn count_reason(
+    rows: &[ResearchCandidateFailureAttributionRow],
+    reason: ResearchCandidateFailureReason,
+) -> usize {
+    rows.iter()
+        .filter(|row| row.failure_reasons.contains(&reason))
+        .count()
+}
+
+fn decimal_avg(values: impl IntoIterator<Item = Decimal>) -> Decimal {
+    let mut sum = Decimal::ZERO;
+    let mut count = 0i64;
+    for value in values {
+        sum += value;
+        count += 1;
+    }
+    if count == 0 {
+        Decimal::ZERO
+    } else {
+        sum / Decimal::from(count)
+    }
+}
+
+fn optional_decimal_avg(values: impl IntoIterator<Item = Decimal>) -> Option<Decimal> {
+    let mut sum = Decimal::ZERO;
+    let mut count = 0i64;
+    for value in values {
+        sum += value;
+        count += 1;
+    }
+    (count > 0).then(|| sum / Decimal::from(count))
+}
+
+fn pct_change(base: Decimal, value: Decimal) -> Decimal {
+    pct_ratio(value - base, base)
+}
+
+fn pct_ratio(numerator: Decimal, denominator: Decimal) -> Decimal {
+    if denominator == Decimal::ZERO {
+        Decimal::ZERO
+    } else {
+        (numerator / denominator) * Decimal::new(100, 0)
+    }
+}
+
+fn strategy_expects_trend(strategy_id: &str) -> bool {
+    let strategy_id = strategy_id.to_ascii_lowercase();
+    strategy_id.contains("trend")
+        || strategy_id.contains("momentum")
+        || strategy_id.contains("breakout")
+}
+
+fn failure_finding(
+    severity: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchCampaignFailureFinding {
+    ResearchCampaignFailureFinding {
+        severity: severity.into(),
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn failure_recommendation(
+    priority: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchCampaignFailureRecommendation {
+    ResearchCampaignFailureRecommendation {
+        priority: priority.into(),
+        code: code.into(),
+        message: message.into(),
+    }
 }
 
 pub fn campaign_windows(
@@ -7975,6 +8731,66 @@ mod tests {
         }
     }
 
+    fn regime_candles(closes: &[i64]) -> Vec<Candle> {
+        closes
+            .windows(2)
+            .enumerate()
+            .map(|(index, pair)| {
+                let open = pair[0];
+                let close = pair[1];
+                Candle {
+                    id: Uuid::new_v4(),
+                    exchange: MarketDataSource::Binance,
+                    symbol: Symbol::new("BTCUSDT").unwrap(),
+                    interval: CandleInterval::OneMinute,
+                    open_time: ts(0, index as u32, 0),
+                    close_time: ts(0, index as u32, 59),
+                    open: Decimal::new(open, 0),
+                    high: Decimal::new(open.max(close), 0),
+                    low: Decimal::new(open.min(close), 0),
+                    close: Decimal::new(close, 0),
+                    volume: Decimal::ONE,
+                    quote_volume: None,
+                    trade_count: 1,
+                    is_closed: true,
+                    created_at: ts(0, index as u32, 59),
+                    updated_at: ts(0, index as u32, 59),
+                }
+            })
+            .collect()
+    }
+
+    fn sample_failure_input() -> ResearchCandidateFailureInput {
+        let candles = regime_candles(&[100, 101, 100, 101, 100, 101, 100]);
+        ResearchCandidateFailureInput {
+            candidate_id: Some(Uuid::from_u128(1)),
+            experiment_run_id: Some(Uuid::from_u128(2)),
+            walk_forward_run_id: Some(Uuid::from_u128(3)),
+            strategy_id: "trend_filter_momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "5m".to_string(),
+            window_start: ts(0, 0, 0),
+            window_end: ts(1, 0, 0),
+            regime_metric: classify_research_regime(
+                "BTCUSDT",
+                "5m",
+                ts(0, 0, 0),
+                ts(1, 0, 0),
+                &candles,
+            ),
+            pnl_pct: Some(Decimal::new(-1, 0)),
+            gross_pnl_pct: Some(Decimal::new(-1, 0)),
+            fee_drag_pct: Some(Decimal::ZERO),
+            trade_count: Some(5),
+            win_rate: Some(Decimal::new(50, 0)),
+            max_drawdown_pct: Some(Decimal::new(1, 0)),
+            walk_forward_status: Some("WEAK".to_string()),
+            walk_forward_profitable_windows: Some(1),
+            walk_forward_losing_windows: Some(1),
+            data_quality_status: Some(MarketDataQualityStatus::Good),
+        }
+    }
+
     #[test]
     fn research_campaign_plan_expansion_cross_joins_inputs_and_windows() {
         let request = sample_campaign_request();
@@ -8112,6 +8928,106 @@ mod tests {
                 Uuid::from_u128(201),
                 Uuid::from_u128(202)
             ]
+        );
+    }
+
+    #[test]
+    fn regime_classification_detects_trend_up() {
+        let candles = regime_candles(&[100, 102, 104, 106, 108, 110, 112]);
+        let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
+
+        assert_eq!(metric.label, ResearchRegimeLabel::TrendUp);
+        assert!(metric.return_pct > Decimal::new(5, 0));
+    }
+
+    #[test]
+    fn regime_classification_detects_range() {
+        let candles = regime_candles(&[100, 101, 100, 101, 100, 101, 100]);
+        let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
+
+        assert_eq!(metric.label, ResearchRegimeLabel::Range);
+    }
+
+    #[test]
+    fn regime_classification_detects_high_volatility() {
+        let candles = regime_candles(&[100, 120, 90, 125, 85, 130, 80]);
+        let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
+
+        assert_eq!(metric.label, ResearchRegimeLabel::HighVolatility);
+    }
+
+    #[test]
+    fn overfit_failure_reason_is_inferred() {
+        let mut input = sample_failure_input();
+        input.walk_forward_status = Some("OVERFIT_RISK".to_string());
+
+        let reasons = infer_research_candidate_failure_reasons(&input);
+
+        assert!(reasons.contains(&ResearchCandidateFailureReason::OverfitRisk));
+    }
+
+    #[test]
+    fn fee_drag_failure_reason_is_inferred() {
+        let mut input = sample_failure_input();
+        input.pnl_pct = Some(Decimal::new(-1, 0));
+        input.gross_pnl_pct = Some(Decimal::new(1, 0));
+
+        let reasons = infer_research_candidate_failure_reasons(&input);
+
+        assert!(reasons.contains(&ResearchCandidateFailureReason::FeeDrag));
+    }
+
+    #[test]
+    fn too_many_trades_failure_reason_is_inferred() {
+        let mut input = sample_failure_input();
+        input.trade_count = Some(40);
+        input.pnl_pct = Some(Decimal::new(-2, 0));
+
+        let reasons = infer_research_candidate_failure_reasons(&input);
+
+        assert!(reasons.contains(&ResearchCandidateFailureReason::TooManyTrades));
+    }
+
+    #[test]
+    fn trend_strategy_in_range_infers_regime_mismatch() {
+        let input = sample_failure_input();
+
+        let reasons = infer_research_candidate_failure_reasons(&input);
+
+        assert!(reasons.contains(&ResearchCandidateFailureReason::RegimeMismatch));
+    }
+
+    #[test]
+    fn recommendation_ordering_is_deterministic() {
+        let mut overfit = sample_failure_input();
+        overfit.walk_forward_status = Some("OVERFIT_RISK".to_string());
+        let mut fee_drag = sample_failure_input();
+        fee_drag.candidate_id = Some(Uuid::from_u128(4));
+        fee_drag.gross_pnl_pct = Some(Decimal::new(2, 0));
+        fee_drag.pnl_pct = Some(Decimal::new(-1, 0));
+
+        let first = build_research_campaign_failure_attribution(
+            Uuid::from_u128(9),
+            vec![fee_drag.clone(), overfit.clone()],
+            ts(2, 0, 0),
+        );
+        let second = build_research_campaign_failure_attribution(
+            Uuid::from_u128(9),
+            vec![fee_drag, overfit],
+            ts(2, 0, 0),
+        );
+
+        assert_eq!(
+            first
+                .recommendations
+                .iter()
+                .map(|recommendation| recommendation.code.as_str())
+                .collect::<Vec<_>>(),
+            second
+                .recommendations
+                .iter()
+                .map(|recommendation| recommendation.code.as_str())
+                .collect::<Vec<_>>()
         );
     }
 }

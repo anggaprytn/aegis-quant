@@ -77,6 +77,7 @@ import type {
   ResearchCampaignRequest,
   ResearchCampaignResponse,
   ResearchCampaignsResponse,
+  ResearchCampaignFailureAttributionResponse,
   ResearchCampaignSummaryResponse,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
@@ -465,6 +466,10 @@ export const api = {
     request<ResearchCampaignBatchesResponse>(`/research/campaigns/${id}/batches`),
   getResearchCampaignSummary: (id: string) =>
     request<ResearchCampaignSummaryResponse>(`/research/campaigns/${id}/summary`),
+  getResearchCampaignFailureAttribution: (id: string) =>
+    request<ResearchCampaignFailureAttributionResponse>(
+      `/research/campaigns/${id}/failure-attribution`,
+    ),
   createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
     request<ResearchCandidateResponse>("/research/candidates", {
       method: "POST",

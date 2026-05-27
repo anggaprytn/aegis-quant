@@ -1318,6 +1318,87 @@ export type ResearchCampaignSummary = {
   recommendations: ResearchCampaignRecommendation[];
 };
 
+export type ResearchRegimeLabel =
+  | "TREND_UP"
+  | "TREND_DOWN"
+  | "RANGE"
+  | "HIGH_VOLATILITY"
+  | "LOW_VOLATILITY"
+  | "MIXED"
+  | "UNKNOWN";
+
+export type ResearchCandidateFailureReason =
+  | "OVERFIT_RISK"
+  | "FEE_DRAG"
+  | "TOO_MANY_TRADES"
+  | "TOO_FEW_TRADES"
+  | "LOW_WIN_RATE"
+  | "HIGH_DRAWDOWN"
+  | "WEAK_EDGE"
+  | "DATA_QUALITY_DEGRADED"
+  | "REGIME_MISMATCH"
+  | "INSUFFICIENT_DATA";
+
+export type ResearchCampaignRegimeSummary = {
+  label: ResearchRegimeLabel;
+  window_count: number;
+  candidate_count: number;
+  avg_return_pct: string;
+  avg_realized_volatility: string;
+  avg_candle_range_pct: string;
+  failure_reasons: ResearchCandidateFailureReason[];
+};
+
+export type ResearchCandidateFailureAttributionRow = {
+  candidate_id: string | null;
+  experiment_run_id: string | null;
+  walk_forward_run_id: string | null;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  window_start: string;
+  window_end: string;
+  regime_label: ResearchRegimeLabel;
+  failure_reasons: ResearchCandidateFailureReason[];
+  pnl_pct: string | null;
+  gross_pnl_pct: string | null;
+  fee_drag_pct: string | null;
+  trade_count: number | null;
+  win_rate: string | null;
+  max_drawdown_pct: string | null;
+  walk_forward_status: string | null;
+  data_quality_status: MarketDataQualityStatus | null;
+};
+
+export type ResearchStrategyTimeframeFailureBreakdown = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  candidate_count: number;
+  dominant_regime: ResearchRegimeLabel;
+  top_failure_reasons: ResearchCandidateFailureReason[];
+  avg_pnl_pct: string | null;
+  avg_trade_count: string | null;
+};
+
+export type ResearchCampaignFailureAttribution = {
+  campaign_id: string;
+  overall_failure_reasons: ResearchCandidateFailureReason[];
+  regime_summary: ResearchCampaignRegimeSummary[];
+  candidate_failure_table: ResearchCandidateFailureAttributionRow[];
+  strategy_timeframe_breakdown: ResearchStrategyTimeframeFailureBreakdown[];
+  findings: ResearchCampaignFinding[];
+  recommendations: ResearchCampaignRecommendation[];
+  generated_at: string;
+};
+
+export type ResearchCampaignFailureAttributionResponse = {
+  attribution: ResearchCampaignFailureAttribution;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCampaignResult = {
   campaign_id: string;
   status: ResearchCampaignStatus;

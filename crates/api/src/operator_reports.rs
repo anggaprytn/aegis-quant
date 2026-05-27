@@ -91,6 +91,11 @@ struct ResearchCampaignReportSnapshot {
     overfit_only_campaign_count: i64,
     failed_campaign_count: i64,
     partial_success_campaign_count: i64,
+    top_failure_reason: Option<String>,
+    overfit_count: i64,
+    fee_drag_count: i64,
+    regime_mismatch_count: i64,
+    data_quality_blocked_count: i64,
     top_strategy_symbol_timeframe: Option<String>,
 }
 
@@ -1318,6 +1323,27 @@ async fn load_research_campaign_snapshot(
             ) AS overfit_only_campaign_count,
             COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_campaign_count,
             COUNT(*) FILTER (WHERE status = 'PARTIAL_SUCCESS') AS partial_success_campaign_count,
+            COALESCE(SUM(COALESCE((summary->'summary'->>'overfit_only_batches')::BIGINT, 0)), 0)::BIGINT AS overfit_count,
+            COALESCE(SUM(COALESCE((summary->'summary'->>'data_quality_blocked_batches')::BIGINT, 0)), 0)::BIGINT AS data_quality_blocked_count,
+            (
+                SELECT COUNT(*)
+                FROM research_candidates candidate
+                WHERE candidate.created_at >= $1
+                  AND candidate.created_at <= $2
+                  AND COALESCE(candidate.fee_drag, 0) >= 2
+            )::BIGINT AS fee_drag_count,
+            (
+                SELECT COUNT(*)
+                FROM research_campaign_batches batch
+                WHERE batch.created_at >= $1
+                  AND batch.created_at <= $2
+                  AND batch.triage_status IN ('WEAK', 'OVERFIT_ONLY')
+                  AND (
+                    LOWER(batch.strategy_id) LIKE '%trend%'
+                    OR LOWER(batch.strategy_id) LIKE '%momentum%'
+                    OR LOWER(batch.strategy_id) LIKE '%breakout%'
+                  )
+            )::BIGINT AS regime_mismatch_count,
             (
                 SELECT summary->'summary'->>'best_strategy_symbol_timeframe'
                 FROM research_campaigns
@@ -1345,6 +1371,25 @@ async fn load_research_campaign_snapshot(
         overfit_only_campaign_count: row.get("overfit_only_campaign_count"),
         failed_campaign_count: row.get("failed_campaign_count"),
         partial_success_campaign_count: row.get("partial_success_campaign_count"),
+        top_failure_reason: {
+            let overfit_count: i64 = row.get("overfit_count");
+            let fee_drag_count: i64 = row.get("fee_drag_count");
+            let regime_mismatch_count: i64 = row.get("regime_mismatch_count");
+            let data_quality_blocked_count: i64 = row.get("data_quality_blocked_count");
+            [
+                ("OVERFIT_RISK", overfit_count),
+                ("FEE_DRAG", fee_drag_count),
+                ("REGIME_MISMATCH", regime_mismatch_count),
+                ("DATA_QUALITY_DEGRADED", data_quality_blocked_count),
+            ]
+            .into_iter()
+            .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+            .and_then(|(reason, count)| (count > 0).then(|| reason.to_string()))
+        },
+        overfit_count: row.get("overfit_count"),
+        fee_drag_count: row.get("fee_drag_count"),
+        regime_mismatch_count: row.get("regime_mismatch_count"),
+        data_quality_blocked_count: row.get("data_quality_blocked_count"),
         top_strategy_symbol_timeframe: row.get("top_strategy_symbol_timeframe"),
     })
 }
@@ -1652,6 +1697,54 @@ fn build_findings(
             OperatorReportSeverity::Medium,
             "Campaign produced only overfit candidates",
             "Research campaign output was overfit-only and should not advance without stronger out-of-sample evidence.",
+            "research_campaigns",
+        ));
+    }
+    if research_campaigns.overfit_count > 0 {
+        findings.push(finding(
+            "research_campaign_failure_overfit_risk",
+            OperatorReportSeverity::Medium,
+            "Campaign candidates mostly failed due to overfit risk",
+            &format!(
+                "{} campaign batch outputs were attributed to OVERFIT_RISK.",
+                research_campaigns.overfit_count
+            ),
+            "research_campaigns",
+        ));
+    }
+    if research_campaigns.fee_drag_count > 0 {
+        findings.push(finding(
+            "research_campaign_failure_fee_drag",
+            OperatorReportSeverity::Medium,
+            "Campaign candidates show fee-drag sensitivity",
+            &format!(
+                "{} research candidates had fee drag above the attribution threshold.",
+                research_campaigns.fee_drag_count
+            ),
+            "research_campaigns",
+        ));
+    }
+    if research_campaigns.regime_mismatch_count > 0 {
+        findings.push(finding(
+            "research_campaign_failure_regime_mismatch",
+            OperatorReportSeverity::Medium,
+            "Strategy appears mismatched to market regime",
+            &format!(
+                "{} trend-like campaign batches were weak or overfit.",
+                research_campaigns.regime_mismatch_count
+            ),
+            "research_campaigns",
+        ));
+    }
+    if research_campaigns.data_quality_blocked_count > 0 {
+        findings.push(finding(
+            "research_campaign_failure_data_quality",
+            OperatorReportSeverity::Medium,
+            "Campaign attribution blocked by market data quality",
+            &format!(
+                "{} campaign batches were data-quality blocked.",
+                research_campaigns.data_quality_blocked_count
+            ),
             "research_campaigns",
         ));
     }
@@ -2300,6 +2393,23 @@ fn build_sections(
                 highlight(
                     "Partial Success",
                     research_campaigns.partial_success_campaign_count.to_string(),
+                ),
+                highlight(
+                    "Top Failure Reason",
+                    research_campaigns
+                        .top_failure_reason
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+                highlight("Overfit Count", research_campaigns.overfit_count.to_string()),
+                highlight("Fee Drag Count", research_campaigns.fee_drag_count.to_string()),
+                highlight(
+                    "Regime Mismatch Count",
+                    research_campaigns.regime_mismatch_count.to_string(),
+                ),
+                highlight(
+                    "Data Quality Blocked Count",
+                    research_campaigns.data_quality_blocked_count.to_string(),
                 ),
                 highlight(
                     "Top Strategy/Symbol/Timeframe",

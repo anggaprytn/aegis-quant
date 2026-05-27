@@ -593,6 +593,16 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_campaign_summary(&response.summary);
                     }
                 }
+                ResearchCampaignCommands::FailureAttribution { campaign_id } => {
+                    let response = client
+                        .get_research_campaign_failure_attribution(campaign_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_campaign_failure_attribution(&response.attribution);
+                    }
+                }
             },
             ResearchCommands::Batches(command) => match command {
                 ResearchBatchCommands::Run(args) => {

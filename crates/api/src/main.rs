@@ -44,9 +44,10 @@ use aegis_core::{
     PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchCandidateTriage,
     ResearchBatchRecommendation, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus,
     ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
-    ResearchCampaignBatchResult, ResearchCampaignRequest, ResearchCampaignResult,
-    ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate, ResearchCandidateDecision,
-    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
+    ResearchCampaignResult, ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate,
+    ResearchCandidateDecision, ResearchCandidateDecisionRejection,
+    ResearchCandidateDecisionRequest, ResearchCandidateFailureInput,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidatePromotionReadiness, ResearchCandidateQualificationChange,
@@ -123,9 +124,9 @@ use db::{
     get_active_strategy_research_candidate_promotion,
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
-    get_closed_1m_candles_range, get_default_paper_account, get_exchange_private_stream_state,
-    get_exchange_testnet_order_by_client_order_id, get_latest_market_tick,
-    get_latest_research_candidate_qualification_evaluation,
+    get_closed_1m_candles_range, get_closed_candles_range, get_default_paper_account,
+    get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
+    get_latest_market_tick, get_latest_research_candidate_qualification_evaluation,
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
@@ -1620,6 +1621,14 @@ struct ResearchCampaignSummaryResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchCampaignFailureAttributionResponse {
+    attribution: ResearchCampaignFailureAttribution,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateEventsResponse {
     events: Vec<ResearchCandidateLifecycleEvent>,
     request_id: String,
@@ -2660,6 +2669,10 @@ async fn main() {
         .route(
             "/research/campaigns/:id/summary",
             get(get_research_campaign_summary_handler),
+        )
+        .route(
+            "/research/campaigns/:id/failure-attribution",
+            get(get_research_campaign_failure_attribution_handler),
         )
         .route(
             "/research/campaigns/:id",
@@ -16585,6 +16598,164 @@ async fn get_research_campaign_summary_handler(
         )
             .into_response(),
     }
+}
+
+async fn get_research_campaign_failure_attribution_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match build_research_campaign_failure_attribution_read_model(&state, id).await {
+        Ok(Some(attribution)) => (
+            StatusCode::OK,
+            Json(ResearchCampaignFailureAttributionResponse {
+                attribution,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_campaign_not_found",
+                message: "Research campaign was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_research_campaign_failure_attribution",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn build_research_campaign_failure_attribution_read_model(
+    state: &AppState,
+    campaign_id: Uuid,
+) -> anyhow::Result<Option<ResearchCampaignFailureAttribution>> {
+    let Some(campaign) = research_campaign_read_model(state, campaign_id).await? else {
+        return Ok(None);
+    };
+    let mut inputs = Vec::new();
+    for batch in &campaign.batches {
+        let mut data_quality_status = None;
+        if let Some(batch_id) = batch.research_batch_id {
+            if let Some(record) = get_research_batch(&state.db_pool, batch_id).await? {
+                let steps = list_research_batch_steps(&state.db_pool, batch_id).await?;
+                let result = research_batch_result_from_records(&record, &steps)?;
+                data_quality_status = result.quality_after.as_ref().map(|quality| quality.status);
+            }
+        }
+        let symbol = Symbol::new(batch.plan.symbol.clone())?;
+        let interval = batch.plan.timeframe.parse::<CandleInterval>()?;
+        let candles = get_closed_candles_range(
+            &state.db_pool,
+            &symbol,
+            interval,
+            batch.plan.start_time,
+            batch.plan.end_time,
+        )
+        .await?;
+        let regime_metric = aegis_core::classify_research_regime(
+            batch.plan.symbol.clone(),
+            batch.plan.timeframe.clone(),
+            batch.plan.start_time,
+            batch.plan.end_time,
+            &candles,
+        );
+
+        for candidate in &batch.top_candidates {
+            let experiment_run =
+                get_strategy_experiment_run(&state.db_pool, candidate.experiment_run_id).await?;
+            let candidate_record = match candidate.candidate_id {
+                Some(candidate_id) => get_research_candidate(&state.db_pool, candidate_id).await?,
+                None => None,
+            };
+            let walk_forward = match candidate.walk_forward_run_id {
+                Some(walk_forward_id) => {
+                    get_strategy_walk_forward_run(&state.db_pool, walk_forward_id).await?
+                }
+                None => None,
+            };
+            inputs.push(ResearchCandidateFailureInput {
+                candidate_id: candidate.candidate_id,
+                experiment_run_id: Some(candidate.experiment_run_id),
+                walk_forward_run_id: candidate.walk_forward_run_id,
+                strategy_id: candidate.strategy_id.clone(),
+                symbol: candidate.symbol.clone(),
+                timeframe: candidate.timeframe.clone(),
+                window_start: batch.plan.start_time,
+                window_end: batch.plan.end_time,
+                regime_metric: regime_metric.clone(),
+                pnl_pct: Some(candidate.pnl_pct),
+                gross_pnl_pct: experiment_run
+                    .as_ref()
+                    .map(|run| run.pnl_pct + run.fee_slippage_drag_pct),
+                fee_drag_pct: experiment_run
+                    .as_ref()
+                    .map(|run| run.fee_slippage_drag_pct)
+                    .or_else(|| candidate_record.as_ref().and_then(|record| record.fee_drag)),
+                trade_count: Some(candidate.trade_count),
+                win_rate: Some(candidate.win_rate),
+                max_drawdown_pct: Some(candidate.max_drawdown_pct),
+                walk_forward_status: walk_forward
+                    .as_ref()
+                    .map(|run| run.robustness_status.clone())
+                    .or_else(|| {
+                        candidate
+                            .robustness_status
+                            .map(|status| status.as_str().to_string())
+                    }),
+                walk_forward_profitable_windows: walk_forward
+                    .as_ref()
+                    .map(|run| run.profitable_test_windows),
+                walk_forward_losing_windows: walk_forward
+                    .as_ref()
+                    .map(|run| run.losing_test_windows),
+                data_quality_status,
+            });
+        }
+
+        if batch.top_candidates.is_empty() {
+            inputs.push(ResearchCandidateFailureInput {
+                candidate_id: None,
+                experiment_run_id: None,
+                walk_forward_run_id: None,
+                strategy_id: batch.plan.strategy_id.clone(),
+                symbol: batch.plan.symbol.clone(),
+                timeframe: batch.plan.timeframe.clone(),
+                window_start: batch.plan.start_time,
+                window_end: batch.plan.end_time,
+                regime_metric,
+                pnl_pct: None,
+                gross_pnl_pct: None,
+                fee_drag_pct: None,
+                trade_count: None,
+                win_rate: None,
+                max_drawdown_pct: None,
+                walk_forward_status: None,
+                walk_forward_profitable_windows: None,
+                walk_forward_losing_windows: None,
+                data_quality_status,
+            });
+        }
+    }
+    Ok(Some(
+        aegis_core::build_research_campaign_failure_attribution(campaign_id, inputs, Utc::now()),
+    ))
 }
 
 async fn get_research_batch_triage_handler(

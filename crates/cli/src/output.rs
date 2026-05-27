@@ -1,8 +1,8 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, MarketDataQualityReport,
     MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignResult,
-    ResearchCampaignSummary, ResearchCandidateDecisionRejection,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidateDecisionRejection,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
@@ -252,6 +252,71 @@ pub fn print_research_campaign_summary(summary: &ResearchCampaignSummary) {
     if !summary.recommendations.is_empty() {
         println!("Recommendations:");
         for recommendation in &summary.recommendations {
+            println!(
+                "  {} {}: {}",
+                recommendation.priority, recommendation.code, recommendation.message
+            );
+        }
+    }
+}
+
+pub fn print_research_campaign_failure_attribution(
+    attribution: &ResearchCampaignFailureAttribution,
+) {
+    println!("Campaign failure attribution: {}", attribution.campaign_id);
+    println!(
+        "Top failure reasons: {}",
+        attribution
+            .overall_failure_reasons
+            .iter()
+            .map(|reason| reason.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if let Some(top_regime) = attribution.regime_summary.first() {
+        println!(
+            "Regime summary: top={} windows={} candidates={} avg_return_pct={} avg_volatility={}",
+            top_regime.label.as_str(),
+            top_regime.window_count,
+            top_regime.candidate_count,
+            top_regime.avg_return_pct,
+            top_regime.avg_realized_volatility
+        );
+    }
+    if let Some(worst) = attribution.candidate_failure_table.first() {
+        println!(
+            "Worst failure source: {} {} {} candidate={} reasons={}",
+            worst.strategy_id,
+            worst.symbol,
+            worst.timeframe,
+            display_option(worst.candidate_id),
+            worst
+                .failure_reasons
+                .iter()
+                .map(|reason| reason.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+    if let Some(best) = attribution
+        .candidate_failure_table
+        .iter()
+        .max_by(|left, right| left.pnl_pct.cmp(&right.pnl_pct))
+    {
+        println!(
+            "Best less-bad area: {} {} {} pnl_pct={} regime={}",
+            best.strategy_id,
+            best.symbol,
+            best.timeframe,
+            best.pnl_pct
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            best.regime_label.as_str()
+        );
+    }
+    if !attribution.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &attribution.recommendations {
             println!(
                 "  {} {}: {}",
                 recommendation.priority, recommendation.code, recommendation.message
