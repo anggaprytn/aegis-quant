@@ -30,9 +30,10 @@ use aegis_core::{
     StrategyExitAttributionResult, StrategyExperimentRequest, StrategyExperimentResult,
     StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
     StrategyMultiTimeframeExperimentResult, StrategyOpportunityAnalysisResult,
-    StrategyPerformanceSummary, StrategySignalFeatureAttributionResult, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyPerformanceSummary, StrategyRobustnessMatrixCell, StrategyRobustnessMatrixRequest,
+    StrategyRobustnessMatrixResult, StrategySignalFeatureAttributionResult,
+    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardWindowResult,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
     TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
     TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
@@ -1823,6 +1824,47 @@ impl ApiClient {
         .await
     }
 
+    pub async fn run_strategy_robustness_matrix(
+        &self,
+        request: &StrategyRobustnessMatrixRequest,
+    ) -> Result<StrategyRobustnessMatrixAcceptedResponse, ApiClientError> {
+        self.post("/research/strategy-robustness-matrix/run", request)
+            .await
+    }
+
+    pub async fn strategy_robustness_matrix_runs(
+        &self,
+        limit: i64,
+    ) -> Result<StrategyRobustnessMatrixRunsResponse, ApiClientError> {
+        self.get(
+            "/research/strategy-robustness-matrix",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn strategy_robustness_matrix_run(
+        &self,
+        run_id: Uuid,
+    ) -> Result<StrategyRobustnessMatrixResponse, ApiClientError> {
+        self.get(
+            &format!("/research/strategy-robustness-matrix/{run_id}"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn strategy_robustness_matrix_cells(
+        &self,
+        run_id: Uuid,
+    ) -> Result<StrategyRobustnessMatrixCellsResponse, ApiClientError> {
+        self.get(
+            &format!("/research/strategy-robustness-matrix/{run_id}/cells"),
+            &[],
+        )
+        .await
+    }
+
     pub async fn strategy_performance(
         &self,
         strategy_id: Option<String>,
@@ -3541,6 +3583,36 @@ pub struct StrategyWalkForwardWindowsResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyRobustnessMatrixAcceptedResponse {
+    pub matrix: StrategyRobustnessMatrixResult,
+    pub cells: Vec<StrategyRobustnessMatrixCell>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyRobustnessMatrixRunsResponse {
+    pub matrices: Vec<StrategyRobustnessMatrixResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyRobustnessMatrixResponse {
+    pub matrix: StrategyRobustnessMatrixResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StrategyRobustnessMatrixCellsResponse {
+    pub cells: Vec<StrategyRobustnessMatrixCell>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StrategyMultiTimeframeExperimentResponse {
     pub comparison: StrategyMultiTimeframeExperimentResult,
     pub request_id: String,
@@ -3868,6 +3940,33 @@ pub fn build_research_campaign_request(
     request
         .validate()
         .context("invalid research campaign request")?;
+    Ok(request)
+}
+
+pub fn build_research_robustness_matrix_request(
+    args: &crate::cli::ResearchRobustnessMatrixRunArgs,
+) -> anyhow::Result<StrategyRobustnessMatrixRequest> {
+    let request = StrategyRobustnessMatrixRequest {
+        strategy_ids: args.strategies.clone(),
+        symbols: args.symbols.clone(),
+        timeframes: args.timeframes.clone(),
+        windows: Vec::new(),
+        start_time: Some(args.start),
+        end_time: Some(args.end),
+        window_hours: Some(args.window_hours),
+        step_hours: Some(args.step_hours),
+        config_json_by_strategy: None,
+        experiment_run_id: None,
+        initial_capital: args.initial_capital,
+        fee_bps: args.fee_bps,
+        slippage_bps: args.slippage_bps,
+        holding_candles: args.holding_candles,
+        min_trades_per_cell: args.min_trades_per_cell,
+        min_profitable_window_ratio: args.min_profitable_window_ratio,
+    };
+    request
+        .validate()
+        .context("invalid strategy robustness matrix request")?;
     Ok(request)
 }
 

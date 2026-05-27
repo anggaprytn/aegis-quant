@@ -19,8 +19,9 @@ use aegis_core::{
     StrategyConfigAuditEntry, StrategyConfigVersion, StrategyDecisionBreakdown,
     StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentResult,
     StrategyExperimentRun, StrategyId, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyRiskBreakdown, StrategySignal,
-    StrategyStatus, StrategyWalkForwardRecommendation, StrategyWalkForwardResult,
+    StrategyPerformanceSummary, StrategyPnlBreakdown, StrategyRiskBreakdown,
+    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, StrategySignal, StrategyStatus,
+    StrategyWalkForwardRecommendation, StrategyWalkForwardResult,
     StrategyWalkForwardRobustnessSummary, StrategyWalkForwardWindow,
     StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
     TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
@@ -880,6 +881,40 @@ pub struct StrategyWalkForwardWindowRecord {
     pub last_signal_time: Option<DateTime<Utc>>,
     pub last_executed_entry_time: Option<DateTime<Utc>>,
     pub result: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyRobustnessMatrixRunRecord {
+    pub id: Uuid,
+    pub request: Value,
+    pub summary: Value,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyRobustnessMatrixCellRecord {
+    pub id: Uuid,
+    pub matrix_run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub regime: String,
+    pub data_quality_status: String,
+    pub status: String,
+    pub pnl_pct: Decimal,
+    pub trade_count: i32,
+    pub raw_signal_count: i32,
+    pub executed_trade_count: i32,
+    pub cooldown_suppressed_count: i32,
+    pub win_rate: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub fee_drag: Decimal,
+    pub metrics: Value,
+    pub findings: Value,
     pub created_at: DateTime<Utc>,
 }
 
@@ -6969,6 +7004,215 @@ pub async fn list_strategy_walk_forward_windows(
     Ok(rows.iter().map(map_strategy_walk_forward_window).collect())
 }
 
+pub async fn insert_strategy_robustness_matrix_run(
+    pool: &PgPool,
+    result: &StrategyRobustnessMatrixResult,
+) -> Result<StrategyRobustnessMatrixRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO strategy_robustness_matrix_runs (
+            id,
+            request,
+            summary,
+            status,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, request, summary, status, created_at
+        "#,
+    )
+    .bind(result.run_id)
+    .bind(serde_json::to_value(&result.request)?)
+    .bind(serde_json::to_value(result)?)
+    .bind(result.status.as_str())
+    .bind(result.created_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_strategy_robustness_matrix_run(&row))
+}
+
+pub async fn insert_strategy_robustness_matrix_cells(
+    pool: &PgPool,
+    cells: &[StrategyRobustnessMatrixCell],
+) -> Result<Vec<StrategyRobustnessMatrixCellRecord>> {
+    let mut records = Vec::with_capacity(cells.len());
+    for cell in cells {
+        let metrics = json!({
+            "pnl_pct": cell.pnl_pct,
+            "trade_count": cell.trade_count,
+            "raw_signal_count": cell.raw_signal_count,
+            "executed_trade_count": cell.executed_trade_count,
+            "cooldown_suppressed_count": cell.cooldown_suppressed_count,
+            "win_rate": cell.win_rate,
+            "max_drawdown_pct": cell.max_drawdown_pct,
+            "fee_drag": cell.fee_drag,
+        });
+        let row = sqlx::query(
+            r#"
+            INSERT INTO strategy_robustness_matrix_cells (
+                id,
+                matrix_run_id,
+                strategy_id,
+                symbol,
+                timeframe,
+                window_start,
+                window_end,
+                regime,
+                data_quality_status,
+                status,
+                pnl_pct,
+                trade_count,
+                raw_signal_count,
+                executed_trade_count,
+                cooldown_suppressed_count,
+                win_rate,
+                max_drawdown_pct,
+                fee_drag,
+                metrics,
+                findings,
+                created_at
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+            )
+            RETURNING
+                id,
+                matrix_run_id,
+                strategy_id,
+                symbol,
+                timeframe,
+                window_start,
+                window_end,
+                regime,
+                data_quality_status,
+                status,
+                pnl_pct,
+                trade_count,
+                raw_signal_count,
+                executed_trade_count,
+                cooldown_suppressed_count,
+                win_rate,
+                max_drawdown_pct,
+                fee_drag,
+                metrics,
+                findings,
+                created_at
+            "#,
+        )
+        .bind(cell.id)
+        .bind(cell.matrix_run_id)
+        .bind(&cell.strategy_id)
+        .bind(&cell.symbol)
+        .bind(&cell.timeframe)
+        .bind(cell.window_start)
+        .bind(cell.window_end)
+        .bind(cell.regime_label.as_str())
+        .bind(cell.data_quality_status.as_str())
+        .bind(cell.status.as_str())
+        .bind(cell.pnl_pct)
+        .bind(cell.trade_count)
+        .bind(cell.raw_signal_count)
+        .bind(cell.executed_trade_count)
+        .bind(cell.cooldown_suppressed_count)
+        .bind(cell.win_rate)
+        .bind(cell.max_drawdown_pct)
+        .bind(cell.fee_drag)
+        .bind(metrics)
+        .bind(serde_json::to_value(&cell.findings)?)
+        .bind(cell.created_at)
+        .fetch_one(pool)
+        .await?;
+        records.push(map_strategy_robustness_matrix_cell(&row));
+    }
+
+    Ok(records)
+}
+
+pub async fn get_strategy_robustness_matrix_run(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<StrategyRobustnessMatrixRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, request, summary, status, created_at
+        FROM strategy_robustness_matrix_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_strategy_robustness_matrix_run))
+}
+
+pub async fn list_strategy_robustness_matrix_runs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<StrategyRobustnessMatrixRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, request, summary, status, created_at
+        FROM strategy_robustness_matrix_runs
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(map_strategy_robustness_matrix_run)
+        .collect())
+}
+
+pub async fn list_strategy_robustness_matrix_cells(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Vec<StrategyRobustnessMatrixCellRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            matrix_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            window_start,
+            window_end,
+            regime,
+            data_quality_status,
+            status,
+            pnl_pct,
+            trade_count,
+            raw_signal_count,
+            executed_trade_count,
+            cooldown_suppressed_count,
+            win_rate,
+            max_drawdown_pct,
+            fee_drag,
+            metrics,
+            findings,
+            created_at
+        FROM strategy_robustness_matrix_cells
+        WHERE matrix_run_id = $1
+        ORDER BY strategy_id ASC, symbol ASC, timeframe ASC, window_start ASC, id ASC
+        "#,
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(map_strategy_robustness_matrix_cell)
+        .collect())
+}
+
 pub async fn get_backtest_trades(pool: &PgPool, run_id: Uuid) -> Result<Vec<BacktestTradeRecord>> {
     let rows = sqlx::query(
         r#"
@@ -10487,6 +10731,46 @@ fn map_strategy_walk_forward_window(
     }
 }
 
+fn map_strategy_robustness_matrix_run(
+    row: &sqlx::postgres::PgRow,
+) -> StrategyRobustnessMatrixRunRecord {
+    StrategyRobustnessMatrixRunRecord {
+        id: row.get("id"),
+        request: row.get("request"),
+        summary: row.get("summary"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_strategy_robustness_matrix_cell(
+    row: &sqlx::postgres::PgRow,
+) -> StrategyRobustnessMatrixCellRecord {
+    StrategyRobustnessMatrixCellRecord {
+        id: row.get("id"),
+        matrix_run_id: row.get("matrix_run_id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        window_start: row.get("window_start"),
+        window_end: row.get("window_end"),
+        regime: row.get("regime"),
+        data_quality_status: row.get("data_quality_status"),
+        status: row.get("status"),
+        pnl_pct: row.get("pnl_pct"),
+        trade_count: row.get("trade_count"),
+        raw_signal_count: row.get("raw_signal_count"),
+        executed_trade_count: row.get("executed_trade_count"),
+        cooldown_suppressed_count: row.get("cooldown_suppressed_count"),
+        win_rate: row.get("win_rate"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        fee_drag: row.get("fee_drag"),
+        metrics: row.get("metrics"),
+        findings: row.get("findings"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn map_signal(row: &sqlx::postgres::PgRow) -> SignalRecord {
     SignalRecord {
         id: row.get("id"),
@@ -10822,6 +11106,39 @@ pub fn strategy_walk_forward_result_from_records(
         warnings: Vec::new(),
         created_at: record.created_at,
         correlation_id: record.correlation_id,
+    })
+}
+
+pub fn strategy_robustness_matrix_result_from_record(
+    record: &StrategyRobustnessMatrixRunRecord,
+) -> Result<StrategyRobustnessMatrixResult> {
+    Ok(serde_json::from_value(record.summary.clone())?)
+}
+
+pub fn strategy_robustness_matrix_cell_from_record(
+    record: &StrategyRobustnessMatrixCellRecord,
+) -> Result<StrategyRobustnessMatrixCell> {
+    Ok(StrategyRobustnessMatrixCell {
+        id: record.id,
+        matrix_run_id: record.matrix_run_id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        window_start: record.window_start,
+        window_end: record.window_end,
+        regime_label: record.regime.parse()?,
+        data_quality_status: record.data_quality_status.parse()?,
+        status: record.status.parse()?,
+        pnl_pct: record.pnl_pct,
+        trade_count: record.trade_count,
+        raw_signal_count: record.raw_signal_count,
+        executed_trade_count: record.executed_trade_count,
+        cooldown_suppressed_count: record.cooldown_suppressed_count,
+        win_rate: record.win_rate,
+        max_drawdown_pct: record.max_drawdown_pct,
+        fee_drag: record.fee_drag,
+        findings: serde_json::from_value(record.findings.clone())?,
+        created_at: record.created_at,
     })
 }
 

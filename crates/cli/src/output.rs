@@ -10,7 +10,8 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult, User,
+    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult,
+    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1893,6 +1894,93 @@ pub fn print_strategy_walk_forward_windows(
             window.cooldown_suppressed_count,
             window.open_position_suppressed_count,
             window.skip_reason.as_deref().unwrap_or("-")
+        );
+    }
+}
+
+pub fn print_strategy_robustness_matrix(result: &StrategyRobustnessMatrixResult) {
+    println!("Robustness matrix ID: {}", result.run_id);
+    println!("Status: {}", result.status.as_str());
+    println!("Cells: {}", result.cell_count);
+    println!("Strategy ranking:");
+    for (index, summary) in result.strategy_rankings.iter().enumerate() {
+        println!(
+            "{}. {} status={} score={} profitable_ratio={} avg_pnl={} median_pnl={} worst_pnl={} avg_trades={} regime_consistency={} data_penalty={} best_symbol={} worst_symbol={} best_regime={} worst_regime={}",
+            index + 1,
+            summary.strategy_id,
+            summary.status.as_str(),
+            summary.robustness_score,
+            summary.profitable_window_ratio,
+            summary.avg_pnl_pct,
+            summary.median_pnl_pct,
+            summary.worst_window_pnl_pct,
+            summary.avg_trade_count,
+            summary.regime_consistency,
+            summary.data_quality_penalty,
+            summary.best_symbol.as_deref().unwrap_or("-"),
+            summary.worst_symbol.as_deref().unwrap_or("-"),
+            summary.best_regime.map(|value| value.as_str()).unwrap_or("-"),
+            summary.worst_regime.map(|value| value.as_str()).unwrap_or("-")
+        );
+        for finding in &summary.findings {
+            println!(
+                "  warning {} {}: {}",
+                finding.severity, finding.code, finding.message
+            );
+        }
+        for recommendation in &summary.recommendations {
+            println!(
+                "  recommendation {} {}: {}",
+                recommendation.priority, recommendation.code, recommendation.message
+            );
+        }
+    }
+    for finding in &result.findings {
+        println!(
+            "Finding {} {}: {}",
+            finding.severity, finding.code, finding.message
+        );
+    }
+}
+
+pub fn print_strategy_robustness_matrices(results: &[StrategyRobustnessMatrixResult]) {
+    for result in results {
+        let best = result
+            .strategy_rankings
+            .first()
+            .map(|summary| summary.strategy_id.as_str())
+            .unwrap_or("-");
+        println!(
+            "{} status={} cells={} best={} created_at={}",
+            result.run_id,
+            result.status.as_str(),
+            result.cell_count,
+            best,
+            result.created_at.to_rfc3339()
+        );
+    }
+}
+
+pub fn print_strategy_robustness_matrix_cells(cells: &[StrategyRobustnessMatrixCell]) {
+    for cell in cells {
+        println!(
+            "{} {} {} {}..{} status={} regime={} quality={} pnl_pct={} trades={} raw_signals={} executed={} cooldown={} win_rate={} drawdown={} fee_drag={}",
+            cell.strategy_id,
+            cell.symbol,
+            cell.timeframe,
+            cell.window_start.to_rfc3339(),
+            cell.window_end.to_rfc3339(),
+            cell.status.as_str(),
+            cell.regime_label.as_str(),
+            cell.data_quality_status.as_str(),
+            cell.pnl_pct,
+            cell.trade_count,
+            cell.raw_signal_count,
+            cell.executed_trade_count,
+            cell.cooldown_suppressed_count,
+            cell.win_rate,
+            cell.max_drawdown_pct,
+            cell.fee_drag
         );
     }
 }

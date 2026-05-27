@@ -14,7 +14,7 @@ use aegis_core::{
     ResearchCandidateStatus, ResearchCandidateTestnetReviewStatus,
     ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
     ResearchShadowPnlRecommendation, StrategyPerformanceMode, StrategyPerformanceRequest,
-    TestnetPromotionFunnelRequest,
+    StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus, TestnetPromotionFunnelRequest,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -99,6 +99,17 @@ struct ResearchCampaignReportSnapshot {
     top_strategy_symbol_timeframe: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct StrategyRobustnessMatrixReportSnapshot {
+    recent_run_count: i64,
+    best_strategy: Option<String>,
+    robust_strategy_count: i64,
+    promising_strategy_count: i64,
+    overfit_or_negative_count: i64,
+    data_quality_blocked_count: i64,
+    latest_status: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -181,6 +192,8 @@ pub async fn generate_operator_report(
     let backtest = load_backtest_activity(&state.db_pool, request, &window).await?;
     let research_batches = load_research_batch_snapshot(&state.db_pool, &window).await?;
     let research_campaigns = load_research_campaign_snapshot(&state.db_pool, &window).await?;
+    let robustness_matrix =
+        load_strategy_robustness_matrix_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -195,6 +208,7 @@ pub async fn generate_operator_report(
         &backtest,
         &research_batches,
         &research_campaigns,
+        &robustness_matrix,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -232,6 +246,7 @@ pub async fn generate_operator_report(
             shadow_pnl.as_ref(),
             &research_batches,
             &research_campaigns,
+            &robustness_matrix,
         )?,
         format: request.format,
         persisted: false,
@@ -1394,6 +1409,61 @@ async fn load_research_campaign_snapshot(
     })
 }
 
+async fn load_strategy_robustness_matrix_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<StrategyRobustnessMatrixReportSnapshot> {
+    let rows = query(
+        r#"
+        SELECT summary, status
+        FROM strategy_robustness_matrix_runs
+        WHERE created_at >= $1 AND created_at <= $2
+        ORDER BY created_at DESC, id DESC
+        LIMIT 10
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_all(pool)
+    .await?;
+    let mut snapshot = StrategyRobustnessMatrixReportSnapshot {
+        recent_run_count: rows.len() as i64,
+        ..Default::default()
+    };
+    for (index, row) in rows.iter().enumerate() {
+        let status: String = row.get("status");
+        if index == 0 {
+            snapshot.latest_status = Some(status);
+        }
+        let summary_value: serde_json::Value = row.get("summary");
+        let matrix = serde_json::from_value::<StrategyRobustnessMatrixResult>(summary_value)
+            .context("failed to decode strategy robustness matrix summary")?;
+        if snapshot.best_strategy.is_none() {
+            snapshot.best_strategy = matrix
+                .strategy_rankings
+                .first()
+                .map(|summary| summary.strategy_id.clone());
+        }
+        for strategy in matrix.strategy_rankings {
+            match strategy.status {
+                StrategyRobustnessMatrixStatus::Robust => snapshot.robust_strategy_count += 1,
+                StrategyRobustnessMatrixStatus::PromisingButWeak => {
+                    snapshot.promising_strategy_count += 1
+                }
+                StrategyRobustnessMatrixStatus::OverfitRisk
+                | StrategyRobustnessMatrixStatus::Negative => {
+                    snapshot.overfit_or_negative_count += 1
+                }
+                _ => {}
+            }
+            if strategy.data_quality_penalty >= Decimal::new(25, 0) {
+                snapshot.data_quality_blocked_count += 1;
+            }
+        }
+    }
+    Ok(snapshot)
+}
+
 async fn load_candidate_shadow_pnl_snapshot(
     state: &AppState,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
@@ -1452,6 +1522,7 @@ fn build_findings(
     backtest: &BacktestActivity,
     research_batches: &ResearchBatchReportSnapshot,
     research_campaigns: &ResearchCampaignReportSnapshot,
+    robustness_matrix: &StrategyRobustnessMatrixReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -1766,6 +1837,43 @@ fn build_findings(
             "No actionable campaign output",
             "Research campaigns in the selected window did not produce actionable output.",
             "research_campaigns",
+        ));
+    }
+
+    if robustness_matrix.recent_run_count > 0 && robustness_matrix.robust_strategy_count > 0 {
+        findings.push(finding(
+            "strategy_robustness_matrix_promising_strategy",
+            OperatorReportSeverity::Low,
+            "Strategy robustness matrix found promising strategy",
+            "At least one recent robustness matrix found a robust strategy across the matrix.",
+            "strategy_robustness_matrix",
+        ));
+    }
+    if robustness_matrix.recent_run_count > 0 && robustness_matrix.robust_strategy_count == 0 {
+        findings.push(finding(
+            "strategy_robustness_matrix_no_robust_strategy",
+            OperatorReportSeverity::Medium,
+            "No robust strategy found",
+            "Recent strategy robustness matrices found no robust candidates.",
+            "strategy_robustness_matrix",
+        ));
+    }
+    if robustness_matrix.overfit_or_negative_count > 0 {
+        findings.push(finding(
+            "strategy_robustness_matrix_concentrated_performance",
+            OperatorReportSeverity::Medium,
+            "Strategy performance concentrated in one window",
+            "Recent matrix output includes OVERFIT_RISK or NEGATIVE strategy summaries.",
+            "strategy_robustness_matrix",
+        ));
+    }
+    if robustness_matrix.data_quality_blocked_count > 0 {
+        findings.push(finding(
+            "strategy_robustness_matrix_bad_data_quality",
+            OperatorReportSeverity::High,
+            "Strategy robustness blocked by bad data quality",
+            "Recent matrix output includes material market-data quality penalties.",
+            "strategy_robustness_matrix",
         ));
     }
 
@@ -2169,6 +2277,7 @@ fn build_sections(
     shadow_pnl: Option<&CandidateShadowPnlReportSnapshot>,
     research_batches: &ResearchBatchReportSnapshot,
     research_campaigns: &ResearchCampaignReportSnapshot,
+    robustness_matrix: &StrategyRobustnessMatrixReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -2437,6 +2546,51 @@ fn build_sections(
                 ),
             ],
             research_campaigns,
+        )?,
+        section(
+            "strategy_robustness_matrix",
+            "Strategy Robustness Matrix",
+            if robustness_matrix.data_quality_blocked_count > 0
+                || robustness_matrix.overfit_or_negative_count > 0
+                || (robustness_matrix.recent_run_count > 0
+                    && robustness_matrix.robust_strategy_count == 0)
+            {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Research-only robustness checks across strategies, symbols, timeframes, windows, and regimes.",
+            vec![
+                highlight("Recent Matrix Runs", robustness_matrix.recent_run_count.to_string()),
+                highlight(
+                    "Best Strategy",
+                    robustness_matrix
+                        .best_strategy
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+                highlight("Robust Strategies", robustness_matrix.robust_strategy_count.to_string()),
+                highlight(
+                    "Promising Strategies",
+                    robustness_matrix.promising_strategy_count.to_string(),
+                ),
+                highlight(
+                    "Overfit/Negative",
+                    robustness_matrix.overfit_or_negative_count.to_string(),
+                ),
+                highlight(
+                    "Data Quality Blocked",
+                    robustness_matrix.data_quality_blocked_count.to_string(),
+                ),
+                highlight(
+                    "Latest Status",
+                    robustness_matrix
+                        .latest_status
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+            ],
+            robustness_matrix,
         )?,
         section(
             "research_candidate_qualification",
@@ -2951,7 +3105,7 @@ mod tests {
     use super::{
         build_findings, build_recommendations, status_from_findings, BacktestActivity,
         ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot, StrategyBehaviorData,
-        SystemAndMarketData,
+        StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
@@ -3119,6 +3273,7 @@ mod tests {
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
+            &StrategyRobustnessMatrixReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3150,6 +3305,7 @@ mod tests {
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
+            &StrategyRobustnessMatrixReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3176,6 +3332,7 @@ mod tests {
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
+            &StrategyRobustnessMatrixReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3202,6 +3359,7 @@ mod tests {
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
+            &StrategyRobustnessMatrixReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3254,6 +3412,7 @@ mod tests {
             &BacktestActivity { run_count: 0 },
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
+            &StrategyRobustnessMatrixReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -3291,6 +3450,7 @@ mod tests {
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
+            &StrategyRobustnessMatrixReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3325,6 +3485,7 @@ mod tests {
             &BacktestActivity { run_count: 1 },
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
+            &StrategyRobustnessMatrixReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {

@@ -82,7 +82,8 @@ use aegis_core::{
     StrategyPnlBreakdown, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
     StrategyResearchCandidatePromotionRequest, StrategyResearchCandidatePromotionResult,
     StrategyResearchCandidateRejectionReason, StrategyResearchCandidateSource,
-    StrategyResearchCandidateStatus, StrategySignalFeatureAttributionRequest,
+    StrategyResearchCandidateStatus, StrategyRobustnessMatrixCell, StrategyRobustnessMatrixRequest,
+    StrategyRobustnessMatrixResult, StrategySignalFeatureAttributionRequest,
     StrategySignalFeatureAttributionResult, StrategyStatus, StrategyWalkForwardRequest,
     StrategyWalkForwardResult, StrategyWalkForwardRobustnessStatus,
     StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
@@ -139,21 +140,22 @@ use db::{
     get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
     get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
     get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_research_candidate, get_strategy_shadow_decision_breakdown, get_strategy_status,
-    get_strategy_walk_forward_run, get_system_event, get_system_state,
-    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
-    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
-    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
-    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
-    insert_research_campaign, insert_research_campaign_batch,
-    insert_research_candidate_qualification_evaluation, insert_risk_config_audit,
-    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
-    insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
-    insert_system_event, insert_testnet_shadow_promotion, insert_user,
-    link_research_candidate_walk_forward_run, list_backtest_runs, list_candle_backfill_runs,
-    list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    get_strategy_research_candidate, get_strategy_robustness_matrix_run,
+    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
+    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
+    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
+    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
+    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
+    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
+    insert_research_batch, insert_research_batch_step, insert_research_campaign,
+    insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
+    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
+    insert_strategy_config_audit, insert_strategy_research_candidate,
+    insert_strategy_research_candidate_promotion, insert_system_event,
+    insert_testnet_shadow_promotion, insert_user, link_research_candidate_walk_forward_run,
+    list_backtest_runs, list_candle_backfill_runs, list_candles,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions,
     list_market_data_repair_runs, list_market_feed_statuses, list_open_paper_positions,
@@ -167,7 +169,8 @@ use db::{
     list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
-    list_strategy_research_candidates, list_strategy_status, list_strategy_walk_forward_runs,
+    list_strategy_research_candidates, list_strategy_robustness_matrix_cells,
+    list_strategy_robustness_matrix_runs, list_strategy_status, list_strategy_walk_forward_runs,
     list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
     list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
     mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
@@ -185,6 +188,7 @@ use db::{
     strategy_experiment_result_from_records, strategy_experiment_run_from_record,
     strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
+    strategy_robustness_matrix_cell_from_record, strategy_robustness_matrix_result_from_record,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
     summarize_candle_continuity_report, update_research_batch_summary,
     update_research_campaign_batch, update_research_campaign_summary,
@@ -2008,6 +2012,36 @@ struct StrategyWalkForwardWindowsResponse {
 }
 
 #[derive(Serialize)]
+struct StrategyRobustnessMatrixAcceptedResponse {
+    matrix: StrategyRobustnessMatrixResult,
+    cells: Vec<StrategyRobustnessMatrixCell>,
+}
+
+#[derive(Serialize)]
+struct StrategyRobustnessMatrixRunsResponse {
+    matrices: Vec<StrategyRobustnessMatrixResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyRobustnessMatrixResponse {
+    matrix: StrategyRobustnessMatrixResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct StrategyRobustnessMatrixCellsResponse {
+    cells: Vec<StrategyRobustnessMatrixCell>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct StrategyMultiTimeframeExperimentResponse {
     comparison: StrategyMultiTimeframeExperimentResult,
     request_id: String,
@@ -2698,6 +2732,22 @@ async fn main() {
         .route(
             "/experiments/strategy/:id/runs",
             get(list_strategy_experiment_runs_handler),
+        )
+        .route(
+            "/research/strategy-robustness-matrix/run",
+            post(run_strategy_robustness_matrix_handler),
+        )
+        .route(
+            "/research/strategy-robustness-matrix",
+            get(list_strategy_robustness_matrix_runs_handler),
+        )
+        .route(
+            "/research/strategy-robustness-matrix/:id",
+            get(get_strategy_robustness_matrix_handler),
+        )
+        .route(
+            "/research/strategy-robustness-matrix/:id/cells",
+            get(list_strategy_robustness_matrix_cells_handler),
         )
         .route(
             "/analytics/strategy/performance",
@@ -12015,6 +12065,304 @@ async fn list_strategy_walk_forward_windows_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_query_strategy_walk_forward_windows",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn run_strategy_robustness_matrix_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<StrategyRobustnessMatrixRequest>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_strategy_robustness_matrix_request",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    for strategy in &payload.strategy_ids {
+        match parse_strategy_id(strategy) {
+            Ok(strategy_id) => {
+                if let Err(err) = ensure_strategy_config(&state, strategy_id).await {
+                    error!(
+                        error = %err,
+                        strategy_id = %strategy_id,
+                        "failed to initialize strategy config before robustness matrix"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_initialize_strategy_config",
+                            message: "Failed to initialize strategy config.".to_string(),
+                            request_id: request_context.request_id,
+                            correlation_id: request_context.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_strategy_id",
+                        message: err.to_string(),
+                        request_id: request_context.request_id,
+                        correlation_id: request_context.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+    if let Some(actor) = actor.as_ref() {
+        let correlation_id = parse_correlation_id(&request_context.correlation_id);
+        let state_actor = state_actor_from_authenticated(actor);
+        let _ = insert_audit_log(
+            &state.db_pool,
+            correlation_id,
+            &state_actor,
+            "research.strategy_robustness_matrix.run",
+            "research/strategy-robustness-matrix/run",
+            &json!({ "actor_id": actor.user_id }),
+        )
+        .await;
+    }
+
+    let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+    match engine.run_strategy_robustness_matrix(payload).await {
+        Ok(execution) => (
+            StatusCode::OK,
+            Json(StrategyRobustnessMatrixAcceptedResponse {
+                matrix: execution.result,
+                cells: execution.cells,
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            let message = err.to_string();
+            let status = if message.contains("invalid")
+                || message.contains("unsupported")
+                || message.contains("cannot be empty")
+                || message.contains("must be")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                status,
+                Json(ErrorResponse {
+                    error: "failed_to_run_strategy_robustness_matrix",
+                    message,
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn list_strategy_robustness_matrix_runs_handler(
+    State(state): State<AppState>,
+    Query(query): Query<StrategyExperimentsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_strategy_robustness_matrix_runs(&state.db_pool, bounded_limit(query.limit)).await {
+        Ok(records) => {
+            let mut matrices = Vec::with_capacity(records.len());
+            for record in records {
+                match strategy_robustness_matrix_result_from_record(&record) {
+                    Ok(matrix) => matrices.push(matrix),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_robustness_matrix",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(StrategyRobustnessMatrixRunsResponse {
+                    matrices,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_robustness_matrix_runs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_strategy_robustness_matrix_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let run_id = match id.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_robustness_matrix_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match get_strategy_robustness_matrix_run(&state.db_pool, run_id).await {
+        Ok(Some(record)) => match strategy_robustness_matrix_result_from_record(&record) {
+            Ok(matrix) => (
+                StatusCode::OK,
+                Json(StrategyRobustnessMatrixResponse {
+                    matrix,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_strategy_robustness_matrix",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "strategy_robustness_matrix_not_found",
+                message: "Strategy robustness matrix run was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_robustness_matrix",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_strategy_robustness_matrix_cells_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let run_id = match id.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_robustness_matrix_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match list_strategy_robustness_matrix_cells(&state.db_pool, run_id).await {
+        Ok(records) => {
+            let mut cells = Vec::with_capacity(records.len());
+            for record in records {
+                match strategy_robustness_matrix_cell_from_record(&record) {
+                    Ok(cell) => cells.push(cell),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_strategy_robustness_matrix_cell",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(StrategyRobustnessMatrixCellsResponse {
+                    cells,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_strategy_robustness_matrix_cells",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

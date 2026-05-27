@@ -13,7 +13,8 @@ use cli::api::{
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
     build_research_batch_request, build_research_campaign_request,
     build_research_data_build_request, build_research_data_coverage_query,
-    build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
+    build_research_robustness_matrix_request, build_risk_config_request,
+    build_strategy_config_request, build_strategy_experiment_request,
     build_strategy_walk_forward_request, ApiClient, ApiClientError,
     CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
     RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
@@ -24,9 +25,10 @@ use cli::cli::{
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
-    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands, RiskCommands,
-    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
-    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
+    ResearchRobustnessMatrixCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
+    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
+    TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -1012,6 +1014,42 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate_shadow_promotion_result(&response.result);
+                    }
+                }
+            },
+            ResearchCommands::RobustnessMatrix(command) => match command {
+                ResearchRobustnessMatrixCommands::Run(args) => {
+                    let request = build_research_robustness_matrix_request(&args)?;
+                    let response = client.run_strategy_robustness_matrix(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_robustness_matrix(&response.matrix);
+                        output::print_strategy_robustness_matrix_cells(&response.cells);
+                    }
+                }
+                ResearchRobustnessMatrixCommands::List(args) => {
+                    let response = client.strategy_robustness_matrix_runs(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_robustness_matrices(&response.matrices);
+                    }
+                }
+                ResearchRobustnessMatrixCommands::Get { run_id } => {
+                    let response = client.strategy_robustness_matrix_run(run_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_robustness_matrix(&response.matrix);
+                    }
+                }
+                ResearchRobustnessMatrixCommands::Cells { run_id } => {
+                    let response = client.strategy_robustness_matrix_cells(run_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_strategy_robustness_matrix_cells(&response.cells);
                     }
                 }
             },

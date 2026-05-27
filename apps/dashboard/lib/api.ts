@@ -131,6 +131,11 @@ import type {
   StrategyWalkForwardResponse,
   StrategyWalkForwardRunsResponse,
   StrategyWalkForwardWindowsResponse,
+  StrategyRobustnessMatrixAcceptedResponse,
+  StrategyRobustnessMatrixCellsResponse,
+  StrategyRobustnessMatrixRequest,
+  StrategyRobustnessMatrixResponse,
+  StrategyRobustnessMatrixRunsResponse,
   StrategyListResponse,
   StrategyPerformanceMode,
   StrategyPerformanceRankingsResponse,
@@ -936,6 +941,26 @@ export const api = {
   getStrategyWalkForwardWindows: (id: string) =>
     request<StrategyWalkForwardWindowsResponse>(
       `/experiments/strategy/walk-forward/${id}/windows`,
+    ),
+  runStrategyRobustnessMatrix: (payload: StrategyRobustnessMatrixRequest) =>
+    request<StrategyRobustnessMatrixAcceptedResponse>(
+      "/research/strategy-robustness-matrix/run",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  getStrategyRobustnessMatrices: (limit = 20) =>
+    request<StrategyRobustnessMatrixRunsResponse>(
+      "/research/strategy-robustness-matrix",
+      undefined,
+      { limit },
+    ),
+  getStrategyRobustnessMatrix: (id: string) =>
+    request<StrategyRobustnessMatrixResponse>(`/research/strategy-robustness-matrix/${id}`),
+  getStrategyRobustnessMatrixCells: (id: string) =>
+    request<StrategyRobustnessMatrixCellsResponse>(
+      `/research/strategy-robustness-matrix/${id}/cells`,
     ),
   getStrategyPerformance: (
     mode: StrategyPerformanceMode,

@@ -73,6 +73,14 @@ fn default_research_campaign_lookback_candidates() -> Vec<u32> {
     vec![10, 20, 50]
 }
 
+fn default_strategy_robustness_min_trades_per_cell() -> i32 {
+    5
+}
+
+fn default_strategy_robustness_min_profitable_window_ratio() -> Decimal {
+    Decimal::new(5, 1)
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchBatchStatus {
@@ -607,6 +615,732 @@ pub enum ResearchRegimeLabel {
     LowVolatility,
     Mixed,
     Unknown,
+}
+
+impl std::str::FromStr for ResearchRegimeLabel {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "TREND_UP" => Ok(Self::TrendUp),
+            "TREND_DOWN" => Ok(Self::TrendDown),
+            "RANGE" => Ok(Self::Range),
+            "HIGH_VOLATILITY" => Ok(Self::HighVolatility),
+            "LOW_VOLATILITY" => Ok(Self::LowVolatility),
+            "MIXED" => Ok(Self::Mixed),
+            "UNKNOWN" => Ok(Self::Unknown),
+            other => Err(CoreError::UnsupportedResearchRegimeLabel(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyRobustnessMatrixStatus {
+    Robust,
+    PromisingButWeak,
+    Mixed,
+    OverfitRisk,
+    Negative,
+    InsufficientData,
+    Failed,
+}
+
+impl StrategyRobustnessMatrixStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Robust => "ROBUST",
+            Self::PromisingButWeak => "PROMISING_BUT_WEAK",
+            Self::Mixed => "MIXED",
+            Self::OverfitRisk => "OVERFIT_RISK",
+            Self::Negative => "NEGATIVE",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyRobustnessMatrixStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ROBUST" => Ok(Self::Robust),
+            "PROMISING_BUT_WEAK" => Ok(Self::PromisingButWeak),
+            "MIXED" => Ok(Self::Mixed),
+            "OVERFIT_RISK" => Ok(Self::OverfitRisk),
+            "NEGATIVE" => Ok(Self::Negative),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedStrategyRobustnessMatrixStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrategyRobustnessMatrixFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StrategyRobustnessMatrixRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyRobustnessMatrixWindow {
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyRobustnessMatrixRequest {
+    pub strategy_ids: Vec<String>,
+    pub symbols: Vec<String>,
+    pub timeframes: Vec<String>,
+    #[serde(default)]
+    pub windows: Vec<StrategyRobustnessMatrixWindow>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub window_hours: Option<i64>,
+    pub step_hours: Option<i64>,
+    #[serde(default)]
+    pub config_json_by_strategy: Option<BTreeMap<String, Value>>,
+    pub experiment_run_id: Option<Uuid>,
+    pub initial_capital: Decimal,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub holding_candles: Option<u32>,
+    #[serde(default = "default_strategy_robustness_min_trades_per_cell")]
+    pub min_trades_per_cell: i32,
+    #[serde(default = "default_strategy_robustness_min_profitable_window_ratio")]
+    pub min_profitable_window_ratio: Decimal,
+}
+
+impl StrategyRobustnessMatrixRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self
+            .strategy_ids
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || self.strategy_ids.is_empty()
+        {
+            return Err(CoreError::EmptyStrategyRobustnessMatrixStrategies);
+        }
+        if self.symbols.iter().any(|value| value.trim().is_empty()) || self.symbols.is_empty() {
+            return Err(CoreError::EmptyStrategyRobustnessMatrixSymbols);
+        }
+        if self.timeframes.iter().any(|value| value.trim().is_empty()) || self.timeframes.is_empty()
+        {
+            return Err(CoreError::EmptyStrategyRobustnessMatrixTimeframes);
+        }
+        for timeframe in &self.timeframes {
+            timeframe.parse::<CandleInterval>()?;
+        }
+        if self.initial_capital <= Decimal::ZERO {
+            return Err(CoreError::InvalidStrategyRobustnessMatrixInitialCapital);
+        }
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        if self.min_trades_per_cell < 0 {
+            return Err(CoreError::InvalidStrategyRobustnessMatrixThreshold(
+                "min_trades_per_cell".to_string(),
+            ));
+        }
+        if self.min_profitable_window_ratio < Decimal::ZERO
+            || self.min_profitable_window_ratio > Decimal::ONE
+        {
+            return Err(CoreError::InvalidStrategyRobustnessMatrixThreshold(
+                "min_profitable_window_ratio".to_string(),
+            ));
+        }
+        if self.windows.is_empty() {
+            let Some(start_time) = self.start_time else {
+                return Err(CoreError::EmptyStrategyRobustnessMatrixWindows);
+            };
+            let Some(end_time) = self.end_time else {
+                return Err(CoreError::EmptyStrategyRobustnessMatrixWindows);
+            };
+            if end_time <= start_time {
+                return Err(CoreError::InvalidStrategyRobustnessMatrixTimeRange);
+            }
+            if self.window_hours.unwrap_or(0) <= 0 || self.step_hours.unwrap_or(0) <= 0 {
+                return Err(CoreError::InvalidStrategyRobustnessMatrixWindowStep);
+            }
+        } else {
+            for window in &self.windows {
+                if window.end_time <= window.start_time {
+                    return Err(CoreError::InvalidStrategyRobustnessMatrixTimeRange);
+                }
+            }
+        }
+        if self.holding_candles.is_some_and(|value| value == 0) {
+            return Err(CoreError::InvalidHoldingCandles);
+        }
+        Ok(())
+    }
+
+    pub fn resolved_windows(&self) -> Result<Vec<StrategyRobustnessMatrixWindow>, CoreError> {
+        self.validate()?;
+        if !self.windows.is_empty() {
+            return Ok(self.windows.clone());
+        }
+        let mut windows = Vec::new();
+        let mut cursor = self.start_time.expect("validated start_time");
+        let end_time = self.end_time.expect("validated end_time");
+        let window_size = Duration::hours(self.window_hours.expect("validated window_hours"));
+        let step_size = Duration::hours(self.step_hours.expect("validated step_hours"));
+        while cursor + window_size <= end_time {
+            windows.push(StrategyRobustnessMatrixWindow {
+                start_time: cursor,
+                end_time: cursor + window_size,
+            });
+            cursor += step_size;
+        }
+        if windows.is_empty() {
+            return Err(CoreError::EmptyStrategyRobustnessMatrixWindows);
+        }
+        Ok(windows)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyRobustnessMatrixCell {
+    pub id: Uuid,
+    pub matrix_run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub regime_label: ResearchRegimeLabel,
+    pub data_quality_status: MarketDataQualityStatus,
+    pub status: StrategyRobustnessMatrixStatus,
+    pub pnl_pct: Decimal,
+    pub trade_count: i32,
+    pub raw_signal_count: i32,
+    pub executed_trade_count: i32,
+    pub cooldown_suppressed_count: i32,
+    pub win_rate: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub fee_drag: Decimal,
+    pub findings: Vec<StrategyRobustnessMatrixFinding>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyRobustnessMatrixStrategySummary {
+    pub strategy_id: String,
+    pub status: StrategyRobustnessMatrixStatus,
+    pub profitable_window_ratio: Decimal,
+    pub avg_pnl_pct: Decimal,
+    pub median_pnl_pct: Decimal,
+    pub worst_window_pnl_pct: Decimal,
+    pub best_window_pnl_pct: Decimal,
+    pub avg_trade_count: Decimal,
+    pub regime_consistency: Decimal,
+    pub data_quality_penalty: Decimal,
+    pub robustness_score: Decimal,
+    pub completed_cells: i32,
+    pub insufficient_data_cells: i32,
+    pub failed_cells: i32,
+    pub best_symbol: Option<String>,
+    pub worst_symbol: Option<String>,
+    pub best_regime: Option<ResearchRegimeLabel>,
+    pub worst_regime: Option<ResearchRegimeLabel>,
+    pub findings: Vec<StrategyRobustnessMatrixFinding>,
+    pub recommendations: Vec<StrategyRobustnessMatrixRecommendation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyRobustnessMatrixResult {
+    pub run_id: Uuid,
+    pub status: StrategyRobustnessMatrixStatus,
+    pub request: StrategyRobustnessMatrixRequest,
+    pub strategy_rankings: Vec<StrategyRobustnessMatrixStrategySummary>,
+    pub findings: Vec<StrategyRobustnessMatrixFinding>,
+    pub recommendations: Vec<StrategyRobustnessMatrixRecommendation>,
+    pub cell_count: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+pub fn build_strategy_robustness_matrix_result(
+    run_id: Uuid,
+    request: StrategyRobustnessMatrixRequest,
+    cells: Vec<StrategyRobustnessMatrixCell>,
+    created_at: DateTime<Utc>,
+) -> StrategyRobustnessMatrixResult {
+    let mut by_strategy = BTreeMap::<String, Vec<StrategyRobustnessMatrixCell>>::new();
+    for cell in cells.iter().cloned() {
+        by_strategy
+            .entry(cell.strategy_id.clone())
+            .or_default()
+            .push(cell);
+    }
+
+    let mut strategy_rankings = by_strategy
+        .into_iter()
+        .map(|(strategy_id, strategy_cells)| {
+            summarize_strategy_robustness_matrix_strategy(&strategy_id, &request, &strategy_cells)
+        })
+        .collect::<Vec<_>>();
+    strategy_rankings.sort_by(|left, right| {
+        right
+            .robustness_score
+            .cmp(&left.robustness_score)
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id))
+    });
+
+    let robust_count = strategy_rankings
+        .iter()
+        .filter(|summary| summary.status == StrategyRobustnessMatrixStatus::Robust)
+        .count();
+    let status = if strategy_rankings.is_empty() {
+        StrategyRobustnessMatrixStatus::InsufficientData
+    } else if robust_count > 0 {
+        StrategyRobustnessMatrixStatus::Robust
+    } else if strategy_rankings
+        .iter()
+        .any(|summary| summary.status == StrategyRobustnessMatrixStatus::PromisingButWeak)
+    {
+        StrategyRobustnessMatrixStatus::PromisingButWeak
+    } else if strategy_rankings
+        .iter()
+        .any(|summary| summary.status == StrategyRobustnessMatrixStatus::Mixed)
+    {
+        StrategyRobustnessMatrixStatus::Mixed
+    } else if strategy_rankings
+        .iter()
+        .all(|summary| summary.status == StrategyRobustnessMatrixStatus::Failed)
+    {
+        StrategyRobustnessMatrixStatus::Failed
+    } else {
+        StrategyRobustnessMatrixStatus::Negative
+    };
+
+    let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
+    if robust_count == 0 {
+        findings.push(StrategyRobustnessMatrixFinding {
+            severity: "MEDIUM".to_string(),
+            code: "no_robust_strategy_found".to_string(),
+            message: "No strategy met robustness thresholds across the matrix.".to_string(),
+        });
+        recommendations.push(StrategyRobustnessMatrixRecommendation {
+            priority: "MEDIUM".to_string(),
+            code: "continue_research".to_string(),
+            message: "Treat the matrix as research evidence only and avoid candidate promotion."
+                .to_string(),
+        });
+    } else {
+        findings.push(StrategyRobustnessMatrixFinding {
+            severity: "LOW".to_string(),
+            code: "promising_strategy_found".to_string(),
+            message: "Strategy robustness matrix found at least one robust or promising strategy."
+                .to_string(),
+        });
+    }
+
+    if strategy_rankings
+        .iter()
+        .any(|summary| summary.data_quality_penalty >= Decimal::new(25, 0))
+    {
+        findings.push(StrategyRobustnessMatrixFinding {
+            severity: "HIGH".to_string(),
+            code: "bad_data_quality_blocks_robustness".to_string(),
+            message: "One or more strategies were materially penalized by bad market data quality."
+                .to_string(),
+        });
+    }
+
+    StrategyRobustnessMatrixResult {
+        run_id,
+        status,
+        request,
+        strategy_rankings,
+        findings,
+        recommendations,
+        cell_count: i32::try_from(cells.len()).unwrap_or(i32::MAX),
+        created_at,
+    }
+}
+
+pub fn summarize_strategy_robustness_matrix_strategy(
+    strategy_id: &str,
+    request: &StrategyRobustnessMatrixRequest,
+    cells: &[StrategyRobustnessMatrixCell],
+) -> StrategyRobustnessMatrixStrategySummary {
+    let completed = cells
+        .iter()
+        .filter(|cell| {
+            !matches!(
+                cell.status,
+                StrategyRobustnessMatrixStatus::Failed
+                    | StrategyRobustnessMatrixStatus::InsufficientData
+            )
+        })
+        .collect::<Vec<_>>();
+    let completed_cells = i32::try_from(completed.len()).unwrap_or(i32::MAX);
+    let insufficient_data_cells = cells
+        .iter()
+        .filter(|cell| cell.status == StrategyRobustnessMatrixStatus::InsufficientData)
+        .count() as i32;
+    let failed_cells = cells
+        .iter()
+        .filter(|cell| cell.status == StrategyRobustnessMatrixStatus::Failed)
+        .count() as i32;
+    let profitable_windows = completed
+        .iter()
+        .filter(|cell| cell.pnl_pct > Decimal::ZERO)
+        .count() as i32;
+    let profitable_window_ratio = if completed_cells == 0 {
+        Decimal::ZERO
+    } else {
+        Decimal::from(profitable_windows) / Decimal::from(completed_cells)
+    };
+    let avg_pnl_pct = decimal_avg(completed.iter().map(|cell| cell.pnl_pct));
+    let mut sorted_pnl = completed
+        .iter()
+        .map(|cell| cell.pnl_pct)
+        .collect::<Vec<_>>();
+    sorted_pnl.sort();
+    let median_pnl_pct = median_decimal(&sorted_pnl);
+    let worst_window_pnl_pct = completed
+        .iter()
+        .map(|cell| cell.pnl_pct)
+        .min()
+        .unwrap_or(Decimal::ZERO);
+    let best_window_pnl_pct = completed
+        .iter()
+        .map(|cell| cell.pnl_pct)
+        .max()
+        .unwrap_or(Decimal::ZERO);
+    let avg_trade_count = decimal_avg(completed.iter().map(|cell| Decimal::from(cell.trade_count)));
+    let regime_consistency = calculate_strategy_robustness_regime_consistency(&completed);
+    let data_quality_penalty = calculate_strategy_robustness_data_quality_penalty(cells);
+    let concentration_pct = calculate_strategy_robustness_winner_concentration_pct(&completed);
+    let robustness_score = calculate_strategy_robustness_score(
+        profitable_window_ratio,
+        avg_pnl_pct,
+        median_pnl_pct,
+        worst_window_pnl_pct,
+        avg_trade_count,
+        regime_consistency,
+        data_quality_penalty,
+        concentration_pct,
+    );
+
+    let status = classify_strategy_robustness_matrix_status(
+        cells.len() as i32,
+        completed_cells,
+        insufficient_data_cells,
+        failed_cells,
+        profitable_window_ratio,
+        median_pnl_pct,
+        avg_pnl_pct,
+        worst_window_pnl_pct,
+        avg_trade_count,
+        concentration_pct,
+        data_quality_penalty,
+        robustness_score,
+        request.min_trades_per_cell,
+        request.min_profitable_window_ratio,
+    );
+
+    let best_symbol = best_group_by_avg_pnl(&completed, |cell| cell.symbol.clone(), true);
+    let worst_symbol = best_group_by_avg_pnl(&completed, |cell| cell.symbol.clone(), false);
+    let best_regime = best_group_by_avg_pnl(&completed, |cell| cell.regime_label, true);
+    let worst_regime = best_group_by_avg_pnl(&completed, |cell| cell.regime_label, false);
+    let (findings, recommendations) = strategy_robustness_findings_recommendations(
+        status,
+        concentration_pct,
+        data_quality_penalty,
+        median_pnl_pct,
+        avg_trade_count,
+        request.min_trades_per_cell,
+    );
+
+    StrategyRobustnessMatrixStrategySummary {
+        strategy_id: strategy_id.to_string(),
+        status,
+        profitable_window_ratio,
+        avg_pnl_pct,
+        median_pnl_pct,
+        worst_window_pnl_pct,
+        best_window_pnl_pct,
+        avg_trade_count,
+        regime_consistency,
+        data_quality_penalty,
+        robustness_score,
+        completed_cells,
+        insufficient_data_cells,
+        failed_cells,
+        best_symbol,
+        worst_symbol,
+        best_regime,
+        worst_regime,
+        findings,
+        recommendations,
+    }
+}
+
+pub fn calculate_strategy_robustness_regime_consistency(
+    cells: &[&StrategyRobustnessMatrixCell],
+) -> Decimal {
+    let mut by_regime = BTreeMap::<ResearchRegimeLabel, Vec<&StrategyRobustnessMatrixCell>>::new();
+    for cell in cells {
+        if cell.regime_label != ResearchRegimeLabel::Unknown {
+            by_regime.entry(cell.regime_label).or_default().push(*cell);
+        }
+    }
+    if by_regime.is_empty() {
+        return Decimal::ZERO;
+    }
+    let positive_regimes = by_regime
+        .values()
+        .filter(|items| decimal_avg(items.iter().map(|cell| cell.pnl_pct)) > Decimal::ZERO)
+        .count() as i32;
+    (Decimal::from(positive_regimes) / Decimal::from(by_regime.len() as i32)) * Decimal::new(100, 0)
+}
+
+pub fn calculate_strategy_robustness_data_quality_penalty(
+    cells: &[StrategyRobustnessMatrixCell],
+) -> Decimal {
+    if cells.is_empty() {
+        return Decimal::new(50, 0);
+    }
+    let total = cells.iter().fold(Decimal::ZERO, |sum, cell| {
+        sum + match cell.data_quality_status {
+            MarketDataQualityStatus::Good => Decimal::ZERO,
+            MarketDataQualityStatus::Degraded => Decimal::new(10, 0),
+            MarketDataQualityStatus::Bad => Decimal::new(30, 0),
+            MarketDataQualityStatus::InsufficientData => Decimal::new(40, 0),
+            MarketDataQualityStatus::Unknown => Decimal::new(15, 0),
+        }
+    });
+    total / Decimal::from(cells.len() as i32)
+}
+
+pub fn calculate_strategy_robustness_winner_concentration_pct(
+    cells: &[&StrategyRobustnessMatrixCell],
+) -> Decimal {
+    let total_positive = cells
+        .iter()
+        .filter(|cell| cell.pnl_pct > Decimal::ZERO)
+        .fold(Decimal::ZERO, |sum, cell| sum + cell.pnl_pct);
+    if total_positive <= Decimal::ZERO {
+        return Decimal::ZERO;
+    }
+    let best = cells
+        .iter()
+        .map(|cell| cell.pnl_pct.max(Decimal::ZERO))
+        .max()
+        .unwrap_or(Decimal::ZERO);
+    (best / total_positive) * Decimal::new(100, 0)
+}
+
+pub fn calculate_strategy_robustness_score(
+    profitable_window_ratio: Decimal,
+    avg_pnl_pct: Decimal,
+    median_pnl_pct: Decimal,
+    worst_window_pnl_pct: Decimal,
+    avg_trade_count: Decimal,
+    regime_consistency: Decimal,
+    data_quality_penalty: Decimal,
+    concentration_pct: Decimal,
+) -> Decimal {
+    let profitability_component =
+        (profitable_window_ratio * Decimal::new(40, 0)).clamp(Decimal::ZERO, Decimal::new(40, 0));
+    let median_component =
+        (median_pnl_pct * Decimal::new(12, 0)).clamp(Decimal::new(-20, 0), Decimal::new(20, 0));
+    let avg_component =
+        (avg_pnl_pct * Decimal::new(8, 0)).clamp(Decimal::new(-15, 0), Decimal::new(15, 0));
+    let worst_penalty = (worst_window_pnl_pct.min(Decimal::ZERO).abs() * Decimal::new(5, 0))
+        .min(Decimal::new(20, 0));
+    let trade_component =
+        (avg_trade_count.min(Decimal::new(20, 0)) / Decimal::new(20, 0)) * Decimal::new(10, 0);
+    let regime_component = (regime_consistency / Decimal::new(100, 0)) * Decimal::new(15, 0);
+    let concentration_penalty = if concentration_pct > Decimal::new(55, 0) {
+        ((concentration_pct - Decimal::new(55, 0)) / Decimal::new(45, 0)) * Decimal::new(25, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let score = Decimal::new(20, 0)
+        + profitability_component
+        + median_component
+        + avg_component
+        + trade_component
+        + regime_component
+        - worst_penalty
+        - data_quality_penalty
+        - concentration_penalty;
+    score.clamp(Decimal::ZERO, Decimal::new(100, 0)).round_dp(4)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn classify_strategy_robustness_matrix_status(
+    total_cells: i32,
+    completed_cells: i32,
+    insufficient_data_cells: i32,
+    failed_cells: i32,
+    profitable_window_ratio: Decimal,
+    median_pnl_pct: Decimal,
+    avg_pnl_pct: Decimal,
+    worst_window_pnl_pct: Decimal,
+    avg_trade_count: Decimal,
+    concentration_pct: Decimal,
+    data_quality_penalty: Decimal,
+    robustness_score: Decimal,
+    min_trades_per_cell: i32,
+    min_profitable_window_ratio: Decimal,
+) -> StrategyRobustnessMatrixStatus {
+    if total_cells == 0 || completed_cells == 0 {
+        return StrategyRobustnessMatrixStatus::InsufficientData;
+    }
+    if failed_cells == total_cells {
+        return StrategyRobustnessMatrixStatus::Failed;
+    }
+    if insufficient_data_cells > 0 && completed_cells < total_cells / 2 {
+        return StrategyRobustnessMatrixStatus::InsufficientData;
+    }
+    if data_quality_penalty >= Decimal::new(30, 0) {
+        return StrategyRobustnessMatrixStatus::InsufficientData;
+    }
+    if median_pnl_pct < Decimal::ZERO {
+        return StrategyRobustnessMatrixStatus::Negative;
+    }
+    if concentration_pct >= Decimal::new(60, 0) && completed_cells >= 3 {
+        return StrategyRobustnessMatrixStatus::OverfitRisk;
+    }
+    if avg_pnl_pct <= Decimal::ZERO || profitable_window_ratio < min_profitable_window_ratio {
+        return StrategyRobustnessMatrixStatus::Mixed;
+    }
+    if avg_trade_count < Decimal::from(min_trades_per_cell) {
+        return StrategyRobustnessMatrixStatus::PromisingButWeak;
+    }
+    if robustness_score >= Decimal::new(70, 0)
+        && median_pnl_pct > Decimal::ZERO
+        && worst_window_pnl_pct > -Decimal::new(2, 0)
+        && completed_cells >= 4
+    {
+        return StrategyRobustnessMatrixStatus::Robust;
+    }
+    StrategyRobustnessMatrixStatus::PromisingButWeak
+}
+
+fn best_group_by_avg_pnl<T, F>(
+    cells: &[&StrategyRobustnessMatrixCell],
+    f: F,
+    descending: bool,
+) -> Option<T>
+where
+    T: Ord + Clone,
+    F: Fn(&StrategyRobustnessMatrixCell) -> T,
+{
+    let mut groups = BTreeMap::<T, Vec<Decimal>>::new();
+    for cell in cells {
+        groups.entry(f(cell)).or_default().push(cell.pnl_pct);
+    }
+    let mut ranked = groups
+        .into_iter()
+        .map(|(key, values)| (key, decimal_avg(values)))
+        .collect::<Vec<_>>();
+    if descending {
+        ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    } else {
+        ranked.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+    }
+    ranked.first().map(|(key, _)| key.clone())
+}
+
+fn strategy_robustness_findings_recommendations(
+    status: StrategyRobustnessMatrixStatus,
+    concentration_pct: Decimal,
+    data_quality_penalty: Decimal,
+    median_pnl_pct: Decimal,
+    avg_trade_count: Decimal,
+    min_trades_per_cell: i32,
+) -> (
+    Vec<StrategyRobustnessMatrixFinding>,
+    Vec<StrategyRobustnessMatrixRecommendation>,
+) {
+    let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
+    match status {
+        StrategyRobustnessMatrixStatus::Robust => findings.push(StrategyRobustnessMatrixFinding {
+            severity: "LOW".to_string(),
+            code: "strategy_robust_across_matrix".to_string(),
+            message: "Strategy remained positive across enough symbols, windows, and regimes."
+                .to_string(),
+        }),
+        StrategyRobustnessMatrixStatus::Negative => {
+            findings.push(StrategyRobustnessMatrixFinding {
+                severity: "MEDIUM".to_string(),
+                code: "negative_median_performance".to_string(),
+                message: "Negative median performance prevents robustness.".to_string(),
+            })
+        }
+        StrategyRobustnessMatrixStatus::OverfitRisk => {
+            findings.push(StrategyRobustnessMatrixFinding {
+                severity: "MEDIUM".to_string(),
+                code: "performance_concentrated".to_string(),
+                message: "Positive performance is concentrated in a small subset of cells."
+                    .to_string(),
+            })
+        }
+        StrategyRobustnessMatrixStatus::InsufficientData => {
+            findings.push(StrategyRobustnessMatrixFinding {
+                severity: "MEDIUM".to_string(),
+                code: "insufficient_matrix_data".to_string(),
+                message: "Too few usable cells or trades were available.".to_string(),
+            })
+        }
+        _ => {}
+    }
+    if concentration_pct >= Decimal::new(60, 0) {
+        findings.push(StrategyRobustnessMatrixFinding {
+            severity: "MEDIUM".to_string(),
+            code: "single_window_driver".to_string(),
+            message: "Strategy performance is concentrated in one window or cell.".to_string(),
+        });
+    }
+    if data_quality_penalty >= Decimal::new(25, 0) {
+        findings.push(StrategyRobustnessMatrixFinding {
+            severity: "HIGH".to_string(),
+            code: "data_quality_blocks_matrix".to_string(),
+            message: "Bad or degraded data quality materially blocks interpretation.".to_string(),
+        });
+        recommendations.push(StrategyRobustnessMatrixRecommendation {
+            priority: "HIGH".to_string(),
+            code: "repair_market_data".to_string(),
+            message: "Repair or exclude degraded windows before trusting the matrix.".to_string(),
+        });
+    }
+    if median_pnl_pct >= Decimal::ZERO && avg_trade_count < Decimal::from(min_trades_per_cell) {
+        recommendations.push(StrategyRobustnessMatrixRecommendation {
+            priority: "MEDIUM".to_string(),
+            code: "collect_more_trades".to_string(),
+            message: "Expand symbols, windows, or holding periods to collect enough trades."
+                .to_string(),
+        });
+    }
+    recommendations.push(StrategyRobustnessMatrixRecommendation {
+        priority: "LOW".to_string(),
+        code: "do_not_auto_promote".to_string(),
+        message: "Use the matrix as decision support only; do not auto-promote candidates."
+            .to_string(),
+    });
+    (findings, recommendations)
 }
 
 impl ResearchRegimeLabel {
@@ -9112,5 +9846,162 @@ mod tests {
                 .map(|recommendation| recommendation.code.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn matrix_request() -> StrategyRobustnessMatrixRequest {
+        StrategyRobustnessMatrixRequest {
+            strategy_ids: vec!["s1".to_string()],
+            symbols: vec!["BTCUSDT".to_string()],
+            timeframes: vec!["5m".to_string()],
+            windows: vec![StrategyRobustnessMatrixWindow {
+                start_time: ts(0, 0, 0),
+                end_time: ts(0, 1, 0),
+            }],
+            start_time: None,
+            end_time: None,
+            window_hours: None,
+            step_hours: None,
+            config_json_by_strategy: None,
+            experiment_run_id: None,
+            initial_capital: Decimal::new(10000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            holding_candles: None,
+            min_trades_per_cell: 5,
+            min_profitable_window_ratio: Decimal::new(5, 1),
+        }
+    }
+
+    fn matrix_cell(
+        strategy_id: &str,
+        pnl_pct: Decimal,
+        trade_count: i32,
+    ) -> StrategyRobustnessMatrixCell {
+        StrategyRobustnessMatrixCell {
+            id: Uuid::new_v4(),
+            matrix_run_id: Uuid::from_u128(77),
+            strategy_id: strategy_id.to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "5m".to_string(),
+            window_start: ts(0, 0, 0),
+            window_end: ts(0, 1, 0),
+            regime_label: ResearchRegimeLabel::TrendUp,
+            data_quality_status: MarketDataQualityStatus::Good,
+            status: if pnl_pct >= Decimal::ZERO {
+                StrategyRobustnessMatrixStatus::PromisingButWeak
+            } else {
+                StrategyRobustnessMatrixStatus::Negative
+            },
+            pnl_pct,
+            trade_count,
+            raw_signal_count: trade_count,
+            executed_trade_count: trade_count,
+            cooldown_suppressed_count: 0,
+            win_rate: Decimal::new(50, 0),
+            max_drawdown_pct: Decimal::new(1, 0),
+            fee_drag: Decimal::new(1, 1),
+            findings: Vec::new(),
+            created_at: ts(0, 0, 0),
+        }
+    }
+
+    #[test]
+    fn matrix_one_positive_many_negative_is_overfit_or_negative() {
+        let request = matrix_request();
+        let cells = vec![
+            matrix_cell("s1", Decimal::new(5, 0), 8),
+            matrix_cell("s1", Decimal::new(-1, 0), 8),
+            matrix_cell("s1", Decimal::new(-2, 0), 8),
+            matrix_cell("s1", Decimal::new(-3, 0), 8),
+        ];
+
+        let summary = summarize_strategy_robustness_matrix_strategy("s1", &request, &cells);
+
+        assert!(matches!(
+            summary.status,
+            StrategyRobustnessMatrixStatus::OverfitRisk | StrategyRobustnessMatrixStatus::Negative
+        ));
+    }
+
+    #[test]
+    fn matrix_positive_median_enough_trades_is_robust_or_promising() {
+        let request = matrix_request();
+        let cells = vec![
+            matrix_cell("s1", Decimal::new(2, 0), 10),
+            matrix_cell("s1", Decimal::new(1, 0), 12),
+            matrix_cell("s1", Decimal::new(15, 1), 11),
+            matrix_cell("s1", Decimal::new(5, 1), 9),
+        ];
+
+        let summary = summarize_strategy_robustness_matrix_strategy("s1", &request, &cells);
+
+        assert!(matches!(
+            summary.status,
+            StrategyRobustnessMatrixStatus::Robust
+                | StrategyRobustnessMatrixStatus::PromisingButWeak
+        ));
+    }
+
+    #[test]
+    fn matrix_too_few_trades_is_weak() {
+        let request = matrix_request();
+        let cells = vec![
+            matrix_cell("s1", Decimal::new(1, 0), 1),
+            matrix_cell("s1", Decimal::new(1, 0), 2),
+            matrix_cell("s1", Decimal::new(1, 0), 1),
+        ];
+
+        let summary = summarize_strategy_robustness_matrix_strategy("s1", &request, &cells);
+
+        assert_eq!(
+            summary.status,
+            StrategyRobustnessMatrixStatus::PromisingButWeak
+        );
+    }
+
+    #[test]
+    fn matrix_negative_median_is_negative() {
+        let request = matrix_request();
+        let cells = vec![
+            matrix_cell("s1", Decimal::new(1, 0), 8),
+            matrix_cell("s1", Decimal::new(-1, 0), 8),
+            matrix_cell("s1", Decimal::new(-2, 0), 8),
+        ];
+
+        let summary = summarize_strategy_robustness_matrix_strategy("s1", &request, &cells);
+
+        assert_eq!(summary.status, StrategyRobustnessMatrixStatus::Negative);
+    }
+
+    #[test]
+    fn matrix_ranking_is_deterministic() {
+        let request = matrix_request();
+        let cells = vec![
+            matrix_cell("b", Decimal::new(1, 0), 8),
+            matrix_cell("a", Decimal::new(1, 0), 8),
+        ];
+
+        let result = build_strategy_robustness_matrix_result(
+            Uuid::from_u128(8),
+            request,
+            cells,
+            ts(0, 0, 0),
+        );
+
+        assert_eq!(result.strategy_rankings[0].strategy_id, "a");
+        assert_eq!(result.strategy_rankings[1].strategy_id, "b");
+    }
+
+    #[test]
+    fn matrix_regime_consistency_counts_positive_regimes() {
+        let mut trend = matrix_cell("s1", Decimal::new(1, 0), 8);
+        trend.regime_label = ResearchRegimeLabel::TrendUp;
+        let mut range = matrix_cell("s1", Decimal::new(-1, 0), 8);
+        range.regime_label = ResearchRegimeLabel::Range;
+        let cells = vec![&trend, &range];
+
+        let consistency = calculate_strategy_robustness_regime_consistency(&cells);
+
+        assert_eq!(consistency, Decimal::new(50, 0));
     }
 }

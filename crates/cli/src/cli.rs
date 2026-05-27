@@ -816,6 +816,46 @@ pub enum ResearchCommands {
     Batches(ResearchBatchCommands),
     #[command(subcommand)]
     Candidates(ResearchCandidateCommands),
+    #[command(name = "robustness-matrix", subcommand)]
+    RobustnessMatrix(ResearchRobustnessMatrixCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchRobustnessMatrixCommands {
+    Run(ResearchRobustnessMatrixRunArgs),
+    List(ResearchBatchListArgs),
+    Get { run_id: Uuid },
+    Cells { run_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchRobustnessMatrixRunArgs {
+    #[arg(long = "strategies", value_delimiter = ',')]
+    pub strategies: Vec<String>,
+    #[arg(long = "symbols", value_delimiter = ',')]
+    pub symbols: Vec<String>,
+    #[arg(long = "timeframes", value_delimiter = ',')]
+    pub timeframes: Vec<String>,
+    #[arg(long = "start")]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "window-hours")]
+    pub window_hours: i64,
+    #[arg(long = "step-hours")]
+    pub step_hours: i64,
+    #[arg(long = "initial-capital", default_value = "10000")]
+    pub initial_capital: rust_decimal::Decimal,
+    #[arg(long = "fee-bps", default_value = "10")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps", default_value = "5")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "holding-candles")]
+    pub holding_candles: Option<u32>,
+    #[arg(long = "min-trades-per-cell", default_value_t = 5)]
+    pub min_trades_per_cell: i32,
+    #[arg(long = "min-profitable-window-ratio", default_value = "0.5")]
+    pub min_profitable_window_ratio: rust_decimal::Decimal,
 }
 
 #[derive(Debug, Subcommand)]

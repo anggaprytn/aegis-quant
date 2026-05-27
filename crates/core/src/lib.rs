@@ -7773,6 +7773,10 @@ pub enum CoreError {
     UnsupportedResearchBatchStepStatus(String),
     #[error("unsupported research campaign status: {0}")]
     UnsupportedResearchCampaignStatus(String),
+    #[error("unsupported research regime label: {0}")]
+    UnsupportedResearchRegimeLabel(String),
+    #[error("unsupported strategy robustness matrix status: {0}")]
+    UnsupportedStrategyRobustnessMatrixStatus(String),
     #[error("research campaign requires at least one strategy")]
     EmptyResearchCampaignStrategies,
     #[error("research campaign requires at least one symbol")]
@@ -7781,10 +7785,22 @@ pub enum CoreError {
     EmptyResearchCampaignTimeframes,
     #[error("research campaign requires at least one window")]
     EmptyResearchCampaignWindows,
+    #[error("strategy robustness matrix requires at least one strategy")]
+    EmptyStrategyRobustnessMatrixStrategies,
+    #[error("strategy robustness matrix requires at least one symbol")]
+    EmptyStrategyRobustnessMatrixSymbols,
+    #[error("strategy robustness matrix requires at least one timeframe")]
+    EmptyStrategyRobustnessMatrixTimeframes,
+    #[error("strategy robustness matrix requires at least one window")]
+    EmptyStrategyRobustnessMatrixWindows,
     #[error("invalid research campaign time range")]
     InvalidResearchCampaignTimeRange,
     #[error("invalid research campaign window or step hours")]
     InvalidResearchCampaignWindowStep,
+    #[error("invalid strategy robustness matrix time range")]
+    InvalidStrategyRobustnessMatrixTimeRange,
+    #[error("invalid strategy robustness matrix window or step hours")]
+    InvalidStrategyRobustnessMatrixWindowStep,
     #[error("invalid research candidate transition from {0} using decision {1}")]
     InvalidResearchCandidateTransition(String, String),
     #[error("invalid research candidate review action {1} for status {0}")]
@@ -7903,6 +7919,8 @@ pub enum CoreError {
     InvalidStrategyExperimentInitialCapital,
     #[error("strategy walk-forward initial_capital must be greater than zero")]
     InvalidStrategyWalkForwardInitialCapital,
+    #[error("strategy robustness matrix initial_capital must be greater than zero")]
+    InvalidStrategyRobustnessMatrixInitialCapital,
     #[error("strategy experiment max_runs must be greater than zero")]
     InvalidStrategyExperimentMaxRuns,
     #[error("strategy walk-forward min_required_test_windows must be greater than zero")]
@@ -7911,6 +7929,8 @@ pub enum CoreError {
     InvalidStrategyWalkForwardWindowSize(String),
     #[error("strategy walk-forward step_size_hours must be greater than zero")]
     InvalidStrategyWalkForwardStepSize,
+    #[error("invalid strategy robustness matrix threshold: {0}")]
+    InvalidStrategyRobustnessMatrixThreshold(String),
     #[error("candle backfill request limit must be greater than zero")]
     InvalidCandleBackfillLimit,
     #[error("market data repair max_ranges must be greater than zero")]

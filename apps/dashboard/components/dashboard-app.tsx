@@ -81,6 +81,10 @@ import type {
   StrategyWalkForwardRequest,
   StrategyWalkForwardResult,
   StrategyWalkForwardWindowResult,
+  StrategyRobustnessMatrixAcceptedResponse,
+  StrategyRobustnessMatrixCell,
+  StrategyRobustnessMatrixRequest,
+  StrategyRobustnessMatrixResult,
   StrategyConfigUpdateRequest,
   StrategyDecisionBreakdown,
   StrategyPerformanceSummary,
@@ -5441,6 +5445,7 @@ function AuthenticatedDashboard({
 
           {section === "experiments" && (
             <section className="grid gap-4 xl:grid-cols-12">
+              <ResearchRobustnessMatrixPanel />
               <Panel className="xl:col-span-12" title="Research Campaigns">
                 <div className="grid gap-3 md:grid-cols-4">
                   <Field
@@ -9874,6 +9879,278 @@ function ResearchBatchDetail({
       ) : null}
     </div>
   );
+}
+
+const DEFAULT_ROBUSTNESS_MATRIX_FORM: StrategyRobustnessMatrixRequest = {
+  strategy_ids: ["trend_filter_momentum_v1", "trend_filter_momentum_v2", "range_reversion_v1"],
+  symbols: ["BTCUSDT", "ETHUSDT"],
+  timeframes: ["5m", "15m"],
+  windows: [],
+  start_time: "2026-05-01T00:00:00Z",
+  end_time: "2026-05-04T00:00:00Z",
+  window_hours: 24,
+  step_hours: 24,
+  config_json_by_strategy: null,
+  experiment_run_id: null,
+  initial_capital: "1000000",
+  fee_bps: "10",
+  slippage_bps: "5",
+  holding_candles: 10,
+  min_trades_per_cell: 5,
+  min_profitable_window_ratio: "0.5",
+};
+
+function ResearchRobustnessMatrixPanel() {
+  const queryClient = useQueryClient();
+  const [form, setForm] = useState<StrategyRobustnessMatrixRequest>(
+    DEFAULT_ROBUSTNESS_MATRIX_FORM,
+  );
+  const [lastRun, setLastRun] = useState<StrategyRobustnessMatrixAcceptedResponse | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  const runsQuery = useQuery({
+    queryKey: ["strategy-robustness-matrices"],
+    queryFn: () => api.getStrategyRobustnessMatrices(10),
+  });
+  const cellsQuery = useQuery({
+    queryKey: ["strategy-robustness-matrix-cells", selectedRunId],
+    queryFn: () => api.getStrategyRobustnessMatrixCells(selectedRunId ?? ""),
+    enabled: Boolean(selectedRunId),
+  });
+  const runMutation = useMutation({
+    mutationFn: api.runStrategyRobustnessMatrix,
+    onSuccess: async (response) => {
+      setLastRun(response);
+      setSelectedRunId(response.matrix.run_id);
+      await queryClient.invalidateQueries({ queryKey: ["strategy-robustness-matrices"] });
+    },
+  });
+
+  const activeMatrix = lastRun?.matrix ?? runsQuery.data?.matrices[0] ?? null;
+  const activeCells = lastRun?.cells ?? cellsQuery.data?.cells ?? [];
+  const regimeBreakdown = buildRegimeBreakdown(activeCells);
+
+  return (
+    <Panel className="xl:col-span-12" title="Research Robustness Matrix">
+      <form
+        className="grid gap-3 md:grid-cols-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          runMutation.mutate(form);
+        }}
+      >
+        <Field
+          label="Strategies"
+          value={form.strategy_ids.join(",")}
+          onChange={(value) => setForm((current) => ({ ...current, strategy_ids: parseStringList(value) }))}
+        />
+        <Field
+          label="Symbols"
+          value={form.symbols.join(",")}
+          onChange={(value) => setForm((current) => ({ ...current, symbols: parseStringList(value) }))}
+        />
+        <Field
+          label="Timeframes"
+          value={form.timeframes.join(",")}
+          onChange={(value) => setForm((current) => ({ ...current, timeframes: parseStringList(value) }))}
+        />
+        <Field
+          label="Start"
+          value={form.start_time ?? ""}
+          onChange={(value) => setForm((current) => ({ ...current, start_time: value || null }))}
+        />
+        <Field
+          label="End"
+          value={form.end_time ?? ""}
+          onChange={(value) => setForm((current) => ({ ...current, end_time: value || null }))}
+        />
+        <Field
+          label="Window Hours"
+          value={String(form.window_hours ?? "")}
+          onChange={(value) => setForm((current) => ({ ...current, window_hours: Number(value) || null }))}
+        />
+        <Field
+          label="Step Hours"
+          value={String(form.step_hours ?? "")}
+          onChange={(value) => setForm((current) => ({ ...current, step_hours: Number(value) || null }))}
+        />
+        <Field
+          label="Initial Capital"
+          value={form.initial_capital}
+          onChange={(value) => setForm((current) => ({ ...current, initial_capital: value }))}
+        />
+        <Field
+          label="Fee Bps"
+          value={form.fee_bps}
+          onChange={(value) => setForm((current) => ({ ...current, fee_bps: value }))}
+        />
+        <Field
+          label="Slippage Bps"
+          value={form.slippage_bps}
+          onChange={(value) => setForm((current) => ({ ...current, slippage_bps: value }))}
+        />
+        <Field
+          label="Holding Candles"
+          value={String(form.holding_candles ?? "")}
+          onChange={(value) =>
+            setForm((current) => ({ ...current, holding_candles: value ? Number(value) : null }))
+          }
+        />
+        <Field
+          label="Min Trades"
+          value={String(form.min_trades_per_cell ?? 5)}
+          onChange={(value) =>
+            setForm((current) => ({ ...current, min_trades_per_cell: Number(value) || 0 }))
+          }
+        />
+        <button
+          className="rounded-xl border border-accent bg-accent/15 px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/25 disabled:opacity-50 md:self-end"
+          type="submit"
+          disabled={runMutation.isPending}
+        >
+          {runMutation.isPending ? "Running..." : "Run Matrix"}
+        </button>
+      </form>
+      <InlineStatus error={getErrorMessage(runMutation.error ?? runsQuery.error)} />
+
+      <div className="mt-5 grid gap-4 xl:grid-cols-3">
+        <div className="rounded-lg border border-border/70 p-3">
+          <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">Recent Runs</div>
+          <div className="space-y-2 text-sm">
+            {(runsQuery.data?.matrices ?? []).map((run) => (
+              <button
+                key={run.run_id}
+                className="block w-full rounded-md border border-border/70 px-3 py-2 text-left hover:border-accent"
+                type="button"
+                onClick={() => {
+                  setSelectedRunId(run.run_id);
+                  setLastRun(null);
+                }}
+              >
+                <div className="font-mono text-xs text-slate-300">{run.run_id}</div>
+                <div className="mt-1 text-xs text-muted">
+                  {run.status} cells={run.cell_count}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="xl:col-span-2">
+          {activeMatrix ? <StrategyRobustnessRankingTable matrix={activeMatrix} /> : null}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-3">
+        <div className="rounded-lg border border-border/70 p-3">
+          <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">Regime Breakdown</div>
+          <div className="space-y-2 text-sm">
+            {regimeBreakdown.map((row) => (
+              <div key={row.regime} className="flex items-center justify-between gap-3">
+                <span>{row.regime}</span>
+                <span className="text-muted">
+                  cells={row.count} avg={row.avgPnl}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-lg border border-border/70 p-3 xl:col-span-2">
+          <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">Recommendations</div>
+          <div className="space-y-2 text-sm text-slate-300">
+            {(activeMatrix?.strategy_rankings ?? []).flatMap((summary) =>
+              summary.recommendations.map((item) => (
+                <div key={`${summary.strategy_id}-${item.code}`} className="rounded-md bg-surface/60 px-3 py-2">
+                  {summary.strategy_id}: {item.priority} {item.code} - {item.message}
+                </div>
+              )),
+            )}
+          </div>
+        </div>
+      </div>
+
+      <StrategyRobustnessCellsTable cells={activeCells} />
+    </Panel>
+  );
+}
+
+function StrategyRobustnessRankingTable({ matrix }: { matrix: StrategyRobustnessMatrixResult }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border/70">
+      <table className="min-w-full divide-y divide-border/70 text-sm">
+        <thead className="text-xs uppercase tracking-[0.18em] text-muted">
+          <tr>
+            {["Strategy", "Status", "Score", "Avg PnL", "Median", "Worst", "Best Symbol", "Best Regime"].map((header) => (
+              <th key={header} className="px-3 py-2 text-left">{header}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border/50">
+          {matrix.strategy_rankings.map((summary) => (
+            <tr key={summary.strategy_id}>
+              <td className="px-3 py-2 font-mono text-xs">{summary.strategy_id}</td>
+              <td className="px-3 py-2">{summary.status}</td>
+              <td className="px-3 py-2">{summary.robustness_score}</td>
+              <td className="px-3 py-2">{summary.avg_pnl_pct}</td>
+              <td className="px-3 py-2">{summary.median_pnl_pct}</td>
+              <td className="px-3 py-2">{summary.worst_window_pnl_pct}</td>
+              <td className="px-3 py-2">{summary.best_symbol ?? "-"}</td>
+              <td className="px-3 py-2">{summary.best_regime ?? "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function StrategyRobustnessCellsTable({ cells }: { cells: StrategyRobustnessMatrixCell[] }) {
+  return (
+    <div className="mt-4 overflow-x-auto rounded-lg border border-border/70">
+      <table className="min-w-full divide-y divide-border/70 text-sm">
+        <thead className="text-xs uppercase tracking-[0.18em] text-muted">
+          <tr>
+            {["Strategy", "Symbol", "Tf", "Window", "Status", "Regime", "Quality", "PnL", "Trades", "Signals", "Drawdown"].map((header) => (
+              <th key={header} className="px-3 py-2 text-left">{header}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border/50">
+          {cells.slice(0, 80).map((cell) => (
+            <tr key={cell.id}>
+              <td className="px-3 py-2 font-mono text-xs">{cell.strategy_id}</td>
+              <td className="px-3 py-2">{cell.symbol}</td>
+              <td className="px-3 py-2">{cell.timeframe}</td>
+              <td className="px-3 py-2 text-xs">{cell.window_start.slice(0, 10)}..{cell.window_end.slice(0, 10)}</td>
+              <td className="px-3 py-2">{cell.status}</td>
+              <td className="px-3 py-2">{cell.regime_label}</td>
+              <td className="px-3 py-2">{cell.data_quality_status}</td>
+              <td className="px-3 py-2">{cell.pnl_pct}</td>
+              <td className="px-3 py-2">{cell.trade_count}</td>
+              <td className="px-3 py-2">{cell.raw_signal_count}</td>
+              <td className="px-3 py-2">{cell.max_drawdown_pct}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function buildRegimeBreakdown(cells: StrategyRobustnessMatrixCell[]) {
+  const groups = new Map<string, { count: number; total: number }>();
+  for (const cell of cells) {
+    const current = groups.get(cell.regime_label) ?? { count: 0, total: 0 };
+    current.count += 1;
+    current.total += Number(cell.pnl_pct);
+    groups.set(cell.regime_label, current);
+  }
+  return Array.from(groups.entries())
+    .map(([regime, value]) => ({
+      regime,
+      count: value.count,
+      avgPnl: value.count > 0 ? (value.total / value.count).toFixed(5) : "0",
+    }))
+    .sort((left, right) => left.regime.localeCompare(right.regime));
 }
 
 function StrategyExperimentsTable({

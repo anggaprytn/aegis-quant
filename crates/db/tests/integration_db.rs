@@ -11,9 +11,9 @@ use aegis_core::{
     ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
     ResearchCandidateStatus, ResearchDataCoverageResult, ResearchDataReadinessStatus,
     ResearchDatasetBuildRequest, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchShadowPnlAttributionRequest, ResearchShadowPnlStatus,
-    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
-    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
+    ResearchDatasetBuildStepStatus, ResearchRegimeLabel, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
     StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
     StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
@@ -22,12 +22,15 @@ use aegis_core::{
     StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
     StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
     StrategyResearchCandidateEvidence, StrategyResearchCandidateScore,
-    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategySignal,
-    StrategyWalkForwardCandidate, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus, StrategyWalkForwardWindow,
-    StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
-    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetShadowRunnerConfig,
-    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategyRobustnessMatrixCell,
+    StrategyRobustnessMatrixFinding, StrategyRobustnessMatrixRecommendation,
+    StrategyRobustnessMatrixRequest, StrategyRobustnessMatrixResult,
+    StrategyRobustnessMatrixStatus, StrategyRobustnessMatrixStrategySummary,
+    StrategyRobustnessMatrixWindow, StrategySignal, StrategyWalkForwardCandidate,
+    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary,
+    StrategyWalkForwardStatus, StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
 };
 use chrono::{TimeZone, Utc};
 use db::{
@@ -41,16 +44,17 @@ use db::{
     get_order_by_idempotency_key, get_research_candidate_shadow_performance,
     get_research_candidate_shadow_pnl_attribution, get_research_dataset_build, get_risk_decision,
     get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_shadow_run_by_id,
-    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
+    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_market_data_repair_run, insert_paper_account, insert_research_candidate_shadow_run_link,
     insert_research_dataset_build, insert_risk_decision, insert_signal_deduped,
     insert_strategy_candidate_observation, insert_strategy_experiment,
     insert_strategy_experiment_runs, insert_strategy_research_candidate,
+    insert_strategy_robustness_matrix_cells, insert_strategy_robustness_matrix_run,
     insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
     insert_testnet_shadow_promotion, insert_testnet_shadow_run,
     list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
@@ -58,7 +62,8 @@ use db::{
     list_orders, list_recent_signals, list_research_candidate_shadow_runs,
     list_research_dataset_build_steps, list_strategy_candidate_observations,
     list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
-    list_strategy_research_candidates, list_strategy_walk_forward_runs,
+    list_strategy_research_candidates, list_strategy_robustness_matrix_cells,
+    list_strategy_robustness_matrix_runs, list_strategy_walk_forward_runs,
     list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
     list_testnet_shadow_runs, list_testnet_shadow_runs_in_window,
     mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
@@ -66,7 +71,8 @@ use db::{
     research_candidate_from_record, research_dataset_build_result_from_records,
     resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
-    strategy_research_candidate_from_record, strategy_walk_forward_result_from_records,
+    strategy_research_candidate_from_record, strategy_robustness_matrix_cell_from_record,
+    strategy_robustness_matrix_result_from_record, strategy_walk_forward_result_from_records,
     strategy_walk_forward_window_from_record, summarize_candle_continuity_report,
     test_support::TestDatabase, testnet_shadow_runner_config_from_record,
     testnet_shadow_runner_state_from_record, update_backtest_run_completed,
@@ -3003,6 +3009,170 @@ async fn strategy_walk_forward_windows_persist_and_order() {
         persisted[2].skip_reason.as_deref(),
         Some("insufficient_candle_coverage: expected=96 actual=80 required=10")
     );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn strategy_robustness_matrix_run_and_cells_persist_in_order() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let run_id = Uuid::new_v4();
+    let created_at = fixed_time();
+    let first_window = StrategyRobustnessMatrixWindow {
+        start_time: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        end_time: Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
+    };
+    let second_window = StrategyRobustnessMatrixWindow {
+        start_time: Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap(),
+        end_time: Utc.with_ymd_and_hms(2026, 1, 1, 2, 0, 0).unwrap(),
+    };
+    let request = StrategyRobustnessMatrixRequest {
+        strategy_ids: vec!["trend_filter_momentum_v2".to_string()],
+        symbols: vec!["BTCUSDT".to_string()],
+        timeframes: vec!["15m".to_string()],
+        windows: vec![first_window.clone(), second_window.clone()],
+        start_time: None,
+        end_time: None,
+        window_hours: None,
+        step_hours: None,
+        config_json_by_strategy: None,
+        experiment_run_id: None,
+        initial_capital: Decimal::new(1_000_000, 0),
+        fee_bps: Decimal::new(10, 0),
+        slippage_bps: Decimal::new(5, 0),
+        holding_candles: Some(10),
+        min_trades_per_cell: 5,
+        min_profitable_window_ratio: Decimal::new(50, 2),
+    };
+    let summary = StrategyRobustnessMatrixStrategySummary {
+        strategy_id: "trend_filter_momentum_v2".to_string(),
+        status: StrategyRobustnessMatrixStatus::PromisingButWeak,
+        profitable_window_ratio: Decimal::new(50, 2),
+        avg_pnl_pct: Decimal::new(15, 2),
+        median_pnl_pct: Decimal::new(15, 2),
+        worst_window_pnl_pct: Decimal::new(-10, 2),
+        best_window_pnl_pct: Decimal::new(40, 2),
+        avg_trade_count: Decimal::new(6, 0),
+        regime_consistency: Decimal::new(50, 2),
+        data_quality_penalty: Decimal::ZERO,
+        robustness_score: Decimal::new(55, 0),
+        completed_cells: 2,
+        insufficient_data_cells: 0,
+        failed_cells: 0,
+        best_symbol: Some("BTCUSDT".to_string()),
+        worst_symbol: Some("BTCUSDT".to_string()),
+        best_regime: Some(ResearchRegimeLabel::Range),
+        worst_regime: Some(ResearchRegimeLabel::Range),
+        findings: Vec::new(),
+        recommendations: vec![StrategyRobustnessMatrixRecommendation {
+            priority: "LOW".to_string(),
+            code: "do_not_auto_promote".to_string(),
+            message: "Use the matrix as decision support only.".to_string(),
+        }],
+    };
+    let result = StrategyRobustnessMatrixResult {
+        run_id,
+        status: StrategyRobustnessMatrixStatus::PromisingButWeak,
+        request,
+        strategy_rankings: vec![summary],
+        findings: vec![StrategyRobustnessMatrixFinding {
+            severity: "LOW".to_string(),
+            code: "promising_strategy".to_string(),
+            message: "Strategy has positive cross-window evidence.".to_string(),
+        }],
+        recommendations: Vec::new(),
+        cell_count: 2,
+        created_at,
+    };
+    let mut cells = vec![
+        StrategyRobustnessMatrixCell {
+            id: Uuid::new_v4(),
+            matrix_run_id: run_id,
+            strategy_id: "trend_filter_momentum_v2".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            window_start: second_window.start_time,
+            window_end: second_window.end_time,
+            regime_label: ResearchRegimeLabel::Range,
+            data_quality_status: MarketDataQualityStatus::Good,
+            status: StrategyRobustnessMatrixStatus::Negative,
+            pnl_pct: Decimal::new(-10, 2),
+            trade_count: 5,
+            raw_signal_count: 8,
+            executed_trade_count: 5,
+            cooldown_suppressed_count: 1,
+            win_rate: Decimal::new(40, 2),
+            max_drawdown_pct: Decimal::new(12, 2),
+            fee_drag: Decimal::new(3, 2),
+            findings: Vec::new(),
+            created_at,
+        },
+        StrategyRobustnessMatrixCell {
+            id: Uuid::new_v4(),
+            matrix_run_id: run_id,
+            strategy_id: "trend_filter_momentum_v2".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            window_start: first_window.start_time,
+            window_end: first_window.end_time,
+            regime_label: ResearchRegimeLabel::Range,
+            data_quality_status: MarketDataQualityStatus::Good,
+            status: StrategyRobustnessMatrixStatus::PromisingButWeak,
+            pnl_pct: Decimal::new(40, 2),
+            trade_count: 7,
+            raw_signal_count: 9,
+            executed_trade_count: 7,
+            cooldown_suppressed_count: 2,
+            win_rate: Decimal::new(57, 2),
+            max_drawdown_pct: Decimal::new(4, 2),
+            fee_drag: Decimal::new(4, 2),
+            findings: Vec::new(),
+            created_at,
+        },
+    ];
+
+    insert_strategy_robustness_matrix_run(&test_db.pool, &result)
+        .await
+        .expect("matrix run should persist");
+    insert_strategy_robustness_matrix_cells(&test_db.pool, &cells)
+        .await
+        .expect("matrix cells should persist");
+
+    let listed_runs = list_strategy_robustness_matrix_runs(&test_db.pool, 10)
+        .await
+        .expect("matrix runs should list");
+    assert!(listed_runs.iter().any(|record| record.id == run_id));
+
+    let run_record = get_strategy_robustness_matrix_run(&test_db.pool, run_id)
+        .await
+        .expect("matrix run should load")
+        .expect("matrix run should exist");
+    let mapped_result =
+        strategy_robustness_matrix_result_from_record(&run_record).expect("result should map");
+    assert_eq!(mapped_result.run_id, run_id);
+    assert_eq!(
+        mapped_result.strategy_rankings[0].strategy_id,
+        "trend_filter_momentum_v2"
+    );
+
+    let listed_cells = list_strategy_robustness_matrix_cells(&test_db.pool, run_id)
+        .await
+        .expect("matrix cells should list");
+    assert_eq!(listed_cells.len(), 2);
+    assert_eq!(listed_cells[0].window_start, first_window.start_time);
+    assert_eq!(listed_cells[1].window_start, second_window.start_time);
+
+    let mapped_cell =
+        strategy_robustness_matrix_cell_from_record(&listed_cells[0]).expect("cell should map");
+    assert_eq!(mapped_cell.matrix_run_id, run_id);
+    assert_eq!(
+        mapped_cell.status,
+        StrategyRobustnessMatrixStatus::PromisingButWeak
+    );
+
+    cells.sort_by_key(|cell| cell.window_start);
+    assert_eq!(mapped_cell.id, cells[0].id);
 }
 
 #[tokio::test]

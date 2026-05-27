@@ -3944,3 +3944,126 @@ export type StrategyWalkForwardWindowsResponse = {
   correlation_id: string;
   timestamp: string;
 };
+
+export type StrategyRobustnessMatrixStatus =
+  | "ROBUST"
+  | "PROMISING_BUT_WEAK"
+  | "MIXED"
+  | "OVERFIT_RISK"
+  | "NEGATIVE"
+  | "INSUFFICIENT_DATA"
+  | "FAILED";
+
+export type StrategyRobustnessMatrixFinding = {
+  severity: string;
+  code: string;
+  message: string;
+};
+
+export type StrategyRobustnessMatrixRecommendation = {
+  priority: string;
+  code: string;
+  message: string;
+};
+
+export type StrategyRobustnessMatrixRequest = {
+  strategy_ids: string[];
+  symbols: string[];
+  timeframes: string[];
+  windows?: { start_time: string; end_time: string }[];
+  start_time?: string | null;
+  end_time?: string | null;
+  window_hours?: number | null;
+  step_hours?: number | null;
+  config_json_by_strategy?: Record<string, unknown> | null;
+  experiment_run_id?: string | null;
+  initial_capital: string;
+  fee_bps: string;
+  slippage_bps: string;
+  holding_candles?: number | null;
+  min_trades_per_cell?: number;
+  min_profitable_window_ratio?: string;
+};
+
+export type StrategyRobustnessMatrixCell = {
+  id: string;
+  matrix_run_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  window_start: string;
+  window_end: string;
+  regime_label: ResearchRegimeLabel;
+  data_quality_status: string;
+  status: StrategyRobustnessMatrixStatus;
+  pnl_pct: string;
+  trade_count: number;
+  raw_signal_count: number;
+  executed_trade_count: number;
+  cooldown_suppressed_count: number;
+  win_rate: string;
+  max_drawdown_pct: string;
+  fee_drag: string;
+  findings: StrategyRobustnessMatrixFinding[];
+  created_at: string;
+};
+
+export type StrategyRobustnessMatrixStrategySummary = {
+  strategy_id: string;
+  status: StrategyRobustnessMatrixStatus;
+  profitable_window_ratio: string;
+  avg_pnl_pct: string;
+  median_pnl_pct: string;
+  worst_window_pnl_pct: string;
+  best_window_pnl_pct: string;
+  avg_trade_count: string;
+  regime_consistency: string;
+  data_quality_penalty: string;
+  robustness_score: string;
+  completed_cells: number;
+  insufficient_data_cells: number;
+  failed_cells: number;
+  best_symbol: string | null;
+  worst_symbol: string | null;
+  best_regime: ResearchRegimeLabel | null;
+  worst_regime: ResearchRegimeLabel | null;
+  findings: StrategyRobustnessMatrixFinding[];
+  recommendations: StrategyRobustnessMatrixRecommendation[];
+};
+
+export type StrategyRobustnessMatrixResult = {
+  run_id: string;
+  status: StrategyRobustnessMatrixStatus;
+  request: StrategyRobustnessMatrixRequest;
+  strategy_rankings: StrategyRobustnessMatrixStrategySummary[];
+  findings: StrategyRobustnessMatrixFinding[];
+  recommendations: StrategyRobustnessMatrixRecommendation[];
+  cell_count: number;
+  created_at: string;
+};
+
+export type StrategyRobustnessMatrixAcceptedResponse = {
+  matrix: StrategyRobustnessMatrixResult;
+  cells: StrategyRobustnessMatrixCell[];
+};
+
+export type StrategyRobustnessMatrixRunsResponse = {
+  matrices: StrategyRobustnessMatrixResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyRobustnessMatrixResponse = {
+  matrix: StrategyRobustnessMatrixResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type StrategyRobustnessMatrixCellsResponse = {
+  cells: StrategyRobustnessMatrixCell[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};

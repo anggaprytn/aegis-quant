@@ -1,14 +1,18 @@
 use aegis_core::{
+    build_strategy_robustness_matrix_result, classify_research_regime, summarize_candle_continuity,
     BacktestEquityPoint, BacktestPosition, BacktestRequest, BacktestResult, BacktestTrade, Candle,
-    CandleInterval, EventEnvelope, ReplayRunStatus, ReplaySuppressionCount,
-    ReplaySuppressionReason, Side, StrategyConfig, StrategyConfigUpdateRequest,
-    StrategyEvaluationContext, StrategyExitAttributionHoldingWindow,
-    StrategyExitAttributionRecommendation, StrategyExitAttributionRequest,
-    StrategyExitAttributionResult, StrategyExitAttributionStatus, StrategyExitAttributionTrade,
-    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentGlobalRanking,
-    StrategyExperimentGlobalRankingEntry, StrategyExperimentMetric, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+    CandleInterval, EventEnvelope, MarketDataQualityRequest, MarketDataQualityStatus,
+    MarketDataSource, ReplayRunStatus, ReplaySuppressionCount, ReplaySuppressionReason, Side,
+    StrategyConfig, StrategyConfigUpdateRequest, StrategyEvaluationContext,
+    StrategyExitAttributionHoldingWindow, StrategyExitAttributionRecommendation,
+    StrategyExitAttributionRequest, StrategyExitAttributionResult, StrategyExitAttributionStatus,
+    StrategyExitAttributionTrade, StrategyExperimentCandidate, StrategyExperimentComparison,
+    StrategyExperimentGlobalRanking, StrategyExperimentGlobalRankingEntry,
+    StrategyExperimentMetric, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixFinding, StrategyRobustnessMatrixRequest,
+    StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus,
     StrategySignalFeatureAttributionRequest, StrategySignalFeatureAttributionResult,
     StrategySignalFeatureAttributionStatus, StrategySignalFeatureBucket,
     StrategySignalFeatureMetric, StrategySignalFeatureRecommendation, StrategySignalFeatureSample,
@@ -23,7 +27,8 @@ use db::{
     backtest_result_from_record, get_backtest_run, get_closed_candles_range,
     get_strategy_experiment_run, get_strategy_status, insert_backtest_equity_points,
     insert_backtest_run, insert_backtest_trade, insert_strategy_experiment,
-    insert_strategy_experiment_runs, insert_strategy_walk_forward_run,
+    insert_strategy_experiment_runs, insert_strategy_robustness_matrix_cells,
+    insert_strategy_robustness_matrix_run, insert_strategy_walk_forward_run,
     insert_strategy_walk_forward_windows, insert_system_event, strategy_config_from_record,
     update_backtest_run_completed, PgPool,
 };
@@ -67,6 +72,12 @@ pub struct StrategyMultiTimeframeExperimentExecution {
 pub struct StrategyWalkForwardExecution {
     pub result: StrategyWalkForwardResult,
     pub windows: Vec<StrategyWalkForwardWindowResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrategyRobustnessMatrixExecution {
+    pub result: StrategyRobustnessMatrixResult,
+    pub cells: Vec<StrategyRobustnessMatrixCell>,
 }
 
 #[derive(Debug, Clone)]
@@ -521,6 +532,91 @@ impl ReplayEngine {
             .context("failed to insert strategy walk-forward windows")?;
 
         Ok(execution)
+    }
+
+    pub async fn run_strategy_robustness_matrix(
+        &self,
+        request: StrategyRobustnessMatrixRequest,
+    ) -> Result<StrategyRobustnessMatrixExecution> {
+        request.validate()?;
+        let matrix_run_id = Uuid::new_v4();
+        let created_at = Utc::now();
+        let windows = request.resolved_windows()?;
+        let correlation_id = request.experiment_run_id.unwrap_or_else(Uuid::new_v4);
+        let mut cells = Vec::new();
+
+        for strategy_id in &request.strategy_ids {
+            let (base_config, _) = self
+                .load_strategy_experiment_context(strategy_id, request.symbols[0].as_str())
+                .await?;
+            let strategy_config_value = request
+                .config_json_by_strategy
+                .as_ref()
+                .and_then(|configs| configs.get(strategy_id))
+                .cloned();
+
+            for symbol_value in &request.symbols {
+                let symbol = Symbol::new(symbol_value.clone())
+                    .context("invalid symbol for strategy robustness matrix")?;
+                for timeframe_value in &request.timeframes {
+                    let timeframe = parse_strategy_timeframe(timeframe_value)?;
+                    let span_start = windows
+                        .iter()
+                        .map(|window| window.start_time)
+                        .min()
+                        .expect("validated matrix windows");
+                    let span_end = windows
+                        .iter()
+                        .map(|window| window.end_time)
+                        .max()
+                        .expect("validated matrix windows");
+                    let candles = get_closed_candles_range(
+                        &self.pool, &symbol, timeframe, span_start, span_end,
+                    )
+                    .await
+                    .context("failed to load matrix candles")?;
+                    let strategy_config = strategy_robustness_matrix_config(
+                        strategy_id,
+                        symbol.clone(),
+                        timeframe,
+                        &base_config,
+                        strategy_config_value.clone(),
+                    )?;
+
+                    for window in &windows {
+                        cells.push(build_strategy_robustness_matrix_cell(
+                            matrix_run_id,
+                            created_at,
+                            correlation_id,
+                            &request,
+                            strategy_id,
+                            symbol.as_str(),
+                            timeframe_value,
+                            timeframe,
+                            &strategy_config,
+                            &candles,
+                            window.start_time,
+                            window.end_time,
+                        )?);
+                    }
+                }
+            }
+        }
+
+        let result = build_strategy_robustness_matrix_result(
+            matrix_run_id,
+            request,
+            cells.clone(),
+            created_at,
+        );
+        insert_strategy_robustness_matrix_run(&self.pool, &result)
+            .await
+            .context("failed to insert strategy robustness matrix run")?;
+        insert_strategy_robustness_matrix_cells(&self.pool, &cells)
+            .await
+            .context("failed to insert strategy robustness matrix cells")?;
+
+        Ok(StrategyRobustnessMatrixExecution { result, cells })
     }
 
     async fn resolve_strategy_walk_forward_request(
@@ -2442,6 +2538,248 @@ fn build_strategy_walk_forward_execution(
         result,
         windows: window_results,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_strategy_robustness_matrix_cell(
+    matrix_run_id: Uuid,
+    created_at: DateTime<Utc>,
+    correlation_id: Uuid,
+    request: &StrategyRobustnessMatrixRequest,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe_value: &str,
+    timeframe: CandleInterval,
+    strategy_config: &StrategyConfig,
+    candles: &[Candle],
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+) -> Result<StrategyRobustnessMatrixCell> {
+    let window_candles = candles_for_range(candles, window_start, window_end);
+    let quality = summarize_candle_continuity(
+        &MarketDataQualityRequest {
+            exchange: MarketDataSource::Binance,
+            symbol: symbol.to_string(),
+            interval: timeframe_value.to_string(),
+            start_time: window_start,
+            end_time: window_end,
+            expected_interval_seconds: Some(timeframe.duration().num_seconds()),
+            max_allowed_gap_count: Some(0),
+            max_allowed_gap_pct: Some(Decimal::ZERO),
+        },
+        &window_candles,
+        3,
+    )?;
+    let regime = classify_research_regime(
+        symbol.to_string(),
+        timeframe_value.to_string(),
+        window_start,
+        window_end,
+        &window_candles,
+    );
+    let mut findings = Vec::new();
+    if quality.status != MarketDataQualityStatus::Good {
+        findings.push(StrategyRobustnessMatrixFinding {
+            severity: if matches!(
+                quality.status,
+                MarketDataQualityStatus::Bad | MarketDataQualityStatus::InsufficientData
+            ) {
+                "HIGH"
+            } else {
+                "MEDIUM"
+            }
+            .to_string(),
+            code: "market_data_quality_not_good".to_string(),
+            message: format!(
+                "Market data quality is {} with coverage {}%.",
+                quality.status.as_str(),
+                quality.coverage_pct
+            ),
+        });
+    }
+    if matches!(
+        quality.status,
+        MarketDataQualityStatus::Bad | MarketDataQualityStatus::InsufficientData
+    ) {
+        return Ok(empty_strategy_robustness_matrix_cell(
+            matrix_run_id,
+            created_at,
+            strategy_id,
+            symbol,
+            timeframe_value,
+            window_start,
+            window_end,
+            regime.label,
+            quality.status,
+            StrategyRobustnessMatrixStatus::InsufficientData,
+            findings,
+        ));
+    }
+    if window_candles.is_empty() {
+        return Ok(empty_strategy_robustness_matrix_cell(
+            matrix_run_id,
+            created_at,
+            strategy_id,
+            symbol,
+            timeframe_value,
+            window_start,
+            window_end,
+            regime.label,
+            MarketDataQualityStatus::InsufficientData,
+            StrategyRobustnessMatrixStatus::InsufficientData,
+            findings,
+        ));
+    }
+
+    let run_request = BacktestRequest {
+        strategy_id: strategy_id.to_string(),
+        symbol: symbol.to_string(),
+        timeframe: timeframe_value.to_string(),
+        start_time: window_start,
+        end_time: window_end,
+        initial_capital: request.initial_capital,
+        risk_config_id: None,
+        risk_config: None,
+        fee_bps: request.fee_bps,
+        slippage_bps: request.slippage_bps,
+        correlation_id: Some(correlation_id),
+        holding_candles: request.holding_candles.or(strategy_config.holding_candles),
+        strategy_config_override: None,
+    };
+    let execution = simulate_backtest(
+        Uuid::new_v4(),
+        created_at,
+        correlation_id,
+        &run_request,
+        strategy_config,
+        window_candles,
+    )?;
+    let result = execution.result;
+    let fee_drag = calculate_fee_slippage_drag_pct(
+        request.initial_capital,
+        result.fee_paid,
+        result.slippage_cost,
+    );
+    let mut status = if result.status == ReplayRunStatus::Failed {
+        StrategyRobustnessMatrixStatus::Failed
+    } else if result.trade_count < request.min_trades_per_cell {
+        StrategyRobustnessMatrixStatus::InsufficientData
+    } else if result.pnl_pct > Decimal::ZERO {
+        StrategyRobustnessMatrixStatus::PromisingButWeak
+    } else if result.pnl_pct < Decimal::ZERO {
+        StrategyRobustnessMatrixStatus::Negative
+    } else {
+        StrategyRobustnessMatrixStatus::Mixed
+    };
+    if quality.status == MarketDataQualityStatus::Degraded
+        && status == StrategyRobustnessMatrixStatus::PromisingButWeak
+    {
+        status = StrategyRobustnessMatrixStatus::Mixed;
+    }
+    if result.trade_count < request.min_trades_per_cell {
+        findings.push(StrategyRobustnessMatrixFinding {
+            severity: "MEDIUM".to_string(),
+            code: "too_few_trades".to_string(),
+            message: format!(
+                "Cell produced {} trades; required minimum is {}.",
+                result.trade_count, request.min_trades_per_cell
+            ),
+        });
+    }
+
+    Ok(StrategyRobustnessMatrixCell {
+        id: Uuid::new_v4(),
+        matrix_run_id,
+        strategy_id: strategy_id.to_string(),
+        symbol: symbol.to_string(),
+        timeframe: timeframe_value.to_string(),
+        window_start,
+        window_end,
+        regime_label: regime.label,
+        data_quality_status: quality.status,
+        status,
+        pnl_pct: result.pnl_pct,
+        trade_count: result.trade_count,
+        raw_signal_count: result.raw_signal_count,
+        executed_trade_count: result.executed_trade_count,
+        cooldown_suppressed_count: result.cooldown_suppressed_count,
+        win_rate: result.win_rate,
+        max_drawdown_pct: result.max_drawdown_pct,
+        fee_drag,
+        findings,
+        created_at,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn empty_strategy_robustness_matrix_cell(
+    matrix_run_id: Uuid,
+    created_at: DateTime<Utc>,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    regime_label: aegis_core::ResearchRegimeLabel,
+    data_quality_status: MarketDataQualityStatus,
+    status: StrategyRobustnessMatrixStatus,
+    findings: Vec<StrategyRobustnessMatrixFinding>,
+) -> StrategyRobustnessMatrixCell {
+    StrategyRobustnessMatrixCell {
+        id: Uuid::new_v4(),
+        matrix_run_id,
+        strategy_id: strategy_id.to_string(),
+        symbol: symbol.to_string(),
+        timeframe: timeframe.to_string(),
+        window_start,
+        window_end,
+        regime_label,
+        data_quality_status,
+        status,
+        pnl_pct: Decimal::ZERO,
+        trade_count: 0,
+        raw_signal_count: 0,
+        executed_trade_count: 0,
+        cooldown_suppressed_count: 0,
+        win_rate: Decimal::ZERO,
+        max_drawdown_pct: Decimal::ZERO,
+        fee_drag: Decimal::ZERO,
+        findings,
+        created_at,
+    }
+}
+
+fn strategy_robustness_matrix_config(
+    strategy_id: &str,
+    symbol: Symbol,
+    timeframe: CandleInterval,
+    base_config: &StrategyConfig,
+    config_json: Option<serde_json::Value>,
+) -> Result<StrategyConfig> {
+    let mut config = if let Some(value) = config_json {
+        let mut update = serde_json::from_value::<StrategyConfigUpdateRequest>(value)
+            .context("failed to decode robustness matrix config_json")?;
+        update.strategy_id = strategy_id.to_string();
+        update.symbols = vec![symbol.as_str().to_string()];
+        update.timeframe = timeframe.as_str().to_string();
+        validate_strategy_config(
+            &update,
+            &StrategyValidationContext {
+                supported_symbols: vec![symbol.clone()],
+                max_position_notional: Some(
+                    aegis_core::RiskConfig::default().max_position_notional,
+                ),
+            },
+        )
+        .normalized_config
+        .ok_or_else(|| anyhow!("invalid robustness matrix config_json"))?
+    } else {
+        base_config.clone()
+    };
+    config.strategy_id = strategy_id.parse()?;
+    config.symbols = vec![symbol];
+    config.timeframe = timeframe;
+    Ok(config)
 }
 
 pub fn generate_walk_forward_windows(
