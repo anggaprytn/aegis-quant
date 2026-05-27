@@ -862,6 +862,13 @@ pub fn print_research_experiment_plan_run(result: &ResearchExperimentPlanRunResu
     );
     println!("  hypothesis: {}", result.hypothesis_id);
     println!("  recommendation: {}", result.recommendation);
+    if result.mode.as_str() == "PREVIEW" {
+        println!("  preview semantics: persisted plan-run history only; no downstream research artifact created");
+    } else {
+        println!(
+            "  run semantics: creates the explicit research artifact only after exact confirmation"
+        );
+    }
     if result.artifact_ids.is_empty() {
         println!("  artifacts created: none");
     } else {

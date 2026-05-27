@@ -1,5 +1,61 @@
 # Research Workflows
 
+## Current Research Loop
+
+The research platform is an evidence factory around stored public market data. It does not own order submission.
+
+```txt
+public market ingest
+-> candle storage
+-> data quality / repair
+-> higher-timeframe aggregation
+-> research dataset build
+-> campaigns
+-> failure attribution
+-> hypothesis generation
+-> operator review
+-> experiment plan
+-> plan preview / run
+-> explicit artifact:
+   strategy experiment | research batch | research campaign | robustness matrix | walk-forward
+-> research candidates
+-> shadow tracking
+-> qualification
+-> testnet review dossier
+-> operator report
+```
+
+Boundaries:
+
+- Market data ingestion and repair use public data only.
+- Research dataset builds, campaigns, hypotheses, plans, matrices, walk-forward runs, candidates, qualifications, dossiers, and reports are research or inspection surfaces.
+- Strategy/risk/execution behavior is not changed by research workflows.
+- Research workflows must not create paper orders, paper fills, paper positions, isolated testnet orders, testnet lifecycle events, testnet shadow promotions, or live execution state.
+- Candidate promotion to shadow configuration is a review/config coverage step; it does not submit orders.
+- No live trading path is enabled.
+
+## Experiment Plan Runner Semantics
+
+`POST /research/experiment-plans/:id/run-preview` is not a dry run in the sense of being invisible. It persists a plan-run history record so the operator has an audit trail of previews and blockers.
+
+Preview creates:
+
+- a persisted `research_experiment_plan_runs` history row
+- the response payload showing the artifact type that would be created
+- warnings/blockers/recommendation metadata
+
+Preview does not create:
+
+- `strategy_experiments` or `strategy_experiment_runs`
+- `research_batches` or campaign-linked batch artifacts
+- `research_campaigns`
+- `strategy_robustness_matrix_runs` or cells
+- `strategy_walk_forward_runs`
+- research candidates
+- paper, shadow, testnet, or live execution rows
+
+`POST /research/experiment-plans/:id/run` requires exact confirmation `RUN RESEARCH PLAN <plan_id>`. A successful run creates exactly the explicit research artifact for the plan type and records completion history. It still does not touch execution tables.
+
 ## Regime Calibration Precedence
 
 Regime discovery accepts both an inline `classifier_config` and a saved `calibration_id`.

@@ -89,6 +89,8 @@ make verify
 - Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
 - Strategy experiments are research-only parameter sweeps on stored candles; they must not mutate live, paper, shadow, promotion, or testnet execution state.
+- Research experiment plan preview persists plan-run audit/history only. It does not create experiment, batch, campaign, matrix, walk-forward, candidate, paper, testnet, or live execution artifacts.
+- Research experiment plan run creates the explicit research artifact after exact confirmation and still must not mutate execution tables.
 - Baseline research strategies such as `trend_filter_momentum_v1`, `trend_filter_momentum_v2`, and `volatility_breakout_v2` are deterministic candle-only comparators for experiments and candidate review. They are not financial advice, do not promise profit, and do not bypass risk, paper, shadow, testnet, or live execution boundaries.
 - Research candidate lifecycle operations are review-only controls; candidate creation, observation, decisions, and archival append auditable lifecycle events and do not execute trades or auto-submit anything.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
@@ -108,6 +110,7 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 - [Release notes](./RELEASE_NOTES.md)
 - [Documentation index](./docs/README.md)
 - [Architecture overview](./docs/ARCHITECTURE_OVERVIEW.md)
+- [Runbook](./docs/RUNBOOK.md)
 - [Operator checklist](./docs/OPERATOR_CHECKLIST.md)
 - [Security checklist](./docs/SECURITY_CHECKLIST.md)
 
@@ -132,6 +135,10 @@ After promotion, linked shadow runs can be inspected through candidate shadow-pe
 Candidate qualification checks are stateless and read-only decision support. They gate whether a candidate is ready for testnet promotion consideration, do not auto-promote anything, do not submit orders, and do not mutate paper/testnet/live execution tables. Default qualification thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
 
 Persisted qualification evaluations are separate research snapshots. `POST /research/candidates/:id/qualification/evaluate` stores the current qualification result, the watchlist tracks how candidate health changes over time, and the history endpoints remain research-only with no execution side effects.
+
+Experiment plan runner semantics:
+`run-preview` records plan-run history for auditability and returns the proposed artifact shape. It does not create downstream research artifacts.
+`run` requires `RUN RESEARCH PLAN <plan_id>` and creates the explicit research artifact for the plan type. Neither mode touches execution tables.
 
 ## Local prerequisites
 

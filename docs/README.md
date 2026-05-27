@@ -6,9 +6,11 @@
 - [Security](./SECURITY.md): detailed security and isolation rules
 - [Security Checklist](./SECURITY_CHECKLIST.md): operator-facing hardening checklist for local and demo environments
 - [Operator Checklist](./OPERATOR_CHECKLIST.md): preflight and emergency-stop runbook
+- [Runbook](./RUNBOOK.md): local start, VPS sync, migrations, health checks, and common failures
 - [Roadmap](./ROADMAP.md): milestone history and next work
 
 Research note:
+- Research experiment plan preview persists plan-run history for auditability but does not create downstream artifacts. Confirmed run creates the explicit research artifact only and still does not mutate execution tables.
 - Walk-forward validation is available through the strategy experiments surface as research-only out-of-sample testing. It reports robustness status and recommendation metadata to help detect overfit candidates, persists into isolated walk-forward tables, and must not mutate paper, shadow, testnet, or live execution state.
 - `trend_filter_momentum_v1`, `trend_filter_momentum_v2`, and `volatility_breakout_v2` are conservative candle-only research baselines for experiments, diagnostics, and candidate evidence. They are long-only comparators with no financial promise and no execution authority.
 

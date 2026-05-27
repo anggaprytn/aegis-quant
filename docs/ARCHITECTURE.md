@@ -213,6 +213,40 @@ Notes:
 - Strategy experiments persist only into `strategy_experiments` and `strategy_experiment_runs`, and must not create signals, risk decisions, orders, paper rows, shadow rows, promotion rows, or testnet execution rows.
 - Replay must not mutate production `signals`, `risk_decisions`, or `orders`.
 
+## Research automation loop
+
+The current research platform is a deterministic loop over public market data and persisted research evidence:
+
+```txt
+public market data ingest
+-> data quality checks / repair
+-> 1m candle storage
+-> 5m / 15m / 1h aggregation
+-> research dataset readiness
+-> research campaign
+-> failure attribution
+-> hypothesis generation
+-> operator review / decision
+-> experiment plan
+-> plan preview / confirmed run
+-> explicit research artifact
+   strategy experiment | batch | campaign | robustness matrix | walk-forward
+-> research candidate
+-> shadow-run linkage / performance attribution
+-> qualification evaluation
+-> testnet review dossier
+-> operator report
+```
+
+Research-loop invariants:
+
+- Preview persists `research_experiment_plan_runs` history for auditability, but does not create downstream research artifacts.
+- Confirmed run creates the explicit artifact for the plan type and records run history.
+- Campaigns, failure attribution, hypotheses, experiment plans, robustness matrices, candidates, shadow tracking, qualifications, dossiers, and reports are research/inspection surfaces.
+- Research actions do not mutate `orders`, `paper_positions`, `paper_fills`, `exchange_testnet_orders`, `exchange_testnet_order_lifecycle_events`, or `testnet_shadow_promotions`.
+- Research candidate lifecycle decisions do not submit anything and do not bypass the strategy -> risk -> order-intent -> execution-state boundary.
+- LLM components remain absent from the execution path.
+
 ## Strategy analytics read model
 
 Operator analytics is a read-only aggregation layer over the existing isolated persistence:

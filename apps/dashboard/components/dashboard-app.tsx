@@ -11330,7 +11330,7 @@ function ResearchExperimentPlansPanel({
               </pre>
               <div className="rounded-md border border-border bg-background p-3">
                 <div className="text-xs text-muted">
-                  Research-only. This does not create paper, testnet, or live orders.
+                  Research-only. Preview persists plan-run history only; Run creates the selected research artifact after exact confirmation. Neither path creates paper, testnet, or live orders.
                 </div>
                 <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto]">
                   <input
@@ -11361,6 +11361,12 @@ function ResearchExperimentPlansPanel({
                       ["Run Status", lastRun.status],
                       ["Mode", lastRun.mode],
                       ["Recommendation", lastRun.recommendation],
+                      [
+                        "Semantics",
+                        lastRun.mode === "PREVIEW"
+                          ? "History only; no downstream artifact"
+                          : "Explicit research artifact only",
+                      ],
                       ["Artifacts", lastRun.artifact_ids.length ? lastRun.artifact_ids.map(shortenId).join(", ") : "-"],
                     ]}
                   />

@@ -188,18 +188,17 @@ use db::{
     list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
-    list_strategy_research_candidates, list_strategy_robustness_matrix_cells,
-    list_strategy_robustness_matrix_runs, list_strategy_status, list_strategy_walk_forward_runs,
-    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
-    list_testnet_shadow_promotions, list_testnet_shadow_runs, load_risk_state_snapshot,
-    mark_research_experiment_plan_completed, mark_strategy_research_candidate_promoted,
-    market_data_repair_result_from_record, paper_account_from_record,
-    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, research_batch_result_from_records,
-    research_batch_step_from_record, research_campaign_batch_result_from_record,
-    research_campaign_result_from_records, research_candidate_event_from_record,
-    research_candidate_from_record, research_candidate_qualification_evaluation_from_record,
-    research_candidate_review_from_record,
+    list_strategy_robustness_matrix_cells, list_strategy_robustness_matrix_runs,
+    list_strategy_status, list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
+    list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
+    load_risk_state_snapshot, mark_research_experiment_plan_completed,
+    mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
+    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
+    persist_risk_config_version, persist_strategy_config_version,
+    research_batch_result_from_records, research_batch_step_from_record,
+    research_campaign_batch_result_from_record, research_campaign_result_from_records,
+    research_candidate_event_from_record, research_candidate_from_record,
+    research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row,
     research_regime_calibration_candidate_from_record,
     research_regime_calibration_result_from_records, research_regime_dataset_result_from_records,
@@ -227,9 +226,10 @@ use db::{
     PaperPositionRecord, PaperTradeJournalRecord, PgPool, ResearchCandidateListFilters,
     ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
     ResearchCandidateWatchlistRow, RiskDecisionRecord, SignalRecord, StateActor,
-    StrategyResearchCandidateListFilters, StrategyStatusRecord, SystemEventRecord,
-    SystemStateRecord, TestnetShadowPromotionRecord,
+    StrategyStatusRecord, SystemEventRecord, SystemStateRecord, TestnetShadowPromotionRecord,
 };
+#[cfg(test)]
+use db::{list_strategy_research_candidates, StrategyResearchCandidateListFilters};
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use exchange::{
     apply_testnet_transition, hash_listen_key, map_cancel_ack_to_transition,
@@ -1451,6 +1451,7 @@ struct ResearchBatchesQuery {
     limit: Option<i64>,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct StrategyResearchCandidatesQuery {
     strategy_id: Option<String>,
@@ -1926,6 +1927,7 @@ struct ResearchDatasetBuildResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[cfg(test)]
 #[derive(Serialize)]
 struct StrategyResearchCandidatesResponse {
     candidates: Vec<StrategyResearchCandidate>,
@@ -19079,6 +19081,9 @@ async fn build_research_experiment_plan_run_result(
     }
     let mut warnings = vec![
         "Research-only. This does not create paper, testnet, or live orders.".to_string(),
+        "PREVIEW persists plan-run audit/history only and creates no downstream research artifacts."
+            .to_string(),
+        "RUN creates the explicit research artifact after exact confirmation.".to_string(),
         "No candidate promotion is performed by this runner.".to_string(),
     ];
     if matches!(
@@ -19114,7 +19119,7 @@ async fn build_research_experiment_plan_run_result(
         warnings,
         blockers,
         recommendation: if mode == ResearchExperimentPlanRunMode::Preview {
-            "Preview only. Use the run endpoint with exact confirmation to create research artifacts.".to_string()
+            "Preview only. A plan-run history record is persisted, but no experiment, batch, campaign, robustness matrix, walk-forward, candidate, paper, testnet, or live execution artifact is created.".to_string()
         } else {
             "Run only after reviewing blockers and the proposed research artifact.".to_string()
         },
@@ -22558,6 +22563,7 @@ async fn register_strategy_research_candidate_handler(
     }
 }
 
+#[cfg(test)]
 async fn list_strategy_research_candidates_handler(
     State(state): State<AppState>,
     Query(query): Query<StrategyResearchCandidatesQuery>,
@@ -22623,6 +22629,7 @@ async fn list_strategy_research_candidates_handler(
     }
 }
 
+#[cfg(test)]
 async fn get_strategy_research_candidate_handler(
     State(state): State<AppState>,
     Path(candidate_id): Path<Uuid>,

@@ -4,6 +4,29 @@
 
 This repository scaffold intentionally avoids live trading and real exchange credentials. v0.1 also keeps authenticated exchange actions on Binance Spot Testnet only and does not enable any LLM execution path.
 
+## Safety boundary summary
+
+- No live trading is implemented.
+- Binance production/private trading endpoints are intentionally unsupported.
+- Public market-data endpoints may be used for ingest, backfill, repair, and research.
+- Research actions do not mutate execution tables.
+- Shadow and testnet paths are isolated from paper and live execution state.
+- Local development may use disposable YOLO validation: reset Docker volumes, recreate Postgres, bootstrap a new owner, reseed data, run migrations from scratch, and execute research/backtest/shadow smoke checks.
+- VPS or production-ish validation must be conservative: run migrations intentionally, back up before destructive changes, avoid local-volume reset assumptions, and prefer read-only checks unless a deployment task explicitly requires mutation.
+
+Execution tables for safety checks:
+
+- `orders`
+- `paper_positions`
+- `paper_fills`
+- `exchange_testnet_orders`
+- `exchange_testnet_order_lifecycle_events`
+- `testnet_shadow_promotions`
+
+Research-only smoke runs may create rows in research tables such as plan-run history, experiments, batches, campaigns, robustness matrix, walk-forward, candidates, reviews, observations, and reports. They must leave the execution tables above unchanged unless a task explicitly asks to test a paper/testnet execution path.
+
+If a VPS has read-only database roles or views such as `aegis_readonly` / `ai_read`, use them for validation queries, count checks, and evidence collection. Do not use write-capable credentials for exploratory inspection when read-only access is available.
+
 ## Rules
 
 - Do not commit real API keys or secrets
@@ -17,6 +40,8 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Operator daily reports are read-only, VIEWER-readable inspection/export only; they may expose operational state but must never trigger execution, reconciliation, repair, promotion submit, paper mutation, or live/testnet order submission
 - Execution readiness is read-only, VIEWER-readable inspection only; it may compute and optionally persist bounded readiness snapshots, but it must never trigger execution, promotion submit, reconciliation, repair, paper mutation, or live/testnet order submission
 - Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
+- Research experiment plan preview persists only plan-run audit/history and does not create experiments, batches, campaigns, matrices, walk-forward runs, candidates, or execution rows
+- Research experiment plan run creates only the explicit research artifact for the selected plan type and must not mutate execution tables
 - Paper accounting is simulated only and never submits exchange orders
 - Binance Spot Testnet credentials, when configured, are backend-only and never exposed to the dashboard or CLI
 - Passwords are hashed with Argon2id; plaintext passwords are never stored or returned
