@@ -414,6 +414,9 @@ impl ReplayEngine {
                 trend_lookback_candles: candidate.trend_lookback_candles,
                 momentum_lookback_candles: candidate.momentum_lookback_candles,
                 breakout_lookback_candles: candidate.breakout_lookback_candles,
+                lower_band_pct: candidate.lower_band_pct,
+                min_range_width_pct: candidate.min_range_width_pct,
+                max_range_width_pct: candidate.max_range_width_pct,
                 holding_candles: candidate.holding_candles,
                 stop_loss_pct: candidate.stop_loss_pct,
                 take_profit_pct: candidate.take_profit_pct,
@@ -677,6 +680,19 @@ fn experiment_strategy_override(
             .or(Some(candidate.lookback_candles))
             .filter(|_| request.strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
             .or(base_config.breakout_lookback_candles),
+        lower_band_pct: candidate
+            .lower_band_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.lower_band_pct),
+        upper_band_pct: base_config.upper_band_pct,
+        min_range_width_pct: candidate
+            .min_range_width_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.min_range_width_pct),
+        max_range_width_pct: candidate
+            .max_range_width_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.max_range_width_pct),
         confidence_floor: base_config.confidence_floor,
         stop_loss_pct: candidate.stop_loss_pct.or(base_config.stop_loss_pct),
         take_profit_pct: candidate.take_profit_pct.or(base_config.take_profit_pct),
@@ -1104,6 +1120,22 @@ fn walk_forward_strategy_override(
             .or(Some(request.candidate_config.lookback_candles))
             .filter(|_| request.strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
             .or(base_config.breakout_lookback_candles),
+        lower_band_pct: request
+            .candidate_config
+            .lower_band_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.lower_band_pct),
+        upper_band_pct: base_config.upper_band_pct,
+        min_range_width_pct: request
+            .candidate_config
+            .min_range_width_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.min_range_width_pct),
+        max_range_width_pct: request
+            .candidate_config
+            .max_range_width_pct
+            .filter(|_| request.strategy_id == StrategyId::RangeReversionV1.as_str())
+            .or(base_config.max_range_width_pct),
         confidence_floor: base_config.confidence_floor,
         stop_loss_pct: request
             .candidate_config
@@ -1165,6 +1197,9 @@ fn strategy_walk_forward_candidate_from_config(
         trend_lookback_candles: read_u32(&["trend_lookback_candles", "trend_lookback"]),
         momentum_lookback_candles: read_u32(&["momentum_lookback_candles", "momentum_lookback"]),
         breakout_lookback_candles: read_u32(&["breakout_lookback_candles", "breakout_lookback"]),
+        lower_band_pct: read_decimal(&["lower_band_pct", "lower_band"])?,
+        min_range_width_pct: read_decimal(&["min_range_width_pct", "min_range_width"])?,
+        max_range_width_pct: read_decimal(&["max_range_width_pct", "max_range_width"])?,
         holding_candles: read_u32(&["holding_candles", "holding"]),
         stop_loss_pct: read_decimal(&["stop_loss_pct"])?,
         take_profit_pct: read_decimal(&["take_profit_pct"])?,
@@ -2168,6 +2203,10 @@ mod tests {
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -2232,6 +2271,9 @@ mod tests {
             trend_lookback_candidates: None,
             momentum_lookback_candidates: None,
             breakout_lookback_candidates: None,
+            lower_band_pct_candidates: None,
+            min_range_width_pct_candidates: None,
+            max_range_width_pct_candidates: None,
             holding_candles_candidates: Some(vec![3, 5]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
@@ -2255,11 +2297,67 @@ mod tests {
             trend_lookback_candles: Some(20),
             momentum_lookback_candles: Some(3),
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
             notes: None,
+        }
+    }
+
+    fn range_reversion_strategy_config() -> StrategyConfig {
+        StrategyConfig {
+            strategy_id: StrategyId::RangeReversionV1,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols: vec![Symbol::new("BTCUSDT").unwrap()],
+            timeframe: CandleInterval::FifteenMinutes,
+            suggested_notional: Decimal::new(100_000, 0),
+            max_signal_age_ms: 2_700_000,
+            cooldown_seconds: 1_800,
+            lookback_candles: 20,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
+            lower_band_pct: Some(Decimal::new(20, 0)),
+            upper_band_pct: Some(Decimal::new(80, 0)),
+            min_range_width_pct: Some(Decimal::new(15, 2)),
+            max_range_width_pct: Some(Decimal::new(3, 0)),
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: None,
+        }
+    }
+
+    fn range_reversion_experiment_request() -> StrategyExperimentRequest {
+        StrategyExperimentRequest {
+            strategy_id: "range_reversion_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "15m".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            initial_capital: Decimal::new(1_000_000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            lookback_candidates: vec![20],
+            trend_lookback_candidates: None,
+            momentum_lookback_candidates: None,
+            breakout_lookback_candidates: None,
+            lower_band_pct_candidates: Some(vec![Decimal::new(20, 0)]),
+            min_range_width_pct_candidates: Some(vec![Decimal::new(15, 2)]),
+            max_range_width_pct_candidates: Some(vec![Decimal::new(3, 0)]),
+            holding_candles_candidates: Some(vec![3]),
+            stop_loss_pct_candidates: None,
+            take_profit_pct_candidates: None,
+            max_signal_age_ms: Some(2_700_000),
+            max_runs: None,
+            correlation_id: None,
         }
     }
 
@@ -2280,6 +2378,9 @@ mod tests {
             trend_lookback_candidates: Some(vec![10, 20]),
             momentum_lookback_candidates: Some(vec![2, 3]),
             breakout_lookback_candidates: None,
+            lower_band_pct_candidates: None,
+            min_range_width_pct_candidates: None,
+            max_range_width_pct_candidates: None,
             max_runs: Some(4),
             ..sample_experiment_request()
         }
@@ -2302,6 +2403,9 @@ mod tests {
                 trend_lookback_candles: None,
                 momentum_lookback_candles: None,
                 breakout_lookback_candles: None,
+                lower_band_pct: None,
+                min_range_width_pct: None,
+                max_range_width_pct: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -2345,6 +2449,9 @@ mod tests {
                 trend_lookback_candles: None,
                 momentum_lookback_candles: None,
                 breakout_lookback_candles: None,
+                lower_band_pct: None,
+                min_range_width_pct: None,
+                max_range_width_pct: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -2456,6 +2563,35 @@ mod tests {
             run.candidate.trend_lookback_candles == Some(10)
                 && run.candidate.momentum_lookback_candles == Some(2)
         }));
+    }
+
+    #[test]
+    fn range_reversion_experiment_runs_in_replay() {
+        let execution = build_strategy_experiment_execution(
+            &range_reversion_strategy_config(),
+            Symbol::new("BTCUSDT").unwrap(),
+            range_reversion_experiment_request(),
+            (0..80)
+                .map(|index| {
+                    if index % 10 == 0 {
+                        candle(index, 100, 102, 100, 100)
+                    } else {
+                        candle(index, 101, 102, 100, 101)
+                    }
+                })
+                .collect(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x504),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(execution.result.strategy_id, "range_reversion_v1");
+        assert_eq!(execution.runs.len(), 1);
+        assert_eq!(
+            execution.runs[0].candidate.lower_band_pct,
+            Some(Decimal::new(20, 0))
+        );
     }
 
     #[test]
@@ -2689,6 +2825,9 @@ mod tests {
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             holding_candles: Some(5),
             stop_loss_pct: Some(Decimal::new(2, 0)),
             take_profit_pct: Some(Decimal::new(4, 0)),

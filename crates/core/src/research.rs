@@ -162,6 +162,9 @@ pub struct ResearchBatchRequest {
     pub trend_lookback_candidates: Option<Vec<u32>>,
     pub momentum_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub lower_band_pct_candidates: Option<Vec<Decimal>>,
+    pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
+    pub max_range_width_pct_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
     #[serde(default = "default_research_batch_walk_forward_top_n")]
     pub walk_forward_top_n: u32,
@@ -435,6 +438,9 @@ pub struct ResearchCampaignRequest {
     pub trend_lookback_candidates: Option<Vec<u32>>,
     pub momentum_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub lower_band_pct_candidates: Option<Vec<Decimal>>,
+    pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
+    pub max_range_width_pct_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
     pub correlation_id: Option<Uuid>,
 }
@@ -510,6 +516,9 @@ impl ResearchCampaignBatchPlan {
             trend_lookback_candidates: campaign.trend_lookback_candidates.clone(),
             momentum_lookback_candidates: campaign.momentum_lookback_candidates.clone(),
             breakout_lookback_candidates: campaign.breakout_lookback_candidates.clone(),
+            lower_band_pct_candidates: campaign.lower_band_pct_candidates.clone(),
+            min_range_width_pct_candidates: campaign.min_range_width_pct_candidates.clone(),
+            max_range_width_pct_candidates: campaign.max_range_width_pct_candidates.clone(),
             holding_candles_candidates: campaign.holding_candles_candidates.clone(),
             walk_forward_top_n: campaign.walk_forward_top_n,
             repair_degraded_data: campaign.repair_degraded_data,
@@ -933,6 +942,14 @@ pub fn infer_research_candidate_failure_reasons(
     {
         reasons.insert(ResearchCandidateFailureReason::RegimeMismatch);
     }
+    if strategy_expects_range(&input.strategy_id)
+        && matches!(
+            input.regime_metric.label,
+            ResearchRegimeLabel::TrendUp | ResearchRegimeLabel::TrendDown
+        )
+    {
+        reasons.insert(ResearchCandidateFailureReason::RegimeMismatch);
+    }
     if reasons.is_empty() {
         reasons.insert(ResearchCandidateFailureReason::WeakEdge);
     }
@@ -1301,6 +1318,10 @@ fn strategy_expects_trend(strategy_id: &str) -> bool {
     strategy_id.contains("trend")
         || strategy_id.contains("momentum")
         || strategy_id.contains("breakout")
+}
+
+fn strategy_expects_range(strategy_id: &str) -> bool {
+    strategy_id.to_ascii_lowercase().contains("range")
 }
 
 fn failure_finding(
@@ -8678,6 +8699,9 @@ mod tests {
             trend_lookback_candidates: None,
             momentum_lookback_candidates: Some(vec![2, 3]),
             breakout_lookback_candidates: None,
+            lower_band_pct_candidates: None,
+            min_range_width_pct_candidates: None,
+            max_range_width_pct_candidates: None,
             holding_candles_candidates: None,
             correlation_id: None,
         }
@@ -8802,6 +8826,20 @@ mod tests {
         assert_eq!(plans[0].timeframe, "5m");
         assert_eq!(plans[0].start_time, ts(0, 0, 0));
         assert_eq!(plans[1].start_time, ts(0, 0, 0) + Duration::hours(24));
+    }
+
+    #[test]
+    fn research_campaign_can_include_range_reversion() {
+        let mut request = sample_campaign_request();
+        request.strategies = vec!["range_reversion_v1".to_string()];
+        request.lower_band_pct_candidates = Some(vec![Decimal::new(10, 0), Decimal::new(20, 0)]);
+
+        let plans = expand_research_campaign(&request).expect("campaign should expand");
+
+        assert!(plans
+            .iter()
+            .all(|plan| plan.strategy_id == "range_reversion_v1"));
+        assert_eq!(plans.len(), 8);
     }
 
     #[test]
@@ -8991,6 +9029,30 @@ mod tests {
     #[test]
     fn trend_strategy_in_range_infers_regime_mismatch() {
         let input = sample_failure_input();
+
+        let reasons = infer_research_candidate_failure_reasons(&input);
+
+        assert!(reasons.contains(&ResearchCandidateFailureReason::RegimeMismatch));
+    }
+
+    #[test]
+    fn range_strategy_in_range_does_not_infer_regime_mismatch() {
+        let mut input = sample_failure_input();
+        input.strategy_id = "range_reversion_v1".to_string();
+
+        let reasons = infer_research_candidate_failure_reasons(&input);
+
+        assert!(!reasons.contains(&ResearchCandidateFailureReason::RegimeMismatch));
+        assert!(reasons.contains(&ResearchCandidateFailureReason::WeakEdge));
+    }
+
+    #[test]
+    fn range_strategy_in_trend_infers_regime_mismatch() {
+        let candles = regime_candles(&[100, 102, 104, 106, 108, 110, 112]);
+        let mut input = sample_failure_input();
+        input.strategy_id = "range_reversion_v1".to_string();
+        input.regime_metric =
+            classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
 
         let reasons = infer_research_candidate_failure_reasons(&input);
 

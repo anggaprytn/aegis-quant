@@ -2260,6 +2260,10 @@ struct StrategyStatusView {
     trend_lookback_candles: Option<i32>,
     momentum_lookback_candles: Option<i32>,
     breakout_lookback_candles: Option<i32>,
+    lower_band_pct: Option<String>,
+    upper_band_pct: Option<String>,
+    min_range_width_pct: Option<String>,
+    max_range_width_pct: Option<String>,
     confidence_floor: Option<String>,
     stop_loss_pct: Option<String>,
     take_profit_pct: Option<String>,
@@ -3685,6 +3689,16 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
         trend_lookback_candles: record.config.trend_lookback_candles,
         momentum_lookback_candles: record.config.momentum_lookback_candles,
         breakout_lookback_candles: record.config.breakout_lookback_candles,
+        lower_band_pct: record.config.lower_band_pct.map(|value| value.to_string()),
+        upper_band_pct: record.config.upper_band_pct.map(|value| value.to_string()),
+        min_range_width_pct: record
+            .config
+            .min_range_width_pct
+            .map(|value| value.to_string()),
+        max_range_width_pct: record
+            .config
+            .max_range_width_pct
+            .map(|value| value.to_string()),
         confidence_floor: record
             .config
             .confidence_floor
@@ -3721,6 +3735,10 @@ fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfi
         trend_lookback_candles: config.trend_lookback_candles,
         momentum_lookback_candles: config.momentum_lookback_candles,
         breakout_lookback_candles: config.breakout_lookback_candles,
+        lower_band_pct: config.lower_band_pct,
+        upper_band_pct: config.upper_band_pct,
+        min_range_width_pct: config.min_range_width_pct,
+        max_range_width_pct: config.max_range_width_pct,
         confidence_floor: config.confidence_floor,
         stop_loss_pct: config.stop_loss_pct,
         take_profit_pct: config.take_profit_pct,
@@ -15341,6 +15359,10 @@ fn strategy_config_request_with_candidate_overrides(
         breakout_lookback_candles: Some(lookback_candles)
             .filter(|_| base.strategy_id == StrategyId::VolatilityBreakoutV2)
             .or(base.breakout_lookback_candles),
+        lower_band_pct: base.lower_band_pct,
+        upper_band_pct: base.upper_band_pct,
+        min_range_width_pct: base.min_range_width_pct,
+        max_range_width_pct: base.max_range_width_pct,
         confidence_floor: base.confidence_floor,
         stop_loss_pct,
         take_profit_pct,
@@ -15739,6 +15761,9 @@ async fn execute_research_batch(
                 trend_lookback_candidates: payload.trend_lookback_candidates.clone(),
                 momentum_lookback_candidates: payload.momentum_lookback_candidates.clone(),
                 breakout_lookback_candidates: payload.breakout_lookback_candidates.clone(),
+                lower_band_pct_candidates: payload.lower_band_pct_candidates.clone(),
+                min_range_width_pct_candidates: payload.min_range_width_pct_candidates.clone(),
+                max_range_width_pct_candidates: payload.max_range_width_pct_candidates.clone(),
                 holding_candles_candidates: payload.holding_candles_candidates.clone(),
                 stop_loss_pct_candidates: None,
                 take_profit_pct_candidates: None,
@@ -15812,6 +15837,9 @@ async fn execute_research_batch(
                     trend_lookback_candles: experiment_run.candidate.trend_lookback_candles,
                     momentum_lookback_candles: experiment_run.candidate.momentum_lookback_candles,
                     breakout_lookback_candles: experiment_run.candidate.breakout_lookback_candles,
+                    lower_band_pct: experiment_run.candidate.lower_band_pct,
+                    min_range_width_pct: experiment_run.candidate.min_range_width_pct,
+                    max_range_width_pct: experiment_run.candidate.max_range_width_pct,
                     holding_candles: experiment_run.candidate.holding_candles,
                     stop_loss_pct: experiment_run.candidate.stop_loss_pct,
                     take_profit_pct: experiment_run.candidate.take_profit_pct,
@@ -24258,6 +24286,10 @@ mod tests {
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -24350,6 +24382,9 @@ mod tests {
                 trend_lookback_candles: None,
                 momentum_lookback_candles: None,
                 breakout_lookback_candles: None,
+                lower_band_pct: None,
+                min_range_width_pct: None,
+                max_range_width_pct: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -25150,6 +25185,10 @@ mod tests {
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,

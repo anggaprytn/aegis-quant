@@ -16,12 +16,13 @@ pub struct StrategyValidationContext {
     pub max_position_notional: Option<Decimal>,
 }
 
-pub fn known_strategy_ids() -> [StrategyId; 4] {
+pub fn known_strategy_ids() -> [StrategyId; 5] {
     [
         StrategyId::MomentumV1,
         StrategyId::VolatilityBreakoutV1,
         StrategyId::TrendFilterMomentumV1,
         StrategyId::VolatilityBreakoutV2,
+        StrategyId::RangeReversionV1,
     ]
 }
 
@@ -39,7 +40,7 @@ pub fn validate_strategy_config(
                 StrategyConfigValidationSeverity::Error,
                 "unknown_strategy",
                 "strategy_id",
-                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v1, or volatility_breakout_v2",
+                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v1, volatility_breakout_v2, or range_reversion_v1",
             ));
             return StrategyConfigValidationResult {
                 strategy_id: request.strategy_id.clone(),
@@ -204,6 +205,7 @@ pub fn validate_strategy_config(
         StrategyId::VolatilityBreakoutV1 => 5..=500,
         StrategyId::TrendFilterMomentumV1 => 2..=500,
         StrategyId::VolatilityBreakoutV2 => 5..=500,
+        StrategyId::RangeReversionV1 => 2..=500,
     };
     if !lookback_range.contains(&request.lookback_candles) {
         issues.push(issue(
@@ -246,6 +248,53 @@ pub fn validate_strategy_config(
                 "invalid_breakout_lookback_candles",
                 "breakout_lookback_candles",
                 "breakout_lookback_candles must be greater than zero",
+            ));
+        }
+    }
+
+    let lower_band_pct = request.lower_band_pct.unwrap_or(Decimal::new(20, 0));
+    let upper_band_pct = request.upper_band_pct.unwrap_or(Decimal::new(80, 0));
+    let min_range_width_pct = request.min_range_width_pct.unwrap_or(Decimal::new(15, 2));
+    let max_range_width_pct = request.max_range_width_pct.unwrap_or(Decimal::new(3, 0));
+    if strategy_id == StrategyId::RangeReversionV1 {
+        if lower_band_pct < Decimal::ZERO || lower_band_pct > Decimal::new(50, 0) {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_lower_band_pct",
+                "lower_band_pct",
+                "lower_band_pct must be between 0 and 50",
+            ));
+        }
+        if upper_band_pct < Decimal::new(50, 0) || upper_band_pct > Decimal::new(100, 0) {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_upper_band_pct",
+                "upper_band_pct",
+                "upper_band_pct must be between 50 and 100",
+            ));
+        }
+        if lower_band_pct >= upper_band_pct {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_range_band_order",
+                "lower_band_pct",
+                "lower_band_pct must be less than upper_band_pct",
+            ));
+        }
+        if min_range_width_pct <= Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_range_width_pct",
+                "min_range_width_pct",
+                "min_range_width_pct must be greater than 0",
+            ));
+        }
+        if max_range_width_pct <= min_range_width_pct {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_max_range_width_pct",
+                "max_range_width_pct",
+                "max_range_width_pct must be greater than min_range_width_pct",
             ));
         }
     }
@@ -329,6 +378,18 @@ pub fn validate_strategy_config(
             trend_lookback_candles: request.trend_lookback_candles,
             momentum_lookback_candles: request.momentum_lookback_candles,
             breakout_lookback_candles: request.breakout_lookback_candles,
+            lower_band_pct: request
+                .lower_band_pct
+                .or((strategy_id == StrategyId::RangeReversionV1).then_some(lower_band_pct)),
+            upper_band_pct: request
+                .upper_band_pct
+                .or((strategy_id == StrategyId::RangeReversionV1).then_some(upper_band_pct)),
+            min_range_width_pct: request
+                .min_range_width_pct
+                .or((strategy_id == StrategyId::RangeReversionV1).then_some(min_range_width_pct)),
+            max_range_width_pct: request
+                .max_range_width_pct
+                .or((strategy_id == StrategyId::RangeReversionV1).then_some(max_range_width_pct)),
             confidence_floor: request.confidence_floor,
             stop_loss_pct: request.stop_loss_pct,
             take_profit_pct: request.take_profit_pct,
@@ -354,6 +415,7 @@ pub fn required_candle_count(config: &StrategyConfig) -> i64 {
             trend.max(momentum).max(2)
         }
         StrategyId::VolatilityBreakoutV2 => (breakout_lookback(config) as i64 + 1).max(2),
+        StrategyId::RangeReversionV1 => (config.lookback_candles as i64 + 1).max(2),
         _ => (config.lookback_candles as i64 + 1).max(2),
     }
 }
@@ -383,6 +445,7 @@ pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluation
         StrategyId::VolatilityBreakoutV1 => evaluate_breakout(&context, candles),
         StrategyId::TrendFilterMomentumV1 => evaluate_trend_filter_momentum(&context, candles),
         StrategyId::VolatilityBreakoutV2 => evaluate_volume_breakout(&context, candles),
+        StrategyId::RangeReversionV1 => evaluate_range_reversion(&context, candles),
     }
 }
 
@@ -490,7 +553,11 @@ pub fn diagnose(
     } else if data_health.available_closed_candles < data_health.required_closed_candles {
         DiagnosticOutcome {
             final_decision: StrategyDiagnosticsDecision::InsufficientData,
-            no_signal_reason: Some(StrategyNoSignalReason::InsufficientCandles),
+            no_signal_reason: Some(if context.strategy_id == StrategyId::RangeReversionV1 {
+                StrategyNoSignalReason::InsufficientData
+            } else {
+                StrategyNoSignalReason::InsufficientCandles
+            }),
             summary: format!(
                 "Only {} closed candles are available, below the required {} candles.",
                 data_health.available_closed_candles, data_health.required_closed_candles
@@ -523,6 +590,9 @@ pub fn diagnose(
             }
             StrategyId::VolatilityBreakoutV2 => {
                 diagnose_volume_breakout(&context, &candles, &mut condition_checks)
+            }
+            StrategyId::RangeReversionV1 => {
+                diagnose_range_reversion(&context, &candles, &mut condition_checks)
             }
         }?
     };
@@ -700,6 +770,64 @@ fn evaluate_volume_breakout(
         latest,
         SignalReason::VolumeConfirmedBreakout,
         Decimal::new(72, 2),
+    )?)
+}
+
+fn evaluate_range_reversion(
+    context: &StrategyEvaluationContext,
+    candles: Vec<Candle>,
+) -> Result<StrategyEvaluationResult, CoreError> {
+    let lookback = context.config.lookback_candles as usize;
+    let required = lookback + 1;
+    if candles.len() < required {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::InsufficientHistory,
+        ));
+    }
+
+    let recent = &candles[candles.len() - required..];
+    let latest = recent.last().expect("recent candles must be present");
+    let previous = &recent[recent.len() - 2];
+    let range_window = &recent[recent.len() - lookback..];
+    let range = calculate_range_metrics(range_window);
+    if range.range_width_pct < min_range_width_pct(&context.config) {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+    if range.range_width_pct > max_range_width_pct(&context.config) {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+    if range.range_position_pct > lower_band_pct(&context.config) {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+    let reversal_confirmed = latest.close > previous.close || latest.close > latest.open;
+    let falling_knife_avoided = latest.low >= previous.low;
+    if !reversal_confirmed || !falling_knife_avoided {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    Ok(generated_result(
+        context,
+        latest,
+        SignalReason::RangeReversion,
+        Decimal::new(66, 2),
     )?)
 }
 
@@ -1173,6 +1301,198 @@ fn diagnose_volume_breakout(
     )
 }
 
+fn diagnose_range_reversion(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    let lookback = context.config.lookback_candles as usize;
+    let recent = &candles[candles.len() - lookback - 1..];
+    let latest = recent.last().expect("recent candles must be present");
+    let previous = &recent[recent.len() - 2];
+    let range_window = &recent[recent.len() - lookback..];
+    let range = calculate_range_metrics(range_window);
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "range_lookback_candles_required".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: format!(
+            "Range reversion uses {} closed candles for range bounds.",
+            lookback
+        ),
+        actual: Some(lookback.to_string()),
+        expected: Some(context.config.lookback_candles.to_string()),
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "range_high".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Highest high over the range lookback.".to_string(),
+        actual: Some(range.range_high.to_string()),
+        expected: None,
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "range_low".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Lowest low over the range lookback.".to_string(),
+        actual: Some(range.range_low.to_string()),
+        expected: None,
+    });
+
+    let min_width = min_range_width_pct(&context.config);
+    let width_above_min = range.range_width_pct >= min_width;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "range_width_above_minimum".to_string(),
+        passed: width_above_min,
+        severity: if width_above_min {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!("Range width is {}%.", range.range_width_pct),
+        actual: Some(range.range_width_pct.to_string()),
+        expected: Some(format!(">= {min_width}")),
+    });
+    if !width_above_min {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::RangeTooNarrow),
+            summary: format!(
+                "Range reversion did not trigger because range width {}% is below {}%.",
+                range.range_width_pct, min_width
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let max_width = max_range_width_pct(&context.config);
+    let width_below_max = range.range_width_pct <= max_width;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "range_width_below_maximum".to_string(),
+        passed: width_below_max,
+        severity: if width_below_max {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!("Range width is {}%.", range.range_width_pct),
+        actual: Some(range.range_width_pct.to_string()),
+        expected: Some(format!("<= {max_width}")),
+    });
+    if !width_below_max {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::RangeTooWide),
+            summary: format!(
+                "Range reversion did not trigger because range width {}% is above {}%.",
+                range.range_width_pct, max_width
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let lower_band = lower_band_pct(&context.config);
+    let near_lower_band = range.range_position_pct <= lower_band;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "range_position_near_lower_band".to_string(),
+        passed: near_lower_band,
+        severity: if near_lower_band {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!(
+            "Latest close {} is at {}% of the range.",
+            latest.close, range.range_position_pct
+        ),
+        actual: Some(range.range_position_pct.to_string()),
+        expected: Some(format!("<= {lower_band}")),
+    });
+    if !near_lower_band {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::NotNearLowerBand),
+            summary: format!(
+                "Range reversion did not trigger because range position {}% is above lower band {}%.",
+                range.range_position_pct, lower_band
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "latest_close".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Latest closed candle close.".to_string(),
+        actual: Some(latest.close.to_string()),
+        expected: None,
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "previous_close".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Previous closed candle close.".to_string(),
+        actual: Some(previous.close.to_string()),
+        expected: None,
+    });
+
+    let reversal_confirmed = latest.close > previous.close || latest.close > latest.open;
+    let falling_knife_avoided = latest.low >= previous.low;
+    let reversal_passed = reversal_confirmed && falling_knife_avoided;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "reversal_confirmation".to_string(),
+        passed: reversal_passed,
+        severity: if reversal_passed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Requires close uptick or green candle and latest low not below previous low."
+            .to_string(),
+        actual: Some(format!(
+            "close>{}: {}, close>open: {}, low>={}: {}",
+            previous.close,
+            latest.close > previous.close,
+            latest.close > latest.open,
+            previous.low,
+            latest.low >= previous.low
+        )),
+        expected: Some("reversal confirmation and no lower low".to_string()),
+    });
+    if !reversal_passed {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::NoReversalConfirmation),
+            summary: "Range reversion did not trigger because reversal confirmation failed."
+                .to_string(),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "final_decision".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Range reversion conditions passed.".to_string(),
+        actual: Some("WOULD_SIGNAL".to_string()),
+        expected: Some("WOULD_SIGNAL".to_string()),
+    });
+
+    confidence_outcome(
+        context,
+        latest,
+        SignalReason::RangeReversion,
+        Decimal::new(66, 2),
+    )
+}
+
 fn confidence_outcome(
     context: &StrategyEvaluationContext,
     latest: &Candle,
@@ -1253,6 +1573,60 @@ fn breakout_lookback(config: &StrategyConfig) -> u32 {
         .unwrap_or(config.lookback_candles)
 }
 
+fn lower_band_pct(config: &StrategyConfig) -> Decimal {
+    config.lower_band_pct.unwrap_or(Decimal::new(20, 0))
+}
+
+fn min_range_width_pct(config: &StrategyConfig) -> Decimal {
+    config.min_range_width_pct.unwrap_or(Decimal::new(15, 2))
+}
+
+fn max_range_width_pct(config: &StrategyConfig) -> Decimal {
+    config.max_range_width_pct.unwrap_or(Decimal::new(3, 0))
+}
+
+#[derive(Debug)]
+struct RangeMetrics {
+    range_high: Decimal,
+    range_low: Decimal,
+    range_width_pct: Decimal,
+    range_position_pct: Decimal,
+}
+
+fn calculate_range_metrics(candles: &[Candle]) -> RangeMetrics {
+    let range_high = candles
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(Decimal::ZERO);
+    let range_low = candles
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(Decimal::ZERO);
+    let range_width = range_high - range_low;
+    let latest_close = candles
+        .last()
+        .map(|candle| candle.close)
+        .unwrap_or(Decimal::ZERO);
+    let range_width_pct = pct_ratio(range_width, range_low);
+    let range_position_pct = pct_ratio(latest_close - range_low, range_width);
+    RangeMetrics {
+        range_high,
+        range_low,
+        range_width_pct,
+        range_position_pct,
+    }
+}
+
+fn pct_ratio(numerator: Decimal, denominator: Decimal) -> Decimal {
+    if denominator == Decimal::ZERO {
+        Decimal::ZERO
+    } else {
+        (numerator / denominator) * Decimal::new(100, 0)
+    }
+}
+
 fn average_decimal(values: impl Iterator<Item = Decimal>) -> Decimal {
     let values = values.collect::<Vec<_>>();
     if values.is_empty() {
@@ -1285,6 +1659,10 @@ pub fn build_default_strategy_configs(
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -1304,6 +1682,10 @@ pub fn build_default_strategy_configs(
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -1323,6 +1705,10 @@ pub fn build_default_strategy_configs(
             trend_lookback_candles: Some(20),
             momentum_lookback_candles: Some(3),
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -1333,7 +1719,7 @@ pub fn build_default_strategy_configs(
             strategy_id: StrategyId::VolatilityBreakoutV2,
             enabled: true,
             mode: StrategyMode::Research,
-            symbols,
+            symbols: symbols.clone(),
             timeframe: breakout_timeframe,
             suggested_notional,
             max_signal_age_ms: 2_700_000,
@@ -1342,11 +1728,38 @@ pub fn build_default_strategy_configs(
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: Some(20),
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
             notes: Some("Research baseline volume-confirmed breakout config".to_string()),
+        },
+        StrategyConfig {
+            strategy_id: StrategyId::RangeReversionV1,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols,
+            timeframe: CandleInterval::FifteenMinutes,
+            suggested_notional,
+            max_signal_age_ms: 2_700_000,
+            cooldown_seconds: 1_800,
+            lookback_candles: 20,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
+            lower_band_pct: Some(Decimal::new(20, 0)),
+            upper_band_pct: Some(Decimal::new(80, 0)),
+            min_range_width_pct: Some(Decimal::new(15, 2)),
+            max_range_width_pct: Some(Decimal::new(3, 0)),
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(5),
+            notes: Some("Research baseline range-reversion config".to_string()),
         },
     ]
 }
@@ -1398,6 +1811,7 @@ fn max_strategy_confidence(strategy_id: StrategyId) -> Decimal {
         StrategyId::VolatilityBreakoutV1 => Decimal::new(70, 2),
         StrategyId::TrendFilterMomentumV1 => Decimal::new(68, 2),
         StrategyId::VolatilityBreakoutV2 => Decimal::new(72, 2),
+        StrategyId::RangeReversionV1 => Decimal::new(66, 2),
     }
 }
 
@@ -1450,6 +1864,64 @@ mod tests {
         }
     }
 
+    fn range_candle(
+        index: i64,
+        open: Decimal,
+        high: Decimal,
+        low: Decimal,
+        close: Decimal,
+    ) -> Candle {
+        let open_time =
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap() + Duration::minutes(index);
+        Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new("BTCUSDT").expect("valid symbol"),
+            interval: CandleInterval::FifteenMinutes,
+            open_time,
+            close_time: open_time + Duration::minutes(15),
+            open,
+            high,
+            low,
+            close,
+            volume: Decimal::new(10, 0),
+            quote_volume: Some(Decimal::new(1000, 0)),
+            trade_count: 5,
+            is_closed: true,
+            created_at: open_time,
+            updated_at: open_time,
+        }
+    }
+
+    fn range_reversion_candles(latest_close: Decimal, latest_open: Decimal) -> Vec<Candle> {
+        let mut candles = (0..19)
+            .map(|index| {
+                range_candle(
+                    index,
+                    Decimal::new(101, 0),
+                    Decimal::new(102, 0),
+                    Decimal::new(100, 0),
+                    Decimal::new(101, 0),
+                )
+            })
+            .collect::<Vec<_>>();
+        candles.push(range_candle(
+            19,
+            Decimal::new(1005, 1),
+            Decimal::new(102, 0),
+            Decimal::new(100, 0),
+            Decimal::new(1002, 1),
+        ));
+        candles.push(range_candle(
+            20,
+            latest_open,
+            Decimal::new(102, 0),
+            Decimal::new(100, 0),
+            latest_close,
+        ));
+        candles
+    }
+
     fn context(strategy_id: StrategyId, candles: Vec<Candle>) -> StrategyEvaluationContext {
         let evaluated_at = candles
             .last()
@@ -1499,6 +1971,10 @@ mod tests {
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
             breakout_lookback_candles: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
             confidence_floor: None,
             stop_loss_pct: Some(Decimal::new(5, 0)),
             take_profit_pct: Some(Decimal::new(10, 0)),
@@ -1788,6 +2264,143 @@ mod tests {
             issue.severity == StrategyConfigValidationSeverity::Error
                 && issue.code == "invalid_trend_lookback_candles"
         }));
+    }
+
+    #[test]
+    fn range_reversion_emits_buy_near_lower_range_with_reversal() {
+        let candles = range_reversion_candles(Decimal::new(1004, 1), Decimal::new(1003, 1));
+
+        let result = evaluate(context(StrategyId::RangeReversionV1, candles))
+            .expect("evaluation should succeed");
+
+        assert!(result.generated);
+        assert_eq!(result.reason, SignalReason::RangeReversion);
+    }
+
+    #[test]
+    fn range_reversion_no_signal_when_not_near_lower_band() {
+        let candles = range_reversion_candles(Decimal::new(101, 0), Decimal::new(1005, 1));
+
+        let result = diagnose(context(StrategyId::RangeReversionV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::NotNearLowerBand)
+        );
+    }
+
+    #[test]
+    fn range_reversion_no_signal_when_range_too_narrow() {
+        let mut candles = range_reversion_candles(Decimal::new(10004, 2), Decimal::new(10003, 2));
+        for candle in &mut candles {
+            candle.high = Decimal::new(1001, 1);
+            candle.low = Decimal::new(100, 0);
+        }
+
+        let result = diagnose(context(StrategyId::RangeReversionV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::RangeTooNarrow)
+        );
+    }
+
+    #[test]
+    fn range_reversion_no_signal_when_range_too_wide() {
+        let mut candles = range_reversion_candles(Decimal::new(1004, 1), Decimal::new(1003, 1));
+        for candle in &mut candles {
+            candle.high = Decimal::new(110, 0);
+            candle.low = Decimal::new(100, 0);
+        }
+
+        let result = diagnose(context(StrategyId::RangeReversionV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::RangeTooWide)
+        );
+    }
+
+    #[test]
+    fn range_reversion_no_signal_without_reversal_confirmation() {
+        let candles = range_reversion_candles(Decimal::new(1001, 1), Decimal::new(1002, 1));
+
+        let result = diagnose(context(StrategyId::RangeReversionV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::NoReversalConfirmation)
+        );
+    }
+
+    #[test]
+    fn range_reversion_reports_insufficient_data() {
+        let candles = vec![range_candle(
+            0,
+            Decimal::new(100, 0),
+            Decimal::new(101, 0),
+            Decimal::new(99, 0),
+            Decimal::new(100, 0),
+        )];
+
+        let result = diagnose(context(StrategyId::RangeReversionV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.final_decision,
+            StrategyDiagnosticsDecision::InsufficientData
+        );
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::InsufficientData)
+        );
+    }
+
+    #[test]
+    fn range_reversion_reports_stale_data() {
+        let candles = range_reversion_candles(Decimal::new(1004, 1), Decimal::new(1003, 1));
+        let evaluated_at = candles.last().unwrap().close_time + Duration::minutes(60);
+
+        let result = diagnose(context_at(
+            StrategyId::RangeReversionV1,
+            candles,
+            evaluated_at,
+        ))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.final_decision,
+            StrategyDiagnosticsDecision::StaleData
+        );
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::StaleData)
+        );
+    }
+
+    #[test]
+    fn range_reversion_validation_rejects_invalid_band_config() {
+        let mut request = sample_request("range_reversion_v1");
+        request.lookback_candles = 20;
+        request.lower_band_pct = Some(Decimal::new(60, 0));
+        request.upper_band_pct = Some(Decimal::new(50, 0));
+
+        let result = validate_strategy_config(&request, &validation_context());
+
+        assert!(!result.valid);
+        assert!(result
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid_lower_band_pct"));
+        assert!(result
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid_range_band_order"));
     }
 
     #[test]

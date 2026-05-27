@@ -229,6 +229,9 @@ type StrategyExperimentFormState = {
   trend_lookbacks: string;
   momentum_lookbacks: string;
   breakout_lookbacks: string;
+  lower_band_pct: string;
+  min_range_width_pct: string;
+  max_range_width_pct: string;
   holding_candles: string;
   stop_loss_pct: string;
   take_profit_pct: string;
@@ -274,6 +277,9 @@ const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   trend_lookbacks: "10,20,50",
   momentum_lookbacks: "2,3,5",
   breakout_lookbacks: "",
+  lower_band_pct: "10,20,30",
+  min_range_width_pct: "0.15",
+  max_range_width_pct: "3.0",
   holding_candles: "3,5,10",
   stop_loss_pct: "",
   take_profit_pct: "",
@@ -362,7 +368,7 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
 };
 
 const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
-  strategies: ["trend_filter_momentum_v1"],
+  strategies: ["trend_filter_momentum_v1", "volatility_breakout_v2", "range_reversion_v1"],
   symbols: ["BTCUSDT", "ETHUSDT"],
   experiment_timeframes: ["5m", "15m"],
   campaign_start: "2024-05-01T00:00:00Z",
@@ -378,6 +384,9 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   base_interval: "1m",
   lookback_candidates: [10, 20, 50],
   momentum_lookback_candidates: [2, 3, 5],
+  lower_band_pct_candidates: ["10", "20", "30"],
+  min_range_width_pct_candidates: ["0.15"],
+  max_range_width_pct_candidates: ["3.0"],
 };
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
@@ -414,6 +423,10 @@ function strategyConfigFormFromStatus(
     trend_lookback_candles: strategy?.trend_lookback_candles ?? null,
     momentum_lookback_candles: strategy?.momentum_lookback_candles ?? null,
     breakout_lookback_candles: strategy?.breakout_lookback_candles ?? null,
+    lower_band_pct: strategy?.lower_band_pct ?? null,
+    upper_band_pct: strategy?.upper_band_pct ?? null,
+    min_range_width_pct: strategy?.min_range_width_pct ?? null,
+    max_range_width_pct: strategy?.max_range_width_pct ?? null,
     confidence_floor: strategy?.confidence_floor ?? null,
     stop_loss_pct: strategy?.stop_loss_pct ?? null,
     take_profit_pct: strategy?.take_profit_pct ?? null,
@@ -474,6 +487,9 @@ function buildStrategyExperimentRequest(
     trend_lookback_candidates: parseIntegerList(form.trend_lookbacks),
     momentum_lookback_candidates: parseIntegerList(form.momentum_lookbacks),
     breakout_lookback_candidates: parseIntegerList(form.breakout_lookbacks),
+    lower_band_pct_candidates: parseDecimalList(form.lower_band_pct),
+    min_range_width_pct_candidates: parseDecimalList(form.min_range_width_pct),
+    max_range_width_pct_candidates: parseDecimalList(form.max_range_width_pct),
     holding_candles_candidates: holding.length ? holding : null,
     stop_loss_pct_candidates: parseDecimalList(form.stop_loss_pct),
     take_profit_pct_candidates: parseDecimalList(form.take_profit_pct),
@@ -3686,6 +3702,46 @@ function AuthenticatedDashboard({
                       }
                     />
                     <Field
+                      label="Lower Band %"
+                      value={strategyConfigForm.lower_band_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          lower_band_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Upper Band %"
+                      value={strategyConfigForm.upper_band_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          upper_band_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Range Width %"
+                      value={strategyConfigForm.min_range_width_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_range_width_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Max Range Width %"
+                      value={strategyConfigForm.max_range_width_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          max_range_width_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
                       label="Stop Loss %"
                       value={strategyConfigForm.stop_loss_pct ?? ""}
                       onChange={(value) =>
@@ -5179,6 +5235,9 @@ function AuthenticatedDashboard({
                       ["trend_lookbacks", "Trend Lookbacks"],
                       ["momentum_lookbacks", "Momentum Lookbacks"],
                       ["breakout_lookbacks", "Breakout Lookbacks"],
+                      ["lower_band_pct", "Lower Band %"],
+                      ["min_range_width_pct", "Min Range Width %"],
+                      ["max_range_width_pct", "Max Range Width %"],
                       ["holding_candles", "Holding Candles"],
                       ["stop_loss_pct", "Stop Loss %"],
                       ["take_profit_pct", "Take Profit %"],
