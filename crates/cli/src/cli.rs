@@ -609,6 +609,12 @@ pub struct StrategyConfigArgs {
     pub cooldown_seconds: u32,
     #[arg(long = "lookback-candles")]
     pub lookback_candles: u32,
+    #[arg(long = "trend-lookback-candles")]
+    pub trend_lookback_candles: Option<u32>,
+    #[arg(long = "momentum-lookback-candles")]
+    pub momentum_lookback_candles: Option<u32>,
+    #[arg(long = "breakout-lookback-candles")]
+    pub breakout_lookback_candles: Option<u32>,
     #[arg(long = "confidence-floor")]
     pub confidence_floor: Option<rust_decimal::Decimal>,
     #[arg(long = "stop-loss-pct")]
@@ -1232,6 +1238,12 @@ pub struct StrategyExperimentRunArgs {
     pub slippage_bps: rust_decimal::Decimal,
     #[arg(long = "lookbacks", value_delimiter = ',')]
     pub lookbacks: Vec<u32>,
+    #[arg(long = "trend-lookbacks", value_delimiter = ',')]
+    pub trend_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "momentum-lookbacks", value_delimiter = ',')]
+    pub momentum_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
+    pub breakout_lookbacks: Option<Vec<u32>>,
     #[arg(long = "holding-candles", value_delimiter = ',')]
     pub holding_candles: Option<Vec<u32>>,
     #[arg(long = "stop-loss-pct", value_delimiter = ',')]
@@ -1266,6 +1278,12 @@ pub struct StrategyMultiTimeframeExperimentRunArgs {
     pub slippage_bps: rust_decimal::Decimal,
     #[arg(long = "lookbacks", value_delimiter = ',')]
     pub lookbacks: Vec<u32>,
+    #[arg(long = "trend-lookbacks", value_delimiter = ',')]
+    pub trend_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "momentum-lookbacks", value_delimiter = ',')]
+    pub momentum_lookbacks: Option<Vec<u32>>,
+    #[arg(long = "breakout-lookbacks", value_delimiter = ',')]
+    pub breakout_lookbacks: Option<Vec<u32>>,
     #[arg(long = "holding-candles", value_delimiter = ',')]
     pub holding_candles: Option<Vec<u32>>,
     #[arg(long = "stop-loss-pct", value_delimiter = ',')]

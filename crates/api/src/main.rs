@@ -2054,6 +2054,9 @@ struct StrategyStatusView {
     max_signal_age_ms: i64,
     cooldown_seconds: i32,
     lookback_candles: i32,
+    trend_lookback_candles: Option<i32>,
+    momentum_lookback_candles: Option<i32>,
+    breakout_lookback_candles: Option<i32>,
     confidence_floor: Option<String>,
     stop_loss_pct: Option<String>,
     take_profit_pct: Option<String>,
@@ -3402,6 +3405,9 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
         max_signal_age_ms: record.config.max_signal_age_ms,
         cooldown_seconds: record.config.cooldown_seconds,
         lookback_candles: record.config.lookback_candles,
+        trend_lookback_candles: record.config.trend_lookback_candles,
+        momentum_lookback_candles: record.config.momentum_lookback_candles,
+        breakout_lookback_candles: record.config.breakout_lookback_candles,
         confidence_floor: record
             .config
             .confidence_floor
@@ -3435,6 +3441,9 @@ fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfi
         max_signal_age_ms: config.max_signal_age_ms,
         cooldown_seconds: config.cooldown_seconds,
         lookback_candles: config.lookback_candles,
+        trend_lookback_candles: config.trend_lookback_candles,
+        momentum_lookback_candles: config.momentum_lookback_candles,
+        breakout_lookback_candles: config.breakout_lookback_candles,
         confidence_floor: config.confidence_floor,
         stop_loss_pct: config.stop_loss_pct,
         take_profit_pct: config.take_profit_pct,
@@ -14214,6 +14223,13 @@ fn strategy_config_request_with_candidate_overrides(
         max_signal_age_ms: max_signal_age_ms.unwrap_or(base.max_signal_age_ms),
         cooldown_seconds: base.cooldown_seconds,
         lookback_candles,
+        trend_lookback_candles: Some(lookback_candles)
+            .filter(|_| base.strategy_id == StrategyId::TrendFilterMomentumV1)
+            .or(base.trend_lookback_candles),
+        momentum_lookback_candles: base.momentum_lookback_candles,
+        breakout_lookback_candles: Some(lookback_candles)
+            .filter(|_| base.strategy_id == StrategyId::VolatilityBreakoutV2)
+            .or(base.breakout_lookback_candles),
         confidence_floor: base.confidence_floor,
         stop_loss_pct,
         take_profit_pct,
@@ -21062,6 +21078,9 @@ mod tests {
             max_signal_age_ms: 180_000,
             cooldown_seconds: 900,
             lookback_candles: 3,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -21151,6 +21170,9 @@ mod tests {
             rank: 1,
             candidate: StrategyExperimentCandidate {
                 lookback_candles,
+                trend_lookback_candles: None,
+                momentum_lookback_candles: None,
+                breakout_lookback_candles: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -21897,6 +21919,9 @@ mod tests {
             max_signal_age_ms: 180_000,
             cooldown_seconds: 900,
             lookback_candles: 3,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,

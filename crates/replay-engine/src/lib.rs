@@ -630,6 +630,20 @@ fn experiment_strategy_override(
             .unwrap_or(base_config.max_signal_age_ms),
         cooldown_seconds: base_config.cooldown_seconds,
         lookback_candles: candidate.lookback_candles,
+        trend_lookback_candles: candidate
+            .trend_lookback_candles
+            .or(Some(candidate.lookback_candles))
+            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .or(base_config.trend_lookback_candles),
+        momentum_lookback_candles: candidate
+            .momentum_lookback_candles
+            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .or(base_config.momentum_lookback_candles),
+        breakout_lookback_candles: candidate
+            .breakout_lookback_candles
+            .or(Some(candidate.lookback_candles))
+            .filter(|_| request.strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
+            .or(base_config.breakout_lookback_candles),
         confidence_floor: base_config.confidence_floor,
         stop_loss_pct: candidate.stop_loss_pct.or(base_config.stop_loss_pct),
         take_profit_pct: candidate.take_profit_pct.or(base_config.take_profit_pct),
@@ -1040,6 +1054,13 @@ fn walk_forward_strategy_override(
             .unwrap_or(base_config.max_signal_age_ms),
         cooldown_seconds: base_config.cooldown_seconds,
         lookback_candles: request.candidate_config.lookback_candles,
+        trend_lookback_candles: Some(request.candidate_config.lookback_candles)
+            .filter(|_| request.strategy_id == StrategyId::TrendFilterMomentumV1.as_str())
+            .or(base_config.trend_lookback_candles),
+        momentum_lookback_candles: base_config.momentum_lookback_candles,
+        breakout_lookback_candles: Some(request.candidate_config.lookback_candles)
+            .filter(|_| request.strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
+            .or(base_config.breakout_lookback_candles),
         confidence_floor: base_config.confidence_floor,
         stop_loss_pct: request
             .candidate_config
@@ -1706,13 +1727,22 @@ fn record_equity(
     } else {
         Decimal::ZERO
     };
-    state.equity_curve.push(BacktestEquityPoint {
+    let point = BacktestEquityPoint {
         id: deterministic_point_id(run_id, timestamp),
         run_id,
         timestamp,
         equity,
         drawdown_pct,
-    });
+    };
+    if let Some(existing) = state
+        .equity_curve
+        .iter_mut()
+        .find(|existing| existing.timestamp == timestamp)
+    {
+        *existing = point;
+    } else {
+        state.equity_curve.push(point);
+    }
     Ok(())
 }
 
@@ -1866,12 +1896,12 @@ fn deterministic_point_id(run_id: Uuid, timestamp: DateTime<Utc>) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_global_ranking, build_strategy_walk_forward_execution,
-        calculate_fee_slippage_drag_pct, calculate_strategy_experiment_score,
-        calculate_walk_forward_robustness_score, experiment_strategy_override, experiment_warnings,
-        generate_walk_forward_windows, global_ranking_entry, median_decimal,
-        rank_strategy_experiment_runs, simulate_backtest, skipped_strategy_experiment_result,
-        timeframe_comparison_from_result,
+        build_global_ranking, build_strategy_experiment_execution,
+        build_strategy_walk_forward_execution, calculate_fee_slippage_drag_pct,
+        calculate_strategy_experiment_score, calculate_walk_forward_robustness_score,
+        experiment_strategy_override, experiment_warnings, generate_walk_forward_windows,
+        global_ranking_entry, median_decimal, rank_strategy_experiment_runs, simulate_backtest,
+        skipped_strategy_experiment_result, timeframe_comparison_from_result,
     };
     use aegis_core::{
         BacktestRequest, Candle, CandleInterval, MarketDataSource, StrategyConfig,
@@ -1912,6 +1942,9 @@ mod tests {
             max_signal_age_ms: 180_000,
             cooldown_seconds: 900,
             lookback_candles: 3,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -1956,6 +1989,12 @@ mod tests {
         ]
     }
 
+    fn long_trending_candles(count: i64) -> Vec<Candle> {
+        (0..count)
+            .map(|index| candle(index, 100 + index, 101 + index, 99 + index, 100 + index))
+            .collect()
+    }
+
     fn sample_experiment_request() -> StrategyExperimentRequest {
         StrategyExperimentRequest {
             strategy_id: "momentum_v1".to_string(),
@@ -1967,12 +2006,59 @@ mod tests {
             fee_bps: Decimal::new(10, 0),
             slippage_bps: Decimal::new(5, 0),
             lookback_candidates: vec![3, 5, 10],
+            trend_lookback_candidates: None,
+            momentum_lookback_candidates: None,
+            breakout_lookback_candidates: None,
             holding_candles_candidates: Some(vec![3, 5]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
             max_signal_age_ms: Some(180_000),
             max_runs: Some(3),
             correlation_id: None,
+        }
+    }
+
+    fn trend_filter_strategy_config() -> StrategyConfig {
+        StrategyConfig {
+            strategy_id: StrategyId::TrendFilterMomentumV1,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols: vec![Symbol::new("BTCUSDT").unwrap()],
+            timeframe: CandleInterval::FiveMinutes,
+            suggested_notional: Decimal::new(100_000, 0),
+            max_signal_age_ms: 900_000,
+            cooldown_seconds: 1_800,
+            lookback_candles: 20,
+            trend_lookback_candles: Some(20),
+            momentum_lookback_candles: Some(3),
+            breakout_lookback_candles: None,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: None,
+        }
+    }
+
+    fn trend_filter_request() -> BacktestRequest {
+        BacktestRequest {
+            strategy_id: "trend_filter_momentum_v1".to_string(),
+            timeframe: "5m".to_string(),
+            strategy_config_override: None,
+            ..sample_request()
+        }
+    }
+
+    fn trend_filter_experiment_request() -> StrategyExperimentRequest {
+        StrategyExperimentRequest {
+            strategy_id: "trend_filter_momentum_v1".to_string(),
+            timeframe: "5m".to_string(),
+            lookback_candidates: vec![10, 20],
+            trend_lookback_candidates: Some(vec![10, 20]),
+            momentum_lookback_candidates: Some(vec![2, 3]),
+            breakout_lookback_candidates: None,
+            max_runs: Some(4),
+            ..sample_experiment_request()
         }
     }
 
@@ -1990,6 +2076,9 @@ mod tests {
             rank: 0,
             candidate: aegis_core::StrategyExperimentCandidate {
                 lookback_candles: 3,
+                trend_lookback_candles: None,
+                momentum_lookback_candles: None,
+                breakout_lookback_candles: None,
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
@@ -2102,6 +2191,43 @@ mod tests {
 
         assert!(!execution.trades.is_empty());
         assert_eq!(execution.trades[0].side, aegis_core::Side::Buy);
+    }
+
+    #[test]
+    fn trend_filter_momentum_runs_in_backtest_path() {
+        let execution = simulate_backtest(
+            Uuid::from_u128(0x501),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x502),
+            &trend_filter_request(),
+            &trend_filter_strategy_config(),
+            long_trending_candles(40),
+        )
+        .unwrap();
+
+        assert_eq!(execution.result.strategy_id, "trend_filter_momentum_v1");
+        assert!(!execution.trades.is_empty());
+    }
+
+    #[test]
+    fn trend_filter_experiment_evaluates_candidates() {
+        let execution = build_strategy_experiment_execution(
+            &trend_filter_strategy_config(),
+            Symbol::new("BTCUSDT").unwrap(),
+            trend_filter_experiment_request(),
+            long_trending_candles(80),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x503),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(execution.result.strategy_id, "trend_filter_momentum_v1");
+        assert!(!execution.runs.is_empty());
+        assert!(execution.runs.iter().any(|run| {
+            run.candidate.trend_lookback_candles == Some(10)
+                && run.candidate.momentum_lookback_candles == Some(2)
+        }));
     }
 
     #[test]
@@ -2332,6 +2458,9 @@ mod tests {
         let original = base.clone();
         let candidate = aegis_core::StrategyExperimentCandidate {
             lookback_candles: 10,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
             holding_candles: Some(5),
             stop_loss_pct: Some(Decimal::new(2, 0)),
             take_profit_pct: Some(Decimal::new(4, 0)),

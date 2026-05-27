@@ -533,6 +533,9 @@ pub struct StrategyConfigRecord {
     pub max_signal_age_ms: i64,
     pub cooldown_seconds: i32,
     pub lookback_candles: i32,
+    pub trend_lookback_candles: Option<i32>,
+    pub momentum_lookback_candles: Option<i32>,
+    pub breakout_lookback_candles: Option<i32>,
     pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -7908,6 +7911,9 @@ async fn upsert_strategy_config_tx(
             max_signal_age_ms,
             cooldown_seconds,
             lookback_candles,
+            trend_lookback_candles,
+            strategy_momentum_lookback_candles,
+            strategy_breakout_lookback_candles,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -7918,7 +7924,7 @@ async fn upsert_strategy_config_tx(
             updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW(), NOW()
         )
         ON CONFLICT (strategy_id) DO UPDATE
         SET
@@ -7933,6 +7939,9 @@ async fn upsert_strategy_config_tx(
             max_signal_age_ms = EXCLUDED.max_signal_age_ms,
             cooldown_seconds = EXCLUDED.cooldown_seconds,
             lookback_candles = EXCLUDED.lookback_candles,
+            trend_lookback_candles = EXCLUDED.trend_lookback_candles,
+            strategy_momentum_lookback_candles = EXCLUDED.strategy_momentum_lookback_candles,
+            strategy_breakout_lookback_candles = EXCLUDED.strategy_breakout_lookback_candles,
             confidence_floor = EXCLUDED.confidence_floor,
             stop_loss_pct = EXCLUDED.stop_loss_pct,
             take_profit_pct = EXCLUDED.take_profit_pct,
@@ -7950,6 +7959,9 @@ async fn upsert_strategy_config_tx(
             max_signal_age_ms,
             cooldown_seconds,
             lookback_candles,
+            trend_lookback_candles,
+            strategy_momentum_lookback_candles,
+            strategy_breakout_lookback_candles,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -7967,11 +7979,14 @@ async fn upsert_strategy_config_tx(
     .bind(symbols)
     .bind(config.timeframe.as_str())
     .bind(config.suggested_notional)
-    .bind(config.lookback_candles as i32)
-    .bind(config.lookback_candles as i32)
+    .bind(config.momentum_lookback_candles.unwrap_or(config.lookback_candles) as i32)
+    .bind(config.breakout_lookback_candles.unwrap_or(config.lookback_candles) as i32)
     .bind(config.max_signal_age_ms)
     .bind(config.cooldown_seconds as i32)
     .bind(config.lookback_candles as i32)
+    .bind(config.trend_lookback_candles.map(|value| value as i32))
+    .bind(config.momentum_lookback_candles.map(|value| value as i32))
+    .bind(config.breakout_lookback_candles.map(|value| value as i32))
     .bind(config.confidence_floor)
     .bind(config.stop_loss_pct)
     .bind(config.take_profit_pct)
@@ -8000,6 +8015,9 @@ async fn get_strategy_config_tx(
             max_signal_age_ms,
             cooldown_seconds,
             lookback_candles,
+            trend_lookback_candles,
+            strategy_momentum_lookback_candles,
+            strategy_breakout_lookback_candles,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -8035,6 +8053,9 @@ pub async fn get_strategy_config(
             max_signal_age_ms,
             cooldown_seconds,
             lookback_candles,
+            trend_lookback_candles,
+            strategy_momentum_lookback_candles,
+            strategy_breakout_lookback_candles,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -8393,6 +8414,9 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
             c.max_signal_age_ms,
             c.cooldown_seconds,
             c.lookback_candles,
+            c.trend_lookback_candles,
+            c.strategy_momentum_lookback_candles,
+            c.strategy_breakout_lookback_candles,
             c.confidence_floor,
             c.stop_loss_pct,
             c.take_profit_pct,
@@ -8429,6 +8453,9 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
                 max_signal_age_ms: row.get("max_signal_age_ms"),
                 cooldown_seconds: row.get("cooldown_seconds"),
                 lookback_candles: row.get("lookback_candles"),
+                trend_lookback_candles: row.get("trend_lookback_candles"),
+                momentum_lookback_candles: row.get("strategy_momentum_lookback_candles"),
+                breakout_lookback_candles: row.get("strategy_breakout_lookback_candles"),
                 confidence_floor: row.get("confidence_floor"),
                 stop_loss_pct: row.get("stop_loss_pct"),
                 take_profit_pct: row.get("take_profit_pct"),
@@ -8469,6 +8496,9 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
         max_signal_age_ms: record.max_signal_age_ms,
         cooldown_seconds: record.cooldown_seconds as u32,
         lookback_candles: record.lookback_candles as u32,
+        trend_lookback_candles: record.trend_lookback_candles.map(|value| value as u32),
+        momentum_lookback_candles: record.momentum_lookback_candles.map(|value| value as u32),
+        breakout_lookback_candles: record.breakout_lookback_candles.map(|value| value as u32),
         confidence_floor: record.confidence_floor,
         stop_loss_pct: record.stop_loss_pct,
         take_profit_pct: record.take_profit_pct,
@@ -9465,6 +9495,9 @@ fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
         max_signal_age_ms: row.get("max_signal_age_ms"),
         cooldown_seconds: row.get("cooldown_seconds"),
         lookback_candles: row.get("lookback_candles"),
+        trend_lookback_candles: row.get("trend_lookback_candles"),
+        momentum_lookback_candles: row.get("strategy_momentum_lookback_candles"),
+        breakout_lookback_candles: row.get("strategy_breakout_lookback_candles"),
         confidence_floor: row.get("confidence_floor"),
         stop_loss_pct: row.get("stop_loss_pct"),
         take_profit_pct: row.get("take_profit_pct"),

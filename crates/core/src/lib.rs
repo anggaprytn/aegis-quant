@@ -652,6 +652,8 @@ pub enum Side {
 pub enum StrategyId {
     MomentumV1,
     VolatilityBreakoutV1,
+    TrendFilterMomentumV1,
+    VolatilityBreakoutV2,
 }
 
 impl StrategyId {
@@ -659,6 +661,8 @@ impl StrategyId {
         match self {
             Self::MomentumV1 => "momentum_v1",
             Self::VolatilityBreakoutV1 => "volatility_breakout_v1",
+            Self::TrendFilterMomentumV1 => "trend_filter_momentum_v1",
+            Self::VolatilityBreakoutV2 => "volatility_breakout_v2",
         }
     }
 }
@@ -670,6 +674,8 @@ impl std::str::FromStr for StrategyId {
         match value.trim().to_ascii_lowercase().as_str() {
             "momentum_v1" => Ok(Self::MomentumV1),
             "volatility_breakout_v1" => Ok(Self::VolatilityBreakoutV1),
+            "trend_filter_momentum_v1" => Ok(Self::TrendFilterMomentumV1),
+            "volatility_breakout_v2" => Ok(Self::VolatilityBreakoutV2),
             other => Err(CoreError::UnsupportedStrategyId(other.to_string())),
         }
     }
@@ -819,7 +825,9 @@ impl From<SignalSide> for Side {
 pub enum SignalReason {
     ThreeConsecutiveHigherCloses,
     MomentumHigherCloses,
+    TrendFilterMomentum,
     BreakoutAboveRecentHigh,
+    VolumeConfirmedBreakout,
     ConditionsNotMet,
     InsufficientHistory,
     StrategyDisabled,
@@ -830,7 +838,9 @@ impl SignalReason {
         match self {
             Self::ThreeConsecutiveHigherCloses => "three_consecutive_higher_closes",
             Self::MomentumHigherCloses => "momentum_higher_closes",
+            Self::TrendFilterMomentum => "trend_filter_momentum",
             Self::BreakoutAboveRecentHigh => "breakout_above_recent_high",
+            Self::VolumeConfirmedBreakout => "volume_confirmed_breakout",
             Self::ConditionsNotMet => "conditions_not_met",
             Self::InsufficientHistory => "insufficient_history",
             Self::StrategyDisabled => "strategy_disabled",
@@ -845,7 +855,9 @@ impl std::str::FromStr for SignalReason {
         match value.trim().to_ascii_lowercase().as_str() {
             "three_consecutive_higher_closes" => Ok(Self::ThreeConsecutiveHigherCloses),
             "momentum_higher_closes" => Ok(Self::MomentumHigherCloses),
+            "trend_filter_momentum" => Ok(Self::TrendFilterMomentum),
             "breakout_above_recent_high" => Ok(Self::BreakoutAboveRecentHigh),
+            "volume_confirmed_breakout" => Ok(Self::VolumeConfirmedBreakout),
             "conditions_not_met" => Ok(Self::ConditionsNotMet),
             "insufficient_history" => Ok(Self::InsufficientHistory),
             "strategy_disabled" => Ok(Self::StrategyDisabled),
@@ -880,6 +892,9 @@ pub struct StrategyConfig {
     pub max_signal_age_ms: i64,
     pub cooldown_seconds: u32,
     pub lookback_candles: u32,
+    pub trend_lookback_candles: Option<u32>,
+    pub momentum_lookback_candles: Option<u32>,
+    pub breakout_lookback_candles: Option<u32>,
     pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -918,6 +933,9 @@ pub struct StrategyConfigUpdateRequest {
     pub max_signal_age_ms: i64,
     pub cooldown_seconds: u32,
     pub lookback_candles: u32,
+    pub trend_lookback_candles: Option<u32>,
+    pub momentum_lookback_candles: Option<u32>,
+    pub breakout_lookback_candles: Option<u32>,
     pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -973,7 +991,13 @@ pub struct StrategyDiagnosticCheck {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StrategyNoSignalReason {
     MomentumNotStrictlyHigherCloses,
+    TrendCloseNotAboveSma,
+    TrendMomentumNotPositive,
+    TrendTooExtended,
+    VolatilityBelowMinimum,
     BreakoutNotAboveRecentHigh,
+    BreakoutVolumeBelowAverage,
+    BreakoutTooExtended,
     ConfidenceBelowFloor,
     InsufficientCandles,
     StrategyDisabled,
@@ -985,7 +1009,13 @@ impl StrategyNoSignalReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MomentumNotStrictlyHigherCloses => "MOMENTUM_NOT_STRICTLY_HIGHER_CLOSES",
+            Self::TrendCloseNotAboveSma => "TREND_CLOSE_NOT_ABOVE_SMA",
+            Self::TrendMomentumNotPositive => "TREND_MOMENTUM_NOT_POSITIVE",
+            Self::TrendTooExtended => "TREND_TOO_EXTENDED",
+            Self::VolatilityBelowMinimum => "VOLATILITY_BELOW_MINIMUM",
             Self::BreakoutNotAboveRecentHigh => "BREAKOUT_NOT_ABOVE_RECENT_HIGH",
+            Self::BreakoutVolumeBelowAverage => "BREAKOUT_VOLUME_BELOW_AVERAGE",
+            Self::BreakoutTooExtended => "BREAKOUT_TOO_EXTENDED",
             Self::ConfidenceBelowFloor => "CONFIDENCE_BELOW_FLOOR",
             Self::InsufficientCandles => "INSUFFICIENT_CANDLES",
             Self::StrategyDisabled => "STRATEGY_DISABLED",
@@ -1581,6 +1611,9 @@ impl StrategyExperimentMetric {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyExperimentCandidate {
     pub lookback_candles: u32,
+    pub trend_lookback_candles: Option<u32>,
+    pub momentum_lookback_candles: Option<u32>,
+    pub breakout_lookback_candles: Option<u32>,
     pub holding_candles: Option<u32>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -1598,6 +1631,9 @@ pub struct StrategyExperimentRequest {
     pub fee_bps: Decimal,
     pub slippage_bps: Decimal,
     pub lookback_candidates: Vec<u32>,
+    pub trend_lookback_candidates: Option<Vec<u32>>,
+    pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub breakout_lookback_candidates: Option<Vec<u32>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
     pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
     pub take_profit_pct_candidates: Option<Vec<Decimal>>,
@@ -1819,6 +1855,29 @@ impl StrategyExperimentRequest {
         if self.lookback_candidates.is_empty() {
             return Err(CoreError::EmptyStrategyExperimentCandidates);
         }
+        for lookback in self
+            .trend_lookback_candidates
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .chain(
+                self.momentum_lookback_candidates
+                    .as_ref()
+                    .into_iter()
+                    .flatten(),
+            )
+            .chain(
+                self.breakout_lookback_candidates
+                    .as_ref()
+                    .into_iter()
+                    .flatten(),
+            )
+            .copied()
+        {
+            if lookback == 0 {
+                return Err(CoreError::EmptyStrategyExperimentCandidates);
+            }
+        }
         if let Some(max_runs) = self.max_runs {
             if max_runs == 0 {
                 return Err(CoreError::InvalidStrategyExperimentMaxRuns);
@@ -1864,29 +1923,60 @@ impl StrategyExperimentRequest {
             .unwrap_or_else(|| vec![Decimal::ZERO]);
 
         let mut candidates = Vec::new();
+        let trend_lookbacks = self
+            .trend_lookback_candidates
+            .clone()
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| self.lookback_candidates.clone());
+        let momentum_lookbacks = self
+            .momentum_lookback_candidates
+            .clone()
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| vec![0]);
+        let breakout_lookbacks = self
+            .breakout_lookback_candidates
+            .clone()
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| self.lookback_candidates.clone());
+
         for lookback_candles in &self.lookback_candidates {
-            for holding_candles in &holdings {
-                for stop_loss_pct in &stop_losses {
-                    for take_profit_pct in &take_profits {
-                        candidates.push(StrategyExperimentCandidate {
-                            lookback_candles: *lookback_candles,
-                            holding_candles: if *holding_candles == 0 {
-                                None
-                            } else {
-                                Some(*holding_candles)
-                            },
-                            stop_loss_pct: if *stop_loss_pct == Decimal::ZERO {
-                                None
-                            } else {
-                                Some(*stop_loss_pct)
-                            },
-                            take_profit_pct: if *take_profit_pct == Decimal::ZERO {
-                                None
-                            } else {
-                                Some(*take_profit_pct)
-                            },
-                            max_signal_age_ms: self.max_signal_age_ms,
-                        });
+            for trend_lookback_candles in &trend_lookbacks {
+                for momentum_lookback_candles in &momentum_lookbacks {
+                    for breakout_lookback_candles in &breakout_lookbacks {
+                        for holding_candles in &holdings {
+                            for stop_loss_pct in &stop_losses {
+                                for take_profit_pct in &take_profits {
+                                    candidates.push(StrategyExperimentCandidate {
+                                        lookback_candles: *lookback_candles,
+                                        trend_lookback_candles: Some(*trend_lookback_candles),
+                                        momentum_lookback_candles: if *momentum_lookback_candles
+                                            == 0
+                                        {
+                                            None
+                                        } else {
+                                            Some(*momentum_lookback_candles)
+                                        },
+                                        breakout_lookback_candles: Some(*breakout_lookback_candles),
+                                        holding_candles: if *holding_candles == 0 {
+                                            None
+                                        } else {
+                                            Some(*holding_candles)
+                                        },
+                                        stop_loss_pct: if *stop_loss_pct == Decimal::ZERO {
+                                            None
+                                        } else {
+                                            Some(*stop_loss_pct)
+                                        },
+                                        take_profit_pct: if *take_profit_pct == Decimal::ZERO {
+                                            None
+                                        } else {
+                                            Some(*take_profit_pct)
+                                        },
+                                        max_signal_age_ms: self.max_signal_age_ms,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1911,6 +2001,9 @@ pub struct StrategyMultiTimeframeExperimentRequest {
     pub fee_bps: Decimal,
     pub slippage_bps: Decimal,
     pub lookback_candidates: Vec<u32>,
+    pub trend_lookback_candidates: Option<Vec<u32>>,
+    pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub breakout_lookback_candidates: Option<Vec<u32>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
     pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
     pub take_profit_pct_candidates: Option<Vec<Decimal>>,
@@ -1947,6 +2040,9 @@ impl StrategyMultiTimeframeExperimentRequest {
             fee_bps: self.fee_bps,
             slippage_bps: self.slippage_bps,
             lookback_candidates: self.lookback_candidates.clone(),
+            trend_lookback_candidates: self.trend_lookback_candidates.clone(),
+            momentum_lookback_candidates: self.momentum_lookback_candidates.clone(),
+            breakout_lookback_candidates: self.breakout_lookback_candidates.clone(),
             holding_candles_candidates: self.holding_candles_candidates.clone(),
             stop_loss_pct_candidates: self.stop_loss_pct_candidates.clone(),
             take_profit_pct_candidates: self.take_profit_pct_candidates.clone(),

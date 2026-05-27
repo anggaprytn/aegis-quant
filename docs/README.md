@@ -10,6 +10,7 @@
 
 Research note:
 - Walk-forward validation is available through the strategy experiments surface as research-only out-of-sample testing. It persists into isolated walk-forward tables and must not mutate paper, shadow, testnet, or live execution state.
+- `trend_filter_momentum_v1` and `volatility_breakout_v2` are conservative candle-only research baselines for experiments, diagnostics, and candidate evidence. They are long-only comparators with no financial promise and no execution authority.
 
 Research workflow:
 1. Build the research dataset so 1m coverage gaps are backfilled and 5m/15m/1h candles are re-aggregated.

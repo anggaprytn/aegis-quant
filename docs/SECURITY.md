@@ -64,6 +64,7 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Production/private exchange execution remains deferred; only Binance Spot Testnet skeleton endpoints are present
 - Replay/backtest reads stored candles only and must not mutate production `signals`, `risk_decisions`, or `orders`
 - Strategy experiments are research-only and may persist only `strategy_experiments` plus `strategy_experiment_runs`; they must not mutate `strategy_configs`, `signals`, `risk_decisions`, `orders`, `paper_*`, `testnet_shadow_*`, or `exchange_testnet_*`
+- Baseline research strategies are candle-only, long-only, deterministic signal generators for replay, diagnostics, and candidate evidence. They provide no financial promise and do not receive execution authority.
 - Strategy analytics reads persisted backtest, paper, signal/risk, and shadow rows only; it must not mutate paper orders, paper positions, paper PnL, backtest tables, isolated testnet execution tables, or lifecycle history
 - Operator reports may optionally persist into `operator_reports`, but generation must never mutate `orders`, `paper_*`, `backtest_*`, `testnet_shadow_*`, `exchange_testnet_*`, or reconciliation tables
 - Paper accounting reads only stored paper orders and stored public market data; it does not call exchange private endpoints or handle API keys

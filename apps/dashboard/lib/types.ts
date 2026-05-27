@@ -1605,6 +1605,9 @@ export type StrategyStatusView = {
   max_signal_age_ms: number;
   cooldown_seconds: number;
   lookback_candles: number;
+  trend_lookback_candles: number | null;
+  momentum_lookback_candles: number | null;
+  breakout_lookback_candles: number | null;
   confidence_floor: string | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
@@ -1643,6 +1646,9 @@ export type StrategyConfigUpdateRequest = {
   max_signal_age_ms: number;
   cooldown_seconds: number;
   lookback_candles: number;
+  trend_lookback_candles?: number | null;
+  momentum_lookback_candles?: number | null;
+  breakout_lookback_candles?: number | null;
   confidence_floor?: string | null;
   stop_loss_pct?: string | null;
   take_profit_pct?: string | null;
@@ -2622,6 +2628,9 @@ export type StrategyExperimentStatus =
 
 export type StrategyExperimentCandidate = {
   lookback_candles: number;
+  trend_lookback_candles: number | null;
+  momentum_lookback_candles: number | null;
+  breakout_lookback_candles: number | null;
   holding_candles: number | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
@@ -2690,6 +2699,9 @@ export type StrategyExperimentRequest = {
   fee_bps: string;
   slippage_bps: string;
   lookback_candidates: number[];
+  trend_lookback_candidates?: number[] | null;
+  momentum_lookback_candidates?: number[] | null;
+  breakout_lookback_candidates?: number[] | null;
   holding_candles_candidates?: number[] | null;
   stop_loss_pct_candidates?: string[] | null;
   take_profit_pct_candidates?: string[] | null;
@@ -2708,6 +2720,9 @@ export type StrategyMultiTimeframeExperimentRequest = {
   fee_bps: string;
   slippage_bps: string;
   lookback_candidates: number[];
+  trend_lookback_candidates?: number[] | null;
+  momentum_lookback_candidates?: number[] | null;
+  breakout_lookback_candidates?: number[] | null;
   holding_candles_candidates?: number[] | null;
   stop_loss_pct_candidates?: string[] | null;
   take_profit_pct_candidates?: string[] | null;

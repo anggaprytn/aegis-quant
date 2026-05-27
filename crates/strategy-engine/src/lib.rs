@@ -16,8 +16,13 @@ pub struct StrategyValidationContext {
     pub max_position_notional: Option<Decimal>,
 }
 
-pub fn known_strategy_ids() -> [StrategyId; 2] {
-    [StrategyId::MomentumV1, StrategyId::VolatilityBreakoutV1]
+pub fn known_strategy_ids() -> [StrategyId; 4] {
+    [
+        StrategyId::MomentumV1,
+        StrategyId::VolatilityBreakoutV1,
+        StrategyId::TrendFilterMomentumV1,
+        StrategyId::VolatilityBreakoutV2,
+    ]
 }
 
 pub fn validate_strategy_config(
@@ -34,7 +39,7 @@ pub fn validate_strategy_config(
                 StrategyConfigValidationSeverity::Error,
                 "unknown_strategy",
                 "strategy_id",
-                "strategy_id must be one of momentum_v1 or volatility_breakout_v1",
+                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v1, or volatility_breakout_v2",
             ));
             return StrategyConfigValidationResult {
                 strategy_id: request.strategy_id.clone(),
@@ -197,6 +202,8 @@ pub fn validate_strategy_config(
     let lookback_range = match strategy_id {
         StrategyId::MomentumV1 => 2..=50,
         StrategyId::VolatilityBreakoutV1 => 5..=500,
+        StrategyId::TrendFilterMomentumV1 => 2..=500,
+        StrategyId::VolatilityBreakoutV2 => 5..=500,
     };
     if !lookback_range.contains(&request.lookback_candles) {
         issues.push(issue(
@@ -210,6 +217,37 @@ pub fn validate_strategy_config(
                 strategy_id
             ),
         ));
+    }
+
+    if let Some(trend_lookback) = request.trend_lookback_candles {
+        if trend_lookback == 0 {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_trend_lookback_candles",
+                "trend_lookback_candles",
+                "trend_lookback_candles must be greater than zero",
+            ));
+        }
+    }
+    if let Some(momentum_lookback) = request.momentum_lookback_candles {
+        if momentum_lookback == 0 {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_momentum_lookback_candles",
+                "momentum_lookback_candles",
+                "momentum_lookback_candles must be greater than zero",
+            ));
+        }
+    }
+    if let Some(breakout_lookback) = request.breakout_lookback_candles {
+        if breakout_lookback == 0 {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_breakout_lookback_candles",
+                "breakout_lookback_candles",
+                "breakout_lookback_candles must be greater than zero",
+            ));
+        }
     }
 
     validate_optional_percent(
@@ -282,12 +320,15 @@ pub fn validate_strategy_config(
             strategy_id,
             enabled: request.enabled,
             mode: request.mode,
-            symbols,
+            symbols: symbols.clone(),
             timeframe,
             suggested_notional: request.suggested_notional,
             max_signal_age_ms: request.max_signal_age_ms,
             cooldown_seconds: request.cooldown_seconds,
             lookback_candles: request.lookback_candles,
+            trend_lookback_candles: request.trend_lookback_candles,
+            momentum_lookback_candles: request.momentum_lookback_candles,
+            breakout_lookback_candles: request.breakout_lookback_candles,
             confidence_floor: request.confidence_floor,
             stop_loss_pct: request.stop_loss_pct,
             take_profit_pct: request.take_profit_pct,
@@ -306,7 +347,15 @@ pub fn validate_strategy_config(
 }
 
 pub fn required_candle_count(config: &StrategyConfig) -> i64 {
-    (config.lookback_candles as i64 + 1).max(2)
+    match config.strategy_id {
+        StrategyId::TrendFilterMomentumV1 => {
+            let trend = trend_lookback(config) as i64 + 1;
+            let momentum = momentum_lookback(config) as i64 + 1;
+            trend.max(momentum).max(2)
+        }
+        StrategyId::VolatilityBreakoutV2 => (breakout_lookback(config) as i64 + 1).max(2),
+        _ => (config.lookback_candles as i64 + 1).max(2),
+    }
 }
 
 pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluationResult, CoreError> {
@@ -332,6 +381,8 @@ pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluation
     match context.strategy_id {
         StrategyId::MomentumV1 => evaluate_momentum(&context, candles),
         StrategyId::VolatilityBreakoutV1 => evaluate_breakout(&context, candles),
+        StrategyId::TrendFilterMomentumV1 => evaluate_trend_filter_momentum(&context, candles),
+        StrategyId::VolatilityBreakoutV2 => evaluate_volume_breakout(&context, candles),
     }
 }
 
@@ -467,6 +518,12 @@ pub fn diagnose(
             StrategyId::VolatilityBreakoutV1 => {
                 diagnose_breakout(&context, &candles, &mut condition_checks)
             }
+            StrategyId::TrendFilterMomentumV1 => {
+                diagnose_trend_filter_momentum(&context, &candles, &mut condition_checks)
+            }
+            StrategyId::VolatilityBreakoutV2 => {
+                diagnose_volume_breakout(&context, &candles, &mut condition_checks)
+            }
         }?
     };
 
@@ -563,6 +620,86 @@ fn evaluate_breakout(
         latest,
         SignalReason::BreakoutAboveRecentHigh,
         Decimal::new(70, 2),
+    )?)
+}
+
+fn evaluate_trend_filter_momentum(
+    context: &StrategyEvaluationContext,
+    candles: Vec<Candle>,
+) -> Result<StrategyEvaluationResult, CoreError> {
+    let required = required_candle_count(&context.config) as usize;
+    if candles.len() < required {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::InsufficientHistory,
+        ));
+    }
+
+    let latest = candles.last().expect("candles must be present");
+    let previous = &candles[candles.len() - 2];
+    let trend = trend_lookback(&context.config) as usize;
+    let momentum = momentum_lookback(&context.config) as usize;
+    let trend_window = &candles[candles.len() - trend - 1..candles.len() - 1];
+    let sma = average_decimal(trend_window.iter().map(|candle| candle.close));
+    let momentum_reference = &candles[candles.len() - momentum - 1];
+
+    if latest.close <= sma
+        || latest.close <= previous.close
+        || latest.close <= momentum_reference.close
+    {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    Ok(generated_result(
+        context,
+        latest,
+        SignalReason::TrendFilterMomentum,
+        Decimal::new(68, 2),
+    )?)
+}
+
+fn evaluate_volume_breakout(
+    context: &StrategyEvaluationContext,
+    candles: Vec<Candle>,
+) -> Result<StrategyEvaluationResult, CoreError> {
+    let lookback = breakout_lookback(&context.config) as usize;
+    let required = lookback + 1;
+    if candles.len() < required {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::InsufficientHistory,
+        ));
+    }
+
+    let recent = &candles[candles.len() - required..];
+    let latest = recent.last().expect("recent candles must be present");
+    let previous_window = &recent[..recent.len() - 1];
+    let breakout_level = previous_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .expect("previous window must be present");
+    let average_volume = average_decimal(previous_window.iter().map(|candle| candle.volume));
+
+    if latest.close <= breakout_level || latest.volume <= average_volume {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    Ok(generated_result(
+        context,
+        latest,
+        SignalReason::VolumeConfirmedBreakout,
+        Decimal::new(72, 2),
     )?)
 }
 
@@ -830,6 +967,249 @@ fn diagnose_breakout(
     })
 }
 
+fn diagnose_trend_filter_momentum(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    let trend = trend_lookback(&context.config) as usize;
+    let momentum = momentum_lookback(&context.config) as usize;
+    let latest = candles.last().expect("candles must be present");
+    let previous = &candles[candles.len() - 2];
+    let trend_window = &candles[candles.len() - trend - 1..candles.len() - 1];
+    let sma = average_decimal(trend_window.iter().map(|candle| candle.close));
+    let momentum_reference = &candles[candles.len() - momentum - 1];
+
+    let above_sma = latest.close > sma;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "trend_close_above_sma".to_string(),
+        passed: above_sma,
+        severity: if above_sma {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if above_sma {
+            format!(
+                "Latest close {} is above SMA({}) {}.",
+                latest.close, trend, sma
+            )
+        } else {
+            format!(
+                "Latest close {} is not above SMA({}) {}.",
+                latest.close, trend, sma
+            )
+        },
+        actual: Some(latest.close.to_string()),
+        expected: Some(format!("> {sma}")),
+    });
+    if !above_sma {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::TrendCloseNotAboveSma),
+            summary: format!(
+                "Trend-filter momentum did not trigger because latest close {} is not above SMA({}) {}.",
+                latest.close, trend, sma
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let latest_above_previous = latest.close > previous.close;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "latest_close_above_previous_close".to_string(),
+        passed: latest_above_previous,
+        severity: if latest_above_previous {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if latest_above_previous {
+            "Latest close is above the previous close.".to_string()
+        } else {
+            "Latest close is not above the previous close.".to_string()
+        },
+        actual: Some(latest.close.to_string()),
+        expected: Some(format!("> {}", previous.close)),
+    });
+    if !latest_above_previous {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::TrendMomentumNotPositive),
+            summary: format!(
+                "Trend-filter momentum did not trigger because latest close {} is not above previous close {}.",
+                latest.close, previous.close
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let momentum_passed = latest.close > momentum_reference.close;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "momentum_lookback_close_check".to_string(),
+        passed: momentum_passed,
+        severity: if momentum_passed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if momentum_passed {
+            format!(
+                "Latest close is above the close from {} candles ago.",
+                momentum
+            )
+        } else {
+            format!(
+                "Latest close is not above the close from {} candles ago.",
+                momentum
+            )
+        },
+        actual: Some(latest.close.to_string()),
+        expected: Some(format!("> {}", momentum_reference.close)),
+    });
+    if !momentum_passed {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::TrendMomentumNotPositive),
+            summary: format!(
+                "Trend-filter momentum did not trigger because latest close {} is not above the {}-candle momentum reference {}.",
+                latest.close, momentum, momentum_reference.close
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    confidence_outcome(
+        context,
+        latest,
+        SignalReason::TrendFilterMomentum,
+        Decimal::new(68, 2),
+    )
+}
+
+fn diagnose_volume_breakout(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    let lookback = breakout_lookback(&context.config) as usize;
+    let recent = &candles[candles.len() - lookback - 1..];
+    let latest = recent.last().expect("recent candles must be present");
+    let previous_window = &recent[..recent.len() - 1];
+    let breakout_level = previous_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .expect("previous window must be present");
+    let breakout = latest.close > breakout_level;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakout_close_above_prior_high".to_string(),
+        passed: breakout,
+        severity: if breakout {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if breakout {
+            "Latest close is above the prior breakout high.".to_string()
+        } else {
+            "Latest close is not above the prior breakout high.".to_string()
+        },
+        actual: Some(latest.close.to_string()),
+        expected: Some(format!("> {breakout_level}")),
+    });
+    if !breakout {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::BreakoutNotAboveRecentHigh),
+            summary: format!(
+                "Volatility breakout did not trigger because latest close {} is not above prior high {}.",
+                latest.close, breakout_level
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let average_volume = average_decimal(previous_window.iter().map(|candle| candle.volume));
+    let volume_confirmed = latest.volume > average_volume;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakout_volume_above_average".to_string(),
+        passed: volume_confirmed,
+        severity: if volume_confirmed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: if volume_confirmed {
+            "Latest volume is above the lookback average volume.".to_string()
+        } else {
+            "Latest volume is not above the lookback average volume.".to_string()
+        },
+        actual: Some(latest.volume.to_string()),
+        expected: Some(format!("> {average_volume}")),
+    });
+    if !volume_confirmed {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::BreakoutVolumeBelowAverage),
+            summary: format!(
+                "Volatility breakout did not trigger because latest volume {} is not above average volume {}.",
+                latest.volume, average_volume
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    confidence_outcome(
+        context,
+        latest,
+        SignalReason::VolumeConfirmedBreakout,
+        Decimal::new(72, 2),
+    )
+}
+
+fn confidence_outcome(
+    context: &StrategyEvaluationContext,
+    latest: &Candle,
+    reason: SignalReason,
+    confidence: Decimal,
+) -> Result<DiagnosticOutcome, CoreError> {
+    let confidence_passed = context
+        .config
+        .confidence_floor
+        .map(|floor| confidence >= floor)
+        .unwrap_or(true);
+    if !confidence_passed {
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::NoSignal,
+            no_signal_reason: Some(StrategyNoSignalReason::ConfidenceBelowFloor),
+            summary: format!(
+                "{} conditions passed, but confidence {} is below the configured floor.",
+                reason.as_str(),
+                confidence
+            ),
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    Ok(DiagnosticOutcome {
+        final_decision: StrategyDiagnosticsDecision::WouldSignal,
+        no_signal_reason: None,
+        summary: format!(
+            "{} would signal on the latest closed candle.",
+            reason.as_str()
+        ),
+        source_candle_open_time: Some(latest.open_time),
+        confidence: Some(confidence),
+    })
+}
+
 fn no_signal_result(
     context: &StrategyEvaluationContext,
     timeframe: CandleInterval,
@@ -857,6 +1237,30 @@ fn normalize_closed_candles(candles: &[Candle]) -> Vec<Candle> {
     normalized
 }
 
+fn trend_lookback(config: &StrategyConfig) -> u32 {
+    config
+        .trend_lookback_candles
+        .unwrap_or(config.lookback_candles)
+}
+
+fn momentum_lookback(config: &StrategyConfig) -> u32 {
+    config.momentum_lookback_candles.unwrap_or(3)
+}
+
+fn breakout_lookback(config: &StrategyConfig) -> u32 {
+    config
+        .breakout_lookback_candles
+        .unwrap_or(config.lookback_candles)
+}
+
+fn average_decimal(values: impl Iterator<Item = Decimal>) -> Decimal {
+    let values = values.collect::<Vec<_>>();
+    if values.is_empty() {
+        return Decimal::ZERO;
+    }
+    values.iter().copied().sum::<Decimal>() / Decimal::from(values.len() as u64)
+}
+
 pub fn build_default_strategy_configs(
     symbols: Vec<aegis_core::Symbol>,
     timeframe: CandleInterval,
@@ -865,6 +1269,8 @@ pub fn build_default_strategy_configs(
     breakout_lookback_candles: u32,
 ) -> Vec<StrategyConfig> {
     let (recommended_signal_age_ms, _) = timeframe.recommended_max_signal_age_ms();
+    let trend_timeframe = CandleInterval::FiveMinutes;
+    let breakout_timeframe = CandleInterval::FifteenMinutes;
     vec![
         StrategyConfig {
             strategy_id: StrategyId::MomentumV1,
@@ -876,6 +1282,9 @@ pub fn build_default_strategy_configs(
             max_signal_age_ms: recommended_signal_age_ms,
             cooldown_seconds: 900,
             lookback_candles: momentum_lookback_candles,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
@@ -886,17 +1295,58 @@ pub fn build_default_strategy_configs(
             strategy_id: StrategyId::VolatilityBreakoutV1,
             enabled: true,
             mode: StrategyMode::Paper,
-            symbols,
+            symbols: symbols.clone(),
             timeframe,
             suggested_notional,
             max_signal_age_ms: recommended_signal_age_ms,
             cooldown_seconds: 900,
             lookback_candles: breakout_lookback_candles,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
             confidence_floor: None,
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
             notes: Some("Default breakout paper config".to_string()),
+        },
+        StrategyConfig {
+            strategy_id: StrategyId::TrendFilterMomentumV1,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols: symbols.clone(),
+            timeframe: trend_timeframe,
+            suggested_notional,
+            max_signal_age_ms: 900_000,
+            cooldown_seconds: 1_800,
+            lookback_candles: 20,
+            trend_lookback_candles: Some(20),
+            momentum_lookback_candles: Some(3),
+            breakout_lookback_candles: None,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: Some("Research baseline trend-filter momentum config".to_string()),
+        },
+        StrategyConfig {
+            strategy_id: StrategyId::VolatilityBreakoutV2,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols,
+            timeframe: breakout_timeframe,
+            suggested_notional,
+            max_signal_age_ms: 2_700_000,
+            cooldown_seconds: 1_800,
+            lookback_candles: 20,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: Some(20),
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: Some("Research baseline volume-confirmed breakout config".to_string()),
         },
     ]
 }
@@ -946,6 +1396,8 @@ fn max_strategy_confidence(strategy_id: StrategyId) -> Decimal {
     match strategy_id {
         StrategyId::MomentumV1 => Decimal::new(65, 2),
         StrategyId::VolatilityBreakoutV1 => Decimal::new(70, 2),
+        StrategyId::TrendFilterMomentumV1 => Decimal::new(68, 2),
+        StrategyId::VolatilityBreakoutV2 => Decimal::new(72, 2),
     }
 }
 
@@ -1044,6 +1496,9 @@ mod tests {
             max_signal_age_ms: 180_000,
             cooldown_seconds: 900,
             lookback_candles: 3,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            breakout_lookback_candles: None,
             confidence_floor: None,
             stop_loss_pct: Some(Decimal::new(5, 0)),
             take_profit_pct: Some(Decimal::new(10, 0)),
@@ -1217,6 +1672,125 @@ mod tests {
     }
 
     #[test]
+    fn trend_filter_momentum_emits_signal_when_close_above_sma_and_momentum_passes() {
+        let mut candles = (0..20)
+            .map(|index| sample_candle(index, 100 + index, 101 + index, true))
+            .collect::<Vec<_>>();
+        candles.push(sample_candle(20, 130, 131, true));
+
+        let result = evaluate(context(StrategyId::TrendFilterMomentumV1, candles))
+            .expect("evaluation should succeed");
+
+        assert!(result.generated);
+        assert_eq!(result.reason, SignalReason::TrendFilterMomentum);
+    }
+
+    #[test]
+    fn trend_filter_momentum_no_signal_when_below_sma() {
+        let mut candles = (0..20)
+            .map(|index| sample_candle(index, 120, 121, true))
+            .collect::<Vec<_>>();
+        candles.push(sample_candle(20, 110, 121, true));
+
+        let result = evaluate(context(StrategyId::TrendFilterMomentumV1, candles))
+            .expect("evaluation should succeed");
+
+        assert!(!result.generated);
+        assert_eq!(result.reason, SignalReason::ConditionsNotMet);
+    }
+
+    #[test]
+    fn trend_filter_momentum_no_signal_when_latest_close_not_above_previous() {
+        let mut candles = (0..20)
+            .map(|index| sample_candle(index, 100 + index, 101 + index, true))
+            .collect::<Vec<_>>();
+        candles.push(sample_candle(20, 119, 121, true));
+
+        let result = evaluate(context(StrategyId::TrendFilterMomentumV1, candles))
+            .expect("evaluation should succeed");
+
+        assert!(!result.generated);
+        assert_eq!(result.reason, SignalReason::ConditionsNotMet);
+    }
+
+    #[test]
+    fn trend_filter_momentum_reports_insufficient_data() {
+        let candles = (0..5)
+            .map(|index| sample_candle(index, 100 + index, 101 + index, true))
+            .collect::<Vec<_>>();
+
+        let result = diagnose(context(StrategyId::TrendFilterMomentumV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.final_decision,
+            StrategyDiagnosticsDecision::InsufficientData
+        );
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::InsufficientCandles)
+        );
+    }
+
+    #[test]
+    fn trend_filter_momentum_reports_stale_data() {
+        let candles = (0..21)
+            .map(|index| sample_candle(index, 100 + index, 101 + index, true))
+            .collect::<Vec<_>>();
+        let evaluated_at = candles.last().unwrap().close_time + Duration::minutes(20);
+
+        let result = diagnose(context_at(
+            StrategyId::TrendFilterMomentumV1,
+            candles,
+            evaluated_at,
+        ))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.final_decision,
+            StrategyDiagnosticsDecision::StaleData
+        );
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::StaleData)
+        );
+    }
+
+    #[test]
+    fn trend_filter_momentum_diagnostics_explain_below_sma() {
+        let mut candles = (0..20)
+            .map(|index| sample_candle(index, 120, 121, true))
+            .collect::<Vec<_>>();
+        candles.push(sample_candle(20, 110, 121, true));
+
+        let result = diagnose(context(StrategyId::TrendFilterMomentumV1, candles))
+            .expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::TrendCloseNotAboveSma)
+        );
+        assert!(result.summary.contains("not above SMA"));
+    }
+
+    #[test]
+    fn trend_filter_momentum_validation_rejects_invalid_lookbacks() {
+        let mut request = sample_request("trend_filter_momentum_v1");
+        request.lookback_candles = 20;
+        request.trend_lookback_candles = Some(0);
+        request.momentum_lookback_candles = Some(0);
+
+        let result = validate_strategy_config(&request, &validation_context());
+
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|issue| {
+            issue.severity == StrategyConfigValidationSeverity::Error
+                && issue.code == "invalid_trend_lookback_candles"
+        }));
+    }
+
+    #[test]
     fn required_candle_count_uses_shared_lookback() {
         let config = build_default_strategy_configs(
             vec![Symbol::new("BTCUSDT").expect("valid symbol")],
@@ -1240,6 +1814,12 @@ mod tests {
         );
         assert!(configs
             .iter()
+            .filter(|config| {
+                matches!(
+                    config.strategy_id,
+                    StrategyId::MomentumV1 | StrategyId::VolatilityBreakoutV1
+                )
+            })
             .all(|config| config.max_signal_age_ms == 120_000));
     }
 

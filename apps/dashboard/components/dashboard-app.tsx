@@ -213,6 +213,9 @@ type StrategyExperimentFormState = {
   fee_bps: string;
   slippage_bps: string;
   lookbacks: string;
+  trend_lookbacks: string;
+  momentum_lookbacks: string;
+  breakout_lookbacks: string;
   holding_candles: string;
   stop_loss_pct: string;
   take_profit_pct: string;
@@ -241,15 +244,18 @@ type StrategyWalkForwardFormState = {
 };
 
 const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
-  strategy_id: "momentum_v1",
+  strategy_id: "trend_filter_momentum_v1",
   symbol: "BTCUSDT",
-  timeframes: "1m,5m,15m,1h",
+  timeframes: "5m,15m",
   start_time: "2026-05-01T00:00:00Z",
   end_time: "2026-05-02T00:00:00Z",
   initial_capital: "1000000",
   fee_bps: "10",
   slippage_bps: "5",
-  lookbacks: "3,5,10,20",
+  lookbacks: "10,20,50",
+  trend_lookbacks: "10,20,50",
+  momentum_lookbacks: "2,3,5",
+  breakout_lookbacks: "",
   holding_candles: "3,5,10",
   stop_loss_pct: "",
   take_profit_pct: "",
@@ -334,6 +340,9 @@ function strategyConfigFormFromStatus(
     max_signal_age_ms: strategy?.max_signal_age_ms ?? 180000,
     cooldown_seconds: strategy?.cooldown_seconds ?? 900,
     lookback_candles: strategy?.lookback_candles ?? 3,
+    trend_lookback_candles: strategy?.trend_lookback_candles ?? null,
+    momentum_lookback_candles: strategy?.momentum_lookback_candles ?? null,
+    breakout_lookback_candles: strategy?.breakout_lookback_candles ?? null,
     confidence_floor: strategy?.confidence_floor ?? null,
     stop_loss_pct: strategy?.stop_loss_pct ?? null,
     take_profit_pct: strategy?.take_profit_pct ?? null,
@@ -384,6 +393,9 @@ function buildStrategyExperimentRequest(
     fee_bps: form.fee_bps,
     slippage_bps: form.slippage_bps,
     lookback_candidates: parseIntegerList(form.lookbacks),
+    trend_lookback_candidates: parseIntegerList(form.trend_lookbacks),
+    momentum_lookback_candidates: parseIntegerList(form.momentum_lookbacks),
+    breakout_lookback_candidates: parseIntegerList(form.breakout_lookbacks),
     holding_candles_candidates: holding.length ? holding : null,
     stop_loss_pct_candidates: parseDecimalList(form.stop_loss_pct),
     take_profit_pct_candidates: parseDecimalList(form.take_profit_pct),
@@ -3215,6 +3227,36 @@ function AuthenticatedDashboard({
                       }
                     />
                     <Field
+                      label="Trend Lookback"
+                      value={String(strategyConfigForm.trend_lookback_candles ?? "")}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          trend_lookback_candles: value ? Number(value) || 0 : null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Momentum Lookback"
+                      value={String(strategyConfigForm.momentum_lookback_candles ?? "")}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          momentum_lookback_candles: value ? Number(value) || 0 : null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Breakout Lookback"
+                      value={String(strategyConfigForm.breakout_lookback_candles ?? "")}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          breakout_lookback_candles: value ? Number(value) || 0 : null,
+                        }))
+                      }
+                    />
+                    <Field
                       label="Max Signal Age"
                       value={String(strategyConfigForm.max_signal_age_ms)}
                       onChange={(value) =>
@@ -4341,6 +4383,9 @@ function AuthenticatedDashboard({
                       ["fee_bps", "Fee Bps"],
                       ["slippage_bps", "Slippage Bps"],
                       ["lookbacks", "Lookbacks"],
+                      ["trend_lookbacks", "Trend Lookbacks"],
+                      ["momentum_lookbacks", "Momentum Lookbacks"],
+                      ["breakout_lookbacks", "Breakout Lookbacks"],
                       ["holding_candles", "Holding Candles"],
                       ["stop_loss_pct", "Stop Loss %"],
                       ["take_profit_pct", "Take Profit %"],

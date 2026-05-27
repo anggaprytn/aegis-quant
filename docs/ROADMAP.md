@@ -40,7 +40,8 @@
 - Completed: read-only promotion funnel analytics across shadow would-submit, promotion preview/submit, isolated testnet order lifecycle outcomes, API/CLI/dashboard surfaces, and bounded low-cardinality telemetry
 - Completed: read-only operator daily reports across health, feed freshness, strategy/risk behavior, paper PnL, shadow outcomes, promotion funnel, and isolated testnet execution with optional persisted exports
 - Completed: deterministic execution readiness gate with API/CLI/dashboard inspection, optional readiness snapshots, and bounded telemetry across paper/testnet shadow promotion boundaries
-- Current focus: use research-ready dataset preparation to raise experiment and walk-forward reliability while continuing deterministic multi-timeframe comparison, global ranking across parameter sweeps, skipped-window visibility, readiness heuristics, and promotion-readiness workflows before any live execution surface area
+- Completed: conservative candle-only research baselines, including trend-filter momentum and volume-confirmed breakout, exposed through diagnostics, backtests, experiments, CLI/API, and dashboard selection without changing execution authority
+- Current focus: use stronger baseline strategy evidence to raise experiment and walk-forward reliability while continuing deterministic multi-timeframe comparison, global ranking across parameter sweeps, skipped-window visibility, readiness heuristics, and promotion-readiness workflows before any live execution surface area
 
 ## Next implementation steps
 

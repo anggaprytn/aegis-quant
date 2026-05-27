@@ -89,6 +89,7 @@ make verify
 - Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
 - Strategy experiments are research-only parameter sweeps on stored candles; they must not mutate live, paper, shadow, promotion, or testnet execution state.
+- Baseline research strategies such as `trend_filter_momentum_v1` and `volatility_breakout_v2` are deterministic candle-only comparators for experiments and candidate review. They are not financial advice, do not promise profit, and do not bypass risk, paper, shadow, testnet, or live execution boundaries.
 - Research candidate lifecycle operations are review-only controls; candidate creation, observation, decisions, and archival append auditable lifecycle events and do not execute trades or auto-submit anything.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
 
@@ -290,6 +291,9 @@ Strategy experiment sweep:
 
 Multi-timeframe strategy comparison:
 `cargo run -p cli -- experiments strategy multi-timeframe --strategy momentum_v1 --symbol BTCUSDT --timeframes 1m,5m,15m,1h --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`
+
+Baseline research strategy comparison:
+`cargo run -p cli -- experiments strategy multi-timeframe --strategy trend_filter_momentum_v1 --symbol BTCUSDT --timeframes 5m,15m --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 10,20,50 --trend-lookbacks 10,20,50 --momentum-lookbacks 2,3,5 --holding-candles 3,5,10 --max-signal-age-ms 900000 --max-runs 27`
 
 Walk-forward validation:
 `cargo run -p cli -- experiments strategy walk-forward --strategy momentum_v1 --symbol BTCUSDT --timeframe 15m --start 2026-05-01T00:00:00Z --end 2026-05-24T00:00:00Z --train-hours 72 --test-hours 24 --step-hours 24 --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookback-candles 5 --holding-candles 3`
