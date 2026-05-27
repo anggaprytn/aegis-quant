@@ -866,6 +866,7 @@ export type ResearchCandidateStatus =
   | "DISCOVERED"
   | "OBSERVING"
   | "ACCEPTED_FOR_SHADOW"
+  | "PROMOTED_TO_SHADOW_CONFIG"
   | "REJECTED"
   | "ARCHIVED";
 
@@ -1150,12 +1151,14 @@ export type ResearchCandidateQualificationCheck = {
 };
 
 export type ResearchCandidateShadowPerformanceStatus =
+  | "NOT_PROMOTED_TO_SHADOW_CONFIG"
   | "INSUFFICIENT_DATA"
   | "HEALTHY"
   | "UNDER_OBSERVATION"
   | "NEEDS_REVIEW";
 
 export type ResearchCandidateShadowPerformanceRecommendation =
+  | "PROMOTE_TO_SHADOW_CONFIG"
   | "INSUFFICIENT_DATA"
   | "KEEP_OBSERVING"
   | "NEEDS_REVIEW"

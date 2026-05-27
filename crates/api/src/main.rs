@@ -15099,9 +15099,13 @@ async fn build_research_candidate_shadow_promotion_preview(
     let mut proposed_runner_config = snapshot.config.clone();
     let mut changes = Vec::new();
 
-    if candidate.status != ResearchCandidateStatus::AcceptedForShadow {
+    if !matches!(
+        candidate.status,
+        ResearchCandidateStatus::AcceptedForShadow
+            | ResearchCandidateStatus::PromotedToShadowConfig
+    ) {
         reasons.push(format!(
-            "candidate status {} is not ACCEPTED_FOR_SHADOW",
+            "candidate status {} is not ACCEPTED_FOR_SHADOW or PROMOTED_TO_SHADOW_CONFIG",
             candidate.status.as_str()
         ));
     }
@@ -17999,7 +18003,39 @@ async fn apply_research_candidate_shadow_promotion_handler(
         }
     };
 
-    let action = if applied {
+    let next_candidate_status = research_candidate_next_status(
+        candidate.status,
+        ResearchCandidateDecision::PromoteToShadowConfig,
+    )
+    .unwrap_or(candidate.status);
+    let candidate_status_changed = next_candidate_status != candidate.status;
+    if candidate_status_changed {
+        if let Err(err) = update_research_candidate_status(
+            &state.db_pool,
+            candidate.id,
+            next_candidate_status,
+            None,
+            None,
+            Utc::now(),
+            Some(correlation_id),
+        )
+        .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_update_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let action = if applied || candidate_status_changed {
         "research.candidate.shadow_promotion.applied"
     } else {
         "research.candidate.shadow_promotion.no_changes"
@@ -18016,6 +18052,7 @@ async fn apply_research_candidate_shadow_promotion_handler(
         "proposed_runner_config": preview.proposed_runner_config,
         "actor_id": actor.user_id,
         "applied": applied,
+        "candidate_status_changed": candidate_status_changed,
     });
     let _ = insert_audit_log(
         &state.db_pool,
@@ -18036,40 +18073,44 @@ async fn apply_research_candidate_shadow_promotion_handler(
         ),
     )
     .await;
-    let _ = append_research_candidate_event(
-        &state.db_pool,
-        &ResearchCandidateLifecycleEvent {
-            id: Uuid::new_v4(),
-            candidate_id: preview.candidate_id,
-            previous_status: Some(candidate.status),
-            next_status: candidate.status,
-            decision: ResearchCandidateDecision::PromoteToShadowConfig,
-            reason: Some(if applied {
-                "shadow_runner_config_updated".to_string()
-            } else {
-                "shadow_runner_config_already_in_sync".to_string()
-            }),
-            notes: Some(
-                "Accepted research candidate reviewed for shadow runner config promotion."
-                    .to_string(),
-            ),
-            actor_id: Some(actor.user_id),
-            payload: event_payload,
-            created_at: Utc::now(),
-            correlation_id: Some(correlation_id),
-        },
-    )
-    .await;
+    if candidate_status_changed {
+        let _ = append_research_candidate_event(
+            &state.db_pool,
+            &ResearchCandidateLifecycleEvent {
+                id: Uuid::new_v4(),
+                candidate_id: preview.candidate_id,
+                previous_status: Some(candidate.status),
+                next_status: next_candidate_status,
+                decision: ResearchCandidateDecision::PromoteToShadowConfig,
+                reason: Some(if applied {
+                    "shadow_runner_config_updated".to_string()
+                } else {
+                    "shadow_runner_config_already_in_sync".to_string()
+                }),
+                notes: Some(
+                    "Accepted research candidate promoted to shadow runner config coverage."
+                        .to_string(),
+                ),
+                actor_id: Some(actor.user_id),
+                payload: event_payload,
+                created_at: Utc::now(),
+                correlation_id: Some(correlation_id),
+            },
+        )
+        .await;
+    }
 
     let final_status = if applied {
         ResearchCandidateShadowPromotionStatus::Applied
     } else {
         ResearchCandidateShadowPromotionStatus::NoChanges
     };
+    let mut result = preview_to_shadow_promotion_result(preview, final_status, applied);
+    result.candidate_status = next_candidate_status;
     (
         StatusCode::OK,
         Json(ResearchCandidateShadowPromotionResultResponse {
-            result: preview_to_shadow_promotion_result(preview, final_status, applied),
+            result,
             request_id: request.request_id,
             correlation_id: request.correlation_id,
             timestamp: Utc::now(),
@@ -27306,6 +27347,10 @@ mod tests {
         assert_eq!(payload["result"]["status"], "APPLIED");
         assert_eq!(payload["result"]["applied"], true);
         assert_eq!(
+            payload["result"]["candidate_status"],
+            "PROMOTED_TO_SHADOW_CONFIG"
+        );
+        assert_eq!(
             payload["result"]["current_runner_config"]["strategies"],
             json!(["mean_reversion_v1"])
         );
@@ -27370,8 +27415,13 @@ mod tests {
         );
         assert_eq!(
             last_event.get::<String, _>("next_status"),
-            "ACCEPTED_FOR_SHADOW"
+            "PROMOTED_TO_SHADOW_CONFIG"
         );
+        let candidate_after = get_research_candidate(&test_db.pool, candidate.id)
+            .await
+            .expect("candidate query")
+            .expect("candidate should exist");
+        assert_eq!(candidate_after.status, "PROMOTED_TO_SHADOW_CONFIG");
     }
 
     #[tokio::test]

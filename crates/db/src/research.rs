@@ -266,7 +266,8 @@ fn legacy_status_for_research_candidate(
         ResearchCandidateStatus::Discovered | ResearchCandidateStatus::Observing => {
             StrategyResearchCandidateStatus::Registered
         }
-        ResearchCandidateStatus::AcceptedForShadow => {
+        ResearchCandidateStatus::AcceptedForShadow => StrategyResearchCandidateStatus::Registered,
+        ResearchCandidateStatus::PromotedToShadowConfig => {
             StrategyResearchCandidateStatus::PromotedToShadowConfig
         }
         ResearchCandidateStatus::Rejected => StrategyResearchCandidateStatus::Rejected,
@@ -1462,7 +1463,7 @@ pub async fn insert_strategy_candidate_observation(
             COALESCE(score, 0),
             CASE
                 WHEN status IN ('DISCOVERED', 'OBSERVING') THEN 'REGISTERED'
-                WHEN status = 'ACCEPTED_FOR_SHADOW' THEN 'PROMOTED_TO_SHADOW_CONFIG'
+                WHEN status = 'PROMOTED_TO_SHADOW_CONFIG' THEN 'PROMOTED_TO_SHADOW_CONFIG'
                 WHEN status = 'REJECTED' THEN 'REJECTED'
                 WHEN status = 'ARCHIVED' THEN 'ARCHIVED'
                 ELSE 'REGISTERED'
@@ -1472,7 +1473,7 @@ pub async fn insert_strategy_candidate_observation(
             created_at,
             updated_at,
             CASE
-                WHEN status = 'ACCEPTED_FOR_SHADOW' THEN updated_at
+                WHEN status = 'PROMOTED_TO_SHADOW_CONFIG' THEN updated_at
                 ELSE NULL
             END,
             NULL,
@@ -1774,15 +1775,18 @@ pub async fn resolve_promoted_research_candidate_for_shadow_run(
     let rows = sqlx::query(
         r#"
         SELECT
-            id,
-            promoted_at
-        FROM strategy_research_candidates
-        WHERE status = 'PROMOTED_TO_SHADOW_CONFIG'
-          AND promoted_at IS NOT NULL
-          AND strategy_id = $1
-          AND symbol = $2
-          AND timeframe = $3
-        ORDER BY promoted_at DESC, created_at DESC, id DESC
+            legacy.id,
+            legacy.promoted_at
+        FROM strategy_research_candidates legacy
+        INNER JOIN research_candidates candidate
+            ON candidate.id = legacy.id
+           AND candidate.status = 'PROMOTED_TO_SHADOW_CONFIG'
+        WHERE legacy.status = 'PROMOTED_TO_SHADOW_CONFIG'
+          AND legacy.promoted_at IS NOT NULL
+          AND legacy.strategy_id = $1
+          AND legacy.symbol = $2
+          AND legacy.timeframe = $3
+        ORDER BY legacy.promoted_at DESC, legacy.created_at DESC, legacy.id DESC
         LIMIT 2
         "#,
     )
@@ -1821,7 +1825,13 @@ pub async fn insert_research_candidate_shadow_run_link(
             shadow_run_id,
             created_at
         )
-        VALUES ($1, $2, $3)
+        SELECT $1, $2, $3
+        WHERE EXISTS (
+            SELECT 1
+            FROM research_candidates
+            WHERE id = $1
+              AND status = 'PROMOTED_TO_SHADOW_CONFIG'
+        )
         ON CONFLICT (shadow_run_id) DO NOTHING
         RETURNING candidate_id, shadow_run_id, created_at
         "#,
@@ -2209,6 +2219,7 @@ pub async fn get_research_candidate_shadow_performance(
 
     Ok(evaluate_research_candidate_shadow_performance(
         candidate.id,
+        candidate.status,
         candidate.strategy_id.clone(),
         candidate.symbol.clone(),
         candidate.timeframe.clone(),

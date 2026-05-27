@@ -232,6 +232,7 @@ pub enum ResearchCandidateStatus {
     Discovered,
     Observing,
     AcceptedForShadow,
+    PromotedToShadowConfig,
     Rejected,
     Archived,
 }
@@ -242,6 +243,7 @@ impl ResearchCandidateStatus {
             Self::Discovered => "DISCOVERED",
             Self::Observing => "OBSERVING",
             Self::AcceptedForShadow => "ACCEPTED_FOR_SHADOW",
+            Self::PromotedToShadowConfig => "PROMOTED_TO_SHADOW_CONFIG",
             Self::Rejected => "REJECTED",
             Self::Archived => "ARCHIVED",
         }
@@ -256,6 +258,7 @@ impl std::str::FromStr for ResearchCandidateStatus {
             "DISCOVERED" => Ok(Self::Discovered),
             "OBSERVING" => Ok(Self::Observing),
             "ACCEPTED_FOR_SHADOW" => Ok(Self::AcceptedForShadow),
+            "PROMOTED_TO_SHADOW_CONFIG" => Ok(Self::PromotedToShadowConfig),
             "REJECTED" => Ok(Self::Rejected),
             "ARCHIVED" => Ok(Self::Archived),
             other => Err(CoreError::UnsupportedResearchCandidateStatus(
@@ -603,11 +606,23 @@ pub fn research_candidate_next_status(
                 decision.as_str().to_string(),
             )),
         },
-        ResearchCandidateDecision::PromoteToShadowConfig => Ok(current_status),
+        ResearchCandidateDecision::PromoteToShadowConfig => match current_status {
+            ResearchCandidateStatus::AcceptedForShadow => {
+                Ok(ResearchCandidateStatus::PromotedToShadowConfig)
+            }
+            ResearchCandidateStatus::PromotedToShadowConfig => Ok(current_status),
+            _ => Err(CoreError::InvalidResearchCandidateTransition(
+                current_status.as_str().to_string(),
+                decision.as_str().to_string(),
+            )),
+        },
         ResearchCandidateDecision::Reject => match current_status {
             ResearchCandidateStatus::Discovered
             | ResearchCandidateStatus::Observing
-            | ResearchCandidateStatus::AcceptedForShadow => Ok(ResearchCandidateStatus::Rejected),
+            | ResearchCandidateStatus::AcceptedForShadow
+            | ResearchCandidateStatus::PromotedToShadowConfig => {
+                Ok(ResearchCandidateStatus::Rejected)
+            }
             _ => Err(CoreError::InvalidResearchCandidateTransition(
                 current_status.as_str().to_string(),
                 decision.as_str().to_string(),
@@ -1186,6 +1201,7 @@ pub struct ResearchCandidateObservationSummaryView {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateShadowPerformanceStatus {
+    NotPromotedToShadowConfig,
     InsufficientData,
     Healthy,
     UnderObservation,
@@ -1195,6 +1211,7 @@ pub enum ResearchCandidateShadowPerformanceStatus {
 impl ResearchCandidateShadowPerformanceStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::NotPromotedToShadowConfig => "NOT_PROMOTED_TO_SHADOW_CONFIG",
             Self::InsufficientData => "INSUFFICIENT_DATA",
             Self::Healthy => "HEALTHY",
             Self::UnderObservation => "UNDER_OBSERVATION",
@@ -1208,6 +1225,7 @@ impl std::str::FromStr for ResearchCandidateShadowPerformanceStatus {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_uppercase().as_str() {
+            "NOT_PROMOTED_TO_SHADOW_CONFIG" => Ok(Self::NotPromotedToShadowConfig),
             "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
             "HEALTHY" => Ok(Self::Healthy),
             "UNDER_OBSERVATION" => Ok(Self::UnderObservation),
@@ -1222,6 +1240,7 @@ impl std::str::FromStr for ResearchCandidateShadowPerformanceStatus {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateShadowPerformanceRecommendation {
+    PromoteToShadowConfig,
     InsufficientData,
     KeepObserving,
     NeedsReview,
@@ -1232,6 +1251,7 @@ pub enum ResearchCandidateShadowPerformanceRecommendation {
 impl ResearchCandidateShadowPerformanceRecommendation {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::PromoteToShadowConfig => "PROMOTE_TO_SHADOW_CONFIG",
             Self::InsufficientData => "INSUFFICIENT_DATA",
             Self::KeepObserving => "KEEP_OBSERVING",
             Self::NeedsReview => "NEEDS_REVIEW",
@@ -1246,6 +1266,7 @@ impl std::str::FromStr for ResearchCandidateShadowPerformanceRecommendation {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_uppercase().as_str() {
+            "PROMOTE_TO_SHADOW_CONFIG" => Ok(Self::PromoteToShadowConfig),
             "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
             "KEEP_OBSERVING" => Ok(Self::KeepObserving),
             "NEEDS_REVIEW" => Ok(Self::NeedsReview),
@@ -2133,6 +2154,15 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
         .or_else(|| latest_qualification.map(|value| value.total_shadow_runs))
         .unwrap_or(0);
     let current_status = candidate.map(|value| value.status);
+    let accepted_for_shadow = matches!(
+        current_status,
+        Some(
+            ResearchCandidateStatus::AcceptedForShadow
+                | ResearchCandidateStatus::PromotedToShadowConfig
+        )
+    );
+    let promoted_to_shadow_config =
+        current_status == Some(ResearchCandidateStatus::PromotedToShadowConfig);
     let fresh_observation =
         request.observation_freshness == ResearchCandidateObservationFreshnessStatus::Fresh;
     let runner_matches = runner_alignment
@@ -2188,9 +2218,20 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             "candidate_not_accepted_for_shadow",
             "Candidate is not yet accepted for shadow review promotion staging.",
             None,
-            false,
+            true,
         ));
         recommendations.insert(ResearchCandidateTestnetReviewRecommendation::ManualOperatorReview);
+    }
+
+    if accepted_for_shadow && !promoted_to_shadow_config {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::RunnerAlignment,
+            "candidate_not_promoted_to_shadow_config",
+            "Candidate is accepted but not promoted to shadow runner config.",
+            None,
+            true,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::FixRunnerAlignment);
     }
 
     if !fresh_observation {
@@ -2308,7 +2349,7 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             "shadow_runs_missing",
             "No linked shadow runs are available for review.",
             None,
-            false,
+            true,
         ));
         recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
     } else if total_shadow_runs < default_thresholds.min_shadow_runs {
@@ -2387,7 +2428,7 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
         || matches!(readiness_status, Some(ExecutionReadinessStatus::Degraded))
     {
         ResearchCandidateTestnetReviewStatus::NeedsOperatorReview
-    } else if current_status != Some(ResearchCandidateStatus::AcceptedForShadow)
+    } else if !promoted_to_shadow_config
         || latest_qualification.is_none()
         || matches!(
             latest_qualification_status,
@@ -2431,21 +2472,21 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
         testnet_review_checklist_item(
             "candidate_accepted_for_shadow",
             "Candidate accepted for shadow",
-            current_status == Some(ResearchCandidateStatus::AcceptedForShadow),
+            accepted_for_shadow,
             checklist_summary(
-                current_status == Some(ResearchCandidateStatus::AcceptedForShadow),
-                "Candidate is in ACCEPTED_FOR_SHADOW.",
-                "Candidate is not in ACCEPTED_FOR_SHADOW.",
+                accepted_for_shadow,
+                "Candidate is accepted for shadow.",
+                "Candidate is not accepted for shadow.",
             ),
         ),
         testnet_review_checklist_item(
             "candidate_promoted_to_shadow_runner_config",
             "Candidate promoted to shadow runner config",
-            runner_matches,
+            promoted_to_shadow_config,
             checklist_summary(
-                runner_matches,
-                "Runner alignment matches the candidate.",
-                "Runner alignment does not match the candidate.",
+                promoted_to_shadow_config,
+                "Candidate is in PROMOTED_TO_SHADOW_CONFIG.",
+                "Candidate is not in PROMOTED_TO_SHADOW_CONFIG.",
             ),
         ),
         testnet_review_checklist_item(
@@ -2718,8 +2759,13 @@ pub fn evaluate_research_candidate_qualification(
             .insert(ResearchCandidateQualificationRecommendation::ReAcceptCandidateForShadow);
     }
 
-    let status_is_accepted =
-        request.candidate_status == Some(ResearchCandidateStatus::AcceptedForShadow);
+    let status_is_accepted = matches!(
+        request.candidate_status,
+        Some(
+            ResearchCandidateStatus::AcceptedForShadow
+                | ResearchCandidateStatus::PromotedToShadowConfig
+        )
+    );
     checks.push(qualification_check(
         "candidate_status_accepted_for_shadow",
         "Candidate status is ACCEPTED_FOR_SHADOW",
@@ -2727,9 +2773,9 @@ pub fn evaluate_research_candidate_qualification(
         true,
         ResearchCandidateQualificationSeverity::High,
         if status_is_accepted {
-            "Candidate is in ACCEPTED_FOR_SHADOW."
+            "Candidate is accepted for shadow."
         } else {
-            "Candidate is not in ACCEPTED_FOR_SHADOW."
+            "Candidate is not accepted for shadow."
         },
         request
             .candidate_status
@@ -2742,6 +2788,35 @@ pub fn evaluate_research_candidate_qualification(
         );
         recommendations
             .insert(ResearchCandidateQualificationRecommendation::ReAcceptCandidateForShadow);
+    }
+
+    let status_is_promoted =
+        request.candidate_status == Some(ResearchCandidateStatus::PromotedToShadowConfig);
+    checks.push(qualification_check(
+        "candidate_status_promoted_to_shadow_config",
+        "Candidate status is PROMOTED_TO_SHADOW_CONFIG",
+        status_is_promoted,
+        false,
+        ResearchCandidateQualificationSeverity::High,
+        if status_is_promoted {
+            "Candidate is promoted to shadow runner config."
+        } else if request.candidate_status == Some(ResearchCandidateStatus::AcceptedForShadow) {
+            "Candidate is accepted but not promoted to shadow runner config."
+        } else {
+            "Candidate is not promoted to shadow runner config."
+        },
+        request
+            .candidate_status
+            .map(|status| serde_json::json!({ "candidate_status": status.as_str() })),
+    ));
+    if !status_is_promoted {
+        score -= 20;
+        score_explanation.push(
+            "Candidate is accepted but not promoted to shadow runner config. (-20 points)"
+                .to_string(),
+        );
+        recommendations
+            .insert(ResearchCandidateQualificationRecommendation::ExpandShadowRunnerCoverage);
     }
 
     let fresh_observation_passed =
@@ -3098,6 +3173,8 @@ pub fn evaluate_research_candidate_qualification(
         ResearchCandidateQualificationStatus::Unknown
     } else if !blockers.is_empty() {
         ResearchCandidateQualificationStatus::NotQualified
+    } else if !status_is_promoted {
+        ResearchCandidateQualificationStatus::NeedsMoreData
     } else if !enough_shadow_runs {
         ResearchCandidateQualificationStatus::NeedsMoreData
     } else if degraded_status_trigger {
@@ -3145,6 +3222,7 @@ pub fn evaluate_research_candidate_qualification(
 
 pub fn evaluate_research_candidate_shadow_performance(
     candidate_id: Uuid,
+    candidate_status: ResearchCandidateStatus,
     strategy_id: impl Into<String>,
     symbol: impl Into<String>,
     timeframe: impl Into<String>,
@@ -3166,39 +3244,45 @@ pub fn evaluate_research_candidate_shadow_performance(
     let skipped_or_error_rate_pct =
         calculate_percentage_rate(skipped_or_error_count, total_shadow_runs);
 
-    let (status, recommendation) = if !runner_alignment_current {
-        (
-            ResearchCandidateShadowPerformanceStatus::NeedsReview,
-            ResearchCandidateShadowPerformanceRecommendation::CandidateNotCoveredByRunner,
-        )
-    } else if total_shadow_runs <= 0 {
-        (
-            ResearchCandidateShadowPerformanceStatus::InsufficientData,
-            ResearchCandidateShadowPerformanceRecommendation::InsufficientData,
-        )
-    } else if total_shadow_runs < default_min_shadow_runs() {
-        (
-            ResearchCandidateShadowPerformanceStatus::UnderObservation,
-            ResearchCandidateShadowPerformanceRecommendation::KeepObserving,
-        )
-    } else if would_submit_count == 0
-        || risk_rejection_rate_pct >= Decimal::new(75, 0)
-        || skipped_or_error_rate_pct >= Decimal::new(50, 0)
-    {
-        (
-            ResearchCandidateShadowPerformanceStatus::NeedsReview,
-            if would_submit_count == 0 {
-                ResearchCandidateShadowPerformanceRecommendation::RejectCandidate
-            } else {
-                ResearchCandidateShadowPerformanceRecommendation::NeedsReview
-            },
-        )
-    } else {
-        (
-            ResearchCandidateShadowPerformanceStatus::Healthy,
-            ResearchCandidateShadowPerformanceRecommendation::KeepObserving,
-        )
-    };
+    let (status, recommendation) =
+        if candidate_status != ResearchCandidateStatus::PromotedToShadowConfig {
+            (
+                ResearchCandidateShadowPerformanceStatus::NotPromotedToShadowConfig,
+                ResearchCandidateShadowPerformanceRecommendation::PromoteToShadowConfig,
+            )
+        } else if !runner_alignment_current {
+            (
+                ResearchCandidateShadowPerformanceStatus::NeedsReview,
+                ResearchCandidateShadowPerformanceRecommendation::CandidateNotCoveredByRunner,
+            )
+        } else if total_shadow_runs <= 0 {
+            (
+                ResearchCandidateShadowPerformanceStatus::InsufficientData,
+                ResearchCandidateShadowPerformanceRecommendation::InsufficientData,
+            )
+        } else if total_shadow_runs < default_min_shadow_runs() {
+            (
+                ResearchCandidateShadowPerformanceStatus::UnderObservation,
+                ResearchCandidateShadowPerformanceRecommendation::KeepObserving,
+            )
+        } else if would_submit_count == 0
+            || risk_rejection_rate_pct >= Decimal::new(75, 0)
+            || skipped_or_error_rate_pct >= Decimal::new(50, 0)
+        {
+            (
+                ResearchCandidateShadowPerformanceStatus::NeedsReview,
+                if would_submit_count == 0 {
+                    ResearchCandidateShadowPerformanceRecommendation::RejectCandidate
+                } else {
+                    ResearchCandidateShadowPerformanceRecommendation::NeedsReview
+                },
+            )
+        } else {
+            (
+                ResearchCandidateShadowPerformanceStatus::Healthy,
+                ResearchCandidateShadowPerformanceRecommendation::KeepObserving,
+            )
+        };
 
     let strategy_id = strategy_id.into();
     let symbol = symbol.into();
@@ -4156,6 +4240,7 @@ mod tests {
     fn shadow_performance_status_is_insufficient_without_runs() {
         let performance = evaluate_research_candidate_shadow_performance(
             Uuid::nil(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
             "momentum_v1",
             "BTCUSDT",
             "15m",
@@ -4183,6 +4268,37 @@ mod tests {
     }
 
     #[test]
+    fn shadow_performance_recommends_promotion_before_linked_runs() {
+        let performance = evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            ResearchCandidateStatus::AcceptedForShadow,
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            ts(0, 0, 0),
+            ts(0, 1, 0),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            None,
+            true,
+            ts(0, 1, 0),
+        );
+
+        assert_eq!(
+            performance.status,
+            ResearchCandidateShadowPerformanceStatus::NotPromotedToShadowConfig
+        );
+        assert_eq!(
+            performance.recommendation,
+            ResearchCandidateShadowPerformanceRecommendation::PromoteToShadowConfig
+        );
+    }
+
+    #[test]
     fn would_submit_rate_pct_calculation_is_deterministic() {
         assert_eq!(calculate_percentage_rate(3, 12), Decimal::new(25, 0));
     }
@@ -4191,6 +4307,7 @@ mod tests {
     fn shadow_risk_rejection_rate_pct_calculation_is_deterministic() {
         let performance = evaluate_research_candidate_shadow_performance(
             Uuid::nil(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
             "momentum_v1",
             "BTCUSDT",
             "15m",
@@ -4214,6 +4331,7 @@ mod tests {
     fn shadow_performance_recommends_reject_after_enough_zero_would_submit_runs() {
         let performance = evaluate_research_candidate_shadow_performance(
             Uuid::nil(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
             "momentum_v1",
             "BTCUSDT",
             "15m",
@@ -4245,7 +4363,7 @@ mod tests {
     ) -> ResearchCandidateQualificationRequest {
         ResearchCandidateQualificationRequest {
             candidate_id: Uuid::nil(),
-            candidate_status: Some(ResearchCandidateStatus::AcceptedForShadow),
+            candidate_status: Some(ResearchCandidateStatus::PromotedToShadowConfig),
             fresh_observation: true,
             runner_alignment_valid: true,
             shadow_runner_covers_candidate: true,
@@ -4331,7 +4449,7 @@ mod tests {
     }
 
     fn sample_testnet_review_request() -> ResearchCandidateTestnetReviewRequest {
-        let candidate = sample_research_candidate(ResearchCandidateStatus::AcceptedForShadow);
+        let candidate = sample_research_candidate(ResearchCandidateStatus::PromotedToShadowConfig);
         let observation = sample_observation(ExecutionReadinessStatus::Ready);
         let performance = qualification_performance(35, 8, 3, 1, 0);
         let qualification = ResearchCandidateQualificationEvaluation {
@@ -4378,7 +4496,7 @@ mod tests {
                 candidate_id: Uuid::from_u128(0x100),
                 action: ResearchCandidateReviewAction::MarkReadyForTestnetReview,
                 status: ResearchCandidateReviewStatus::Recorded,
-                previous_candidate_status: ResearchCandidateStatus::AcceptedForShadow,
+                previous_candidate_status: ResearchCandidateStatus::PromotedToShadowConfig,
                 next_candidate_status: None,
                 reason: Some("ready".to_string()),
                 notes: None,
@@ -4430,6 +4548,7 @@ mod tests {
     ) -> ResearchCandidateShadowPerformance {
         evaluate_research_candidate_shadow_performance(
             Uuid::nil(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
             "momentum_v1",
             "BTCUSDT",
             "15m",
@@ -4473,6 +4592,22 @@ mod tests {
             result.status,
             ResearchCandidateQualificationStatus::NotQualified
         );
+    }
+
+    #[test]
+    fn qualification_needs_more_data_when_candidate_is_accepted_but_not_promoted() {
+        let mut request = qualification_request(Some(qualification_performance(40, 6, 4, 0, 0)));
+        request.candidate_status = Some(ResearchCandidateStatus::AcceptedForShadow);
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NeedsMoreData
+        );
+        assert!(result.warnings.iter().any(|warning| {
+            warning == "Candidate is accepted but not promoted to shadow runner config."
+        }));
     }
 
     #[test]
@@ -4966,14 +5101,14 @@ mod tests {
     }
 
     #[test]
-    fn promote_to_shadow_config_decision_keeps_status_unchanged() {
+    fn promote_to_shadow_config_decision_moves_accepted_candidate_to_promoted() {
         let next = research_candidate_next_status(
             ResearchCandidateStatus::AcceptedForShadow,
             ResearchCandidateDecision::PromoteToShadowConfig,
         )
-        .expect("promotion event should keep status");
+        .expect("promotion transition should be valid");
 
-        assert_eq!(next, ResearchCandidateStatus::AcceptedForShadow);
+        assert_eq!(next, ResearchCandidateStatus::PromotedToShadowConfig);
     }
 
     #[test]
@@ -4996,6 +5131,7 @@ mod tests {
             ResearchCandidateStatus::Discovered,
             ResearchCandidateStatus::Observing,
             ResearchCandidateStatus::AcceptedForShadow,
+            ResearchCandidateStatus::PromotedToShadowConfig,
             ResearchCandidateStatus::Rejected,
         ] {
             let next = research_candidate_next_status(status, ResearchCandidateDecision::Archive)
@@ -5182,7 +5318,7 @@ mod tests {
     }
 
     #[test]
-    fn testnet_review_dossier_without_shadow_runs_needs_more_shadow_data() {
+    fn testnet_review_dossier_without_shadow_runs_is_blocked() {
         let mut request = sample_testnet_review_request();
         request.shadow_performance_summary = Some(qualification_performance(0, 0, 0, 0, 0));
         if let Some(evaluation) = request.latest_qualification_evaluation.as_mut() {
@@ -5194,12 +5330,43 @@ mod tests {
 
         assert_eq!(
             dossier.status,
-            ResearchCandidateTestnetReviewStatus::NeedsMoreShadowData
+            ResearchCandidateTestnetReviewStatus::Blocked
         );
         assert!(dossier
-            .warnings
+            .blockers
             .iter()
             .any(|item| item.contains("No linked shadow runs")));
+    }
+
+    #[test]
+    fn testnet_review_dossier_blocks_accepted_candidate_not_promoted() {
+        let mut request = sample_testnet_review_request();
+        request.candidate = Some(sample_research_candidate(
+            ResearchCandidateStatus::AcceptedForShadow,
+        ));
+
+        let dossier = evaluate_research_candidate_testnet_review_dossier(&request);
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::Blocked
+        );
+        assert!(dossier
+            .blockers
+            .iter()
+            .any(|item| item == "Candidate is accepted but not promoted to shadow runner config."));
+        let accepted = dossier
+            .checklist
+            .iter()
+            .find(|item| item.code == "candidate_accepted_for_shadow")
+            .expect("accepted checklist item");
+        let promoted = dossier
+            .checklist
+            .iter()
+            .find(|item| item.code == "candidate_promoted_to_shadow_runner_config")
+            .expect("promoted checklist item");
+        assert!(accepted.passed);
+        assert!(!promoted.passed);
     }
 
     #[test]

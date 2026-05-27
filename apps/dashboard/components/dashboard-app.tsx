@@ -159,6 +159,8 @@ function shadowRecommendationLabel(
       return "needs review";
     case "INSUFFICIENT_DATA":
       return "insufficient data";
+    case "PROMOTE_TO_SHADOW_CONFIG":
+      return "promote to shadow runner config";
     case "CANDIDATE_NOT_COVERED_BY_RUNNER":
       return "candidate not covered by runner";
     case "REJECT_CANDIDATE":
@@ -2226,7 +2228,8 @@ function AuthenticatedDashboard({
     Boolean(selectedResearchCandidate) &&
     shadowPromotionPreview !== null &&
     (shadowPromotionPreview.status === "READY" || shadowPromotionPreview.status === "NO_CHANGES") &&
-    selectedResearchCandidate?.status === "ACCEPTED_FOR_SHADOW" &&
+    (selectedResearchCandidate?.status === "ACCEPTED_FOR_SHADOW" ||
+      selectedResearchCandidate?.status === "PROMOTED_TO_SHADOW_CONFIG") &&
     researchCandidateObservationFreshness === "FRESH";
   const decideResearchCandidateErrorPayload = getApiErrorPayload(
     decideResearchCandidateMutation.error,
