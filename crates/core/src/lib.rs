@@ -1683,11 +1683,89 @@ impl std::str::FromStr for StrategyWalkForwardStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyWalkForwardCandidate {
+    #[serde(default)]
     pub lookback_candles: u32,
+    #[serde(default)]
+    pub trend_lookback_candles: Option<u32>,
+    #[serde(default)]
+    pub momentum_lookback_candles: Option<u32>,
+    #[serde(default)]
+    pub breakout_lookback_candles: Option<u32>,
+    #[serde(default)]
     pub holding_candles: Option<u32>,
+    #[serde(default)]
     pub stop_loss_pct: Option<Decimal>,
+    #[serde(default)]
     pub take_profit_pct: Option<Decimal>,
+    #[serde(default)]
     pub max_signal_age_ms: Option<i64>,
+}
+
+fn default_strategy_walk_forward_candidate() -> StrategyWalkForwardCandidate {
+    StrategyWalkForwardCandidate {
+        lookback_candles: 0,
+        trend_lookback_candles: None,
+        momentum_lookback_candles: None,
+        breakout_lookback_candles: None,
+        holding_candles: None,
+        stop_loss_pct: None,
+        take_profit_pct: None,
+        max_signal_age_ms: None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StrategyWalkForwardRobustnessStatus {
+    Robust,
+    Weak,
+    OverfitRisk,
+    InsufficientData,
+    Failed,
+}
+
+impl StrategyWalkForwardRobustnessStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Robust => "ROBUST",
+            Self::Weak => "WEAK",
+            Self::OverfitRisk => "OVERFIT_RISK",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for StrategyWalkForwardRobustnessStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ROBUST" => Ok(Self::Robust),
+            "WEAK" => Ok(Self::Weak),
+            "OVERFIT_RISK" => Ok(Self::OverfitRisk),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedStrategyWalkForwardStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StrategyWalkForwardRecommendation {
+    pub action: String,
+    pub reason: String,
+}
+
+impl Default for StrategyWalkForwardRecommendation {
+    fn default() -> Self {
+        Self {
+            action: "REVIEW".to_string(),
+            reason: "Review walk-forward robustness before candidate acceptance.".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1695,15 +1773,24 @@ pub struct StrategyWalkForwardRequest {
     pub strategy_id: String,
     pub symbol: String,
     pub timeframe: String,
+    #[serde(default)]
+    pub config: Option<Value>,
+    #[serde(default)]
+    pub experiment_run_id: Option<Uuid>,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
+    #[serde(default, alias = "train_window_hours")]
     pub window_train_size_hours: i64,
+    #[serde(alias = "test_window_hours")]
     pub window_test_size_hours: i64,
+    #[serde(alias = "step_hours")]
     pub step_size_hours: i64,
     pub initial_capital: Decimal,
     pub fee_bps: Decimal,
     pub slippage_bps: Decimal,
+    #[serde(default = "default_strategy_walk_forward_candidate")]
     pub candidate_config: StrategyWalkForwardCandidate,
+    #[serde(default, alias = "min_windows")]
     pub min_required_test_windows: Option<u32>,
     pub correlation_id: Option<Uuid>,
 }
@@ -1722,7 +1809,7 @@ impl StrategyWalkForwardRequest {
         if self.end_time <= self.start_time {
             return Err(CoreError::InvalidStrategyWalkForwardTimeRange);
         }
-        if self.window_train_size_hours <= 0 {
+        if self.window_train_size_hours < 0 {
             return Err(CoreError::InvalidStrategyWalkForwardWindowSize(
                 "window_train_size_hours".to_string(),
             ));
@@ -1744,7 +1831,10 @@ impl StrategyWalkForwardRequest {
         if self.slippage_bps < Decimal::ZERO {
             return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
         }
-        if self.candidate_config.lookback_candles == 0 {
+        if self.candidate_config.lookback_candles == 0
+            && self.config.is_none()
+            && self.experiment_run_id.is_none()
+        {
             return Err(CoreError::EmptyStrategyWalkForwardCandidateLookback);
         }
         if let Some(holding_candles) = self.candidate_config.holding_candles {
@@ -1785,6 +1875,8 @@ pub struct StrategyWalkForwardRobustnessSummary {
     pub avg_fee_slippage_drag_pct: Decimal,
     pub skipped_window_pct: Decimal,
     pub dominant_winner_share_pct: Decimal,
+    #[serde(default)]
+    pub recommendation: StrategyWalkForwardRecommendation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1813,17 +1905,29 @@ pub struct StrategyWalkForwardResult {
     pub timeframe: String,
     pub total_windows: i32,
     pub completed_windows: i32,
+    pub failed_windows: i32,
     pub skipped_windows: i32,
     pub profitable_test_windows: i32,
+    pub profitable_windows: i32,
     pub losing_test_windows: i32,
+    pub losing_windows: i32,
     pub avg_test_pnl_pct: Decimal,
+    pub avg_pnl_pct: Decimal,
     pub median_test_pnl_pct: Decimal,
+    pub median_pnl_pct: Decimal,
     pub worst_test_pnl_pct: Decimal,
+    pub worst_pnl_pct: Decimal,
     pub best_test_pnl_pct: Decimal,
+    pub best_pnl_pct: Decimal,
     pub avg_max_drawdown_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub avg_trade_count: Decimal,
     pub robustness_score: Decimal,
+    pub consistency_score: Decimal,
     pub status: StrategyWalkForwardStatus,
+    pub robustness_status: StrategyWalkForwardRobustnessStatus,
     pub robustness_summary: StrategyWalkForwardRobustnessSummary,
+    pub recommendation: StrategyWalkForwardRecommendation,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
 }

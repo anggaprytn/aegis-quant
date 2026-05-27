@@ -227,6 +227,8 @@ type StrategyWalkForwardFormState = {
   strategy_id: string;
   symbol: string;
   timeframe: string;
+  experiment_run_id: string;
+  config_json: string;
   start_time: string;
   end_time: string;
   train_hours: string;
@@ -236,6 +238,9 @@ type StrategyWalkForwardFormState = {
   fee_bps: string;
   slippage_bps: string;
   lookback_candles: string;
+  trend_lookback: string;
+  momentum_lookback: string;
+  breakout_lookback: string;
   holding_candles: string;
   stop_loss_pct: string;
   take_profit_pct: string;
@@ -264,18 +269,23 @@ const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
 };
 
 const DEFAULT_STRATEGY_WALK_FORWARD_FORM: StrategyWalkForwardFormState = {
-  strategy_id: "momentum_v1",
+  strategy_id: "trend_filter_momentum_v1",
   symbol: "BTCUSDT",
   timeframe: "15m",
+  experiment_run_id: "",
+  config_json: "",
   start_time: "2026-05-01T00:00:00Z",
   end_time: "2026-05-24T00:00:00Z",
-  train_hours: "72",
-  test_hours: "24",
-  step_hours: "24",
+  train_hours: "0",
+  test_hours: "6",
+  step_hours: "6",
   initial_capital: "1000000",
   fee_bps: "10",
   slippage_bps: "5",
-  lookback_candles: "5",
+  lookback_candles: "50",
+  trend_lookback: "50",
+  momentum_lookback: "2",
+  breakout_lookback: "",
   holding_candles: "3",
   stop_loss_pct: "",
   take_profit_pct: "",
@@ -412,6 +422,8 @@ function buildStrategyWalkForwardRequest(
     strategy_id: form.strategy_id,
     symbol: form.symbol,
     timeframe: form.timeframe,
+    config: form.config_json ? JSON.parse(form.config_json) : null,
+    experiment_run_id: form.experiment_run_id || null,
     start_time: form.start_time,
     end_time: form.end_time,
     window_train_size_hours: Number(form.train_hours),
@@ -422,6 +434,9 @@ function buildStrategyWalkForwardRequest(
     slippage_bps: form.slippage_bps,
     candidate_config: {
       lookback_candles: Number(form.lookback_candles),
+      trend_lookback_candles: form.trend_lookback ? Number(form.trend_lookback) : null,
+      momentum_lookback_candles: form.momentum_lookback ? Number(form.momentum_lookback) : null,
+      breakout_lookback_candles: form.breakout_lookback ? Number(form.breakout_lookback) : null,
       holding_candles: form.holding_candles ? Number(form.holding_candles) : null,
       stop_loss_pct: form.stop_loss_pct || null,
       take_profit_pct: form.take_profit_pct || null,
@@ -4514,6 +4529,8 @@ function AuthenticatedDashboard({
                       ["strategy_id", "Strategy ID"],
                       ["symbol", "Symbol"],
                       ["timeframe", "Timeframe"],
+                      ["experiment_run_id", "Experiment Run ID"],
+                      ["config_json", "Config JSON"],
                       ["start_time", "Start Time"],
                       ["end_time", "End Time"],
                       ["train_hours", "Train Hours"],
@@ -4523,6 +4540,9 @@ function AuthenticatedDashboard({
                       ["fee_bps", "Fee Bps"],
                       ["slippage_bps", "Slippage Bps"],
                       ["lookback_candles", "Lookback Candles"],
+                      ["trend_lookback", "Trend Lookback"],
+                      ["momentum_lookback", "Momentum Lookback"],
+                      ["breakout_lookback", "Breakout Lookback"],
                       ["holding_candles", "Holding Candles"],
                       ["stop_loss_pct", "Stop Loss %"],
                       ["take_profit_pct", "Take Profit %"],
@@ -4562,7 +4582,9 @@ function AuthenticatedDashboard({
                   items={[
                     ["Run", selectedWalkForward?.walk_forward_id ?? "N/A"],
                     ["Status", selectedWalkForward?.status ?? "N/A"],
+                    ["Robustness", selectedWalkForward?.robustness_status ?? "N/A"],
                     ["Robustness Score", selectedWalkForward?.robustness_score ?? "N/A"],
+                    ["Consistency Score", selectedWalkForward?.consistency_score ?? "N/A"],
                     [
                       "Profitable / Losing",
                       selectedWalkForward
@@ -4574,6 +4596,12 @@ function AuthenticatedDashboard({
                       ? `${selectedWalkForward.worst_test_pnl_pct} / ${selectedWalkForward.best_test_pnl_pct}`
                       : "N/A"],
                     ["Skipped Windows", String(selectedWalkForward?.skipped_windows ?? 0)],
+                    [
+                      "Recommendation",
+                      selectedWalkForward
+                        ? `${selectedWalkForward.recommendation.action}: ${selectedWalkForward.recommendation.reason}`
+                        : "N/A",
+                    ],
                   ]}
                   loading={selectedWalkForwardQuery.isLoading}
                   error={getErrorMessage(selectedWalkForwardQuery.error)}
@@ -7729,7 +7757,8 @@ function StrategyWalkForwardRunsTable({
           <div className="grid gap-2 md:grid-cols-4">
             <div className="font-mono text-xs">{shortenId(run.walk_forward_id)}</div>
             <div>{run.timeframe}</div>
-            <div>score {formatNumber(run.robustness_score)}</div>
+            <div>{run.robustness_status}</div>
+            <div>score {formatNumber(run.consistency_score ?? run.robustness_score)}</div>
             <div>
               {run.profitable_test_windows}/{run.losing_test_windows} windows
             </div>

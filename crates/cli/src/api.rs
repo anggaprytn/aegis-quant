@@ -3250,6 +3250,8 @@ pub fn build_strategy_walk_forward_request(
         strategy_id: args.strategy.clone(),
         symbol: args.symbol.clone(),
         timeframe: args.timeframe.clone(),
+        config: args.config_json.clone(),
+        experiment_run_id: args.experiment_run_id,
         start_time: args.start,
         end_time: args.end,
         window_train_size_hours: args.train_hours,
@@ -3260,6 +3262,9 @@ pub fn build_strategy_walk_forward_request(
         slippage_bps: args.slippage_bps,
         candidate_config: aegis_core::StrategyWalkForwardCandidate {
             lookback_candles: args.lookback_candles,
+            trend_lookback_candles: args.trend_lookback,
+            momentum_lookback_candles: args.momentum_lookback,
+            breakout_lookback_candles: args.breakout_lookback,
             holding_candles: args.holding_candles,
             stop_loss_pct: args.stop_loss_pct,
             take_profit_pct: args.take_profit_pct,

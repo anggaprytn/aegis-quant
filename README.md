@@ -369,7 +369,9 @@ The best single replay window is not enough to promote a strategy config. A cand
 
 Walk-forward validation splits a larger chronological range into repeated train/test windows, keeps execution research-only, and scores the candidate on out-of-sample test windows only. For the MVP the train window is metadata only: Aegis does not optimize parameters inside it.
 
-Walk-forward runs are persisted in isolated `strategy_walk_forward_runs` and `strategy_walk_forward_windows` tables. They do not mutate signals, risk decisions, paper orders, shadow runs, testnet orders, or any live execution path.
+Walk-forward results report a consistency score, aggregate PnL/drawdown/trade metrics, skipped-window reasons, and a robustness status: `ROBUST`, `WEAK`, `OVERFIT_RISK`, `INSUFFICIENT_DATA`, or `FAILED`. These labels are research evidence only and never accept, promote, or execute a candidate automatically.
+
+Walk-forward runs are persisted in isolated `strategy_walk_forward_runs` and `strategy_walk_forward_windows` tables. They do not mutate signals, risk decisions, orders, paper positions/fills, shadow promotions, testnet orders, or any live execution path.
 
 ## Notes
 

@@ -1310,11 +1310,19 @@ pub struct StrategyWalkForwardRunArgs {
     pub start: chrono::DateTime<chrono::Utc>,
     #[arg(long = "end")]
     pub end: chrono::DateTime<chrono::Utc>,
-    #[arg(long = "train-hours")]
+    #[arg(long = "experiment-run-id")]
+    pub experiment_run_id: Option<Uuid>,
+    #[arg(long = "config-json")]
+    pub config_json: Option<serde_json::Value>,
+    #[arg(
+        long = "train-hours",
+        alias = "train-window-hours",
+        default_value_t = 0
+    )]
     pub train_hours: i64,
-    #[arg(long = "test-hours")]
+    #[arg(long = "test-hours", alias = "test-window-hours")]
     pub test_hours: i64,
-    #[arg(long = "step-hours")]
+    #[arg(long = "step-hours", alias = "step-window-hours")]
     pub step_hours: i64,
     #[arg(long = "initial-capital")]
     pub initial_capital: rust_decimal::Decimal,
@@ -1322,8 +1330,14 @@ pub struct StrategyWalkForwardRunArgs {
     pub fee_bps: rust_decimal::Decimal,
     #[arg(long = "slippage-bps")]
     pub slippage_bps: rust_decimal::Decimal,
-    #[arg(long = "lookback-candles")]
+    #[arg(long = "lookback-candles", default_value_t = 0)]
     pub lookback_candles: u32,
+    #[arg(long = "trend-lookback")]
+    pub trend_lookback: Option<u32>,
+    #[arg(long = "momentum-lookback")]
+    pub momentum_lookback: Option<u32>,
+    #[arg(long = "breakout-lookback")]
+    pub breakout_lookback: Option<u32>,
     #[arg(long = "holding-candles")]
     pub holding_candles: Option<u32>,
     #[arg(long = "stop-loss-pct")]
@@ -1332,7 +1346,7 @@ pub struct StrategyWalkForwardRunArgs {
     pub take_profit_pct: Option<rust_decimal::Decimal>,
     #[arg(long = "max-signal-age-ms")]
     pub max_signal_age_ms: Option<i64>,
-    #[arg(long = "min-required-test-windows")]
+    #[arg(long = "min-required-test-windows", alias = "min-windows")]
     pub min_required_test_windows: Option<u32>,
     #[arg(long = "correlation-id")]
     pub correlation_id: Option<Uuid>,

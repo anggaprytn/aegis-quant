@@ -17,8 +17,8 @@ use aegis_core::{
     StrategyDecisionBreakdown, StrategyExperimentCandidate, StrategyExperimentComparison,
     StrategyExperimentResult, StrategyExperimentRun, StrategyId, StrategyPerformanceMode,
     StrategyPerformanceRequest, StrategyPerformanceSummary, StrategyPnlBreakdown,
-    StrategyRiskBreakdown, StrategySignal, StrategyStatus, StrategyWalkForwardResult,
-    StrategyWalkForwardRobustnessSummary, StrategyWalkForwardWindow,
+    StrategyRiskBreakdown, StrategySignal, StrategyStatus, StrategyWalkForwardRecommendation,
+    StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardWindow,
     StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
     TestnetPromotionDropoffBreakdown, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
     TestnetPromotionFunnelStage, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
@@ -754,9 +754,20 @@ pub struct StrategyWalkForwardRunRecord {
     pub symbol: String,
     pub timeframe: String,
     pub request: Value,
+    pub config: Option<Value>,
+    pub experiment_run_id: Option<Uuid>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub train_window_hours: Option<i32>,
+    pub test_window_hours: Option<i32>,
+    pub step_hours: Option<i32>,
+    pub initial_capital: Option<Decimal>,
+    pub fee_bps: Option<Decimal>,
+    pub slippage_bps: Option<Decimal>,
     pub status: String,
     pub total_windows: i32,
     pub completed_windows: i32,
+    pub failed_windows: i32,
     pub skipped_windows: i32,
     pub profitable_test_windows: i32,
     pub losing_test_windows: i32,
@@ -765,8 +776,13 @@ pub struct StrategyWalkForwardRunRecord {
     pub worst_test_pnl_pct: Decimal,
     pub best_test_pnl_pct: Decimal,
     pub avg_max_drawdown_pct: Decimal,
+    pub avg_trade_count: Decimal,
+    pub max_drawdown_pct: Decimal,
     pub robustness_score: Decimal,
+    pub consistency_score: Decimal,
+    pub robustness_status: String,
     pub robustness_summary: Value,
+    pub recommendation: Value,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
 }
@@ -5936,9 +5952,20 @@ pub async fn insert_strategy_walk_forward_run(
             symbol,
             timeframe,
             request,
+            config,
+            experiment_run_id,
+            start_time,
+            end_time,
+            train_window_hours,
+            test_window_hours,
+            step_hours,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
             status,
             total_windows,
             completed_windows,
+            failed_windows,
             skipped_windows,
             profitable_test_windows,
             losing_test_windows,
@@ -5947,14 +5974,21 @@ pub async fn insert_strategy_walk_forward_run(
             worst_test_pnl_pct,
             best_test_pnl_pct,
             avg_max_drawdown_pct,
+            avg_trade_count,
+            max_drawdown_pct,
             robustness_score,
+            consistency_score,
+            robustness_status,
             robustness_summary,
+            recommendation,
             created_at,
             correlation_id
         )
         VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+            $31, $32, $33, $34, $35, $36
         )
         RETURNING
             id,
@@ -5962,9 +5996,20 @@ pub async fn insert_strategy_walk_forward_run(
             symbol,
             timeframe,
             request,
+            config,
+            experiment_run_id,
+            start_time,
+            end_time,
+            train_window_hours,
+            test_window_hours,
+            step_hours,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
             status,
             total_windows,
             completed_windows,
+            failed_windows,
             skipped_windows,
             profitable_test_windows,
             losing_test_windows,
@@ -5973,8 +6018,13 @@ pub async fn insert_strategy_walk_forward_run(
             worst_test_pnl_pct,
             best_test_pnl_pct,
             avg_max_drawdown_pct,
+            avg_trade_count,
+            max_drawdown_pct,
             robustness_score,
+            consistency_score,
+            robustness_status,
             robustness_summary,
+            recommendation,
             created_at,
             correlation_id
         "#,
@@ -5984,9 +6034,20 @@ pub async fn insert_strategy_walk_forward_run(
     .bind(&result.symbol)
     .bind(&result.timeframe)
     .bind(serde_json::to_value(request)?)
+    .bind(&request.config)
+    .bind(request.experiment_run_id)
+    .bind(request.start_time)
+    .bind(request.end_time)
+    .bind(request.window_train_size_hours as i32)
+    .bind(request.window_test_size_hours as i32)
+    .bind(request.step_size_hours as i32)
+    .bind(request.initial_capital)
+    .bind(request.fee_bps)
+    .bind(request.slippage_bps)
     .bind(result.status.as_str())
     .bind(result.total_windows)
     .bind(result.completed_windows)
+    .bind(result.failed_windows)
     .bind(result.skipped_windows)
     .bind(result.profitable_test_windows)
     .bind(result.losing_test_windows)
@@ -5995,8 +6056,13 @@ pub async fn insert_strategy_walk_forward_run(
     .bind(result.worst_test_pnl_pct)
     .bind(result.best_test_pnl_pct)
     .bind(result.avg_max_drawdown_pct)
+    .bind(result.avg_trade_count)
+    .bind(result.max_drawdown_pct)
     .bind(result.robustness_score)
+    .bind(result.consistency_score)
+    .bind(result.robustness_status.as_str())
     .bind(serde_json::to_value(&result.robustness_summary)?)
+    .bind(serde_json::to_value(&result.recommendation)?)
     .bind(result.created_at)
     .bind(result.correlation_id)
     .fetch_one(pool)
@@ -6021,8 +6087,11 @@ pub async fn insert_strategy_walk_forward_windows(
                 train_end,
                 test_start,
                 test_end,
+                window_start,
+                window_end,
                 status,
                 skip_reason,
+                reason,
                 trade_count,
                 pnl,
                 pnl_pct,
@@ -6035,7 +6104,8 @@ pub async fn insert_strategy_walk_forward_windows(
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9,
-                $10, $11, $12, $13, $14, $15, $16, $17, $18
+                $10, $11, $12, $13, $14, $15, $16, $17, $18,
+                $19, $20, $21
             )
             RETURNING
                 id,
@@ -6045,8 +6115,11 @@ pub async fn insert_strategy_walk_forward_windows(
                 train_end,
                 test_start,
                 test_end,
+                window_start,
+                window_end,
                 status,
                 skip_reason,
+                reason,
                 trade_count,
                 pnl,
                 pnl_pct,
@@ -6065,7 +6138,10 @@ pub async fn insert_strategy_walk_forward_windows(
         .bind(window.window.train_end)
         .bind(window.window.test_start)
         .bind(window.window.test_end)
+        .bind(window.window.test_start)
+        .bind(window.window.test_end)
         .bind(window.status.as_str())
+        .bind(&window.skip_reason)
         .bind(&window.skip_reason)
         .bind(window.trade_count)
         .bind(window.pnl)
@@ -6280,9 +6356,20 @@ pub async fn get_strategy_walk_forward_run(
             symbol,
             timeframe,
             request,
+            config,
+            experiment_run_id,
+            start_time,
+            end_time,
+            train_window_hours,
+            test_window_hours,
+            step_hours,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
             status,
             total_windows,
             completed_windows,
+            failed_windows,
             skipped_windows,
             profitable_test_windows,
             losing_test_windows,
@@ -6291,8 +6378,13 @@ pub async fn get_strategy_walk_forward_run(
             worst_test_pnl_pct,
             best_test_pnl_pct,
             avg_max_drawdown_pct,
+            avg_trade_count,
+            max_drawdown_pct,
             robustness_score,
+            consistency_score,
+            robustness_status,
             robustness_summary,
+            recommendation,
             created_at,
             correlation_id
         FROM strategy_walk_forward_runs
@@ -6318,9 +6410,20 @@ pub async fn list_strategy_walk_forward_runs(
             symbol,
             timeframe,
             request,
+            config,
+            experiment_run_id,
+            start_time,
+            end_time,
+            train_window_hours,
+            test_window_hours,
+            step_hours,
+            initial_capital,
+            fee_bps,
+            slippage_bps,
             status,
             total_windows,
             completed_windows,
+            failed_windows,
             skipped_windows,
             profitable_test_windows,
             losing_test_windows,
@@ -6329,8 +6432,13 @@ pub async fn list_strategy_walk_forward_runs(
             worst_test_pnl_pct,
             best_test_pnl_pct,
             avg_max_drawdown_pct,
+            avg_trade_count,
+            max_drawdown_pct,
             robustness_score,
+            consistency_score,
+            robustness_status,
             robustness_summary,
+            recommendation,
             created_at,
             correlation_id
         FROM strategy_walk_forward_runs
@@ -9705,9 +9813,20 @@ fn map_strategy_walk_forward_run(row: &sqlx::postgres::PgRow) -> StrategyWalkFor
         symbol: row.get("symbol"),
         timeframe: row.get("timeframe"),
         request: row.get("request"),
+        config: row.get("config"),
+        experiment_run_id: row.get("experiment_run_id"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        train_window_hours: row.get("train_window_hours"),
+        test_window_hours: row.get("test_window_hours"),
+        step_hours: row.get("step_hours"),
+        initial_capital: row.get("initial_capital"),
+        fee_bps: row.get("fee_bps"),
+        slippage_bps: row.get("slippage_bps"),
         status: row.get("status"),
         total_windows: row.get("total_windows"),
         completed_windows: row.get("completed_windows"),
+        failed_windows: row.get("failed_windows"),
         skipped_windows: row.get("skipped_windows"),
         profitable_test_windows: row.get("profitable_test_windows"),
         losing_test_windows: row.get("losing_test_windows"),
@@ -9716,8 +9835,13 @@ fn map_strategy_walk_forward_run(row: &sqlx::postgres::PgRow) -> StrategyWalkFor
         worst_test_pnl_pct: row.get("worst_test_pnl_pct"),
         best_test_pnl_pct: row.get("best_test_pnl_pct"),
         avg_max_drawdown_pct: row.get("avg_max_drawdown_pct"),
+        avg_trade_count: row.get("avg_trade_count"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
         robustness_score: row.get("robustness_score"),
+        consistency_score: row.get("consistency_score"),
+        robustness_status: row.get("robustness_status"),
         robustness_summary: row.get("robustness_summary"),
+        recommendation: row.get("recommendation"),
         created_at: row.get("created_at"),
         correlation_id: row.get("correlation_id"),
     }
@@ -10021,6 +10145,14 @@ pub fn strategy_walk_forward_result_from_records(
     record: &StrategyWalkForwardRunRecord,
     _window_records: &[StrategyWalkForwardWindowRecord],
 ) -> Result<StrategyWalkForwardResult> {
+    let robustness_summary = serde_json::from_value::<StrategyWalkForwardRobustnessSummary>(
+        record.robustness_summary.clone(),
+    )?;
+    let robustness_status = record.robustness_status.parse()?;
+    let recommendation =
+        serde_json::from_value::<StrategyWalkForwardRecommendation>(record.recommendation.clone())
+            .unwrap_or_else(|_| robustness_summary.recommendation.clone());
+
     Ok(StrategyWalkForwardResult {
         walk_forward_id: record.id,
         strategy_id: record.strategy_id.clone(),
@@ -10028,19 +10160,29 @@ pub fn strategy_walk_forward_result_from_records(
         timeframe: record.timeframe.clone(),
         total_windows: record.total_windows,
         completed_windows: record.completed_windows,
+        failed_windows: record.failed_windows,
         skipped_windows: record.skipped_windows,
         profitable_test_windows: record.profitable_test_windows,
+        profitable_windows: record.profitable_test_windows,
         losing_test_windows: record.losing_test_windows,
+        losing_windows: record.losing_test_windows,
         avg_test_pnl_pct: record.avg_test_pnl_pct,
+        avg_pnl_pct: record.avg_test_pnl_pct,
         median_test_pnl_pct: record.median_test_pnl_pct,
+        median_pnl_pct: record.median_test_pnl_pct,
         worst_test_pnl_pct: record.worst_test_pnl_pct,
+        worst_pnl_pct: record.worst_test_pnl_pct,
         best_test_pnl_pct: record.best_test_pnl_pct,
+        best_pnl_pct: record.best_test_pnl_pct,
         avg_max_drawdown_pct: record.avg_max_drawdown_pct,
+        max_drawdown_pct: record.max_drawdown_pct,
+        avg_trade_count: record.avg_trade_count,
         robustness_score: record.robustness_score,
+        consistency_score: record.consistency_score,
         status: record.status.parse()?,
-        robustness_summary: serde_json::from_value::<StrategyWalkForwardRobustnessSummary>(
-            record.robustness_summary.clone(),
-        )?,
+        robustness_status,
+        robustness_summary,
+        recommendation,
         created_at: record.created_at,
         correlation_id: record.correlation_id,
     })

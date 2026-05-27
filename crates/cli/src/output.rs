@@ -1367,6 +1367,7 @@ pub fn print_strategy_walk_forward(result: &aegis_core::StrategyWalkForwardResul
     println!("Strategy: {}", result.strategy_id);
     println!("Symbol: {}", result.symbol);
     println!("Timeframe: {}", result.timeframe);
+    println!("Robustness status: {}", result.robustness_status.as_str());
     println!("Robustness score: {}", result.robustness_score);
     println!(
         "Windows: total={} completed={} skipped={}",
@@ -1384,23 +1385,29 @@ pub fn print_strategy_walk_forward(result: &aegis_core::StrategyWalkForwardResul
         result.best_test_pnl_pct
     );
     println!("Avg drawdown %: {}", result.avg_max_drawdown_pct);
+    println!(
+        "Recommendation: {} - {}",
+        result.recommendation.action, result.recommendation.reason
+    );
 }
 
 pub fn print_strategy_walk_forward_runs(runs: &[aegis_core::StrategyWalkForwardResult]) {
     for run in runs {
         println!(
-            "{}  {} {} {} status={} score={} windows={}/{} pnl_avg={} pnl_worst={} pnl_best={}",
+            "{}  {} {} {} status={} robustness={} score={} windows={}/{} pnl_avg={} pnl_worst={} pnl_best={} recommendation={}",
             run.walk_forward_id,
             run.strategy_id,
             run.symbol,
             run.timeframe,
             run.status.as_str(),
+            run.robustness_status.as_str(),
             run.robustness_score,
             run.completed_windows,
             run.total_windows,
             run.avg_test_pnl_pct,
             run.worst_test_pnl_pct,
-            run.best_test_pnl_pct
+            run.best_test_pnl_pct,
+            run.recommendation.action
         );
     }
 }

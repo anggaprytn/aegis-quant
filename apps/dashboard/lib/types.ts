@@ -2828,8 +2828,18 @@ export type StrategyWalkForwardStatus =
   | "FAILED"
   | "SKIPPED";
 
+export type StrategyWalkForwardRobustnessStatus =
+  | "ROBUST"
+  | "WEAK"
+  | "OVERFIT_RISK"
+  | "INSUFFICIENT_DATA"
+  | "FAILED";
+
 export type StrategyWalkForwardCandidate = {
   lookback_candles: number;
+  trend_lookback_candles?: number | null;
+  momentum_lookback_candles?: number | null;
+  breakout_lookback_candles?: number | null;
   holding_candles: number | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
@@ -2840,6 +2850,8 @@ export type StrategyWalkForwardRequest = {
   strategy_id: string;
   symbol: string;
   timeframe: string;
+  config?: Record<string, unknown> | null;
+  experiment_run_id?: string | null;
   start_time: string;
   end_time: string;
   window_train_size_hours: number;
@@ -2868,6 +2880,12 @@ export type StrategyWalkForwardRobustnessSummary = {
   avg_fee_slippage_drag_pct: string;
   skipped_window_pct: string;
   dominant_winner_share_pct: string;
+  recommendation?: StrategyWalkForwardRecommendation;
+};
+
+export type StrategyWalkForwardRecommendation = {
+  action: string;
+  reason: string;
 };
 
 export type StrategyWalkForwardWindowResult = {
@@ -2894,17 +2912,29 @@ export type StrategyWalkForwardResult = {
   timeframe: string;
   total_windows: number;
   completed_windows: number;
+  failed_windows?: number;
   skipped_windows: number;
   profitable_test_windows: number;
+  profitable_windows?: number;
   losing_test_windows: number;
+  losing_windows?: number;
   avg_test_pnl_pct: string;
+  avg_pnl_pct?: string;
   median_test_pnl_pct: string;
+  median_pnl_pct?: string;
   worst_test_pnl_pct: string;
+  worst_pnl_pct?: string;
   best_test_pnl_pct: string;
+  best_pnl_pct?: string;
   avg_max_drawdown_pct: string;
+  max_drawdown_pct?: string;
+  avg_trade_count?: string;
   robustness_score: string;
+  consistency_score?: string;
   status: StrategyWalkForwardStatus;
+  robustness_status: StrategyWalkForwardRobustnessStatus;
   robustness_summary: StrategyWalkForwardRobustnessSummary;
+  recommendation: StrategyWalkForwardRecommendation;
   created_at: string;
   correlation_id: string | null;
 };
