@@ -17,19 +17,20 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyExperimentRequest, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
-    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
+    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
+    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
+    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -853,6 +854,24 @@ impl ApiClient {
         self.get(
             &format!("/research/candidates/{candidate_id}/shadow-performance"),
             &query,
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_shadow_pnl_attribution(
+        &self,
+        candidate_id: Uuid,
+        holding_windows: &str,
+        fee_bps: Decimal,
+        slippage_bps: Decimal,
+    ) -> Result<ResearchCandidateShadowPnlAttributionResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/shadow-pnl-attribution"),
+            &[
+                ("holding_windows", holding_windows.to_string()),
+                ("fee_bps", fee_bps.to_string()),
+                ("slippage_bps", slippage_bps.to_string()),
+            ],
         )
         .await
     }
@@ -2217,6 +2236,14 @@ pub struct ResearchCandidateQualificationEvaluateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateQualificationHistoryResponse {
     pub history: ResearchCandidateQualificationHistory,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateShadowPnlAttributionResponse {
+    pub attribution: ResearchShadowPnlAttributionResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

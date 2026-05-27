@@ -649,6 +649,23 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_shadow_performance(&response.performance);
                     }
                 }
+                ResearchCandidateCommands::ShadowPnl(args) => {
+                    let response = client
+                        .get_research_candidate_shadow_pnl_attribution(
+                            args.candidate_id,
+                            &args.holding_windows,
+                            args.fee_bps,
+                            args.slippage_bps,
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_shadow_pnl_attribution(
+                            &response.attribution,
+                        );
+                    }
+                }
                 ResearchCandidateCommands::ShadowRuns(args) => {
                     let response = client
                         .list_research_candidate_shadow_runs(

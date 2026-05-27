@@ -755,6 +755,7 @@ pub enum ResearchCandidateCommands {
     WalkForward { candidate_id: Uuid },
     LinkWalkForward(ResearchCandidateLinkWalkForwardArgs),
     ShadowPerformance(ResearchCandidateShadowWindowArgs),
+    ShadowPnl(ResearchCandidateShadowPnlArgs),
     ShadowRuns(ResearchCandidateShadowRunsArgs),
     Create(ResearchCandidateCreateArgs),
     FromExperimentRun(ResearchCandidateFromExperimentRunArgs),
@@ -905,6 +906,17 @@ pub struct ResearchCandidateShadowWindowArgs {
     pub start_time: Option<chrono::DateTime<chrono::Utc>>,
     #[arg(long = "end")]
     pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateShadowPnlArgs {
+    pub candidate_id: Uuid,
+    #[arg(long = "holding-windows", default_value = "1,3,5,10")]
+    pub holding_windows: String,
+    #[arg(long = "fee-bps", default_value = "10")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps", default_value = "5")]
+    pub slippage_bps: rust_decimal::Decimal,
 }
 
 #[derive(Debug, Args)]

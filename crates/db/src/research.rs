@@ -7,22 +7,24 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use aegis_core::{
-    evaluate_research_candidate_shadow_performance, CandleInterval, ExecutionReadinessStatus,
-    MarketDataSource, ResearchCandidate, ResearchCandidateDecision,
-    ResearchCandidateLifecycleEvent, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationRecommendation, ResearchCandidateQualificationStatus,
-    ResearchCandidateQualificationThresholds, ResearchCandidateReview,
-    ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
+    calculate_research_shadow_pnl_attribution, evaluate_research_candidate_shadow_performance,
+    Candle, CandleInterval, ExecutionReadinessStatus, MarketDataSource, ResearchCandidate,
+    ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationRecommendation,
+    ResearchCandidateQualificationStatus, ResearchCandidateQualificationThresholds,
+    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, StrategyCandidateObservationDecision,
-    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
-    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
-    StrategyResearchCandidateSource, StrategyResearchCandidateStatus,
-    StrategyWalkForwardRecommendation, StrategyWalkForwardRobustnessStatus, Symbol,
+    ResearchDatasetBuildStepStatus, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput,
+    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
+    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+    StrategyCandidateObservationSummary, StrategyResearchCandidate,
+    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
+    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
+    StrategyResearchCandidateStatus, StrategyWalkForwardRecommendation,
+    StrategyWalkForwardRobustnessStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -2592,6 +2594,120 @@ pub async fn get_research_candidate_shadow_performance(
         error_count,
         last_shadow_run_at,
         runner_alignment_current,
+        computed_at,
+    ))
+}
+
+pub async fn get_research_candidate_shadow_pnl_attribution(
+    pool: &PgPool,
+    candidate: &ResearchCandidate,
+    request: &ResearchShadowPnlAttributionRequest,
+    computed_at: DateTime<Utc>,
+) -> Result<ResearchShadowPnlAttributionResult> {
+    let start_time = request.start_time.unwrap_or(candidate.updated_at);
+    let end_time = request.end_time.unwrap_or(computed_at);
+    let limit = request.limit.unwrap_or(100).clamp(1, 1_000);
+    let run_rows = sqlx::query(
+        r#"
+        SELECT
+            run.id AS shadow_run_id,
+            run.created_at AS shadow_created_at
+        FROM research_candidate_shadow_runs link
+        INNER JOIN testnet_shadow_runs run
+            ON run.id = link.shadow_run_id
+        WHERE link.candidate_id = $1
+          AND run.decision = 'WOULD_SUBMIT'
+          AND run.created_at >= $2
+          AND run.created_at <= $3
+        ORDER BY run.created_at DESC, run.id DESC
+        LIMIT $4
+        "#,
+    )
+    .bind(candidate.id)
+    .bind(start_time)
+    .bind(end_time)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let runs = run_rows
+        .iter()
+        .map(|row| ResearchShadowPnlRunInput {
+            shadow_run_id: row.get("shadow_run_id"),
+            shadow_created_at: row.get("shadow_created_at"),
+        })
+        .collect::<Vec<_>>();
+
+    let candles = if let Some(first_run_time) = runs.iter().map(|run| run.shadow_created_at).min() {
+        let symbol = Symbol::new(candidate.symbol.clone())?;
+        let interval = candidate.timeframe.parse::<CandleInterval>()?;
+        let candle_rows = sqlx::query(
+            r#"
+            SELECT
+                id,
+                exchange,
+                symbol,
+                interval,
+                open_time,
+                close_time,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                quote_volume,
+                trade_count,
+                is_closed,
+                created_at,
+                updated_at
+            FROM candles
+            WHERE symbol = $1
+              AND interval = $2
+              AND is_closed = TRUE
+              AND open_time > $3
+            ORDER BY open_time ASC
+            "#,
+        )
+        .bind(symbol.as_str())
+        .bind(interval.as_str())
+        .bind(first_run_time)
+        .fetch_all(pool)
+        .await?;
+
+        candle_rows
+            .iter()
+            .map(|row| -> Result<Candle> {
+                Ok(Candle {
+                    id: row.get("id"),
+                    exchange: row
+                        .get::<String, _>("exchange")
+                        .parse::<MarketDataSource>()?,
+                    symbol: Symbol::new(row.get::<String, _>("symbol"))?,
+                    interval: row.get::<String, _>("interval").parse::<CandleInterval>()?,
+                    open_time: row.get("open_time"),
+                    close_time: row.get("close_time"),
+                    open: row.get("open"),
+                    high: row.get("high"),
+                    low: row.get("low"),
+                    close: row.get("close"),
+                    volume: row.get("volume"),
+                    quote_volume: row.get("quote_volume"),
+                    trade_count: row.get("trade_count"),
+                    is_closed: row.get("is_closed"),
+                    created_at: row.get("created_at"),
+                    updated_at: row.get("updated_at"),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+
+    Ok(calculate_research_shadow_pnl_attribution(
+        candidate,
+        request,
+        &runs,
+        &candles,
         computed_at,
     ))
 }

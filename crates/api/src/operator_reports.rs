@@ -11,8 +11,9 @@ use aegis_core::{
     OperatorReportSummary, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
     OperatorReportTopPairCount, ResearchCandidateQualificationStatus,
     ResearchCandidateQualificationThresholds, ResearchCandidateStatus,
-    ResearchCandidateTestnetReviewStatus, StrategyPerformanceMode, StrategyPerformanceRequest,
-    TestnetPromotionFunnelRequest,
+    ResearchCandidateTestnetReviewStatus, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, ResearchShadowPnlRecommendation, StrategyPerformanceMode,
+    StrategyPerformanceRequest, TestnetPromotionFunnelRequest,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -24,9 +25,11 @@ use uuid::Uuid;
 
 use crate::AppState;
 use db::{
+    get_research_candidate, get_research_candidate_shadow_pnl_attribution,
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
-    list_research_candidates, research_candidate_qualification_evaluation_from_record,
-    research_candidate_review_from_record, ResearchCandidateListFilters,
+    list_research_candidates, research_candidate_from_record,
+    research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
+    ResearchCandidateListFilters,
 };
 
 const DEFAULT_REPORT_WINDOW_HOURS: i64 = 24;
@@ -75,6 +78,37 @@ struct SystemAndMarketData {
     stale_threshold_seconds: i32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct CandidateShadowPnlReportSnapshot {
+    candidate_id: Uuid,
+    strategy_id: String,
+    symbol: String,
+    timeframe: String,
+    total_attributed_runs: i64,
+    insufficient_forward_data_count: i64,
+    best_holding_window: Option<u32>,
+    best_avg_net_pnl_pct: Option<Decimal>,
+    recommendation: ResearchShadowPnlRecommendation,
+    negative_all_windows: bool,
+}
+
+impl From<&ResearchShadowPnlAttributionResult> for CandidateShadowPnlReportSnapshot {
+    fn from(value: &ResearchShadowPnlAttributionResult) -> Self {
+        Self {
+            candidate_id: value.candidate_id,
+            strategy_id: value.strategy_id.clone(),
+            symbol: value.symbol.clone(),
+            timeframe: value.timeframe.clone(),
+            total_attributed_runs: value.summary.total_attributed_runs,
+            insufficient_forward_data_count: value.summary.insufficient_forward_data_count,
+            best_holding_window: value.best_holding_window,
+            best_avg_net_pnl_pct: value.best_avg_net_pnl_pct,
+            recommendation: value.latest_shadow_pnl_status,
+            negative_all_windows: value.summary.negative_all_windows,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct OperatorReportRecord {
     payload: serde_json::Value,
@@ -113,6 +147,9 @@ pub async fn generate_operator_report(
     let testnet = load_testnet_snapshot(&state.db_pool, request, &window).await?;
     let research_qualification =
         load_research_candidate_qualification_snapshot(state, request, &window).await?;
+    let shadow_pnl =
+        load_candidate_shadow_pnl_snapshot(state, &research_qualification, request, &window)
+            .await?;
     let backtest = load_backtest_activity(&state.db_pool, request, &window).await?;
 
     let mut findings = build_findings(
@@ -124,6 +161,7 @@ pub async fn generate_operator_report(
         &promotion,
         &testnet,
         &research_qualification,
+        shadow_pnl.as_ref(),
         &backtest,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
@@ -159,6 +197,7 @@ pub async fn generate_operator_report(
             &promotion,
             &testnet,
             &research_qualification,
+            shadow_pnl.as_ref(),
         )?,
         format: request.format,
         persisted: false,
@@ -1126,6 +1165,50 @@ async fn load_backtest_activity(
     Ok(BacktestActivity { run_count })
 }
 
+async fn load_candidate_shadow_pnl_snapshot(
+    state: &AppState,
+    research_qualification: &OperatorReportResearchQualificationSnapshot,
+    request: &OperatorReportRequest,
+    window: &ReportWindow,
+) -> Result<Option<CandidateShadowPnlReportSnapshot>> {
+    let Some(top_candidate) = research_qualification.top_candidate.as_ref() else {
+        return Ok(None);
+    };
+    let Some(record) = get_research_candidate(&state.db_pool, top_candidate.candidate_id).await?
+    else {
+        return Ok(None);
+    };
+    let candidate = research_candidate_from_record(&record)?;
+    let attribution = get_research_candidate_shadow_pnl_attribution(
+        &state.db_pool,
+        &candidate,
+        &ResearchShadowPnlAttributionRequest {
+            candidate_id: candidate.id,
+            holding_windows: vec![1, 3, 5, 10],
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            start_time: Some(window.start),
+            end_time: Some(window.end),
+            limit: Some(100),
+        },
+        window.generated_at,
+    )
+    .await?;
+
+    if let Some(strategy_id) = request.strategy_id.as_ref() {
+        if attribution.strategy_id != *strategy_id {
+            return Ok(None);
+        }
+    }
+    if let Some(symbol) = request.symbol.as_ref() {
+        if !attribution.symbol.eq_ignore_ascii_case(symbol) {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(CandidateShadowPnlReportSnapshot::from(&attribution)))
+}
+
 fn build_findings(
     system_market: &SystemAndMarketData,
     strategy: &StrategyBehaviorData,
@@ -1135,6 +1218,7 @@ fn build_findings(
     promotion: &OperatorReportPromotionSnapshot,
     testnet: &OperatorReportTestnetSnapshot,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
+    shadow_pnl: Option<&CandidateShadowPnlReportSnapshot>,
     backtest: &BacktestActivity,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
@@ -1352,6 +1436,36 @@ fn build_findings(
         ));
     }
 
+    if let Some(shadow_pnl) = shadow_pnl {
+        if shadow_pnl.total_attributed_runs == 0 || shadow_pnl.insufficient_forward_data_count > 0 {
+            findings.push(finding(
+                "candidate_shadow_pnl_insufficient_data",
+                OperatorReportSeverity::Low,
+                "Shadow PnL attribution insufficient data",
+                "The top candidate has missing forward candles for at least one linked WOULD_SUBMIT shadow run.",
+                "candidate_shadow_pnl_attribution",
+            ));
+        }
+        if shadow_pnl.negative_all_windows {
+            findings.push(finding(
+                "candidate_shadow_pnl_negative_all_windows",
+                OperatorReportSeverity::Medium,
+                "Candidate shadow PnL negative across all tested holding windows",
+                "Stored-candle hypothetical attribution is negative across all tested holding windows for the top candidate.",
+                "candidate_shadow_pnl_attribution",
+            ));
+        }
+        if shadow_pnl.recommendation == ResearchShadowPnlRecommendation::Promising {
+            findings.push(finding(
+                "candidate_shadow_pnl_promising_window",
+                OperatorReportSeverity::Low,
+                "Candidate shadow PnL promising in at least one holding window",
+                "Stored-candle hypothetical attribution is promising for at least one tested holding window.",
+                "candidate_shadow_pnl_attribution",
+            ));
+        }
+    }
+
     if research_qualification.newly_qualified_count > 0 {
         findings.push(finding(
             "candidate_newly_qualified_awaiting_review",
@@ -1555,8 +1669,9 @@ fn build_sections(
     promotion: &OperatorReportPromotionSnapshot,
     testnet: &OperatorReportTestnetSnapshot,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
+    shadow_pnl: Option<&CandidateShadowPnlReportSnapshot>,
 ) -> Result<Vec<OperatorReportSection>> {
-    Ok(vec![
+    let mut sections = vec![
         section(
             "system_health",
             "System Health",
@@ -1874,6 +1989,59 @@ fn build_sections(
             ],
             research_qualification,
         )?,
+    ];
+
+    if let Some(shadow_pnl) = shadow_pnl {
+        sections.push(section(
+            "candidate_shadow_pnl_attribution",
+            "Candidate Shadow PnL Attribution",
+            if shadow_pnl.negative_all_windows {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Research-only stored-candle hypothetical PnL attribution for the top candidate.",
+            vec![
+                highlight(
+                    "Top Candidate",
+                    format!(
+                        "{}:{} {}",
+                        shadow_pnl.strategy_id, shadow_pnl.symbol, shadow_pnl.timeframe
+                    ),
+                ),
+                highlight(
+                    "Attributed Runs",
+                    shadow_pnl.total_attributed_runs.to_string(),
+                ),
+                highlight(
+                    "Insufficient Forward Data",
+                    shadow_pnl.insufficient_forward_data_count.to_string(),
+                ),
+                highlight(
+                    "Best Holding Window",
+                    shadow_pnl
+                        .best_holding_window
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+                highlight(
+                    "Best Avg Net PnL %",
+                    shadow_pnl
+                        .best_avg_net_pnl_pct
+                        .map(|value| value.round_dp(4).to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+                highlight("Recommendation", shadow_pnl.recommendation.as_str()),
+                highlight(
+                    "Negative All Windows",
+                    yes_no(shadow_pnl.negative_all_windows),
+                ),
+            ],
+            shadow_pnl,
+        )?);
+    }
+
+    sections.extend(vec![
         section(
             "promotion_funnel",
             "Promotion Funnel",
@@ -1941,7 +2109,9 @@ fn build_sections(
             ],
             testnet,
         )?,
-    ])
+    ]);
+
+    Ok(sections)
 }
 
 fn build_summary(
@@ -2311,6 +2481,7 @@ mod tests {
             &base_promotion(),
             &base_testnet(),
             &base_research_qualification(),
+            None,
             &BacktestActivity { run_count: 1 },
         );
 
@@ -2339,6 +2510,7 @@ mod tests {
             &base_promotion(),
             &testnet,
             &base_research_qualification(),
+            None,
             &BacktestActivity { run_count: 1 },
         );
 
@@ -2362,6 +2534,7 @@ mod tests {
             &promotion,
             &base_testnet(),
             &base_research_qualification(),
+            None,
             &BacktestActivity { run_count: 1 },
         );
 
@@ -2385,6 +2558,7 @@ mod tests {
             &base_promotion(),
             &base_testnet(),
             &base_research_qualification(),
+            None,
             &BacktestActivity { run_count: 1 },
         );
 
@@ -2434,6 +2608,7 @@ mod tests {
                 private_stream_last_event_age_seconds: Some(1),
             },
             &base_research_qualification(),
+            None,
             &BacktestActivity { run_count: 0 },
         );
 
@@ -2468,6 +2643,7 @@ mod tests {
             &base_promotion(),
             &base_testnet(),
             &research,
+            None,
             &BacktestActivity { run_count: 1 },
         );
 
@@ -2499,6 +2675,7 @@ mod tests {
             &base_promotion(),
             &base_testnet(),
             &research,
+            None,
             &BacktestActivity { run_count: 1 },
         );
 

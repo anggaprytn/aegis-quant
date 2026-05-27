@@ -7,7 +7,7 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, User,
+    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -1983,6 +1983,59 @@ pub fn print_research_candidate_shadow_performance(
     );
     println!("Status: {}", performance.status.as_str());
     println!("Recommendation: {}", performance.recommendation.as_str());
+}
+
+pub fn print_research_candidate_shadow_pnl_attribution(
+    attribution: &ResearchShadowPnlAttributionResult,
+) {
+    println!("Candidate ID: {}", attribution.candidate_id);
+    println!(
+        "Candidate: {}/{}/{}",
+        attribution.strategy_id, attribution.symbol, attribution.timeframe
+    );
+    println!(
+        "Research-only. This does not create orders. fee_bps={} slippage_bps={}",
+        attribution.fee_bps, attribution.slippage_bps
+    );
+    println!(
+        "Total attributed runs: {}",
+        attribution.summary.total_attributed_runs
+    );
+    println!(
+        "Insufficient forward data: {}",
+        attribution.summary.insufficient_forward_data_count
+    );
+    println!(
+        "Best holding window: {} avg_net_pnl_pct={}",
+        attribution
+            .best_holding_window
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        attribution
+            .best_avg_net_pnl_pct
+            .map(|value| value.round_dp(4).to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Recommendation: {}",
+        attribution.latest_shadow_pnl_status.as_str()
+    );
+    println!("Holding windows:");
+    for window in &attribution.summary.per_holding_window {
+        println!(
+            "  {} candles: trades={} win_rate={} avg_net={} median_net={} best={} worst={} total_net={} fee_drag={} recommendation={}",
+            window.holding_window,
+            window.trade_count,
+            window.win_rate.round_dp(2),
+            window.avg_net_pnl_pct.round_dp(4),
+            window.median_net_pnl_pct.round_dp(4),
+            window.best_net_pnl_pct.round_dp(4),
+            window.worst_net_pnl_pct.round_dp(4),
+            window.total_net_pnl_pct.round_dp(4),
+            window.fee_drag_pct.round_dp(4),
+            window.recommendation.as_str()
+        );
+    }
 }
 
 pub fn print_research_candidate_qualification(

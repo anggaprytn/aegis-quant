@@ -72,6 +72,7 @@ import type {
   ResearchCandidateReviewResponse,
   ResearchCandidateReviewsResponse,
   ResearchCandidateShadowPerformanceResponse,
+  ResearchShadowPnlAttributionResponse,
   ResearchCandidateTestnetReviewDossierResponse,
   CreateResearchCandidateFromExperimentRunRequest,
   CreateResearchCandidateRequest,
@@ -467,6 +468,15 @@ export const api = {
   ) =>
     request<ResearchCandidateShadowPerformanceResponse>(
       `/research/candidates/${id}/shadow-performance`,
+      undefined,
+      query,
+    ),
+  getResearchCandidateShadowPnlAttribution: (
+    id: string,
+    query?: { holding_windows?: string; fee_bps?: string; slippage_bps?: string; limit?: number },
+  ) =>
+    request<ResearchShadowPnlAttributionResponse>(
+      `/research/candidates/${id}/shadow-pnl-attribution`,
       undefined,
       query,
     ),

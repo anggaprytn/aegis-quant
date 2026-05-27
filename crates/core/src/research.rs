@@ -15,6 +15,18 @@ fn default_required_coverage_pct() -> Decimal {
     Decimal::new(95, 0)
 }
 
+fn default_shadow_pnl_holding_windows() -> Vec<u32> {
+    vec![1, 3, 5, 10]
+}
+
+fn default_shadow_pnl_fee_bps() -> Decimal {
+    Decimal::new(10, 0)
+}
+
+fn default_shadow_pnl_slippage_bps() -> Decimal {
+    Decimal::new(5, 0)
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchDataReadinessStatus {
@@ -1357,6 +1369,158 @@ pub struct ResearchCandidateShadowRunLink {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchShadowPnlStatus {
+    Attributed,
+    InsufficientForwardData,
+}
+
+impl ResearchShadowPnlStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Attributed => "ATTRIBUTED",
+            Self::InsufficientForwardData => "INSUFFICIENT_FORWARD_DATA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchShadowPnlRecommendation {
+    Promising,
+    Weak,
+    Negative,
+    InsufficientData,
+}
+
+impl ResearchShadowPnlRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Promising => "PROMISING",
+            Self::Weak => "WEAK",
+            Self::Negative => "NEGATIVE",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchShadowPnlAttributionRequest {
+    pub candidate_id: Uuid,
+    #[serde(default = "default_shadow_pnl_holding_windows")]
+    pub holding_windows: Vec<u32>,
+    #[serde(default = "default_shadow_pnl_fee_bps")]
+    pub fee_bps: Decimal,
+    #[serde(default = "default_shadow_pnl_slippage_bps")]
+    pub slippage_bps: Decimal,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+}
+
+impl ResearchShadowPnlAttributionRequest {
+    pub fn normalized_holding_windows(&self) -> Vec<u32> {
+        let mut windows = self
+            .holding_windows
+            .iter()
+            .copied()
+            .filter(|value| *value > 0)
+            .collect::<Vec<_>>();
+        if windows.is_empty() {
+            windows = default_shadow_pnl_holding_windows();
+        }
+        windows.sort_unstable();
+        windows.dedup();
+        windows
+    }
+}
+
+impl Default for ResearchShadowPnlAttributionRequest {
+    fn default() -> Self {
+        Self {
+            candidate_id: Uuid::nil(),
+            holding_windows: default_shadow_pnl_holding_windows(),
+            fee_bps: default_shadow_pnl_fee_bps(),
+            slippage_bps: default_shadow_pnl_slippage_bps(),
+            start_time: None,
+            end_time: None,
+            limit: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchShadowPnlTradeHoldingWindowResult {
+    pub holding_window: u32,
+    pub status: ResearchShadowPnlStatus,
+    pub exit_candle_open_time: Option<DateTime<Utc>>,
+    pub exit_candle_close_time: Option<DateTime<Utc>>,
+    pub exit_price: Option<Decimal>,
+    pub gross_pnl_pct: Option<Decimal>,
+    pub net_pnl_pct: Option<Decimal>,
+    pub fee_drag_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchShadowPnlAttributionTrade {
+    pub candidate_id: Uuid,
+    pub shadow_run_id: Uuid,
+    pub shadow_created_at: DateTime<Utc>,
+    pub status: ResearchShadowPnlStatus,
+    pub entry_candle_open_time: Option<DateTime<Utc>>,
+    pub entry_candle_close_time: Option<DateTime<Utc>>,
+    pub entry_price: Option<Decimal>,
+    pub holding_windows: Vec<ResearchShadowPnlTradeHoldingWindowResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchShadowPnlHoldingWindowResult {
+    pub holding_window: u32,
+    pub trade_count: i64,
+    pub win_rate: Decimal,
+    pub avg_net_pnl_pct: Decimal,
+    pub median_net_pnl_pct: Decimal,
+    pub best_net_pnl_pct: Decimal,
+    pub worst_net_pnl_pct: Decimal,
+    pub total_net_pnl_pct: Decimal,
+    pub fee_drag_pct: Decimal,
+    pub recommendation: ResearchShadowPnlRecommendation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchShadowPnlSummary {
+    pub total_attributed_runs: i64,
+    pub insufficient_forward_data_count: i64,
+    pub negative_all_windows: bool,
+    pub per_holding_window: Vec<ResearchShadowPnlHoldingWindowResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchShadowPnlAttributionResult {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub holding_windows: Vec<u32>,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub summary: ResearchShadowPnlSummary,
+    pub trades: Vec<ResearchShadowPnlAttributionTrade>,
+    pub latest_shadow_pnl_status: ResearchShadowPnlRecommendation,
+    pub best_holding_window: Option<u32>,
+    pub best_avg_net_pnl_pct: Option<Decimal>,
+    pub computed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResearchShadowPnlRunInput {
+    pub shadow_run_id: Uuid,
+    pub shadow_created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateQualificationStatus {
     Qualified,
     NotQualified,
@@ -1656,6 +1820,7 @@ pub struct ResearchCandidateQualificationRequest {
     pub latest_readiness_status: Option<ExecutionReadinessStatus>,
     pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
     pub shadow_performance: Option<ResearchCandidateShadowPerformance>,
+    pub shadow_pnl_attribution: Option<ResearchShadowPnlAttributionResult>,
     #[serde(default)]
     pub thresholds: ResearchCandidateQualificationThresholds,
     pub computed_at: DateTime<Utc>,
@@ -1688,6 +1853,11 @@ pub struct ResearchCandidateQualificationResult {
     pub recommendations: Vec<ResearchCandidateQualificationRecommendation>,
     pub thresholds: ResearchCandidateQualificationThresholds,
     pub shadow_performance: Option<ResearchCandidateShadowPerformance>,
+    pub latest_shadow_pnl_status: Option<ResearchShadowPnlRecommendation>,
+    pub best_holding_window: Option<u32>,
+    pub best_avg_net_pnl_pct: Option<Decimal>,
+    #[serde(default)]
+    pub negative_all_windows: bool,
     pub computed_at: DateTime<Utc>,
 }
 
@@ -1904,6 +2074,7 @@ pub struct ResearchCandidateTestnetReviewEvidence {
     pub experiment_id: Option<Uuid>,
     pub experiment_run_id: Option<Uuid>,
     pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
+    pub shadow_pnl_attribution: Option<ResearchShadowPnlAttributionResult>,
     #[serde(default)]
     pub operator_report_findings: Vec<ResearchCandidateTestnetReviewFinding>,
 }
@@ -1947,6 +2118,7 @@ pub struct ResearchCandidateTestnetReviewRequest {
     pub runner_alignment: Option<StrategyCandidateRunnerAlignment>,
     pub readiness_snapshot: Option<ResearchCandidatePromotionReadiness>,
     pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
+    pub shadow_pnl_attribution: Option<ResearchShadowPnlAttributionResult>,
     pub private_stream_stale_warning: bool,
     pub require_ready_review_action: bool,
     pub no_execution_table_mutation: bool,
@@ -2714,6 +2886,7 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             experiment_id: candidate.and_then(|value| value.experiment_id),
             experiment_run_id: candidate.and_then(|value| value.experiment_run_id),
             walk_forward_evidence: request.walk_forward_evidence.clone(),
+            shadow_pnl_attribution: request.shadow_pnl_attribution.clone(),
             operator_report_findings: request.operator_report_findings.clone(),
         },
         checklist,
@@ -3516,6 +3689,23 @@ pub fn evaluate_research_candidate_qualification(
         recommendations: recommendations.into_iter().collect(),
         thresholds,
         shadow_performance,
+        latest_shadow_pnl_status: request
+            .shadow_pnl_attribution
+            .as_ref()
+            .map(|value| value.latest_shadow_pnl_status),
+        best_holding_window: request
+            .shadow_pnl_attribution
+            .as_ref()
+            .and_then(|value| value.best_holding_window),
+        best_avg_net_pnl_pct: request
+            .shadow_pnl_attribution
+            .as_ref()
+            .and_then(|value| value.best_avg_net_pnl_pct),
+        negative_all_windows: request
+            .shadow_pnl_attribution
+            .as_ref()
+            .map(|value| value.summary.negative_all_windows)
+            .unwrap_or(false),
         computed_at: request.computed_at,
     }
 }
@@ -3619,6 +3809,233 @@ pub fn evaluate_research_candidate_shadow_performance(
         status,
         outcome_breakdown,
         computed_at,
+    }
+}
+
+pub fn calculate_research_shadow_pnl_attribution(
+    candidate: &ResearchCandidate,
+    request: &ResearchShadowPnlAttributionRequest,
+    runs: &[ResearchShadowPnlRunInput],
+    candles: &[Candle],
+    computed_at: DateTime<Utc>,
+) -> ResearchShadowPnlAttributionResult {
+    let holding_windows = request.normalized_holding_windows();
+    let fee_drag_pct = (request.fee_bps + request.slippage_bps) / Decimal::new(100, 0);
+
+    let mut sorted_runs = runs.to_vec();
+    sorted_runs.sort_by_key(|run| run.shadow_created_at);
+    let mut sorted_candles = candles.to_vec();
+    sorted_candles.sort_by_key(|candle| candle.open_time);
+
+    let trades = sorted_runs
+        .iter()
+        .map(|run| {
+            let entry_index = sorted_candles
+                .iter()
+                .position(|candle| candle.is_closed && candle.open_time > run.shadow_created_at);
+
+            let Some(entry_index) = entry_index else {
+                return ResearchShadowPnlAttributionTrade {
+                    candidate_id: candidate.id,
+                    shadow_run_id: run.shadow_run_id,
+                    shadow_created_at: run.shadow_created_at,
+                    status: ResearchShadowPnlStatus::InsufficientForwardData,
+                    entry_candle_open_time: None,
+                    entry_candle_close_time: None,
+                    entry_price: None,
+                    holding_windows: holding_windows
+                        .iter()
+                        .copied()
+                        .map(|holding_window| ResearchShadowPnlTradeHoldingWindowResult {
+                            holding_window,
+                            status: ResearchShadowPnlStatus::InsufficientForwardData,
+                            exit_candle_open_time: None,
+                            exit_candle_close_time: None,
+                            exit_price: None,
+                            gross_pnl_pct: None,
+                            net_pnl_pct: None,
+                            fee_drag_pct,
+                        })
+                        .collect(),
+                };
+            };
+
+            let entry = &sorted_candles[entry_index];
+            let entry_price = entry.open;
+            let window_results = holding_windows
+                .iter()
+                .copied()
+                .map(|holding_window| {
+                    let exit_index = entry_index + holding_window as usize;
+                    let Some(exit) = sorted_candles.get(exit_index) else {
+                        return ResearchShadowPnlTradeHoldingWindowResult {
+                            holding_window,
+                            status: ResearchShadowPnlStatus::InsufficientForwardData,
+                            exit_candle_open_time: None,
+                            exit_candle_close_time: None,
+                            exit_price: None,
+                            gross_pnl_pct: None,
+                            net_pnl_pct: None,
+                            fee_drag_pct,
+                        };
+                    };
+                    let gross_pnl_pct = if entry_price > Decimal::ZERO {
+                        ((exit.close - entry_price) / entry_price) * Decimal::new(100, 0)
+                    } else {
+                        Decimal::ZERO
+                    };
+                    let net_pnl_pct = gross_pnl_pct - fee_drag_pct;
+                    ResearchShadowPnlTradeHoldingWindowResult {
+                        holding_window,
+                        status: ResearchShadowPnlStatus::Attributed,
+                        exit_candle_open_time: Some(exit.open_time),
+                        exit_candle_close_time: Some(exit.close_time),
+                        exit_price: Some(exit.close),
+                        gross_pnl_pct: Some(gross_pnl_pct),
+                        net_pnl_pct: Some(net_pnl_pct),
+                        fee_drag_pct,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let status = if window_results
+                .iter()
+                .any(|window| window.status == ResearchShadowPnlStatus::Attributed)
+            {
+                ResearchShadowPnlStatus::Attributed
+            } else {
+                ResearchShadowPnlStatus::InsufficientForwardData
+            };
+
+            ResearchShadowPnlAttributionTrade {
+                candidate_id: candidate.id,
+                shadow_run_id: run.shadow_run_id,
+                shadow_created_at: run.shadow_created_at,
+                status,
+                entry_candle_open_time: Some(entry.open_time),
+                entry_candle_close_time: Some(entry.close_time),
+                entry_price: Some(entry_price),
+                holding_windows: window_results,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let per_holding_window = holding_windows
+        .iter()
+        .copied()
+        .map(|holding_window| {
+            let mut values = trades
+                .iter()
+                .flat_map(|trade| trade.holding_windows.iter())
+                .filter(|window| window.holding_window == holding_window)
+                .filter_map(|window| window.net_pnl_pct)
+                .collect::<Vec<_>>();
+            values.sort();
+            let trade_count = values.len() as i64;
+            let total_net_pnl_pct = values.iter().copied().sum::<Decimal>();
+            let win_count = values
+                .iter()
+                .filter(|value| **value > Decimal::ZERO)
+                .count() as i64;
+            let avg_net_pnl_pct = if trade_count > 0 {
+                total_net_pnl_pct / Decimal::from(trade_count)
+            } else {
+                Decimal::ZERO
+            };
+            let median_net_pnl_pct = median_decimal(&values);
+            let best_net_pnl_pct = values.last().copied().unwrap_or(Decimal::ZERO);
+            let worst_net_pnl_pct = values.first().copied().unwrap_or(Decimal::ZERO);
+            let win_rate = calculate_percentage_rate(win_count, trade_count);
+            let total_fee_drag_pct = fee_drag_pct * Decimal::from(trade_count);
+            let recommendation = if trade_count < 3 {
+                ResearchShadowPnlRecommendation::InsufficientData
+            } else if avg_net_pnl_pct < Decimal::ZERO && total_net_pnl_pct < Decimal::ZERO {
+                ResearchShadowPnlRecommendation::Negative
+            } else if avg_net_pnl_pct > Decimal::ZERO && win_rate >= Decimal::new(50, 0) {
+                ResearchShadowPnlRecommendation::Promising
+            } else {
+                ResearchShadowPnlRecommendation::Weak
+            };
+
+            ResearchShadowPnlHoldingWindowResult {
+                holding_window,
+                trade_count,
+                win_rate,
+                avg_net_pnl_pct,
+                median_net_pnl_pct,
+                best_net_pnl_pct,
+                worst_net_pnl_pct,
+                total_net_pnl_pct,
+                fee_drag_pct: total_fee_drag_pct,
+                recommendation,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let total_attributed_runs = trades
+        .iter()
+        .filter(|trade| trade.status == ResearchShadowPnlStatus::Attributed)
+        .count() as i64;
+    let insufficient_forward_data_count = trades.len() as i64 - total_attributed_runs;
+    let negative_all_windows = !per_holding_window.is_empty()
+        && per_holding_window.iter().all(|window| {
+            window.recommendation == ResearchShadowPnlRecommendation::Negative
+                || window.recommendation == ResearchShadowPnlRecommendation::InsufficientData
+        })
+        && per_holding_window
+            .iter()
+            .any(|window| window.recommendation == ResearchShadowPnlRecommendation::Negative);
+    let best_window = per_holding_window
+        .iter()
+        .filter(|window| window.trade_count > 0)
+        .max_by(|left, right| left.avg_net_pnl_pct.cmp(&right.avg_net_pnl_pct));
+    let best_holding_window = best_window.map(|window| window.holding_window);
+    let best_avg_net_pnl_pct = best_window.map(|window| window.avg_net_pnl_pct);
+    let latest_shadow_pnl_status = if per_holding_window
+        .iter()
+        .any(|window| window.recommendation == ResearchShadowPnlRecommendation::Promising)
+    {
+        ResearchShadowPnlRecommendation::Promising
+    } else if negative_all_windows {
+        ResearchShadowPnlRecommendation::Negative
+    } else if total_attributed_runs == 0 {
+        ResearchShadowPnlRecommendation::InsufficientData
+    } else {
+        ResearchShadowPnlRecommendation::Weak
+    };
+
+    ResearchShadowPnlAttributionResult {
+        candidate_id: candidate.id,
+        strategy_id: candidate.strategy_id.clone(),
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        holding_windows,
+        fee_bps: request.fee_bps,
+        slippage_bps: request.slippage_bps,
+        start_time: request.start_time,
+        end_time: request.end_time,
+        summary: ResearchShadowPnlSummary {
+            total_attributed_runs,
+            insufficient_forward_data_count,
+            negative_all_windows,
+            per_holding_window,
+        },
+        trades,
+        latest_shadow_pnl_status,
+        best_holding_window,
+        best_avg_net_pnl_pct,
+        computed_at,
+    }
+}
+
+fn median_decimal(values: &[Decimal]) -> Decimal {
+    if values.is_empty() {
+        return Decimal::ZERO;
+    }
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        values[mid]
+    } else {
+        (values[mid - 1] + values[mid]) / Decimal::new(2, 0)
     }
 }
 
@@ -4184,6 +4601,185 @@ mod tests {
             .unwrap()
     }
 
+    fn shadow_pnl_candidate() -> ResearchCandidate {
+        ResearchCandidate {
+            id: Uuid::new_v4(),
+            experiment_id: None,
+            experiment_run_id: None,
+            strategy_id: "baseline".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            config: serde_json::json!({}),
+            score: None,
+            pnl_pct: None,
+            max_drawdown_pct: None,
+            trade_count: None,
+            win_rate: None,
+            fee_drag: None,
+            status: ResearchCandidateStatus::PromotedToShadowConfig,
+            rejection_reason: None,
+            notes: None,
+            created_at: ts(0, 0, 0),
+            updated_at: ts(0, 0, 0),
+            correlation_id: None,
+        }
+    }
+
+    fn shadow_pnl_candle(minute: u32, open: i64, close: i64) -> Candle {
+        Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new("BTCUSDT").unwrap(),
+            interval: CandleInterval::OneMinute,
+            open_time: ts(0, minute, 0),
+            close_time: ts(0, minute, 59),
+            open: Decimal::new(open, 0),
+            high: Decimal::new(open.max(close), 0),
+            low: Decimal::new(open.min(close), 0),
+            close: Decimal::new(close, 0),
+            volume: Decimal::ONE,
+            quote_volume: None,
+            trade_count: 1,
+            is_closed: true,
+            created_at: ts(0, minute, 59),
+            updated_at: ts(0, minute, 59),
+        }
+    }
+
+    fn shadow_pnl_result(
+        prices: &[(u32, i64, i64)],
+        windows: Vec<u32>,
+        run_times: Vec<DateTime<Utc>>,
+    ) -> ResearchShadowPnlAttributionResult {
+        let candidate = shadow_pnl_candidate();
+        let request = ResearchShadowPnlAttributionRequest {
+            candidate_id: candidate.id,
+            holding_windows: windows,
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            start_time: None,
+            end_time: None,
+            limit: None,
+        };
+        let runs = run_times
+            .into_iter()
+            .map(|shadow_created_at| ResearchShadowPnlRunInput {
+                shadow_run_id: Uuid::new_v4(),
+                shadow_created_at,
+            })
+            .collect::<Vec<_>>();
+        let candles = prices
+            .iter()
+            .map(|(minute, open, close)| shadow_pnl_candle(*minute, *open, *close))
+            .collect::<Vec<_>>();
+        calculate_research_shadow_pnl_attribution(
+            &candidate,
+            &request,
+            &runs,
+            &candles,
+            ts(1, 0, 0),
+        )
+    }
+
+    #[test]
+    fn shadow_pnl_entry_uses_next_candle_open_and_exit_uses_nth_close() {
+        let result = shadow_pnl_result(
+            &[(0, 100, 101), (1, 110, 111), (2, 120, 132)],
+            vec![1],
+            vec![ts(0, 0, 30)],
+        );
+
+        let trade = &result.trades[0];
+        assert_eq!(trade.entry_candle_open_time, Some(ts(0, 1, 0)));
+        assert_eq!(trade.entry_price, Some(Decimal::new(110, 0)));
+        let window = &trade.holding_windows[0];
+        assert_eq!(window.exit_candle_close_time, Some(ts(0, 2, 59)));
+        assert_eq!(window.exit_price, Some(Decimal::new(132, 0)));
+    }
+
+    #[test]
+    fn shadow_pnl_net_pnl_subtracts_fee_and_slippage() {
+        let result =
+            shadow_pnl_result(&[(1, 100, 100), (2, 100, 110)], vec![1], vec![ts(0, 0, 30)]);
+
+        let window = &result.trades[0].holding_windows[0];
+        assert_eq!(window.gross_pnl_pct, Some(Decimal::new(10, 0)));
+        assert_eq!(window.net_pnl_pct, Some(Decimal::new(985, 2)));
+        assert_eq!(window.fee_drag_pct, Decimal::new(15, 2));
+    }
+
+    #[test]
+    fn shadow_pnl_insufficient_forward_data_is_counted() {
+        let result = shadow_pnl_result(&[(1, 100, 100)], vec![1], vec![ts(0, 0, 30)]);
+
+        assert_eq!(
+            result.trades[0].status,
+            ResearchShadowPnlStatus::InsufficientForwardData
+        );
+        assert_eq!(result.summary.total_attributed_runs, 0);
+        assert_eq!(result.summary.insufficient_forward_data_count, 1);
+    }
+
+    #[test]
+    fn shadow_pnl_summary_calculates_median_avg_and_win_rate() {
+        let result = shadow_pnl_result(
+            &[
+                (1, 100, 100),
+                (2, 100, 110),
+                (3, 100, 90),
+                (4, 100, 120),
+                (5, 100, 100),
+                (6, 100, 130),
+            ],
+            vec![1],
+            vec![ts(0, 0, 30), ts(0, 1, 30), ts(0, 2, 30), ts(0, 3, 30)],
+        );
+
+        let summary = &result.summary.per_holding_window[0];
+        assert_eq!(summary.trade_count, 4);
+        assert_eq!(summary.win_rate, Decimal::new(50, 0));
+        assert_eq!(summary.avg_net_pnl_pct.round_dp(2), Decimal::new(485, 2));
+        assert_eq!(summary.median_net_pnl_pct, Decimal::new(485, 2));
+        assert_eq!(summary.best_net_pnl_pct, Decimal::new(1985, 2));
+        assert_eq!(summary.worst_net_pnl_pct, Decimal::new(-1015, 2));
+    }
+
+    #[test]
+    fn shadow_pnl_negative_all_windows_and_promising_recommendations() {
+        let negative = shadow_pnl_result(
+            &[
+                (1, 100, 100),
+                (2, 100, 90),
+                (3, 100, 85),
+                (4, 100, 80),
+                (5, 100, 75),
+            ],
+            vec![1],
+            vec![ts(0, 0, 30), ts(0, 1, 30), ts(0, 2, 30)],
+        );
+        assert!(negative.summary.negative_all_windows);
+        assert_eq!(
+            negative.latest_shadow_pnl_status,
+            ResearchShadowPnlRecommendation::Negative
+        );
+
+        let promising = shadow_pnl_result(
+            &[
+                (1, 100, 100),
+                (2, 100, 110),
+                (3, 100, 112),
+                (4, 100, 114),
+                (5, 100, 116),
+            ],
+            vec![1],
+            vec![ts(0, 0, 30), ts(0, 1, 30), ts(0, 2, 30)],
+        );
+        assert_eq!(
+            promising.summary.per_holding_window[0].recommendation,
+            ResearchShadowPnlRecommendation::Promising
+        );
+    }
+
     #[test]
     fn expected_candle_count_supports_supported_intervals() {
         let now = ts(2, 0, 0);
@@ -4673,6 +5269,7 @@ mod tests {
                 StrategyWalkForwardRobustnessStatus::Robust,
             )),
             shadow_performance: performance,
+            shadow_pnl_attribution: None,
             thresholds: ResearchCandidateQualificationThresholds::default(),
             computed_at: ts(1, 0, 0),
         }
@@ -4874,6 +5471,7 @@ mod tests {
             walk_forward_evidence: Some(sample_walk_forward_evidence(
                 StrategyWalkForwardRobustnessStatus::Robust,
             )),
+            shadow_pnl_attribution: None,
             private_stream_stale_warning: false,
             require_ready_review_action: true,
             no_execution_table_mutation: true,

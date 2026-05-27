@@ -53,7 +53,8 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    ResearchDatasetBuildResult, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
     RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
     StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
@@ -118,22 +119,23 @@ use db::{
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_order_by_id, get_paper_position_by_id, get_recent_closed_candles, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
-    get_research_candidate_shadow_performance, get_risk_config, get_risk_decision_by_id,
-    get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
-    get_strategy_experiment, get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_research_candidate,
-    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
-    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
-    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
-    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
-    insert_exchange_testnet_repair_action, insert_paper_account, insert_paper_equity_snapshot,
-    insert_research_candidate_qualification_evaluation, insert_risk_config_audit,
-    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
-    insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
-    insert_system_event, insert_testnet_shadow_promotion, insert_user,
-    link_research_candidate_walk_forward_run, list_backtest_runs, list_candle_backfill_runs,
-    list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
+    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
+    get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_research_candidate, get_strategy_shadow_decision_breakdown, get_strategy_status,
+    get_strategy_walk_forward_run, get_system_event, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
+    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
+    insert_exchange_testnet_order, insert_exchange_testnet_repair_action, insert_paper_account,
+    insert_paper_equity_snapshot, insert_research_candidate_qualification_evaluation,
+    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
+    insert_strategy_config_audit, insert_strategy_research_candidate,
+    insert_strategy_research_candidate_promotion, insert_system_event,
+    insert_testnet_shadow_promotion, insert_user, link_research_candidate_walk_forward_run,
+    list_backtest_runs, list_candle_backfill_runs, list_candles,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions, list_market_feed_statuses,
     list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
@@ -1386,6 +1388,16 @@ struct ResearchCandidateShadowRunsQueryParams {
 }
 
 #[derive(Deserialize)]
+struct ResearchCandidateShadowPnlAttributionQueryParams {
+    holding_windows: Option<String>,
+    fee_bps: Option<Decimal>,
+    slippage_bps: Option<Decimal>,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
 struct ResearchCandidateQualificationQueryParams {
     min_shadow_runs: Option<i64>,
     min_would_submit_count: Option<i64>,
@@ -1644,6 +1656,14 @@ struct ResearchCandidateShadowPromotionResultResponse {
 #[derive(Serialize)]
 struct ResearchCandidateShadowPerformanceResponse {
     performance: ResearchCandidateShadowPerformance,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateShadowPnlAttributionResponse {
+    attribution: ResearchShadowPnlAttributionResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -2509,6 +2529,10 @@ async fn main() {
         .route(
             "/research/candidates/:id/shadow-performance",
             get(get_research_candidate_shadow_performance_handler),
+        )
+        .route(
+            "/research/candidates/:id/shadow-pnl-attribution",
+            get(get_research_candidate_shadow_pnl_attribution_handler),
         )
         .route(
             "/research/candidates/:id/qualification",
@@ -14839,6 +14863,22 @@ async fn build_research_candidate_qualification(
         now,
     )
     .await?;
+    let shadow_pnl_attribution = get_research_candidate_shadow_pnl_attribution(
+        &state.db_pool,
+        candidate,
+        &ResearchShadowPnlAttributionRequest {
+            candidate_id: candidate.id,
+            holding_windows: vec![1, 3, 5, 10],
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            start_time: Some(candidate.updated_at),
+            end_time: Some(now),
+            limit: Some(100),
+        },
+        now,
+    )
+    .await
+    .ok();
     let walk_forward_evidence =
         get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id).await?;
 
@@ -14861,6 +14901,7 @@ async fn build_research_candidate_qualification(
                 .and_then(|observation| observation.summary.latest_readiness_status),
             walk_forward_evidence,
             shadow_performance: Some(shadow_performance),
+            shadow_pnl_attribution,
             thresholds,
             computed_at: now,
         },
@@ -14986,6 +15027,22 @@ async fn build_research_candidate_testnet_review_dossier(
         now,
     )
     .await?;
+    let shadow_pnl_attribution = get_research_candidate_shadow_pnl_attribution(
+        &state.db_pool,
+        candidate,
+        &ResearchShadowPnlAttributionRequest {
+            candidate_id: candidate.id,
+            holding_windows: vec![1, 3, 5, 10],
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            start_time: Some(candidate.updated_at),
+            end_time: Some(now),
+            limit: Some(100),
+        },
+        now,
+    )
+    .await
+    .ok();
 
     let observation_records =
         list_strategy_candidate_observations(&state.db_pool, candidate.id).await?;
@@ -15047,6 +15104,7 @@ async fn build_research_candidate_testnet_review_dossier(
                 runner_alignment: Some(runner_alignment),
                 readiness_snapshot,
                 walk_forward_evidence,
+                shadow_pnl_attribution,
                 private_stream_stale_warning,
                 require_ready_review_action: true,
                 no_execution_table_mutation: true,
@@ -17292,6 +17350,113 @@ async fn get_research_candidate_shadow_performance_handler(
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+fn parse_holding_windows_query(raw: Option<&str>) -> Vec<u32> {
+    raw.map(|value| {
+        value
+            .split(',')
+            .filter_map(|item| item.trim().parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .collect::<Vec<_>>()
+    })
+    .filter(|values| !values.is_empty())
+    .unwrap_or_else(|| vec![1, 3, 5, 10])
+}
+
+async fn get_research_candidate_shadow_pnl_attribution_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    Query(query): Query<ResearchCandidateShadowPnlAttributionQueryParams>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    let now = Utc::now();
+    let candidate = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request_context.request_id,
+                        correlation_id: request_context.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let attribution_request = ResearchShadowPnlAttributionRequest {
+        candidate_id,
+        holding_windows: parse_holding_windows_query(query.holding_windows.as_deref()),
+        fee_bps: query.fee_bps.unwrap_or_else(|| Decimal::new(10, 0)),
+        slippage_bps: query.slippage_bps.unwrap_or_else(|| Decimal::new(5, 0)),
+        start_time: query.start_time,
+        end_time: query.end_time,
+        limit: query.limit,
+    };
+
+    match get_research_candidate_shadow_pnl_attribution(
+        &state.db_pool,
+        &candidate,
+        &attribution_request,
+        now,
+    )
+    .await
+    {
+        Ok(attribution) => (
+            StatusCode::OK,
+            Json(ResearchCandidateShadowPnlAttributionResponse {
+                attribution,
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_get_research_candidate_shadow_pnl_attribution",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
                 timestamp: now,
             }),
         )
@@ -20368,6 +20533,7 @@ mod tests {
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
         get_research_candidate_shadow_performance_handler,
+        get_research_candidate_shadow_pnl_attribution_handler,
         get_research_candidate_testnet_review_dossier_handler, get_risk_decisions,
         get_strategy_candidate_observation_handler, get_strategy_config_handler, get_strategy_list,
         get_strategy_research_candidate_handler, is_valid_resume_confirmation,
@@ -21384,6 +21550,10 @@ mod tests {
             .route(
                 "/research/candidates/:id/shadow-performance",
                 get(get_research_candidate_shadow_performance_handler),
+            )
+            .route(
+                "/research/candidates/:id/shadow-pnl-attribution",
+                get(get_research_candidate_shadow_pnl_attribution_handler),
             )
             .route(
                 "/research/candidates/:id/qualification",

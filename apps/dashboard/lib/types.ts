@@ -1257,6 +1257,77 @@ export type ResearchCandidateShadowRunsResponse = {
   timestamp: string;
 };
 
+export type ResearchShadowPnlRecommendation =
+  | "PROMISING"
+  | "WEAK"
+  | "NEGATIVE"
+  | "INSUFFICIENT_DATA";
+
+export type ResearchShadowPnlStatus = "ATTRIBUTED" | "INSUFFICIENT_FORWARD_DATA";
+
+export type ResearchShadowPnlTradeHoldingWindowResult = {
+  holding_window: number;
+  status: ResearchShadowPnlStatus;
+  exit_candle_open_time: string | null;
+  exit_candle_close_time: string | null;
+  exit_price: string | null;
+  gross_pnl_pct: string | null;
+  net_pnl_pct: string | null;
+  fee_drag_pct: string;
+};
+
+export type ResearchShadowPnlAttributionTrade = {
+  candidate_id: string;
+  shadow_run_id: string;
+  shadow_created_at: string;
+  status: ResearchShadowPnlStatus;
+  entry_candle_open_time: string | null;
+  entry_candle_close_time: string | null;
+  entry_price: string | null;
+  holding_windows: ResearchShadowPnlTradeHoldingWindowResult[];
+};
+
+export type ResearchShadowPnlHoldingWindowResult = {
+  holding_window: number;
+  trade_count: number;
+  win_rate: string;
+  avg_net_pnl_pct: string;
+  median_net_pnl_pct: string;
+  best_net_pnl_pct: string;
+  worst_net_pnl_pct: string;
+  total_net_pnl_pct: string;
+  fee_drag_pct: string;
+  recommendation: ResearchShadowPnlRecommendation;
+};
+
+export type ResearchShadowPnlAttributionResult = {
+  candidate_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  holding_windows: number[];
+  fee_bps: string;
+  slippage_bps: string;
+  summary: {
+    total_attributed_runs: number;
+    insufficient_forward_data_count: number;
+    negative_all_windows: boolean;
+    per_holding_window: ResearchShadowPnlHoldingWindowResult[];
+  };
+  trades: ResearchShadowPnlAttributionTrade[];
+  latest_shadow_pnl_status: ResearchShadowPnlRecommendation;
+  best_holding_window: number | null;
+  best_avg_net_pnl_pct: string | null;
+  computed_at: string;
+};
+
+export type ResearchShadowPnlAttributionResponse = {
+  attribution: ResearchShadowPnlAttributionResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateQualificationResult = {
   candidate_id: string;
   status: ResearchCandidateQualificationStatus;

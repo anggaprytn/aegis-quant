@@ -49,6 +49,7 @@ import type {
   ResearchCandidateShadowPromotionResult,
   ResearchCandidateShadowRunLink,
   ResearchCandidateWatchlistEntry,
+  ResearchShadowPnlAttributionResult,
   ResearchCandidateStatus as StrategyResearchCandidateStatus,
   RiskConfig,
   RiskDecisionRecord,
@@ -737,6 +738,8 @@ function AuthenticatedDashboard({
   const [researchCandidateDecisionReason, setResearchCandidateDecisionReason] = useState("");
   const [researchCandidateReviewReason, setResearchCandidateReviewReason] = useState("");
   const [researchCandidateReviewNotes, setResearchCandidateReviewNotes] = useState("");
+  const [researchShadowPnlHoldingWindows, setResearchShadowPnlHoldingWindows] =
+    useState("1,3,5,10");
   const [researchCandidateShadowPromotionPreview, setResearchCandidateShadowPromotionPreview] =
     useState<ResearchCandidateShadowPromotionPreview | null>(null);
   const [researchCandidateShadowPromotionResult, setResearchCandidateShadowPromotionResult] =
@@ -1073,6 +1076,22 @@ function AuthenticatedDashboard({
   const selectedResearchCandidateShadowPerformanceQuery = useQuery({
     queryKey: ["research-candidate-shadow-performance", selectedResearchCandidateId],
     queryFn: () => api.getResearchCandidateShadowPerformance(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
+  const selectedResearchCandidateShadowPnlQuery = useQuery({
+    queryKey: [
+      "research-candidate-shadow-pnl-attribution",
+      selectedResearchCandidateId,
+      researchShadowPnlHoldingWindows,
+    ],
+    queryFn: () =>
+      api.getResearchCandidateShadowPnlAttribution(selectedResearchCandidateId ?? "", {
+        holding_windows: researchShadowPnlHoldingWindows,
+        fee_bps: "10",
+        slippage_bps: "5",
+        limit: 100,
+      }),
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
@@ -2234,6 +2253,8 @@ function AuthenticatedDashboard({
     selectedResearchCandidateReviewsQuery.data?.reviews ?? [];
   const researchCandidateShadowPerformance: ResearchCandidateShadowPerformance | null =
     selectedResearchCandidateShadowPerformanceQuery.data?.performance ?? null;
+  const researchCandidateShadowPnl: ResearchShadowPnlAttributionResult | null =
+    selectedResearchCandidateShadowPnlQuery.data?.attribution ?? null;
   const researchCandidateShadowRuns: ResearchCandidateShadowRunLink[] =
     selectedResearchCandidateShadowRunsQuery.data?.runs ?? [];
   const latestResearchCandidateObservation: StrategyCandidateObservation | null =
@@ -5571,6 +5592,104 @@ function AuthenticatedDashboard({
                       </div>
                       <InlineStatus
                         error={getErrorMessage(selectedResearchCandidateShadowPerformanceQuery.error)}
+                      />
+                    </div>
+                    <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="font-semibold text-slate-100">
+                          Shadow Hypothetical PnL
+                        </div>
+                        <div className="rounded-full border border-border/70 px-3 py-1 text-[11px] uppercase tracking-[0.2em] text-slate-300">
+                          {researchCandidateShadowPnl?.latest_shadow_pnl_status ?? "UNKNOWN"}
+                        </div>
+                      </div>
+                      <div className="mt-2 text-slate-300">
+                        Research-only. This does not create orders.
+                      </div>
+                      <div className="mt-3 max-w-xs">
+                        <Field
+                          label="Holding Windows"
+                          value={researchShadowPnlHoldingWindows}
+                          onChange={setResearchShadowPnlHoldingWindows}
+                          placeholder="1,3,5,10"
+                        />
+                      </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                        <div>
+                          Attributed:{" "}
+                          {researchCandidateShadowPnl?.summary.total_attributed_runs ?? 0}
+                        </div>
+                        <div>
+                          Insufficient:{" "}
+                          {researchCandidateShadowPnl?.summary
+                            .insufficient_forward_data_count ?? 0}
+                        </div>
+                        <div>
+                          Best:{" "}
+                          {researchCandidateShadowPnl?.best_holding_window
+                            ? `${researchCandidateShadowPnl.best_holding_window} candles / ${researchCandidateShadowPnl.best_avg_net_pnl_pct ?? "-"}%`
+                            : "N/A"}
+                        </div>
+                      </div>
+                      <div className="mt-3 overflow-auto rounded-xl border border-border/70">
+                        <table className="min-w-full text-[11px]">
+                          <thead className="bg-surface/60 text-left text-slate-300">
+                            <tr>
+                              {["Window", "Trades", "Win %", "Avg Net", "Median", "Best", "Worst", "Total", "Fee Drag", "Rec"].map((label) => (
+                                <th key={label} className="px-2 py-1 font-medium">{label}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(researchCandidateShadowPnl?.summary.per_holding_window ?? []).map((window) => (
+                              <tr key={window.holding_window} className="border-t border-border/60">
+                                <td className="px-2 py-1">{window.holding_window}</td>
+                                <td className="px-2 py-1">{window.trade_count}</td>
+                                <td className="px-2 py-1">{window.win_rate}</td>
+                                <td className="px-2 py-1">{window.avg_net_pnl_pct}</td>
+                                <td className="px-2 py-1">{window.median_net_pnl_pct}</td>
+                                <td className="px-2 py-1">{window.best_net_pnl_pct}</td>
+                                <td className="px-2 py-1">{window.worst_net_pnl_pct}</td>
+                                <td className="px-2 py-1">{window.total_net_pnl_pct}</td>
+                                <td className="px-2 py-1">{window.fee_drag_pct}</td>
+                                <td className="px-2 py-1">{window.recommendation}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="mt-3 overflow-auto rounded-xl border border-border/70">
+                        <table className="min-w-full text-[11px]">
+                          <thead className="bg-surface/60 text-left text-slate-300">
+                            <tr>
+                              {["Run", "Shadow Time", "Entry", "Status", "Windows"].map((label) => (
+                                <th key={label} className="px-2 py-1 font-medium">{label}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(researchCandidateShadowPnl?.trades ?? []).slice(0, 10).map((trade) => (
+                              <tr key={trade.shadow_run_id} className="border-t border-border/60">
+                                <td className="px-2 py-1 font-mono">{shortenId(trade.shadow_run_id)}</td>
+                                <td className="px-2 py-1">{formatDateTime(trade.shadow_created_at)}</td>
+                                <td className="px-2 py-1">
+                                  {trade.entry_price ?? "-"} @ {formatDateTime(trade.entry_candle_open_time)}
+                                </td>
+                                <td className="px-2 py-1">{trade.status}</td>
+                                <td className="px-2 py-1">
+                                  {trade.holding_windows
+                                    .map((window) =>
+                                      `${window.holding_window}:${window.net_pnl_pct ?? "NA"}`,
+                                    )
+                                    .join(" | ")}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <InlineStatus
+                        error={getErrorMessage(selectedResearchCandidateShadowPnlQuery.error)}
                       />
                     </div>
                     <div className="mt-4 text-xs uppercase tracking-[0.2em] text-muted">

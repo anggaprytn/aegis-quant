@@ -10,9 +10,9 @@ use aegis_core::{
     ResearchCandidateDecision, ResearchCandidateLifecycleEvent, ResearchCandidateStatus,
     ResearchDataCoverageResult, ResearchDataReadinessStatus, ResearchDatasetBuildRequest,
     ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
-    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
-    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
-    StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
+    ResearchShadowPnlAttributionRequest, RiskCheckContext, RiskEvaluationDecision,
+    RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason,
+    SignalSide, StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
     StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
     StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
@@ -35,12 +35,12 @@ use db::{
     get_backtest_run, get_backtest_trades, get_candle_backfill_run, get_closed_1m_candles_range,
     get_closed_candles_range, get_exchange_private_stream_state, get_exchange_reconciliation_run,
     get_exchange_testnet_order_by_client_order_id, get_order_by_idempotency_key,
-    get_research_candidate_shadow_performance, get_research_dataset_build, get_risk_decision,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_shadow_run_by_id,
-    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
-    insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
+    get_research_dataset_build, get_risk_decision, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_shadow_decision_breakdown, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
+    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_paper_account, insert_research_candidate_shadow_run_link, insert_research_dataset_build,
@@ -3535,6 +3535,182 @@ async fn promoted_candidate_links_to_shadow_runs() {
     assert_eq!(linked.len(), 1);
     assert_eq!(linked[0].shadow_run_id, run.id);
     assert_eq!(linked[0].decision, "WOULD_SUBMIT");
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_shadow_pnl_attribution_reads_would_submit_only_without_execution_mutation() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let promoted_at = fixed_time();
+    let mut legacy_candidate = sample_research_candidate(
+        Uuid::new_v4(),
+        StrategyId::MomentumV1,
+        "BTCUSDT",
+        CandleInterval::FifteenMinutes,
+        StrategyResearchCandidateSource::WalkForward,
+        StrategyResearchCandidateStatus::PromotedToShadowConfig,
+        promoted_at,
+    );
+    legacy_candidate.promoted_at = Some(promoted_at);
+    insert_strategy_research_candidate(&test_db.pool, &legacy_candidate, None)
+        .await
+        .expect("legacy candidate should persist");
+    let candidate = ResearchCandidate {
+        id: legacy_candidate.id,
+        experiment_id: legacy_candidate.evidence.experiment_id,
+        experiment_run_id: legacy_candidate.evidence.experiment_run_id,
+        strategy_id: legacy_candidate.strategy_id.clone(),
+        symbol: legacy_candidate.symbol.clone(),
+        timeframe: legacy_candidate.timeframe.clone(),
+        config: legacy_candidate.config.clone(),
+        score: Some(legacy_candidate.score.score),
+        pnl_pct: legacy_candidate.evidence.pnl_pct,
+        max_drawdown_pct: legacy_candidate.evidence.max_drawdown_pct,
+        trade_count: legacy_candidate.evidence.trade_count,
+        win_rate: legacy_candidate.evidence.win_rate,
+        fee_drag: None,
+        status: ResearchCandidateStatus::PromotedToShadowConfig,
+        rejection_reason: None,
+        notes: None,
+        created_at: promoted_at,
+        updated_at: promoted_at,
+        correlation_id: Some(Uuid::new_v4()),
+    };
+
+    let would_submit = sample_shadow_run(
+        "WOULD_SUBMIT",
+        "COMPLETED",
+        promoted_at + chrono::Duration::minutes(1),
+    );
+    let no_signal = sample_shadow_run(
+        "NO_SIGNAL",
+        "COMPLETED",
+        promoted_at + chrono::Duration::minutes(2),
+    );
+    insert_testnet_shadow_run(&test_db.pool, &would_submit)
+        .await
+        .expect("would submit run should persist");
+    insert_testnet_shadow_run(&test_db.pool, &no_signal)
+        .await
+        .expect("no signal run should persist");
+    insert_research_candidate_shadow_run_link(
+        &test_db.pool,
+        candidate.id,
+        would_submit.id,
+        would_submit.created_at,
+    )
+    .await
+    .expect("would submit link")
+    .expect("would submit link created");
+    insert_research_candidate_shadow_run_link(
+        &test_db.pool,
+        candidate.id,
+        no_signal.id,
+        no_signal.created_at,
+    )
+    .await
+    .expect("no signal link")
+    .expect("no signal link created");
+
+    for (index, (open, close)) in [(100, 100), (100, 110), (100, 120), (100, 130)]
+        .iter()
+        .enumerate()
+    {
+        let open_time = promoted_at + chrono::Duration::minutes(15 * (index as i64 + 1));
+        upsert_candle(
+            &test_db.pool,
+            &Candle {
+                id: Uuid::new_v4(),
+                exchange: MarketDataSource::Binance,
+                symbol: Symbol::new("BTCUSDT").unwrap(),
+                interval: CandleInterval::FifteenMinutes,
+                open_time,
+                close_time: open_time + chrono::Duration::minutes(15),
+                open: Decimal::new(*open, 0),
+                high: Decimal::new((*open).max(*close), 0),
+                low: Decimal::new((*open).min(*close), 0),
+                close: Decimal::new(*close, 0),
+                volume: Decimal::ONE,
+                quote_volume: None,
+                trade_count: 1,
+                is_closed: true,
+                created_at: open_time + chrono::Duration::minutes(15),
+                updated_at: open_time + chrono::Duration::minutes(15),
+            },
+        )
+        .await
+        .expect("candle should upsert");
+    }
+
+    let before_orders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orders")
+        .fetch_one(&test_db.pool)
+        .await
+        .unwrap();
+    let before_paper_positions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM paper_positions")
+        .fetch_one(&test_db.pool)
+        .await
+        .unwrap();
+    let before_paper_fills: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM paper_fills")
+        .fetch_one(&test_db.pool)
+        .await
+        .unwrap();
+    let before_testnet_orders: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM exchange_testnet_orders")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap();
+
+    let attribution = get_research_candidate_shadow_pnl_attribution(
+        &test_db.pool,
+        &candidate,
+        &ResearchShadowPnlAttributionRequest {
+            candidate_id: candidate.id,
+            holding_windows: vec![1, 3],
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            start_time: Some(promoted_at),
+            end_time: Some(promoted_at + chrono::Duration::hours(1)),
+            limit: Some(50),
+        },
+        promoted_at + chrono::Duration::hours(1),
+    )
+    .await
+    .expect("attribution should compute");
+
+    assert_eq!(attribution.trades.len(), 1);
+    assert_eq!(attribution.trades[0].shadow_run_id, would_submit.id);
+    assert_eq!(attribution.summary.total_attributed_runs, 1);
+    assert_eq!(attribution.summary.insufficient_forward_data_count, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM orders")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap(),
+        before_orders
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM paper_positions")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap(),
+        before_paper_positions
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM paper_fills")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap(),
+        before_paper_fills
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM exchange_testnet_orders")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap(),
+        before_testnet_orders
+    );
 }
 
 #[tokio::test]
