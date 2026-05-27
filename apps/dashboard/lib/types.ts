@@ -1473,6 +1473,22 @@ export type ResearchRegimeDiscoveryStatus =
   | "PARTIAL"
   | "INSUFFICIENT_DATA"
   | "FAILED";
+export type ResearchRegimeCalibrationStatus =
+  | "COMPLETED"
+  | "PARTIAL"
+  | "INSUFFICIENT_DATA"
+  | "FAILED";
+
+export type ResearchRegimeClassifierConfig = {
+  trend_return_threshold_pct: string;
+  trend_slope_threshold: string;
+  range_return_max_pct: string;
+  range_choppiness_min: string;
+  high_volatility_threshold_pct: string;
+  low_volatility_threshold_pct: string;
+  min_confidence: string;
+  priority_order: ResearchRegimeLabel[];
+};
 
 export type ResearchRegimeDatasetRequest = {
   symbol: string;
@@ -1485,6 +1501,7 @@ export type ResearchRegimeDatasetRequest = {
   target_regimes?: ResearchRegimeLabel[] | null;
   max_windows_per_regime?: number | null;
   require_good_data_quality?: boolean;
+  classifier_config?: ResearchRegimeClassifierConfig | null;
 };
 
 export type ResearchRegimeDiscoveryRequest = {
@@ -1499,6 +1516,8 @@ export type ResearchRegimeDiscoveryRequest = {
   min_confidence?: string | null;
   require_existing_candles?: boolean;
   auto_backfill_missing?: boolean;
+  classifier_config?: ResearchRegimeClassifierConfig | null;
+  calibration_id?: string | null;
 };
 
 export type ResearchRegimeDatasetFromDiscoveryRequest = {
@@ -1512,6 +1531,29 @@ export type ResearchRegimeWindowMetric = {
   value: string;
   threshold: string | null;
   passed: boolean;
+};
+
+export type ResearchRegimeClassificationCondition = {
+  label: ResearchRegimeLabel;
+  metric: string;
+  operator: string;
+  value: string;
+  threshold: string;
+  passed: boolean;
+  reason: string;
+};
+
+export type ResearchRegimeClassificationExplanation = {
+  return_pct: string;
+  realized_volatility: string;
+  avg_range_pct: string;
+  trend_slope: string;
+  choppiness_proxy: string;
+  thresholds_used: ResearchRegimeClassifierConfig;
+  conditions: ResearchRegimeClassificationCondition[];
+  final_label: ResearchRegimeLabel;
+  confidence: string;
+  alternate_labels_considered: ResearchRegimeLabel[];
 };
 
 export type ResearchRegimeWindow = {
@@ -1531,6 +1573,7 @@ export type ResearchRegimeWindow = {
   score: string;
   confidence: string;
   metrics: ResearchRegimeWindowMetric[];
+  explanation: ResearchRegimeClassificationExplanation;
 };
 
 export type ResearchRegimeDatasetRecommendation = {
@@ -1571,6 +1614,57 @@ export type ResearchRegimeDiscoveryCandidateWindow = {
   choppiness_proxy: string;
   data_quality_status: MarketDataQualityStatus;
   candle_count: number;
+  explanation: ResearchRegimeClassificationExplanation;
+};
+
+export type ResearchRegimeThresholdCandidate = {
+  candidate_id: string;
+  classifier_config: ResearchRegimeClassifierConfig;
+};
+
+export type ResearchRegimeCalibrationRequest = {
+  symbol: string;
+  timeframe: string;
+  scan_start: string;
+  scan_end: string;
+  window_hours: number;
+  step_hours: number;
+  threshold_candidates?: ResearchRegimeThresholdCandidate[] | null;
+  target_min_windows_per_regime?: number;
+};
+
+export type ResearchRegimeCalibrationRecommendation = {
+  priority: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchRegimeCalibrationCandidateResult = {
+  candidate_id: string;
+  classifier_config: ResearchRegimeClassifierConfig;
+  counts_by_regime: Partial<Record<ResearchRegimeLabel, number>>;
+  missing_regimes: ResearchRegimeLabel[];
+  total_windows_scanned: number;
+  data_quality_good_windows: number;
+  avg_confidence: string;
+  diversity_score: string;
+  balance_score: string;
+  dominant_regime_share: string;
+  total_score: string;
+  warnings: string[];
+  explanation_samples: ResearchRegimeClassificationExplanation[];
+};
+
+export type ResearchRegimeCalibrationResult = {
+  calibration_id: string;
+  status: ResearchRegimeCalibrationStatus;
+  request: ResearchRegimeCalibrationRequest;
+  candidates: ResearchRegimeCalibrationCandidateResult[];
+  recommended_config: ResearchRegimeClassifierConfig | null;
+  recommended_candidate_id: string | null;
+  missing_regimes: ResearchRegimeLabel[];
+  recommendations: ResearchRegimeCalibrationRecommendation[];
+  created_at: string;
 };
 
 export type ResearchRegimeDiscoveryRecommendation = {
@@ -1616,6 +1710,13 @@ export type ResearchRegimeDatasetResponse = {
 
 export type ResearchRegimeDiscoveryResponse = {
   discovery: ResearchRegimeDiscoveryResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeCalibrationResponse = {
+  calibration: ResearchRegimeCalibrationResult;
   request_id: string;
   correlation_id: string;
   timestamp: string;

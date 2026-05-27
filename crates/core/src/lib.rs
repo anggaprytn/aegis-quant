@@ -7777,6 +7777,8 @@ pub enum CoreError {
     UnsupportedResearchRegimeDatasetStatus(String),
     #[error("unsupported research regime discovery status: {0}")]
     UnsupportedResearchRegimeDiscoveryStatus(String),
+    #[error("unsupported research regime calibration status: {0}")]
+    UnsupportedResearchRegimeCalibrationStatus(String),
     #[error("unsupported research regime label: {0}")]
     UnsupportedResearchRegimeLabel(String),
     #[error("unsupported strategy robustness matrix status: {0}")]
@@ -7807,6 +7809,8 @@ pub enum CoreError {
     InvalidResearchRegimeDatasetWindowStep,
     #[error("research regime dataset min_candles_per_window must be greater than zero")]
     InvalidResearchRegimeDatasetMinCandles,
+    #[error("invalid research regime classifier config: {0}")]
+    InvalidResearchRegimeClassifierConfig(String),
     #[error("invalid strategy robustness matrix time range")]
     InvalidStrategyRobustnessMatrixTimeRange,
     #[error("invalid strategy robustness matrix window or step hours")]

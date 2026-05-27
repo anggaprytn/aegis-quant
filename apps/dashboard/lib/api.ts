@@ -82,6 +82,8 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  ResearchRegimeCalibrationRequest,
+  ResearchRegimeCalibrationResponse,
   ResearchRegimeDatasetFromDiscoveryRequest,
   ResearchRegimeDatasetRequest,
   ResearchRegimeDatasetResponse,
@@ -475,6 +477,11 @@ export const api = {
     request<ResearchRegimeDatasetWindowsResponse>(`/research/regime-datasets/${id}/windows`),
   runResearchRegimeDiscovery: (payload: ResearchRegimeDiscoveryRequest) =>
     request<ResearchRegimeDiscoveryResponse>("/research/regime-discovery/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  runResearchRegimeCalibration: (payload: ResearchRegimeCalibrationRequest) =>
+    request<ResearchRegimeCalibrationResponse>("/research/regime-calibration/run", {
       method: "POST",
       body: JSON.stringify(payload),
     }),

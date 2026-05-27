@@ -13,6 +13,7 @@ use cli::api::{
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
     build_research_batch_request, build_research_campaign_request,
     build_research_data_build_request, build_research_data_coverage_query,
+    build_research_regime_calibration_request,
     build_research_regime_dataset_from_discovery_request, build_research_regime_dataset_request,
     build_research_regime_discovery_request, build_research_robustness_matrix_request,
     build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
@@ -27,10 +28,10 @@ use cli::cli::{
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
     ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
-    ResearchRegimeDatasetCommands, ResearchRegimeDiscoveryCommands,
-    ResearchRobustnessMatrixCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
-    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
-    TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchRegimeCalibrationCommands, ResearchRegimeDatasetCommands,
+    ResearchRegimeDiscoveryCommands, ResearchRobustnessMatrixCommands, RiskCommands,
+    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -696,6 +697,17 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_regime_discovery_windows(&response.windows);
+                    }
+                }
+            },
+            ResearchCommands::RegimeCalibration(command) => match command {
+                ResearchRegimeCalibrationCommands::Run(args) => {
+                    let request = build_research_regime_calibration_request(&args)?;
+                    let response = client.run_research_regime_calibration(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_calibration(&response.calibration);
                     }
                 }
             },

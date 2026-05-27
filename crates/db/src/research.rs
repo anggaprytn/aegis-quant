@@ -146,6 +146,7 @@ pub struct ResearchRegimeWindowRecord {
     pub score: Decimal,
     pub confidence: Decimal,
     pub metrics: Value,
+    pub explanation: Value,
     pub created_at: DateTime<Utc>,
 }
 
@@ -177,6 +178,7 @@ pub struct ResearchRegimeDiscoveryWindowRecord {
     pub choppiness_proxy: Decimal,
     pub data_quality_status: String,
     pub candle_count: i32,
+    pub explanation: Value,
     pub created_at: DateTime<Utc>,
 }
 
@@ -595,6 +597,7 @@ fn map_research_regime_window(row: sqlx::postgres::PgRow) -> ResearchRegimeWindo
         score: row.get("score"),
         confidence: row.get("confidence"),
         metrics: row.get("metrics"),
+        explanation: row.get("explanation"),
         created_at: row.get("created_at"),
     }
 }
@@ -630,6 +633,7 @@ fn map_research_regime_discovery_window(
         choppiness_proxy: row.get("choppiness_proxy"),
         data_quality_status: row.get("data_quality_status"),
         candle_count: row.get("candle_count"),
+        explanation: row.get("explanation"),
         created_at: row.get("created_at"),
     }
 }
@@ -687,6 +691,7 @@ pub fn research_regime_window_from_record(
         score: record.score,
         confidence: record.confidence,
         metrics: serde_json::from_value(record.metrics.clone())?,
+        explanation: serde_json::from_value(record.explanation.clone())?,
     })
 }
 
@@ -723,6 +728,7 @@ pub fn research_regime_discovery_window_from_record(
         choppiness_proxy: record.choppiness_proxy,
         data_quality_status: record.data_quality_status.parse()?,
         candle_count: record.candle_count,
+        explanation: serde_json::from_value(record.explanation.clone())?,
     })
 }
 
@@ -1370,11 +1376,12 @@ pub async fn insert_research_regime_dataset(
                 score,
                 confidence,
                 metrics,
+                explanation,
                 created_at
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9,
-                $10, $11, $12, $13, $14, $15, $16, $17, $18
+                $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
             )
             "#,
         )
@@ -1395,6 +1402,7 @@ pub async fn insert_research_regime_dataset(
         .bind(window.score)
         .bind(window.confidence)
         .bind(serde_json::to_value(&window.metrics)?)
+        .bind(serde_json::to_value(&window.explanation)?)
         .bind(result.created_at)
         .execute(&mut *tx)
         .await?;
@@ -1463,6 +1471,7 @@ pub async fn list_research_regime_windows(
             score,
             confidence,
             metrics,
+            explanation,
             created_at
         FROM research_regime_windows
         WHERE dataset_id = $1
@@ -1520,9 +1529,10 @@ pub async fn insert_research_regime_discovery(
                 choppiness_proxy,
                 data_quality_status,
                 candle_count,
+                explanation,
                 created_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             "#,
         )
         .bind(window.id)
@@ -1538,6 +1548,7 @@ pub async fn insert_research_regime_discovery(
         .bind(window.choppiness_proxy)
         .bind(window.data_quality_status.as_str())
         .bind(window.candle_count)
+        .bind(serde_json::to_value(&window.explanation)?)
         .bind(result.created_at)
         .execute(&mut *tx)
         .await?;
@@ -1605,6 +1616,7 @@ pub async fn list_research_regime_discovery_windows(
             choppiness_proxy,
             data_quality_status,
             candle_count,
+            explanation,
             created_at
         FROM research_regime_discovery_windows
         WHERE discovery_id = $1

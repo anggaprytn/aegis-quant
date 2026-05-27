@@ -89,6 +89,20 @@ fn default_research_regime_discovery_max_windows_per_regime() -> u32 {
     20
 }
 
+fn default_research_regime_calibration_target_min_windows_per_regime() -> u32 {
+    5
+}
+
+fn default_research_regime_priority_order() -> Vec<ResearchRegimeLabel> {
+    vec![
+        ResearchRegimeLabel::HighVolatility,
+        ResearchRegimeLabel::TrendUp,
+        ResearchRegimeLabel::TrendDown,
+        ResearchRegimeLabel::Range,
+        ResearchRegimeLabel::LowVolatility,
+    ]
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchBatchStatus {
@@ -719,6 +733,92 @@ impl std::str::FromStr for ResearchRegimeDiscoveryStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchRegimeCalibrationStatus {
+    Completed,
+    Partial,
+    InsufficientData,
+    Failed,
+}
+
+impl ResearchRegimeCalibrationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "COMPLETED",
+            Self::Partial => "PARTIAL",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchRegimeCalibrationStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "COMPLETED" => Ok(Self::Completed),
+            "PARTIAL" => Ok(Self::Partial),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedResearchRegimeCalibrationStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeClassifierConfig {
+    pub trend_return_threshold_pct: Decimal,
+    pub trend_slope_threshold: Decimal,
+    pub range_return_max_pct: Decimal,
+    pub range_choppiness_min: Decimal,
+    pub high_volatility_threshold_pct: Decimal,
+    pub low_volatility_threshold_pct: Decimal,
+    pub min_confidence: Decimal,
+    #[serde(default = "default_research_regime_priority_order")]
+    pub priority_order: Vec<ResearchRegimeLabel>,
+}
+
+impl Default for ResearchRegimeClassifierConfig {
+    fn default() -> Self {
+        Self {
+            trend_return_threshold_pct: Decimal::new(3, 0),
+            trend_slope_threshold: Decimal::ZERO,
+            range_return_max_pct: Decimal::ONE,
+            range_choppiness_min: Decimal::new(65, 0),
+            high_volatility_threshold_pct: Decimal::new(8, 0),
+            low_volatility_threshold_pct: Decimal::new(15, 1),
+            min_confidence: Decimal::ZERO,
+            priority_order: default_research_regime_priority_order(),
+        }
+    }
+}
+
+impl ResearchRegimeClassifierConfig {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.trend_return_threshold_pct < Decimal::ZERO
+            || self.range_return_max_pct < Decimal::ZERO
+            || self.range_choppiness_min < Decimal::ZERO
+            || self.high_volatility_threshold_pct < Decimal::ZERO
+            || self.low_volatility_threshold_pct < Decimal::ZERO
+            || self.min_confidence < Decimal::ZERO
+        {
+            return Err(CoreError::InvalidResearchRegimeClassifierConfig(
+                "thresholds must be non-negative".to_string(),
+            ));
+        }
+        if self.priority_order.is_empty() {
+            return Err(CoreError::InvalidResearchRegimeClassifierConfig(
+                "priority_order cannot be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchRegimeDatasetRequest {
     pub symbol: String,
@@ -734,6 +834,8 @@ pub struct ResearchRegimeDatasetRequest {
     pub max_windows_per_regime: Option<u32>,
     #[serde(default = "default_research_regime_dataset_require_good_data_quality")]
     pub require_good_data_quality: bool,
+    #[serde(default)]
+    pub classifier_config: Option<ResearchRegimeClassifierConfig>,
 }
 
 impl ResearchRegimeDatasetRequest {
@@ -750,6 +852,9 @@ impl ResearchRegimeDatasetRequest {
         }
         if self.min_candles_per_window <= 0 {
             return Err(CoreError::InvalidResearchRegimeDatasetMinCandles);
+        }
+        if let Some(config) = &self.classifier_config {
+            config.validate()?;
         }
         Ok(())
     }
@@ -785,6 +890,10 @@ pub struct ResearchRegimeDiscoveryRequest {
     pub require_existing_candles: bool,
     #[serde(default)]
     pub auto_backfill_missing: bool,
+    #[serde(default)]
+    pub classifier_config: Option<ResearchRegimeClassifierConfig>,
+    #[serde(default)]
+    pub calibration_id: Option<Uuid>,
 }
 
 impl ResearchRegimeDiscoveryRequest {
@@ -798,6 +907,9 @@ impl ResearchRegimeDiscoveryRequest {
         }
         if self.window_hours <= 0 || self.step_hours <= 0 {
             return Err(CoreError::InvalidResearchRegimeDatasetWindowStep);
+        }
+        if let Some(config) = &self.classifier_config {
+            config.validate()?;
         }
         Ok(())
     }
@@ -824,6 +936,31 @@ pub struct ResearchRegimeWindowMetric {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeClassificationCondition {
+    pub label: ResearchRegimeLabel,
+    pub metric: String,
+    pub operator: String,
+    pub value: Decimal,
+    pub threshold: Decimal,
+    pub passed: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeClassificationExplanation {
+    pub return_pct: Decimal,
+    pub realized_volatility: Decimal,
+    pub avg_range_pct: Decimal,
+    pub trend_slope: Decimal,
+    pub choppiness_proxy: Decimal,
+    pub thresholds_used: ResearchRegimeClassifierConfig,
+    pub conditions: Vec<ResearchRegimeClassificationCondition>,
+    pub final_label: ResearchRegimeLabel,
+    pub confidence: Decimal,
+    pub alternate_labels_considered: Vec<ResearchRegimeLabel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchRegimeWindow {
     pub id: Uuid,
     pub symbol: String,
@@ -841,6 +978,7 @@ pub struct ResearchRegimeWindow {
     pub score: Decimal,
     pub confidence: Decimal,
     pub metrics: Vec<ResearchRegimeWindowMetric>,
+    pub explanation: ResearchRegimeClassificationExplanation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -885,6 +1023,7 @@ pub struct ResearchRegimeDiscoveryCandidateWindow {
     pub choppiness_proxy: Decimal,
     pub data_quality_status: MarketDataQualityStatus,
     pub candle_count: i32,
+    pub explanation: ResearchRegimeClassificationExplanation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -931,6 +1070,89 @@ pub struct ResearchRegimeDatasetFromDiscoveryRequest {
     pub target_regimes: Option<Vec<ResearchRegimeLabel>>,
     #[serde(default)]
     pub max_windows_per_regime: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeThresholdCandidate {
+    pub candidate_id: String,
+    pub classifier_config: ResearchRegimeClassifierConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchRegimeCalibrationRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeCalibrationRequest {
+    pub symbol: String,
+    pub timeframe: String,
+    pub scan_start: DateTime<Utc>,
+    pub scan_end: DateTime<Utc>,
+    pub window_hours: i64,
+    pub step_hours: i64,
+    #[serde(default)]
+    pub threshold_candidates: Option<Vec<ResearchRegimeThresholdCandidate>>,
+    #[serde(default = "default_research_regime_calibration_target_min_windows_per_regime")]
+    pub target_min_windows_per_regime: u32,
+}
+
+impl ResearchRegimeCalibrationRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptySymbol);
+        }
+        self.timeframe.parse::<CandleInterval>()?;
+        if self.scan_end <= self.scan_start {
+            return Err(CoreError::InvalidResearchRegimeDatasetTimeRange);
+        }
+        if self.window_hours <= 0 || self.step_hours <= 0 {
+            return Err(CoreError::InvalidResearchRegimeDatasetWindowStep);
+        }
+        if let Some(candidates) = &self.threshold_candidates {
+            if candidates.is_empty() {
+                return Err(CoreError::InvalidResearchRegimeClassifierConfig(
+                    "threshold_candidates cannot be empty when provided".to_string(),
+                ));
+            }
+            for candidate in candidates {
+                candidate.classifier_config.validate()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeCalibrationCandidateResult {
+    pub candidate_id: String,
+    pub classifier_config: ResearchRegimeClassifierConfig,
+    pub counts_by_regime: BTreeMap<ResearchRegimeLabel, i32>,
+    pub missing_regimes: Vec<ResearchRegimeLabel>,
+    pub total_windows_scanned: i32,
+    pub data_quality_good_windows: i32,
+    pub avg_confidence: Decimal,
+    pub diversity_score: Decimal,
+    pub balance_score: Decimal,
+    pub dominant_regime_share: Decimal,
+    pub total_score: Decimal,
+    pub warnings: Vec<String>,
+    pub explanation_samples: Vec<ResearchRegimeClassificationExplanation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeCalibrationResult {
+    pub calibration_id: Uuid,
+    pub status: ResearchRegimeCalibrationStatus,
+    pub request: ResearchRegimeCalibrationRequest,
+    pub candidates: Vec<ResearchRegimeCalibrationCandidateResult>,
+    pub recommended_config: Option<ResearchRegimeClassifierConfig>,
+    pub recommended_candidate_id: Option<String>,
+    pub missing_regimes: Vec<ResearchRegimeLabel>,
+    pub recommendations: Vec<ResearchRegimeCalibrationRecommendation>,
+    pub created_at: DateTime<Utc>,
 }
 
 impl std::str::FromStr for ResearchRegimeLabel {
@@ -1717,8 +1939,11 @@ pub struct ResearchRegimeMetric {
     pub average_candle_range_pct: Decimal,
     pub close_vs_sma_pct: Decimal,
     pub directional_movement_pct: Decimal,
+    pub trend_slope: Decimal,
     pub choppiness_pct: Decimal,
     pub label: ResearchRegimeLabel,
+    pub confidence: Decimal,
+    pub explanation: ResearchRegimeClassificationExplanation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1822,9 +2047,66 @@ pub fn classify_research_regime(
     window_end: DateTime<Utc>,
     candles: &[Candle],
 ) -> ResearchRegimeMetric {
+    classify_research_regime_with_config(
+        symbol,
+        timeframe,
+        window_start,
+        window_end,
+        candles,
+        &ResearchRegimeClassifierConfig::default(),
+    )
+}
+
+fn push_regime_condition(
+    conditions: &mut Vec<ResearchRegimeClassificationCondition>,
+    label: ResearchRegimeLabel,
+    metric: &str,
+    operator: &str,
+    value: Decimal,
+    threshold: Decimal,
+    passed: bool,
+) {
+    conditions.push(ResearchRegimeClassificationCondition {
+        label,
+        metric: metric.to_string(),
+        operator: operator.to_string(),
+        value,
+        threshold,
+        passed,
+        reason: format!(
+            "{} {} {} {}",
+            metric,
+            operator,
+            threshold,
+            if passed { "passed" } else { "failed" }
+        ),
+    });
+}
+
+pub fn classify_research_regime_with_config(
+    symbol: impl Into<String>,
+    timeframe: impl Into<String>,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    candles: &[Candle],
+    config: &ResearchRegimeClassifierConfig,
+) -> ResearchRegimeMetric {
     let symbol = symbol.into();
     let timeframe = timeframe.into();
+    let config = config.clone();
     if candles.len() < REGIME_MIN_CANDLES {
+        let explanation = ResearchRegimeClassificationExplanation {
+            return_pct: Decimal::ZERO,
+            realized_volatility: Decimal::ZERO,
+            avg_range_pct: Decimal::ZERO,
+            trend_slope: Decimal::ZERO,
+            choppiness_proxy: Decimal::ZERO,
+            thresholds_used: config.clone(),
+            conditions: Vec::new(),
+            final_label: ResearchRegimeLabel::Unknown,
+            confidence: Decimal::ZERO,
+            alternate_labels_considered: Vec::new(),
+        };
         return ResearchRegimeMetric {
             symbol,
             timeframe,
@@ -1836,8 +2118,11 @@ pub fn classify_research_regime(
             average_candle_range_pct: Decimal::ZERO,
             close_vs_sma_pct: Decimal::ZERO,
             directional_movement_pct: Decimal::ZERO,
+            trend_slope: Decimal::ZERO,
             choppiness_pct: Decimal::ZERO,
             label: ResearchRegimeLabel::Unknown,
+            confidence: Decimal::ZERO,
+            explanation,
         };
     }
 
@@ -1871,6 +2156,9 @@ pub fn classify_research_regime(
         }
     }
     let realized_volatility = decimal_avg(absolute_returns.into_iter());
+    let trend_slope = (return_pct
+        / Decimal::from(i64::try_from(candles.len().saturating_sub(1)).unwrap_or(i64::MAX)))
+    .round_dp(8);
     let directional_movement_pct = pct_ratio(
         directional_moves.abs(),
         Decimal::from(i64::try_from(candles.len().saturating_sub(1)).unwrap_or(i64::MAX)),
@@ -1885,31 +2173,132 @@ pub fn classify_research_regime(
         Decimal::ZERO
     };
 
-    let label = if realized_volatility >= Decimal::new(8, 0)
-        || average_candle_range_pct >= Decimal::new(8, 0)
-    {
-        ResearchRegimeLabel::HighVolatility
-    } else if return_pct >= Decimal::new(3, 0)
-        && close_vs_sma_pct > Decimal::ZERO
-        && directional_movement_pct >= Decimal::new(55, 0)
-    {
-        ResearchRegimeLabel::TrendUp
-    } else if return_pct <= -Decimal::new(3, 0)
-        && close_vs_sma_pct < Decimal::ZERO
-        && directional_movement_pct >= Decimal::new(55, 0)
-    {
-        ResearchRegimeLabel::TrendDown
-    } else if return_pct.abs() <= Decimal::ONE || choppiness_pct >= Decimal::new(65, 0) {
-        ResearchRegimeLabel::Range
-    } else if realized_volatility <= Decimal::new(15, 1)
-        && average_candle_range_pct <= Decimal::new(15, 1)
-    {
-        ResearchRegimeLabel::LowVolatility
-    } else {
-        ResearchRegimeLabel::Mixed
-    };
+    let mut conditions = Vec::new();
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::HighVolatility,
+        "realized_volatility",
+        ">=",
+        realized_volatility,
+        config.high_volatility_threshold_pct,
+        realized_volatility >= config.high_volatility_threshold_pct,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::HighVolatility,
+        "avg_range_pct",
+        ">=",
+        average_candle_range_pct,
+        config.high_volatility_threshold_pct,
+        average_candle_range_pct >= config.high_volatility_threshold_pct,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::TrendUp,
+        "return_pct",
+        ">=",
+        return_pct,
+        config.trend_return_threshold_pct,
+        return_pct >= config.trend_return_threshold_pct,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::TrendUp,
+        "trend_slope",
+        ">=",
+        trend_slope,
+        config.trend_slope_threshold,
+        trend_slope >= config.trend_slope_threshold,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::TrendDown,
+        "return_pct",
+        "<=",
+        return_pct,
+        -config.trend_return_threshold_pct,
+        return_pct <= -config.trend_return_threshold_pct,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::TrendDown,
+        "trend_slope",
+        "<=",
+        trend_slope,
+        -config.trend_slope_threshold,
+        trend_slope <= -config.trend_slope_threshold,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::Range,
+        "abs_return_pct",
+        "<=",
+        return_pct.abs(),
+        config.range_return_max_pct,
+        return_pct.abs() <= config.range_return_max_pct,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::Range,
+        "choppiness_proxy",
+        ">=",
+        choppiness_pct,
+        config.range_choppiness_min,
+        choppiness_pct >= config.range_choppiness_min,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::LowVolatility,
+        "realized_volatility",
+        "<=",
+        realized_volatility,
+        config.low_volatility_threshold_pct,
+        realized_volatility <= config.low_volatility_threshold_pct,
+    );
+    push_regime_condition(
+        &mut conditions,
+        ResearchRegimeLabel::LowVolatility,
+        "avg_range_pct",
+        "<=",
+        average_candle_range_pct,
+        config.low_volatility_threshold_pct,
+        average_candle_range_pct <= config.low_volatility_threshold_pct,
+    );
 
-    ResearchRegimeMetric {
+    let mut passed_labels = Vec::new();
+    if realized_volatility >= config.high_volatility_threshold_pct
+        || average_candle_range_pct >= config.high_volatility_threshold_pct
+    {
+        passed_labels.push(ResearchRegimeLabel::HighVolatility);
+    }
+    if return_pct >= config.trend_return_threshold_pct
+        && trend_slope >= config.trend_slope_threshold
+    {
+        passed_labels.push(ResearchRegimeLabel::TrendUp);
+    }
+    if return_pct <= -config.trend_return_threshold_pct
+        && trend_slope <= -config.trend_slope_threshold
+    {
+        passed_labels.push(ResearchRegimeLabel::TrendDown);
+    }
+    if return_pct.abs() <= config.range_return_max_pct
+        || choppiness_pct >= config.range_choppiness_min
+    {
+        passed_labels.push(ResearchRegimeLabel::Range);
+    }
+    if realized_volatility <= config.low_volatility_threshold_pct
+        && average_candle_range_pct <= config.low_volatility_threshold_pct
+    {
+        passed_labels.push(ResearchRegimeLabel::LowVolatility);
+    }
+    let mut label = config
+        .priority_order
+        .iter()
+        .copied()
+        .find(|priority| passed_labels.contains(priority))
+        .unwrap_or(ResearchRegimeLabel::Mixed);
+
+    let mut metric = ResearchRegimeMetric {
         symbol,
         timeframe,
         window_start,
@@ -1920,9 +2309,44 @@ pub fn classify_research_regime(
         average_candle_range_pct,
         close_vs_sma_pct,
         directional_movement_pct,
+        trend_slope,
         choppiness_pct,
         label,
+        confidence: Decimal::ZERO,
+        explanation: ResearchRegimeClassificationExplanation {
+            return_pct,
+            realized_volatility,
+            avg_range_pct: average_candle_range_pct,
+            trend_slope,
+            choppiness_proxy: choppiness_pct,
+            thresholds_used: config.clone(),
+            conditions: conditions.clone(),
+            final_label: label,
+            confidence: Decimal::ZERO,
+            alternate_labels_considered: passed_labels
+                .iter()
+                .copied()
+                .filter(|candidate| *candidate != label)
+                .collect(),
+        },
+    };
+    let confidence = regime_confidence(&metric).round_dp(4);
+    if confidence < config.min_confidence && label != ResearchRegimeLabel::Unknown {
+        label = ResearchRegimeLabel::Mixed;
     }
+    metric.label = label;
+    metric.confidence = if label == ResearchRegimeLabel::Mixed {
+        confidence.min(Decimal::new(50, 0))
+    } else {
+        confidence
+    };
+    metric.explanation.final_label = label;
+    metric.explanation.confidence = metric.confidence;
+    metric.explanation.alternate_labels_considered = passed_labels
+        .into_iter()
+        .filter(|candidate| *candidate != label)
+        .collect();
+    metric
 }
 
 pub fn infer_research_candidate_failure_reasons(
@@ -2496,6 +2920,7 @@ pub fn build_research_regime_dataset(
     request.validate()?;
     let interval = request.timeframe.parse::<CandleInterval>()?;
     let symbol = Symbol::new(request.symbol.clone())?;
+    let classifier_config = request.classifier_config.clone().unwrap_or_default();
     let target_regimes = request.target_regime_set();
     let target_set = target_regimes.iter().copied().collect::<BTreeSet<_>>();
     let mut candidate_windows = Vec::new();
@@ -2546,12 +2971,13 @@ pub fn build_research_regime_dataset(
             continue;
         }
 
-        let metric = classify_research_regime(
+        let metric = classify_research_regime_with_config(
             request.symbol.clone(),
             request.timeframe.clone(),
             window_start,
             window_end,
             &window_candles,
+            &classifier_config,
         );
         if !target_set.contains(&metric.label) {
             cursor += step_size;
@@ -2641,6 +3067,7 @@ pub fn run_research_regime_discovery(
     request.validate()?;
     let interval = request.timeframe.parse::<CandleInterval>()?;
     let symbol = Symbol::new(request.symbol.clone())?;
+    let classifier_config = request.classifier_config.clone().unwrap_or_default();
     let target_regimes = request.target_regime_set();
     let target_set = target_regimes.iter().copied().collect::<BTreeSet<_>>();
     let mut candidates = Vec::new();
@@ -2691,12 +3118,13 @@ pub fn run_research_regime_discovery(
             continue;
         }
 
-        let metric = classify_research_regime(
+        let metric = classify_research_regime_with_config(
             request.symbol.clone(),
             request.timeframe.clone(),
             window_start,
             window_end,
             &window_candles,
+            &classifier_config,
         );
         if !target_set.contains(&metric.label) {
             cursor += step_size;
@@ -2861,6 +3289,7 @@ pub fn build_research_regime_dataset_from_discovery(
             score: window.confidence,
             confidence: window.confidence,
             metrics: Vec::new(),
+            explanation: window.explanation,
         })
         .collect::<Vec<_>>();
     let mut regime_counts = BTreeMap::new();
@@ -2895,6 +3324,7 @@ pub fn build_research_regime_dataset_from_discovery(
             target_regimes: Some(target_regimes),
             max_windows_per_regime: request.max_windows_per_regime,
             require_good_data_quality: discovery.request.require_existing_candles,
+            classifier_config: discovery.request.classifier_config.clone(),
         },
         summary: ResearchRegimeDatasetSummary {
             total_candidate_windows: discovery.total_windows_scanned,
@@ -2914,16 +3344,299 @@ pub fn build_research_regime_dataset_from_discovery(
     })
 }
 
+pub fn run_research_regime_calibration(
+    calibration_id: Uuid,
+    request: ResearchRegimeCalibrationRequest,
+    candles: &[Candle],
+    created_at: DateTime<Utc>,
+) -> Result<ResearchRegimeCalibrationResult, CoreError> {
+    request.validate()?;
+    let interval = request.timeframe.parse::<CandleInterval>()?;
+    let symbol = Symbol::new(request.symbol.clone())?;
+    let threshold_candidates = request
+        .threshold_candidates
+        .clone()
+        .unwrap_or_else(default_research_regime_threshold_candidates);
+    let target_regimes = default_research_regime_priority_order();
+    let mut candidate_results = Vec::new();
+
+    for candidate in threshold_candidates {
+        let mut counts_by_regime = BTreeMap::<ResearchRegimeLabel, i32>::new();
+        let mut confidence_sum = Decimal::ZERO;
+        let mut classified_count = 0_i32;
+        let mut total_windows_scanned = 0_i32;
+        let mut data_quality_good_windows = 0_i32;
+        let mut samples = Vec::new();
+        let mut cursor = request.scan_start;
+        let window_size = Duration::hours(request.window_hours);
+        let step_size = Duration::hours(request.step_hours);
+
+        while cursor + window_size <= request.scan_end {
+            let window_start = cursor;
+            let window_end = cursor + window_size;
+            total_windows_scanned += 1;
+            let window_candles = candles
+                .iter()
+                .filter(|candle| {
+                    candle.symbol == symbol
+                        && candle.interval == interval
+                        && candle.is_closed
+                        && candle.open_time >= window_start
+                        && candle.close_time <= window_end
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let quality = summarize_candle_continuity(
+                &MarketDataQualityRequest {
+                    exchange: MarketDataSource::Binance,
+                    symbol: request.symbol.clone(),
+                    interval: request.timeframe.clone(),
+                    start_time: window_start,
+                    end_time: window_end,
+                    expected_interval_seconds: Some(interval.duration().num_seconds()),
+                    max_allowed_gap_count: Some(0),
+                    max_allowed_gap_pct: Some(Decimal::ZERO),
+                },
+                &window_candles,
+                0,
+            )?;
+            if quality.status == MarketDataQualityStatus::Good {
+                data_quality_good_windows += 1;
+            }
+            if window_candles.len() >= REGIME_MIN_CANDLES {
+                let metric = classify_research_regime_with_config(
+                    request.symbol.clone(),
+                    request.timeframe.clone(),
+                    window_start,
+                    window_end,
+                    &window_candles,
+                    &candidate.classifier_config,
+                );
+                if target_regimes.contains(&metric.label) {
+                    *counts_by_regime.entry(metric.label).or_insert(0) += 1;
+                    confidence_sum += metric.confidence;
+                    classified_count += 1;
+                    if samples.len() < 10
+                        && !samples.iter().any(
+                            |sample: &ResearchRegimeClassificationExplanation| {
+                                sample.final_label == metric.label
+                            },
+                        )
+                    {
+                        samples.push(metric.explanation.clone());
+                    }
+                }
+            }
+            cursor += step_size;
+        }
+
+        let missing_regimes = target_regimes
+            .iter()
+            .copied()
+            .filter(|regime| counts_by_regime.get(regime).copied().unwrap_or(0) == 0)
+            .collect::<Vec<_>>();
+        let represented = target_regimes
+            .iter()
+            .filter(|regime| counts_by_regime.get(regime).copied().unwrap_or(0) > 0)
+            .count();
+        let met_target = target_regimes
+            .iter()
+            .filter(|regime| {
+                counts_by_regime.get(regime).copied().unwrap_or(0)
+                    >= request.target_min_windows_per_regime as i32
+            })
+            .count();
+        let max_count = counts_by_regime.values().copied().max().unwrap_or(0);
+        let total_selected: i32 = counts_by_regime.values().copied().sum();
+        let dominant_regime_share = if total_selected > 0 {
+            pct_ratio(Decimal::from(max_count), Decimal::from(total_selected)).round_dp(4)
+        } else {
+            Decimal::ZERO
+        };
+        let avg_confidence = if classified_count > 0 {
+            (confidence_sum / Decimal::from(classified_count)).round_dp(4)
+        } else {
+            Decimal::ZERO
+        };
+        let diversity_score = pct_ratio(
+            Decimal::from(met_target as i64),
+            Decimal::from(target_regimes.len() as i64),
+        )
+        .round_dp(4);
+        let balance_score = (Decimal::new(100, 0) - dominant_regime_share)
+            .max(Decimal::ZERO)
+            .round_dp(4);
+        let data_quality_score = if total_windows_scanned > 0 {
+            pct_ratio(
+                Decimal::from(data_quality_good_windows),
+                Decimal::from(total_windows_scanned),
+            )
+        } else {
+            Decimal::ZERO
+        };
+        let total_score = (diversity_score * Decimal::new(45, 2)
+            + balance_score * Decimal::new(25, 2)
+            + avg_confidence * Decimal::new(20, 2)
+            + data_quality_score * Decimal::new(10, 2))
+        .round_dp(4);
+        let mut warnings = Vec::new();
+        if represented <= 1 {
+            warnings.push("range_only_or_single_regime".to_string());
+        }
+        if dominant_regime_share >= Decimal::new(80, 0) {
+            warnings.push("dominant_regime_share_above_80pct".to_string());
+        }
+        if !missing_regimes.is_empty() {
+            warnings.push(format!(
+                "missing_regimes={}",
+                missing_regimes
+                    .iter()
+                    .map(|regime| regime.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+
+        candidate_results.push(ResearchRegimeCalibrationCandidateResult {
+            candidate_id: candidate.candidate_id,
+            classifier_config: candidate.classifier_config,
+            counts_by_regime,
+            missing_regimes,
+            total_windows_scanned,
+            data_quality_good_windows,
+            avg_confidence,
+            diversity_score,
+            balance_score,
+            dominant_regime_share,
+            total_score,
+            warnings,
+            explanation_samples: samples,
+        });
+    }
+
+    candidate_results.sort_by(|left, right| {
+        right
+            .total_score
+            .cmp(&left.total_score)
+            .then_with(|| right.diversity_score.cmp(&left.diversity_score))
+            .then_with(|| left.dominant_regime_share.cmp(&right.dominant_regime_share))
+            .then_with(|| left.candidate_id.cmp(&right.candidate_id))
+    });
+    let recommended = candidate_results.first();
+    let recommended_config = recommended.map(|candidate| candidate.classifier_config.clone());
+    let recommended_candidate_id = recommended.map(|candidate| candidate.candidate_id.clone());
+    let missing_regimes = recommended
+        .map(|candidate| candidate.missing_regimes.clone())
+        .unwrap_or_else(|| target_regimes.clone());
+    let status = if candidate_results.is_empty() {
+        ResearchRegimeCalibrationStatus::Failed
+    } else if recommended.is_some_and(|candidate| candidate.total_windows_scanned == 0) {
+        ResearchRegimeCalibrationStatus::InsufficientData
+    } else if missing_regimes.is_empty() {
+        ResearchRegimeCalibrationStatus::Completed
+    } else {
+        ResearchRegimeCalibrationStatus::Partial
+    };
+
+    Ok(ResearchRegimeCalibrationResult {
+        calibration_id,
+        status,
+        request,
+        candidates: candidate_results,
+        recommended_config,
+        recommended_candidate_id,
+        missing_regimes: missing_regimes.clone(),
+        recommendations: regime_calibration_recommendations(&missing_regimes),
+        created_at,
+    })
+}
+
+fn default_research_regime_threshold_candidates() -> Vec<ResearchRegimeThresholdCandidate> {
+    let mut candidates = Vec::new();
+    let base = ResearchRegimeClassifierConfig::default();
+    candidates.push(ResearchRegimeThresholdCandidate {
+        candidate_id: "default".to_string(),
+        classifier_config: base.clone(),
+    });
+    for (id, trend, range, chop, high, low) in [
+        ("crypto_vol_balanced", "1.0", "0.8", "70", "0.45", "0.18"),
+        ("crypto_all_sensitive", "1.2", "0.6", "75", "0.35", "0.15"),
+        ("balanced_1", "1.5", "1.0", "55", "2.5", "0.4"),
+        ("balanced_2", "2.0", "1.5", "60", "3.5", "0.6"),
+        ("trend_sensitive", "1.0", "0.8", "65", "4.0", "0.5"),
+        ("vol_sensitive", "2.0", "1.0", "60", "2.0", "0.5"),
+        ("range_sensitive", "2.5", "2.0", "50", "4.0", "0.8"),
+    ] {
+        candidates.push(ResearchRegimeThresholdCandidate {
+            candidate_id: id.to_string(),
+            classifier_config: ResearchRegimeClassifierConfig {
+                trend_return_threshold_pct: trend
+                    .parse()
+                    .unwrap_or(base.trend_return_threshold_pct),
+                trend_slope_threshold: Decimal::ZERO,
+                range_return_max_pct: range.parse().unwrap_or(base.range_return_max_pct),
+                range_choppiness_min: chop.parse().unwrap_or(base.range_choppiness_min),
+                high_volatility_threshold_pct: high
+                    .parse()
+                    .unwrap_or(base.high_volatility_threshold_pct),
+                low_volatility_threshold_pct: low
+                    .parse()
+                    .unwrap_or(base.low_volatility_threshold_pct),
+                min_confidence: Decimal::ZERO,
+                priority_order: if id == "crypto_all_sensitive" {
+                    vec![
+                        ResearchRegimeLabel::HighVolatility,
+                        ResearchRegimeLabel::LowVolatility,
+                        ResearchRegimeLabel::TrendUp,
+                        ResearchRegimeLabel::TrendDown,
+                        ResearchRegimeLabel::Range,
+                    ]
+                } else if id == "crypto_vol_balanced" {
+                    vec![
+                        ResearchRegimeLabel::HighVolatility,
+                        ResearchRegimeLabel::TrendUp,
+                        ResearchRegimeLabel::TrendDown,
+                        ResearchRegimeLabel::LowVolatility,
+                        ResearchRegimeLabel::Range,
+                    ]
+                } else {
+                    base.priority_order.clone()
+                },
+            },
+        });
+    }
+    candidates
+}
+
+fn regime_calibration_recommendations(
+    missing_regimes: &[ResearchRegimeLabel],
+) -> Vec<ResearchRegimeCalibrationRecommendation> {
+    let mut recommendations = Vec::new();
+    if !missing_regimes.is_empty() {
+        recommendations.push(ResearchRegimeCalibrationRecommendation {
+            priority: "MEDIUM".to_string(),
+            code: "broaden_history_or_symbols".to_string(),
+            message:
+                "Recommended thresholds still miss regimes; scan more history or add symbols before trusting balanced campaigns."
+                    .to_string(),
+        });
+    }
+    recommendations.push(ResearchRegimeCalibrationRecommendation {
+        priority: "LOW".to_string(),
+        code: "research_only".to_string(),
+        message:
+            "Calibration is research-only and must not submit orders, create paper state, or auto-promote candidates."
+                .to_string(),
+    });
+    recommendations
+}
+
 fn regime_window_from_metric(
     metric: ResearchRegimeMetric,
     data_quality_status: MarketDataQualityStatus,
 ) -> ResearchRegimeWindow {
-    let trend_slope = if metric.candle_count > 0 {
-        (metric.return_pct / Decimal::from(metric.candle_count)).round_dp(8)
-    } else {
-        Decimal::ZERO
-    };
-    let confidence = regime_confidence(&metric).round_dp(4);
+    let trend_slope = metric.trend_slope;
+    let confidence = metric.confidence;
     ResearchRegimeWindow {
         id: Uuid::new_v4(),
         symbol: metric.symbol.clone(),
@@ -2944,28 +3657,49 @@ fn regime_window_from_metric(
             ResearchRegimeWindowMetric {
                 name: "return_pct".to_string(),
                 value: metric.return_pct,
-                threshold: Some(Decimal::new(3, 0)),
-                passed: metric.return_pct.abs() >= Decimal::new(3, 0),
+                threshold: Some(
+                    metric
+                        .explanation
+                        .thresholds_used
+                        .trend_return_threshold_pct,
+                ),
+                passed: metric.return_pct.abs()
+                    >= metric
+                        .explanation
+                        .thresholds_used
+                        .trend_return_threshold_pct,
             },
             ResearchRegimeWindowMetric {
                 name: "realized_volatility".to_string(),
                 value: metric.realized_volatility,
-                threshold: Some(Decimal::new(8, 0)),
-                passed: metric.realized_volatility >= Decimal::new(8, 0),
+                threshold: Some(
+                    metric
+                        .explanation
+                        .thresholds_used
+                        .high_volatility_threshold_pct,
+                ),
+                passed: metric.realized_volatility
+                    >= metric
+                        .explanation
+                        .thresholds_used
+                        .high_volatility_threshold_pct,
             },
             ResearchRegimeWindowMetric {
-                name: "directional_movement_pct".to_string(),
-                value: metric.directional_movement_pct,
-                threshold: Some(Decimal::new(55, 0)),
-                passed: metric.directional_movement_pct >= Decimal::new(55, 0),
+                name: "trend_slope".to_string(),
+                value: metric.trend_slope,
+                threshold: Some(metric.explanation.thresholds_used.trend_slope_threshold),
+                passed: metric.trend_slope.abs()
+                    >= metric.explanation.thresholds_used.trend_slope_threshold,
             },
             ResearchRegimeWindowMetric {
-                name: "choppiness_pct".to_string(),
+                name: "choppiness_proxy".to_string(),
                 value: metric.choppiness_pct,
-                threshold: Some(Decimal::new(65, 0)),
-                passed: metric.choppiness_pct >= Decimal::new(65, 0),
+                threshold: Some(metric.explanation.thresholds_used.range_choppiness_min),
+                passed: metric.choppiness_pct
+                    >= metric.explanation.thresholds_used.range_choppiness_min,
             },
         ],
+        explanation: metric.explanation,
     }
 }
 
@@ -2985,6 +3719,7 @@ fn discovery_candidate_from_window(
         choppiness_proxy: window.choppiness_proxy,
         data_quality_status: window.data_quality_status,
         candle_count: window.candle_count,
+        explanation: window.explanation,
     }
 }
 
@@ -10616,6 +11351,7 @@ mod tests {
             target_regimes: Some(vec![ResearchRegimeLabel::Range]),
             max_windows_per_regime,
             require_good_data_quality: false,
+            classifier_config: None,
         }
     }
 
@@ -10846,6 +11582,160 @@ mod tests {
     }
 
     #[test]
+    fn regime_explanation_includes_thresholds_and_pass_fail_reasons() {
+        let candles = regime_candles(&[100, 102, 104, 106, 108, 110, 112]);
+        let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
+
+        assert_eq!(metric.explanation.final_label, ResearchRegimeLabel::TrendUp);
+        assert_eq!(
+            metric
+                .explanation
+                .thresholds_used
+                .trend_return_threshold_pct,
+            Decimal::new(3, 0)
+        );
+        assert!(metric
+            .explanation
+            .conditions
+            .iter()
+            .any(|condition| condition.passed && !condition.reason.is_empty()));
+        assert!(metric
+            .explanation
+            .conditions
+            .iter()
+            .any(|condition| !condition.passed && !condition.reason.is_empty()));
+    }
+
+    #[test]
+    fn threshold_config_can_classify_known_trend_up_fixture() {
+        let candles = regime_candles(&[100, 101, 102, 103, 104, 105]);
+        let config = ResearchRegimeClassifierConfig {
+            trend_return_threshold_pct: Decimal::ONE,
+            high_volatility_threshold_pct: Decimal::new(10, 0),
+            ..Default::default()
+        };
+        let metric = classify_research_regime_with_config(
+            "BTCUSDT",
+            "5m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            &candles,
+            &config,
+        );
+
+        assert_eq!(metric.label, ResearchRegimeLabel::TrendUp);
+    }
+
+    #[test]
+    fn threshold_config_can_classify_known_trend_down_fixture() {
+        let candles = regime_candles(&[105, 104, 103, 102, 101, 100]);
+        let config = ResearchRegimeClassifierConfig {
+            trend_return_threshold_pct: Decimal::ONE,
+            high_volatility_threshold_pct: Decimal::new(10, 0),
+            ..Default::default()
+        };
+        let metric = classify_research_regime_with_config(
+            "BTCUSDT",
+            "5m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            &candles,
+            &config,
+        );
+
+        assert_eq!(metric.label, ResearchRegimeLabel::TrendDown);
+    }
+
+    #[test]
+    fn threshold_config_can_classify_known_high_vol_fixture() {
+        let candles = regime_candles(&[100, 112, 98, 115, 95, 118]);
+        let config = ResearchRegimeClassifierConfig {
+            high_volatility_threshold_pct: Decimal::new(5, 0),
+            ..Default::default()
+        };
+        let metric = classify_research_regime_with_config(
+            "BTCUSDT",
+            "5m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            &candles,
+            &config,
+        );
+
+        assert_eq!(metric.label, ResearchRegimeLabel::HighVolatility);
+    }
+
+    #[test]
+    fn threshold_config_can_classify_known_low_vol_fixture() {
+        let candles = decimal_regime_candles(&["100", "100.1", "100.2", "100.3", "100.4", "100.5"]);
+        let config = ResearchRegimeClassifierConfig {
+            range_return_max_pct: Decimal::new(1, 1),
+            range_choppiness_min: Decimal::new(90, 0),
+            low_volatility_threshold_pct: Decimal::new(5, 1),
+            priority_order: vec![
+                ResearchRegimeLabel::LowVolatility,
+                ResearchRegimeLabel::Range,
+                ResearchRegimeLabel::HighVolatility,
+                ResearchRegimeLabel::TrendUp,
+                ResearchRegimeLabel::TrendDown,
+            ],
+            ..Default::default()
+        };
+        let metric = classify_research_regime_with_config(
+            "BTCUSDT",
+            "5m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            &candles,
+            &config,
+        );
+
+        assert_eq!(metric.label, ResearchRegimeLabel::LowVolatility);
+    }
+
+    #[test]
+    fn threshold_config_can_classify_known_range_fixture() {
+        let candles = regime_candles(&[100, 101, 100, 101, 100, 101]);
+        let metric = classify_research_regime_with_config(
+            "BTCUSDT",
+            "5m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            &candles,
+            &ResearchRegimeClassifierConfig::default(),
+        );
+
+        assert_eq!(metric.label, ResearchRegimeLabel::Range);
+    }
+
+    #[test]
+    fn overlapping_regime_labels_resolve_by_priority_order() {
+        let candles = decimal_regime_candles(&["100", "100.1", "100.0", "100.1", "100.0", "100.1"]);
+        let config = ResearchRegimeClassifierConfig {
+            priority_order: vec![
+                ResearchRegimeLabel::LowVolatility,
+                ResearchRegimeLabel::Range,
+                ResearchRegimeLabel::HighVolatility,
+            ],
+            ..Default::default()
+        };
+        let metric = classify_research_regime_with_config(
+            "BTCUSDT",
+            "5m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            &candles,
+            &config,
+        );
+
+        assert_eq!(metric.label, ResearchRegimeLabel::LowVolatility);
+        assert!(metric
+            .explanation
+            .alternate_labels_considered
+            .contains(&ResearchRegimeLabel::Range));
+    }
+
+    #[test]
     fn regime_dataset_window_generation_is_deterministic() {
         let candles = dataset_range_candles(3);
         let request = regime_dataset_request(None);
@@ -10928,6 +11818,8 @@ mod tests {
             min_confidence: None,
             require_existing_candles: false,
             auto_backfill_missing: false,
+            classifier_config: None,
+            calibration_id: None,
         }
     }
 
@@ -11017,6 +11909,85 @@ mod tests {
             ResearchRegimeDiscoveryStatus::InsufficientData
         );
         assert!(discovery.selected_windows.is_empty());
+    }
+
+    #[test]
+    fn calibration_ranks_more_diverse_config_over_range_only_config() {
+        let mut candles = Vec::new();
+        for (hour, closes) in [
+            (0_u32, vec![100, 101, 100, 101, 100, 101]),
+            (1_u32, vec![100, 101, 102, 103, 104, 105]),
+            (2_u32, vec![105, 104, 103, 102, 101, 100]),
+        ] {
+            for (minute, pair) in closes.windows(2).enumerate() {
+                let open = Decimal::new(pair[0], 0);
+                let close = Decimal::new(pair[1], 0);
+                candles.push(Candle {
+                    id: Uuid::new_v4(),
+                    exchange: MarketDataSource::Binance,
+                    symbol: Symbol::new("BTCUSDT").unwrap(),
+                    interval: CandleInterval::OneMinute,
+                    open_time: ts(hour, minute as u32, 0),
+                    close_time: ts(hour, minute as u32, 59),
+                    open,
+                    high: open.max(close),
+                    low: open.min(close),
+                    close,
+                    volume: Decimal::ONE,
+                    quote_volume: None,
+                    trade_count: 1,
+                    is_closed: true,
+                    created_at: ts(hour, minute as u32, 59),
+                    updated_at: ts(hour, minute as u32, 59),
+                });
+            }
+        }
+        let range_only = ResearchRegimeThresholdCandidate {
+            candidate_id: "range_only".to_string(),
+            classifier_config: ResearchRegimeClassifierConfig {
+                range_return_max_pct: Decimal::new(100, 0),
+                range_choppiness_min: Decimal::ZERO,
+                priority_order: vec![
+                    ResearchRegimeLabel::Range,
+                    ResearchRegimeLabel::TrendUp,
+                    ResearchRegimeLabel::TrendDown,
+                ],
+                ..Default::default()
+            },
+        };
+        let diverse = ResearchRegimeThresholdCandidate {
+            candidate_id: "diverse".to_string(),
+            classifier_config: ResearchRegimeClassifierConfig {
+                trend_return_threshold_pct: Decimal::ONE,
+                high_volatility_threshold_pct: Decimal::new(20, 0),
+                range_return_max_pct: Decimal::ONE,
+                priority_order: vec![
+                    ResearchRegimeLabel::TrendUp,
+                    ResearchRegimeLabel::TrendDown,
+                    ResearchRegimeLabel::Range,
+                ],
+                ..Default::default()
+            },
+        };
+        let result = run_research_regime_calibration(
+            Uuid::from_u128(99),
+            ResearchRegimeCalibrationRequest {
+                symbol: "BTCUSDT".to_string(),
+                timeframe: "1m".to_string(),
+                scan_start: ts(0, 0, 0),
+                scan_end: ts(3, 0, 0),
+                window_hours: 1,
+                step_hours: 1,
+                threshold_candidates: Some(vec![range_only, diverse]),
+                target_min_windows_per_regime: 1,
+            },
+            &candles,
+            ts(3, 0, 0),
+        )
+        .expect("calibration should run");
+
+        assert_eq!(result.recommended_candidate_id.as_deref(), Some("diverse"));
+        assert!(result.candidates[0].diversity_score > result.candidates[1].diversity_score);
     }
 
     #[test]

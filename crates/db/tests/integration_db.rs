@@ -11,7 +11,8 @@ use aegis_core::{
     ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
     ResearchCandidateStatus, ResearchDataCoverageResult, ResearchDataReadinessStatus,
     ResearchDatasetBuildRequest, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchDatasetBuildStepStatus, ResearchRegimeClassificationExplanation,
+    ResearchRegimeClassifierConfig, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryRecommendation, ResearchRegimeDiscoveryRequest,
     ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus, ResearchRegimeDiscoverySummary,
     ResearchRegimeLabel, ResearchShadowPnlAttributionRequest, ResearchShadowPnlStatus,
@@ -4565,6 +4566,20 @@ async fn research_regime_discovery_and_windows_persist() {
         min_confidence: None,
         require_existing_candles: true,
         auto_backfill_missing: false,
+        classifier_config: None,
+        calibration_id: None,
+    };
+    let explanation = ResearchRegimeClassificationExplanation {
+        return_pct: Decimal::ZERO,
+        realized_volatility: Decimal::new(1, 0),
+        avg_range_pct: Decimal::new(1, 0),
+        trend_slope: Decimal::ZERO,
+        choppiness_proxy: Decimal::new(80, 0),
+        thresholds_used: ResearchRegimeClassifierConfig::default(),
+        conditions: Vec::new(),
+        final_label: ResearchRegimeLabel::Range,
+        confidence: Decimal::new(90, 0),
+        alternate_labels_considered: Vec::new(),
     };
     let window = ResearchRegimeDiscoveryCandidateWindow {
         id: Uuid::new_v4(),
@@ -4579,6 +4594,7 @@ async fn research_regime_discovery_and_windows_persist() {
         choppiness_proxy: Decimal::new(80, 0),
         data_quality_status: MarketDataQualityStatus::Good,
         candle_count: 96,
+        explanation,
     };
     let summary = ResearchRegimeDiscoverySummary {
         total_windows_scanned: 1,

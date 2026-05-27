@@ -814,6 +814,8 @@ pub enum ResearchCommands {
     RegimeDatasets(ResearchRegimeDatasetCommands),
     #[command(name = "regime-discovery", subcommand)]
     RegimeDiscovery(ResearchRegimeDiscoveryCommands),
+    #[command(name = "regime-calibration", subcommand)]
+    RegimeCalibration(ResearchRegimeCalibrationCommands),
     #[command(subcommand)]
     Campaigns(ResearchCampaignCommands),
     #[command(subcommand)]
@@ -872,6 +874,29 @@ pub enum ResearchRegimeDiscoveryCommands {
     List(ResearchBatchListArgs),
     Get { discovery_id: Uuid },
     Windows { discovery_id: Uuid },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchRegimeCalibrationCommands {
+    Run(ResearchRegimeCalibrationRunArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchRegimeCalibrationRunArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "scan-start")]
+    pub scan_start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "scan-end")]
+    pub scan_end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "window-hours")]
+    pub window_hours: i64,
+    #[arg(long = "step-hours")]
+    pub step_hours: i64,
+    #[arg(long = "target-min-windows-per-regime", default_value_t = 5)]
+    pub target_min_windows_per_regime: u32,
 }
 
 #[derive(Debug, Args)]

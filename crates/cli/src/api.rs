@@ -22,6 +22,7 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
@@ -862,6 +863,13 @@ impl ApiClient {
         request: &ResearchRegimeDiscoveryRequest,
     ) -> Result<ResearchRegimeDiscoveryResponse, ApiClientError> {
         self.post("/research/regime-discovery/run", request).await
+    }
+
+    pub async fn run_research_regime_calibration(
+        &self,
+        request: &ResearchRegimeCalibrationRequest,
+    ) -> Result<ResearchRegimeCalibrationResponse, ApiClientError> {
+        self.post("/research/regime-calibration/run", request).await
     }
 
     pub async fn list_research_regime_discoveries(
@@ -2690,6 +2698,14 @@ pub struct ResearchRegimeDiscoveryWindowsResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeCalibrationResponse {
+    pub calibration: ResearchRegimeCalibrationResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidatesResponse {
     pub candidates: Vec<ResearchCandidate>,
@@ -4110,6 +4126,7 @@ pub fn build_research_regime_dataset_request(
         target_regimes,
         max_windows_per_regime: args.max_windows_per_regime,
         require_good_data_quality: !args.allow_degraded_data,
+        classifier_config: None,
     };
     request
         .validate()
@@ -4162,10 +4179,31 @@ pub fn build_research_regime_discovery_request(
         min_confidence: args.min_confidence,
         require_existing_candles: !args.allow_missing_candles,
         auto_backfill_missing: args.auto_backfill_missing,
+        classifier_config: None,
+        calibration_id: None,
     };
     request
         .validate()
         .context("invalid research regime discovery request")?;
+    Ok(request)
+}
+
+pub fn build_research_regime_calibration_request(
+    args: &crate::cli::ResearchRegimeCalibrationRunArgs,
+) -> anyhow::Result<ResearchRegimeCalibrationRequest> {
+    let request = ResearchRegimeCalibrationRequest {
+        symbol: args.symbol.clone(),
+        timeframe: args.timeframe.clone(),
+        scan_start: args.scan_start,
+        scan_end: args.scan_end,
+        window_hours: args.window_hours,
+        step_hours: args.step_hours,
+        threshold_candidates: None,
+        target_min_windows_per_regime: args.target_min_windows_per_regime,
+    };
+    request
+        .validate()
+        .context("invalid research regime calibration request")?;
     Ok(request)
 }
 

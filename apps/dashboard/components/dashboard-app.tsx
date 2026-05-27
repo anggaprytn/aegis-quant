@@ -44,6 +44,8 @@ import type {
   ResearchCampaignResult,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
+  ResearchRegimeCalibrationRequest,
+  ResearchRegimeCalibrationResult,
   ResearchRegimeDatasetFromDiscoveryRequest,
   ResearchRegimeDatasetRequest,
   ResearchRegimeDatasetResult,
@@ -441,6 +443,17 @@ const DEFAULT_RESEARCH_REGIME_DISCOVERY_FORM: ResearchRegimeDiscoveryRequest = {
   min_confidence: null,
   require_existing_candles: true,
   auto_backfill_missing: false,
+};
+
+const DEFAULT_RESEARCH_REGIME_CALIBRATION_FORM: ResearchRegimeCalibrationRequest = {
+  symbol: "BTCUSDT",
+  timeframe: "15m",
+  scan_start: "2024-01-01T00:00:00Z",
+  scan_end: "2025-01-01T00:00:00Z",
+  window_hours: 24,
+  step_hours: 12,
+  threshold_candidates: null,
+  target_min_windows_per_regime: 5,
 };
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
@@ -970,6 +983,10 @@ function AuthenticatedDashboard({
     useState<string | null>(null);
   const [lastResearchRegimeDiscovery, setLastResearchRegimeDiscovery] =
     useState<ResearchRegimeDiscoveryResult | null>(null);
+  const [researchRegimeCalibrationForm, setResearchRegimeCalibrationForm] =
+    useState<ResearchRegimeCalibrationRequest>(DEFAULT_RESEARCH_REGIME_CALIBRATION_FORM);
+  const [lastResearchRegimeCalibration, setLastResearchRegimeCalibration] =
+    useState<ResearchRegimeCalibrationResult | null>(null);
   const [researchBatchForm, setResearchBatchForm] =
     useState<ResearchBatchRequest>(DEFAULT_RESEARCH_BATCH_FORM);
   const [selectedResearchBatchId, setSelectedResearchBatchId] = useState<string | null>(null);
@@ -2491,6 +2508,24 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["research-regime-discoveries"] });
       await queryClient.invalidateQueries({ queryKey: ["research-regime-discovery"] });
       await queryClient.invalidateQueries({ queryKey: ["research-regime-discovery-windows"] });
+    },
+  });
+  const researchRegimeCalibrationMutation = useMutation({
+    mutationFn: () => api.runResearchRegimeCalibration(researchRegimeCalibrationForm),
+    onSuccess: (response) => {
+      setLastResearchRegimeCalibration(response.calibration);
+      if (response.calibration.recommended_config) {
+        setResearchRegimeDiscoveryForm((current) => ({
+          ...current,
+          symbol: response.calibration.request.symbol,
+          timeframe: response.calibration.request.timeframe,
+          scan_start: response.calibration.request.scan_start,
+          scan_end: response.calibration.request.scan_end,
+          window_hours: response.calibration.request.window_hours,
+          step_hours: response.calibration.request.step_hours,
+          classifier_config: response.calibration.recommended_config,
+        }));
+      }
     },
   });
   const researchRegimeDatasetFromDiscoveryMutation = useMutation({
@@ -5592,6 +5627,89 @@ function AuthenticatedDashboard({
           {section === "experiments" && (
             <section className="grid gap-4 xl:grid-cols-12">
               <ResearchRobustnessMatrixPanel />
+              <Panel className="xl:col-span-12" title="Regime Calibration">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <Field
+                    label="Symbol"
+                    value={researchRegimeCalibrationForm.symbol}
+                    onChange={(value) =>
+                      setResearchRegimeCalibrationForm((current) => ({ ...current, symbol: value }))
+                    }
+                  />
+                  <Field
+                    label="Timeframe"
+                    value={researchRegimeCalibrationForm.timeframe}
+                    onChange={(value) =>
+                      setResearchRegimeCalibrationForm((current) => ({ ...current, timeframe: value }))
+                    }
+                  />
+                  <Field
+                    label="Scan Start"
+                    value={researchRegimeCalibrationForm.scan_start}
+                    onChange={(value) =>
+                      setResearchRegimeCalibrationForm((current) => ({ ...current, scan_start: value }))
+                    }
+                  />
+                  <Field
+                    label="Scan End"
+                    value={researchRegimeCalibrationForm.scan_end}
+                    onChange={(value) =>
+                      setResearchRegimeCalibrationForm((current) => ({ ...current, scan_end: value }))
+                    }
+                  />
+                  <Field
+                    label="Window Hours"
+                    value={String(researchRegimeCalibrationForm.window_hours)}
+                    onChange={(value) =>
+                      setResearchRegimeCalibrationForm((current) => ({
+                        ...current,
+                        window_hours: Number(value) || 24,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Step Hours"
+                    value={String(researchRegimeCalibrationForm.step_hours)}
+                    onChange={(value) =>
+                      setResearchRegimeCalibrationForm((current) => ({
+                        ...current,
+                        step_hours: Number(value) || 12,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Min / Regime"
+                    value={String(researchRegimeCalibrationForm.target_min_windows_per_regime ?? 5)}
+                    onChange={(value) =>
+                      setResearchRegimeCalibrationForm((current) => ({
+                        ...current,
+                        target_min_windows_per_regime: Number(value) || 5,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <ActionButton
+                    label="Run Calibration"
+                    onClick={() => researchRegimeCalibrationMutation.mutate()}
+                    busy={researchRegimeCalibrationMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(researchRegimeCalibrationMutation.error)}
+                    success={
+                      lastResearchRegimeCalibration
+                        ? `Calibration ${shortenId(lastResearchRegimeCalibration.calibration_id)} ${lastResearchRegimeCalibration.status}`
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <ResearchRegimeCalibrationTopConfigs calibration={lastResearchRegimeCalibration} />
+                  <ResearchRegimeCalibrationRecommended calibration={lastResearchRegimeCalibration} />
+                  <ResearchRegimeCalibrationSamples calibration={lastResearchRegimeCalibration} />
+                </div>
+              </Panel>
               <Panel className="xl:col-span-12" title="Regime Discovery">
                 <div className="grid gap-3 md:grid-cols-4">
                   <Field
@@ -10207,6 +10325,88 @@ function ResearchRegimeDiscoveriesTable({
   );
 }
 
+function ResearchRegimeCalibrationTopConfigs({
+  calibration,
+}: {
+  calibration: ResearchRegimeCalibrationResult | null;
+}) {
+  if (!calibration) {
+    return <EmptyState label="No calibration run yet." />;
+  }
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Top Thresholds
+      </div>
+      <Table
+        headers={["Candidate", "Score", "Diversity", "Dominant", "Counts"]}
+        rows={calibration.candidates.slice(0, 6).map((candidate) => [
+          candidate.candidate_id,
+          candidate.total_score,
+          candidate.diversity_score,
+          candidate.dominant_regime_share,
+          Object.entries(candidate.counts_by_regime)
+            .map(([regime, count]) => `${regime}=${count}`)
+            .join(", ") || "-",
+        ])}
+      />
+    </div>
+  );
+}
+
+function ResearchRegimeCalibrationRecommended({
+  calibration,
+}: {
+  calibration: ResearchRegimeCalibrationResult | null;
+}) {
+  const config = calibration?.recommended_config;
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Recommended Config
+      </div>
+      <KeyValue
+        items={[
+          ["Candidate", calibration?.recommended_candidate_id ?? "-"],
+          ["Trend Return", config?.trend_return_threshold_pct ?? "-"],
+          ["Range Return", config?.range_return_max_pct ?? "-"],
+          ["Range Chop", config?.range_choppiness_min ?? "-"],
+          ["High Vol", config?.high_volatility_threshold_pct ?? "-"],
+          ["Low Vol", config?.low_volatility_threshold_pct ?? "-"],
+          ["Missing", calibration?.missing_regimes.join(", ") || "-"],
+        ]}
+      />
+      <SimpleList
+        items={(calibration?.recommendations ?? []).map(
+          (recommendation) =>
+            `${recommendation.priority} ${recommendation.code}: ${recommendation.message}`,
+        )}
+      />
+    </div>
+  );
+}
+
+function ResearchRegimeCalibrationSamples({
+  calibration,
+}: {
+  calibration: ResearchRegimeCalibrationResult | null;
+}) {
+  const samples = calibration?.candidates[0]?.explanation_samples ?? [];
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Explanation Samples
+      </div>
+      <SimpleList
+        items={samples.slice(0, 5).map(
+          (sample) =>
+            `${sample.final_label} confidence=${sample.confidence} return=${sample.return_pct} vol=${sample.realized_volatility} range=${sample.avg_range_pct} slope=${sample.trend_slope} chop=${sample.choppiness_proxy} alternates=${sample.alternate_labels_considered.join(",") || "-"}`,
+        )}
+      />
+    </div>
+  );
+}
+
 function ResearchRegimeDiscoverySummaryTable({
   discovery,
 }: {
@@ -10254,6 +10454,7 @@ function ResearchRegimeDiscoveryWindowsTable({
         "Chop",
         "Quality",
         "Candles",
+        "Explain",
       ]}
       rows={windows.slice(0, 80).map((window) => [
         window.regime_label,
@@ -10265,6 +10466,7 @@ function ResearchRegimeDiscoveryWindowsTable({
         window.choppiness_proxy,
         window.data_quality_status,
         String(window.candle_count),
+        `${window.explanation.final_label} c=${window.explanation.confidence} alt=${window.explanation.alternate_labels_considered.join(",") || "-"}`,
       ])}
     />
   );
@@ -10310,6 +10512,7 @@ function ResearchRegimeWindowsTable({ windows }: { windows: ResearchRegimeWindow
         "Chop",
         "Quality",
         "Candles",
+        "Explain",
       ]}
       rows={windows.slice(0, 80).map((window) => [
         window.regime_label,
@@ -10322,6 +10525,7 @@ function ResearchRegimeWindowsTable({ windows }: { windows: ResearchRegimeWindow
         window.choppiness_proxy,
         window.data_quality_status,
         String(window.candle_count),
+        `${window.explanation.final_label} c=${window.explanation.confidence} alt=${window.explanation.alternate_labels_considered.join(",") || "-"}`,
       ])}
     />
   );

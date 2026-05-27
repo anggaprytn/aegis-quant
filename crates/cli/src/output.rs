@@ -10,7 +10,7 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchRegimeDatasetResult,
+    ResearchCandidateWatchlistEntry, ResearchRegimeCalibrationResult, ResearchRegimeDatasetResult,
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult, ResearchRegimeWindow,
     ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
     StrategyRobustnessMatrixResult, User,
@@ -249,6 +249,19 @@ pub fn print_research_regime_windows(windows: &[ResearchRegimeWindow]) {
             window.data_quality_status.as_str(),
             window.candle_count
         );
+        println!(
+            "    explanation label={} confidence={} alternates={} conditions={}",
+            window.explanation.final_label.as_str(),
+            window.explanation.confidence,
+            window
+                .explanation
+                .alternate_labels_considered
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            window.explanation.conditions.len()
+        );
     }
 }
 
@@ -294,6 +307,19 @@ pub fn print_research_regime_discovery(discovery: &ResearchRegimeDiscoveryResult
             window.data_quality_status.as_str(),
             window.candle_count
         );
+        println!(
+            "    explanation label={} confidence={} alternates={} conditions={}",
+            window.explanation.final_label.as_str(),
+            window.explanation.confidence,
+            window
+                .explanation
+                .alternate_labels_considered
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            window.explanation.conditions.len()
+        );
     }
 }
 
@@ -328,6 +354,93 @@ pub fn print_research_regime_discovery_windows(windows: &[ResearchRegimeDiscover
             window.choppiness_proxy,
             window.data_quality_status.as_str(),
             window.candle_count
+        );
+    }
+}
+
+pub fn print_research_regime_calibration(calibration: &ResearchRegimeCalibrationResult) {
+    println!("Regime calibration: {}", calibration.calibration_id);
+    println!("Status: {}", calibration.status.as_str());
+    println!(
+        "Scope: {} {} {} -> {}",
+        calibration.request.symbol,
+        calibration.request.timeframe,
+        calibration.request.scan_start,
+        calibration.request.scan_end
+    );
+    if let Some(candidate_id) = &calibration.recommended_candidate_id {
+        println!("Recommended candidate: {candidate_id}");
+    }
+    if let Some(config) = &calibration.recommended_config {
+        println!(
+            "Recommended config: trend_return={} trend_slope={} range_return_max={} range_chop_min={} high_vol={} low_vol={} min_confidence={} priority={}",
+            config.trend_return_threshold_pct,
+            config.trend_slope_threshold,
+            config.range_return_max_pct,
+            config.range_choppiness_min,
+            config.high_volatility_threshold_pct,
+            config.low_volatility_threshold_pct,
+            config.min_confidence,
+            config
+                .priority_order
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+    if !calibration.missing_regimes.is_empty() {
+        println!(
+            "Missing regimes: {}",
+            calibration
+                .missing_regimes
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("Top configs:");
+    for candidate in calibration.candidates.iter().take(5) {
+        println!(
+            "  {} score={} diversity={} balance={} avg_confidence={} dominant_share={} counts={}",
+            candidate.candidate_id,
+            candidate.total_score,
+            candidate.diversity_score,
+            candidate.balance_score,
+            candidate.avg_confidence,
+            candidate.dominant_regime_share,
+            candidate
+                .counts_by_regime
+                .iter()
+                .map(|(regime, count)| format!("{}={}", regime.as_str(), count))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        if !candidate.warnings.is_empty() {
+            println!("    warnings={}", candidate.warnings.join(","));
+        }
+    }
+    if let Some(sample) = calibration
+        .candidates
+        .first()
+        .and_then(|candidate| candidate.explanation_samples.first())
+    {
+        println!(
+            "Explanation sample: label={} confidence={} return_pct={} vol={} range={} slope={} chop={} alternates={}",
+            sample.final_label.as_str(),
+            sample.confidence,
+            sample.return_pct,
+            sample.realized_volatility,
+            sample.avg_range_pct,
+            sample.trend_slope,
+            sample.choppiness_proxy,
+            sample
+                .alternate_labels_considered
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
         );
     }
 }

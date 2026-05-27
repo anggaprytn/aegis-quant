@@ -64,17 +64,17 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchRegimeDatasetFromDiscoveryRequest,
-    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
-    ResearchRegimeDiscoveryResult, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
-    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchDatasetBuildResult, ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
+    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeWindow,
+    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
+    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExitAttributionRequest,
     StrategyExitAttributionResult, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
@@ -1694,6 +1694,14 @@ struct ResearchRegimeDiscoveryWindowsResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchRegimeCalibrationResponse {
+    calibration: ResearchRegimeCalibrationResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateEventsResponse {
     events: Vec<ResearchCandidateLifecycleEvent>,
     request_id: String,
@@ -2926,6 +2934,10 @@ async fn main() {
         .route(
             "/research/regime-discovery/:id",
             get(get_research_regime_discovery_handler),
+        )
+        .route(
+            "/research/regime-calibration/run",
+            post(run_research_regime_calibration_handler),
         )
         .route(
             "/research/campaigns/run",
@@ -17357,6 +17369,59 @@ async fn build_research_regime_dataset_from_discovery_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_build_research_regime_dataset_from_discovery",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn run_research_regime_calibration_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<ResearchRegimeCalibrationRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let result = async {
+        payload.validate()?;
+        let symbol = Symbol::new(payload.symbol.clone())?;
+        let interval = payload.timeframe.parse::<CandleInterval>()?;
+        let candles = get_closed_candles_range(
+            &state.db_pool,
+            &symbol,
+            interval,
+            payload.scan_start,
+            payload.scan_end,
+        )
+        .await?;
+        let result = aegis_core::run_research_regime_calibration(
+            Uuid::new_v4(),
+            payload,
+            &candles,
+            Utc::now(),
+        )?;
+        anyhow::Ok(result)
+    }
+    .await;
+
+    match result {
+        Ok(calibration) => (
+            StatusCode::OK,
+            Json(ResearchRegimeCalibrationResponse {
+                calibration,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_run_research_regime_calibration",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
