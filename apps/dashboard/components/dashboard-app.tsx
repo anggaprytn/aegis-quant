@@ -5631,6 +5631,16 @@ function AuthenticatedDashboard({
                             : "N/A"}
                         </div>
                       </div>
+                      {(researchCandidateShadowPnl?.summary.extreme_pnl_count ?? 0) > 0 && (
+                        <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                          Attribution PnL is unusually large; inspect candle continuity and timestamps.
+                        </div>
+                      )}
+                      {(researchCandidateShadowPnl?.summary.gap_detected_count ?? 0) > 0 && (
+                        <div className="mt-2 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+                          Candle gaps detected in attribution. Review entry and exit timestamps before trusting results.
+                        </div>
+                      )}
                       <div className="mt-3 overflow-auto rounded-xl border border-border/70">
                         <table className="min-w-full text-[11px]">
                           <thead className="bg-surface/60 text-left text-slate-300">
@@ -5662,29 +5672,36 @@ function AuthenticatedDashboard({
                         <table className="min-w-full text-[11px]">
                           <thead className="bg-surface/60 text-left text-slate-300">
                             <tr>
-                              {["Run", "Shadow Time", "Entry", "Status", "Windows"].map((label) => (
+                              {["Run", "Shadow Time", "Entry", "Exit", "Status", "Windows"].map((label) => (
                                 <th key={label} className="px-2 py-1 font-medium">{label}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
-                            {(researchCandidateShadowPnl?.trades ?? []).slice(0, 10).map((trade) => (
-                              <tr key={trade.shadow_run_id} className="border-t border-border/60">
-                                <td className="px-2 py-1 font-mono">{shortenId(trade.shadow_run_id)}</td>
-                                <td className="px-2 py-1">{formatDateTime(trade.shadow_created_at)}</td>
-                                <td className="px-2 py-1">
-                                  {trade.entry_price ?? "-"} @ {formatDateTime(trade.entry_candle_open_time)}
-                                </td>
-                                <td className="px-2 py-1">{trade.status}</td>
-                                <td className="px-2 py-1">
-                                  {trade.holding_windows
-                                    .map((window) =>
-                                      `${window.holding_window}:${window.net_pnl_pct ?? "NA"}`,
-                                    )
-                                    .join(" | ")}
-                                </td>
-                              </tr>
-                            ))}
+                            {(researchCandidateShadowPnl?.trades ?? []).slice(0, 10).map((trade) => {
+                              const latestWindow = trade.holding_windows.find((window) => window.net_pnl_pct !== null)
+                                ?? trade.holding_windows[0];
+                              return (
+                                <tr key={trade.shadow_run_id} className="border-t border-border/60">
+                                  <td className="px-2 py-1 font-mono">{shortenId(trade.shadow_run_id)}</td>
+                                  <td className="px-2 py-1">{formatDateTime(trade.signal_time ?? trade.shadow_created_at)}</td>
+                                  <td className="px-2 py-1">
+                                    {trade.entry_price ?? "-"} @ {formatDateTime(trade.entry_candle_open_time)}
+                                  </td>
+                                  <td className="px-2 py-1">
+                                    {latestWindow?.exit_price ?? "-"} @ {formatDateTime(latestWindow?.exit_candle_close_time ?? null)}
+                                  </td>
+                                  <td className="px-2 py-1">{latestWindow?.attribution_status ?? trade.status}</td>
+                                  <td className="px-2 py-1">
+                                    {trade.holding_windows
+                                      .map((window) =>
+                                        `${window.holding_window}:${window.net_pnl_pct ?? "NA"}`,
+                                      )
+                                      .join(" | ")}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

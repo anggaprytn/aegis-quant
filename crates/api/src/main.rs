@@ -1392,6 +1392,7 @@ struct ResearchCandidateShadowPnlAttributionQueryParams {
     holding_windows: Option<String>,
     fee_bps: Option<Decimal>,
     slippage_bps: Option<Decimal>,
+    extreme_pnl_threshold_pct: Option<Decimal>,
     start_time: Option<DateTime<Utc>>,
     end_time: Option<DateTime<Utc>>,
     limit: Option<i64>,
@@ -14871,6 +14872,7 @@ async fn build_research_candidate_qualification(
             holding_windows: vec![1, 3, 5, 10],
             fee_bps: Decimal::new(10, 0),
             slippage_bps: Decimal::new(5, 0),
+            extreme_pnl_threshold_pct: Decimal::new(5, 0),
             start_time: Some(candidate.updated_at),
             end_time: Some(now),
             limit: Some(100),
@@ -15035,6 +15037,7 @@ async fn build_research_candidate_testnet_review_dossier(
             holding_windows: vec![1, 3, 5, 10],
             fee_bps: Decimal::new(10, 0),
             slippage_bps: Decimal::new(5, 0),
+            extreme_pnl_threshold_pct: Decimal::new(5, 0),
             start_time: Some(candidate.updated_at),
             end_time: Some(now),
             limit: Some(100),
@@ -17427,6 +17430,9 @@ async fn get_research_candidate_shadow_pnl_attribution_handler(
         holding_windows: parse_holding_windows_query(query.holding_windows.as_deref()),
         fee_bps: query.fee_bps.unwrap_or_else(|| Decimal::new(10, 0)),
         slippage_bps: query.slippage_bps.unwrap_or_else(|| Decimal::new(5, 0)),
+        extreme_pnl_threshold_pct: query
+            .extreme_pnl_threshold_pct
+            .unwrap_or_else(|| Decimal::new(5, 0)),
         start_time: query.start_time,
         end_time: query.end_time,
         limit: query.limit,
@@ -25703,6 +25709,34 @@ mod tests {
         .await
         .expect("shadow link should persist");
 
+        for (index, (open, close)) in [(100, 100), (100, 106)].iter().enumerate() {
+            let open_time =
+                linked_run.created_at + chrono::Duration::minutes(15 * (index as i64 + 1));
+            upsert_candle(
+                &test_db.pool,
+                &Candle {
+                    id: Uuid::new_v4(),
+                    exchange: MarketDataSource::Binance,
+                    symbol: Symbol::new("BTCUSDT").unwrap(),
+                    interval: CandleInterval::FifteenMinutes,
+                    open_time,
+                    close_time: open_time + chrono::Duration::minutes(15),
+                    open: Decimal::new(*open, 0),
+                    high: Decimal::new((*open).max(*close), 0),
+                    low: Decimal::new((*open).min(*close), 0),
+                    close: Decimal::new(*close, 0),
+                    volume: Decimal::ONE,
+                    quote_volume: None,
+                    trade_count: 1,
+                    is_closed: true,
+                    created_at: open_time + chrono::Duration::minutes(15),
+                    updated_at: open_time + chrono::Duration::minutes(15),
+                },
+            )
+            .await
+            .expect("candle should upsert");
+        }
+
         let before = research_shadow_promotion_execution_counts(&test_db.pool).await;
         let (viewer_login, _) =
             login_cli(&app, viewer_email, "replace-with-a-12-char-min-password").await;
@@ -25732,6 +25766,7 @@ mod tests {
         assert_eq!(performance_payload["performance"]["risk_rejected_count"], 0);
 
         let runs = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -25753,6 +25788,49 @@ mod tests {
         let runs = runs_payload["runs"].as_array().expect("runs array");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0]["shadow_run_id"], linked_run.id.to_string());
+
+        let pnl = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/research/candidates/{}/shadow-pnl-attribution?holding_windows=1&start_time={}&end_time={}",
+                        candidate.id,
+                        (linked_run.created_at - chrono::Duration::minutes(1)).to_rfc3339(),
+                        (linked_run.created_at + chrono::Duration::hours(1)).to_rfc3339()
+                    ))
+                    .header(
+                        AUTHORIZATION,
+                        format!("Bearer {}", viewer_login.access_token),
+                    )
+                    .body(Body::empty())
+                    .expect("pnl request"),
+            )
+            .await
+            .expect("pnl response");
+        assert_eq!(pnl.status(), StatusCode::OK);
+        let pnl_payload = response_json::<Value>(pnl).await;
+        assert_eq!(
+            pnl_payload["attribution"]["summary"]["extreme_pnl_count"],
+            1
+        );
+        assert_eq!(
+            pnl_payload["attribution"]["summary"]["gap_detected_count"],
+            0
+        );
+        let trade = &pnl_payload["attribution"]["trades"][0];
+        assert_eq!(trade["shadow_run_id"], linked_run.id.to_string());
+        assert_eq!(trade["strategy_id"], "momentum_v1");
+        assert_eq!(trade["symbol"], "BTCUSDT");
+        assert_eq!(trade["timeframe"], "15m");
+        assert_eq!(trade["entry_price"], "100");
+        assert_eq!(trade["holding_windows"][0]["exit_price"], "106");
+        assert_eq!(trade["holding_windows"][0]["gross_pnl_pct"], "6");
+        assert_eq!(trade["holding_windows"][0]["net_pnl_pct"], "5.85");
+        assert_eq!(
+            trade["holding_windows"][0]["attribution_status"],
+            "EXTREME_PNL"
+        );
 
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before).await;
     }

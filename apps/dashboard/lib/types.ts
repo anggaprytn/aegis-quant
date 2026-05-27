@@ -1263,24 +1263,38 @@ export type ResearchShadowPnlRecommendation =
   | "NEGATIVE"
   | "INSUFFICIENT_DATA";
 
-export type ResearchShadowPnlStatus = "ATTRIBUTED" | "INSUFFICIENT_FORWARD_DATA";
+export type ResearchShadowPnlStatus =
+  | "ATTRIBUTED"
+  | "INSUFFICIENT_FORWARD_DATA"
+  | "GAP_DETECTED"
+  | "EXTREME_PNL";
 
 export type ResearchShadowPnlTradeHoldingWindowResult = {
   holding_window: number;
   status: ResearchShadowPnlStatus;
+  attribution_status: ResearchShadowPnlStatus;
   exit_candle_open_time: string | null;
   exit_candle_close_time: string | null;
   exit_price: string | null;
   gross_pnl_pct: string | null;
+  fee_bps: string;
+  slippage_bps: string;
   net_pnl_pct: string | null;
   fee_drag_pct: string;
+  candle_gap_seconds: number | null;
+  warning: string | null;
 };
 
 export type ResearchShadowPnlAttributionTrade = {
   candidate_id: string;
   shadow_run_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
   shadow_created_at: string;
+  signal_time: string | null;
   status: ResearchShadowPnlStatus;
+  attribution_status: ResearchShadowPnlStatus;
   entry_candle_open_time: string | null;
   entry_candle_close_time: string | null;
   entry_price: string | null;
@@ -1308,10 +1322,14 @@ export type ResearchShadowPnlAttributionResult = {
   holding_windows: number[];
   fee_bps: string;
   slippage_bps: string;
+  extreme_pnl_threshold_pct: string;
   summary: {
     total_attributed_runs: number;
+    extreme_pnl_count: number;
+    gap_detected_count: number;
     insufficient_forward_data_count: number;
     negative_all_windows: boolean;
+    warnings: string[];
     per_holding_window: ResearchShadowPnlHoldingWindowResult[];
   };
   trades: ResearchShadowPnlAttributionTrade[];

@@ -2611,10 +2611,16 @@ pub async fn get_research_candidate_shadow_pnl_attribution(
         r#"
         SELECT
             run.id AS shadow_run_id,
-            run.created_at AS shadow_created_at
+            run.strategy_id,
+            run.symbol,
+            run.timeframe,
+            run.created_at AS shadow_created_at,
+            signal.created_at AS signal_time
         FROM research_candidate_shadow_runs link
         INNER JOIN testnet_shadow_runs run
             ON run.id = link.shadow_run_id
+        LEFT JOIN signals signal
+            ON signal.id = run.signal_id
         WHERE link.candidate_id = $1
           AND run.decision = 'WOULD_SUBMIT'
           AND run.created_at >= $2
@@ -2634,11 +2640,19 @@ pub async fn get_research_candidate_shadow_pnl_attribution(
         .iter()
         .map(|row| ResearchShadowPnlRunInput {
             shadow_run_id: row.get("shadow_run_id"),
+            strategy_id: row.get("strategy_id"),
+            symbol: row.get("symbol"),
+            timeframe: row.get("timeframe"),
             shadow_created_at: row.get("shadow_created_at"),
+            signal_time: row.get("signal_time"),
         })
         .collect::<Vec<_>>();
 
-    let candles = if let Some(first_run_time) = runs.iter().map(|run| run.shadow_created_at).min() {
+    let candles = if let Some(first_attribution_time) = runs
+        .iter()
+        .map(|run| run.signal_time.unwrap_or(run.shadow_created_at))
+        .min()
+    {
         let symbol = Symbol::new(candidate.symbol.clone())?;
         let interval = candidate.timeframe.parse::<CandleInterval>()?;
         let candle_rows = sqlx::query(
@@ -2670,7 +2684,7 @@ pub async fn get_research_candidate_shadow_pnl_attribution(
         )
         .bind(symbol.as_str())
         .bind(interval.as_str())
-        .bind(first_run_time)
+        .bind(first_attribution_time)
         .fetch_all(pool)
         .await?;
 

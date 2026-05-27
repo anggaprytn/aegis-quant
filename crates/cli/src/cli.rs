@@ -917,6 +917,8 @@ pub struct ResearchCandidateShadowPnlArgs {
     pub fee_bps: rust_decimal::Decimal,
     #[arg(long = "slippage-bps", default_value = "5")]
     pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "extreme-pnl-threshold-pct", default_value = "5")]
+    pub extreme_pnl_threshold_pct: rust_decimal::Decimal,
 }
 
 #[derive(Debug, Args)]

@@ -10,15 +10,15 @@ use aegis_core::{
     ResearchCandidateDecision, ResearchCandidateLifecycleEvent, ResearchCandidateStatus,
     ResearchDataCoverageResult, ResearchDataReadinessStatus, ResearchDatasetBuildRequest,
     ResearchDatasetBuildStatus, ResearchDatasetBuildStep, ResearchDatasetBuildStepStatus,
-    ResearchShadowPnlAttributionRequest, RiskCheckContext, RiskEvaluationDecision,
-    RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason,
-    SignalSide, StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
-    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
-    StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
-    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
+    ResearchShadowPnlAttributionRequest, ResearchShadowPnlStatus, RiskCheckContext,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision, RiskRuleResult, Side,
+    SignalConfidence, SignalReason, SignalSide, StrategyCandidateObservationDecision,
+    StrategyCandidateObservationFinding, StrategyCandidateObservationRequirement,
+    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+    StrategyCandidateObservationSummary, StrategyCandidateRunnerAlignment, StrategyConfig,
+    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+    StrategyMode, StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
     StrategyResearchCandidateEvidence, StrategyResearchCandidateScore,
     StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategySignal,
     StrategyWalkForwardCandidate, StrategyWalkForwardRequest, StrategyWalkForwardResult,
@@ -3661,6 +3661,16 @@ async fn research_shadow_pnl_attribution_reads_would_submit_only_without_executi
             .fetch_one(&test_db.pool)
             .await
             .unwrap();
+    let before_testnet_order_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM exchange_testnet_order_lifecycle_events")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap();
+    let before_shadow_promotions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM testnet_shadow_promotions")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap();
 
     let attribution = get_research_candidate_shadow_pnl_attribution(
         &test_db.pool,
@@ -3670,6 +3680,7 @@ async fn research_shadow_pnl_attribution_reads_would_submit_only_without_executi
             holding_windows: vec![1, 3],
             fee_bps: Decimal::new(10, 0),
             slippage_bps: Decimal::new(5, 0),
+            extreme_pnl_threshold_pct: Decimal::new(5, 0),
             start_time: Some(promoted_at),
             end_time: Some(promoted_at + chrono::Duration::hours(1)),
             limit: Some(50),
@@ -3681,6 +3692,27 @@ async fn research_shadow_pnl_attribution_reads_would_submit_only_without_executi
 
     assert_eq!(attribution.trades.len(), 1);
     assert_eq!(attribution.trades[0].shadow_run_id, would_submit.id);
+    assert_eq!(attribution.trades[0].strategy_id, candidate.strategy_id);
+    assert_eq!(attribution.trades[0].symbol, "BTCUSDT");
+    assert_eq!(attribution.trades[0].timeframe, "15m");
+    assert_eq!(
+        attribution.trades[0].entry_price,
+        Some(Decimal::new(100, 0))
+    );
+    assert_eq!(
+        attribution.trades[0].holding_windows[0].attribution_status,
+        ResearchShadowPnlStatus::ExtremePnl
+    );
+    assert_eq!(
+        attribution.trades[0].holding_windows[0].gross_pnl_pct,
+        Some(Decimal::new(10, 0))
+    );
+    assert_eq!(
+        attribution.trades[0].holding_windows[0].net_pnl_pct,
+        Some(Decimal::new(985, 2))
+    );
+    assert_eq!(attribution.summary.extreme_pnl_count, 2);
+    assert_eq!(attribution.summary.gap_detected_count, 0);
     assert_eq!(attribution.summary.total_attributed_runs, 1);
     assert_eq!(attribution.summary.insufficient_forward_data_count, 0);
     assert_eq!(
@@ -3710,6 +3742,22 @@ async fn research_shadow_pnl_attribution_reads_would_submit_only_without_executi
             .await
             .unwrap(),
         before_testnet_orders
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM exchange_testnet_order_lifecycle_events"
+        )
+        .fetch_one(&test_db.pool)
+        .await
+        .unwrap(),
+        before_testnet_order_events
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM testnet_shadow_promotions")
+            .fetch_one(&test_db.pool)
+            .await
+            .unwrap(),
+        before_shadow_promotions
     );
 }
 

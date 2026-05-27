@@ -2006,6 +2006,14 @@ pub fn print_research_candidate_shadow_pnl_attribution(
         attribution.summary.insufficient_forward_data_count
     );
     println!(
+        "Extreme PnL count: {}",
+        attribution.summary.extreme_pnl_count
+    );
+    println!("Gap count: {}", attribution.summary.gap_detected_count);
+    for warning in &attribution.summary.warnings {
+        println!("Warning: {warning}");
+    }
+    println!(
         "Best holding window: {} avg_net_pnl_pct={}",
         attribution
             .best_holding_window
@@ -2035,6 +2043,46 @@ pub fn print_research_candidate_shadow_pnl_attribution(
             window.fee_drag_pct.round_dp(4),
             window.recommendation.as_str()
         );
+    }
+    println!("Top attributed trades:");
+    for trade in attribution.trades.iter().take(5) {
+        let best_window = trade
+            .holding_windows
+            .iter()
+            .filter(|window| window.net_pnl_pct.is_some())
+            .max_by(|left, right| {
+                left.net_pnl_pct
+                    .unwrap_or_default()
+                    .cmp(&right.net_pnl_pct.unwrap_or_default())
+            });
+        if let Some(window) = best_window {
+            println!(
+                "  shadow_run={} window={} status={} entry={} @ {} exit={} @ {} net_pnl={}%",
+                trade.shadow_run_id,
+                window.holding_window,
+                window.attribution_status.as_str(),
+                trade
+                    .entry_price
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                trade
+                    .entry_candle_open_time
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "-".to_string()),
+                window
+                    .exit_price
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                window
+                    .exit_candle_close_time
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "-".to_string()),
+                window
+                    .net_pnl_pct
+                    .map(|value| value.round_dp(4).to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+        }
     }
 }
 

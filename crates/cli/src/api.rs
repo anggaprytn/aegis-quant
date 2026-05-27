@@ -864,6 +864,7 @@ impl ApiClient {
         holding_windows: &str,
         fee_bps: Decimal,
         slippage_bps: Decimal,
+        extreme_pnl_threshold_pct: Decimal,
     ) -> Result<ResearchCandidateShadowPnlAttributionResponse, ApiClientError> {
         self.get(
             &format!("/research/candidates/{candidate_id}/shadow-pnl-attribution"),
@@ -871,6 +872,10 @@ impl ApiClient {
                 ("holding_windows", holding_windows.to_string()),
                 ("fee_bps", fee_bps.to_string()),
                 ("slippage_bps", slippage_bps.to_string()),
+                (
+                    "extreme_pnl_threshold_pct",
+                    extreme_pnl_threshold_pct.to_string(),
+                ),
             ],
         )
         .await

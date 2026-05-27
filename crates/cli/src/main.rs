@@ -656,6 +656,7 @@ async fn main() -> anyhow::Result<()> {
                             &args.holding_windows,
                             args.fee_bps,
                             args.slippage_bps,
+                            args.extreme_pnl_threshold_pct,
                         )
                         .await?;
                     if cli.json {

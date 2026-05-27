@@ -1187,6 +1187,7 @@ async fn load_candidate_shadow_pnl_snapshot(
             holding_windows: vec![1, 3, 5, 10],
             fee_bps: Decimal::new(10, 0),
             slippage_bps: Decimal::new(5, 0),
+            extreme_pnl_threshold_pct: Decimal::new(5, 0),
             start_time: Some(window.start),
             end_time: Some(window.end),
             limit: Some(100),
