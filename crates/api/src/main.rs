@@ -64,14 +64,14 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
-    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchDatasetBuildResult, ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeWindow, ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
+    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
+    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side,
+    SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
+    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExitAttributionRequest,
     StrategyExitAttributionResult, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
@@ -137,19 +137,20 @@ use db::{
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
-    get_risk_config, get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
-    get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_research_candidate, get_strategy_robustness_matrix_run,
-    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
-    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
-    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
-    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
-    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
-    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
-    insert_research_batch, insert_research_batch_step, insert_research_campaign,
-    insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
+    get_research_regime_dataset, get_risk_config, get_risk_decision_by_id, get_session_by_id,
+    get_session_by_id_and_hash, get_strategy_backtest_breakdown, get_strategy_experiment,
+    get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_research_candidate,
+    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown,
+    get_strategy_status, get_strategy_walk_forward_run, get_system_event, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
+    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
+    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
+    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
+    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
+    insert_research_campaign, insert_research_campaign_batch,
+    insert_research_candidate_qualification_evaluation, insert_research_regime_dataset,
     insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
     insert_strategy_config_audit, insert_strategy_research_candidate,
     insert_strategy_research_candidate_promotion, insert_system_event,
@@ -165,7 +166,8 @@ use db::{
     list_research_campaigns, list_research_candidate_events,
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
-    list_research_candidate_watchlist_rows, list_research_candidates, list_risk_config_audit,
+    list_research_candidate_watchlist_rows, list_research_candidates,
+    list_research_regime_datasets, list_research_regime_windows, list_risk_config_audit,
     list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
@@ -180,9 +182,10 @@ use db::{
     research_campaign_batch_result_from_record, research_campaign_result_from_records,
     research_candidate_event_from_record, research_candidate_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
-    research_candidate_walk_forward_evidence_from_watchlist_row, revoke_session,
-    risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
-    rotate_session_refresh_token, set_kill_switch_state,
+    research_candidate_walk_forward_evidence_from_watchlist_row,
+    research_regime_dataset_result_from_records, research_regime_window_from_record,
+    revoke_session, risk_config_audit_from_record, risk_config_from_record,
+    risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_config_audit_from_record,
     strategy_config_from_record, strategy_config_version_from_record,
     strategy_experiment_result_from_records, strategy_experiment_run_from_record,
@@ -1638,6 +1641,30 @@ struct ResearchCampaignFailureAttributionResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchRegimeDatasetResponse {
+    dataset: ResearchRegimeDatasetResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchRegimeDatasetsResponse {
+    datasets: Vec<ResearchRegimeDatasetResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchRegimeDatasetWindowsResponse {
+    windows: Vec<ResearchRegimeWindow>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateEventsResponse {
     events: Vec<ResearchCandidateLifecycleEvent>,
     request_id: String,
@@ -2835,6 +2862,22 @@ async fn main() {
         .route("/research/data/build", post(post_research_data_build))
         .route("/research/data/builds", get(list_research_data_builds))
         .route("/research/data/builds/:id", get(get_research_data_build))
+        .route(
+            "/research/regime-datasets/build",
+            post(build_research_regime_dataset_handler),
+        )
+        .route(
+            "/research/regime-datasets",
+            get(list_research_regime_datasets_handler),
+        )
+        .route(
+            "/research/regime-datasets/:id/windows",
+            get(get_research_regime_dataset_windows_handler),
+        )
+        .route(
+            "/research/regime-datasets/:id",
+            get(get_research_regime_dataset_handler),
+        )
         .route(
             "/research/campaigns/run",
             post(run_research_campaign_handler),
@@ -16745,6 +16788,252 @@ async fn persist_research_campaign_snapshot(
     Ok(())
 }
 
+async fn build_research_regime_dataset_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchRegimeDatasetRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = current_actor(actor);
+    let Some(actor_ref) = actor.as_ref() else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "authentication_required",
+                message: "Authentication is required to build regime datasets.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    };
+    if !matches!(actor_ref.role, UserRole::Owner | UserRole::Operator) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "forbidden",
+                message: "Only OPERATOR or OWNER can build regime datasets.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let result = async {
+        payload.validate()?;
+        let symbol = Symbol::new(payload.symbol.clone())?;
+        let interval = payload.timeframe.parse::<CandleInterval>()?;
+        let candles = get_closed_candles_range(
+            &state.db_pool,
+            &symbol,
+            interval,
+            payload.start_time,
+            payload.end_time,
+        )
+        .await?;
+        let result = aegis_core::build_research_regime_dataset(
+            Uuid::new_v4(),
+            payload,
+            &candles,
+            Utc::now(),
+        )?;
+        insert_research_regime_dataset(&state.db_pool, &result).await?;
+        anyhow::Ok(result)
+    }
+    .await;
+
+    match result {
+        Ok(dataset) => (
+            StatusCode::OK,
+            Json(ResearchRegimeDatasetResponse {
+                dataset,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_research_regime_dataset",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn research_regime_dataset_read_model(
+    state: &AppState,
+    id: Uuid,
+) -> anyhow::Result<Option<ResearchRegimeDatasetResult>> {
+    let Some(record) = get_research_regime_dataset(&state.db_pool, id).await? else {
+        return Ok(None);
+    };
+    let windows = list_research_regime_windows(&state.db_pool, id).await?;
+    Ok(Some(research_regime_dataset_result_from_records(
+        &record, &windows,
+    )?))
+}
+
+async fn list_research_regime_datasets_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchBatchesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_regime_datasets(&state.db_pool, bounded_backfill_runs_limit(query.limit))
+        .await
+    {
+        Ok(records) => {
+            let mut datasets = Vec::new();
+            for record in records {
+                match research_regime_dataset_read_model(&state, record.id).await {
+                    Ok(Some(dataset)) => datasets.push(dataset),
+                    Ok(None) => {}
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_research_regime_dataset",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(ResearchRegimeDatasetsResponse {
+                    datasets,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_datasets",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_regime_dataset_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match research_regime_dataset_read_model(&state, id).await {
+        Ok(Some(dataset)) => (
+            StatusCode::OK,
+            Json(ResearchRegimeDatasetResponse {
+                dataset,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_regime_dataset_not_found",
+                message: "Regime dataset not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_dataset",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_regime_dataset_windows_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_regime_windows(&state.db_pool, id).await {
+        Ok(records) => {
+            let windows = match records
+                .iter()
+                .map(research_regime_window_from_record)
+                .collect::<anyhow::Result<Vec<_>>>()
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_research_regime_windows",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(ResearchRegimeDatasetWindowsResponse {
+                    windows,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_windows",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn execute_research_campaign(
     state: &AppState,
     mut payload: ResearchCampaignRequest,
@@ -16752,6 +17041,38 @@ async fn execute_research_campaign(
     correlation_id: Uuid,
 ) -> anyhow::Result<ResearchCampaignResult> {
     payload.correlation_id = Some(correlation_id);
+    if let Some(dataset_id) = payload.regime_dataset_id {
+        let Some(dataset) = research_regime_dataset_read_model(state, dataset_id).await? else {
+            anyhow::bail!("regime dataset not found: {dataset_id}");
+        };
+        let mut windows = dataset.windows;
+        if let Some(target_regimes) = payload.target_regimes.as_ref() {
+            windows.retain(|window| target_regimes.contains(&window.regime_label));
+        }
+        if let Some(max_windows_per_regime) = payload.max_windows_per_regime {
+            let mut counts = BTreeMap::<aegis_core::ResearchRegimeLabel, u32>::new();
+            windows.retain(|window| {
+                let count = counts.entry(window.regime_label).or_insert(0);
+                if *count >= max_windows_per_regime {
+                    false
+                } else {
+                    *count += 1;
+                    true
+                }
+            });
+        }
+        payload.windows = windows
+            .into_iter()
+            .map(|window| aegis_core::ResearchCampaignWindow {
+                start_time: window.start_time,
+                end_time: window.end_time,
+                regime_label: Some(window.regime_label),
+            })
+            .collect();
+        if payload.windows.is_empty() {
+            anyhow::bail!("regime dataset did not provide any campaign windows");
+        }
+    }
     payload.validate()?;
     let plans = aegis_core::expand_research_campaign(&payload)?;
     let now = Utc::now();

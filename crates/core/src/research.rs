@@ -7,10 +7,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    calculate_strategy_rejection_rate, Candle, CandleInterval, CoreError, ExecutionReadinessStatus,
-    MarketDataQualityReport, MarketDataQualityStatus, MarketDataSource, MarketProviderHealth,
-    StrategyExitAttributionResult, StrategyWalkForwardRobustnessStatus, Symbol,
-    TestnetShadowRunnerConfig,
+    calculate_strategy_rejection_rate, summarize_candle_continuity, Candle, CandleInterval,
+    CoreError, ExecutionReadinessStatus, MarketDataQualityReport, MarketDataQualityRequest,
+    MarketDataQualityStatus, MarketDataSource, MarketProviderHealth, StrategyExitAttributionResult,
+    StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
 };
 
 const REGIME_MIN_CANDLES: usize = 5;
@@ -79,6 +79,10 @@ fn default_strategy_robustness_min_trades_per_cell() -> i32 {
 
 fn default_strategy_robustness_min_profitable_window_ratio() -> Decimal {
     Decimal::new(5, 1)
+}
+
+fn default_research_regime_dataset_require_good_data_quality() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -421,6 +425,8 @@ impl std::str::FromStr for ResearchCampaignStatus {
 pub struct ResearchCampaignWindow {
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
+    #[serde(default)]
+    pub regime_label: Option<ResearchRegimeLabel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -438,6 +444,12 @@ pub struct ResearchCampaignRequest {
     pub fee_bps: Decimal,
     pub slippage_bps: Decimal,
     pub max_batches: Option<u32>,
+    #[serde(default)]
+    pub regime_dataset_id: Option<Uuid>,
+    #[serde(default)]
+    pub target_regimes: Option<Vec<ResearchRegimeLabel>>,
+    #[serde(default)]
+    pub max_windows_per_regime: Option<u32>,
     #[serde(default = "default_research_campaign_max_candidates_per_batch")]
     pub max_candidates_per_batch: u32,
     #[serde(default = "default_research_campaign_repair_degraded_data")]
@@ -498,9 +510,11 @@ impl ResearchCampaignRequest {
         if self.walk_forward_top_n == 0 || self.max_candidates_per_batch == 0 {
             return Err(CoreError::InvalidStrategyExperimentMaxRuns);
         }
-        let windows = campaign_windows(self)?;
-        if windows.is_empty() {
-            return Err(CoreError::EmptyResearchCampaignWindows);
+        if self.regime_dataset_id.is_none() {
+            let windows = campaign_windows(self)?;
+            if windows.is_empty() {
+                return Err(CoreError::EmptyResearchCampaignWindows);
+            }
         }
         Ok(())
     }
@@ -514,6 +528,8 @@ pub struct ResearchCampaignBatchPlan {
     pub timeframe: String,
     pub start_time: DateTime<Utc>,
     pub end_time: DateTime<Utc>,
+    #[serde(default)]
+    pub regime_label: Option<ResearchRegimeLabel>,
 }
 
 impl ResearchCampaignBatchPlan {
@@ -590,8 +606,21 @@ pub struct ResearchCampaignSummary {
     pub candidates_created: i32,
     pub top_candidates: Vec<ResearchBatchCandidateSummary>,
     pub best_strategy_symbol_timeframe: Option<String>,
+    #[serde(default)]
+    pub per_regime_performance: Vec<ResearchCampaignRegimePerformance>,
     pub findings: Vec<ResearchCampaignFinding>,
     pub recommendations: Vec<ResearchCampaignRecommendation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCampaignRegimePerformance {
+    pub regime_label: ResearchRegimeLabel,
+    pub planned_batches: i32,
+    pub completed_batches: i32,
+    pub failed_batches: i32,
+    pub actionable_batches: i32,
+    pub weak_batches: i32,
+    pub candidates_created: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -615,6 +644,143 @@ pub enum ResearchRegimeLabel {
     LowVolatility,
     Mixed,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchRegimeDatasetStatus {
+    Completed,
+    Partial,
+    Failed,
+}
+
+impl ResearchRegimeDatasetStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "COMPLETED",
+            Self::Partial => "PARTIAL",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchRegimeDatasetStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "COMPLETED" => Ok(Self::Completed),
+            "PARTIAL" => Ok(Self::Partial),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedResearchRegimeDatasetStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDatasetRequest {
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub window_hours: i64,
+    pub step_hours: i64,
+    pub min_candles_per_window: i32,
+    #[serde(default)]
+    pub target_regimes: Option<Vec<ResearchRegimeLabel>>,
+    #[serde(default)]
+    pub max_windows_per_regime: Option<u32>,
+    #[serde(default = "default_research_regime_dataset_require_good_data_quality")]
+    pub require_good_data_quality: bool,
+}
+
+impl ResearchRegimeDatasetRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptySymbol);
+        }
+        self.timeframe.parse::<CandleInterval>()?;
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidResearchRegimeDatasetTimeRange);
+        }
+        if self.window_hours <= 0 || self.step_hours <= 0 {
+            return Err(CoreError::InvalidResearchRegimeDatasetWindowStep);
+        }
+        if self.min_candles_per_window <= 0 {
+            return Err(CoreError::InvalidResearchRegimeDatasetMinCandles);
+        }
+        Ok(())
+    }
+
+    pub fn target_regime_set(&self) -> Vec<ResearchRegimeLabel> {
+        self.target_regimes.clone().unwrap_or_else(|| {
+            vec![
+                ResearchRegimeLabel::TrendUp,
+                ResearchRegimeLabel::TrendDown,
+                ResearchRegimeLabel::Range,
+                ResearchRegimeLabel::HighVolatility,
+                ResearchRegimeLabel::LowVolatility,
+            ]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeWindowMetric {
+    pub name: String,
+    pub value: Decimal,
+    pub threshold: Option<Decimal>,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeWindow {
+    pub id: Uuid,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub regime_label: ResearchRegimeLabel,
+    pub return_pct: Decimal,
+    pub realized_volatility: Decimal,
+    pub avg_range_pct: Decimal,
+    pub trend_slope: Decimal,
+    pub choppiness_proxy: Decimal,
+    pub data_quality_status: MarketDataQualityStatus,
+    pub candle_count: i32,
+    pub score: Decimal,
+    pub confidence: Decimal,
+    pub metrics: Vec<ResearchRegimeWindowMetric>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchRegimeDatasetRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDatasetSummary {
+    pub total_candidate_windows: i32,
+    pub selected_windows: i32,
+    pub data_quality_blocked_windows: i32,
+    pub insufficient_candle_windows: i32,
+    pub regime_counts: BTreeMap<ResearchRegimeLabel, i32>,
+    pub missing_regimes: Vec<ResearchRegimeLabel>,
+    pub recommendations: Vec<ResearchRegimeDatasetRecommendation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDatasetResult {
+    pub dataset_id: Uuid,
+    pub status: ResearchRegimeDatasetStatus,
+    pub request: ResearchRegimeDatasetRequest,
+    pub summary: ResearchRegimeDatasetSummary,
+    pub windows: Vec<ResearchRegimeWindow>,
+    pub created_at: DateTime<Utc>,
 }
 
 impl std::str::FromStr for ResearchRegimeLabel {
@@ -2132,6 +2298,7 @@ pub fn campaign_windows(
         windows.push(ResearchCampaignWindow {
             start_time: cursor,
             end_time,
+            regime_label: None,
         });
         cursor += Duration::hours(step_hours);
     }
@@ -2155,6 +2322,7 @@ pub fn expand_research_campaign(
                         timeframe: timeframe.clone(),
                         start_time: window.start_time,
                         end_time: window.end_time,
+                        regime_label: window.regime_label,
                     });
                     if request
                         .max_batches
@@ -2167,6 +2335,270 @@ pub fn expand_research_campaign(
         }
     }
     Ok(plans)
+}
+
+pub fn build_research_regime_dataset(
+    dataset_id: Uuid,
+    request: ResearchRegimeDatasetRequest,
+    candles: &[Candle],
+    created_at: DateTime<Utc>,
+) -> Result<ResearchRegimeDatasetResult, CoreError> {
+    request.validate()?;
+    let interval = request.timeframe.parse::<CandleInterval>()?;
+    let symbol = Symbol::new(request.symbol.clone())?;
+    let target_regimes = request.target_regime_set();
+    let target_set = target_regimes.iter().copied().collect::<BTreeSet<_>>();
+    let mut candidate_windows = Vec::new();
+    let mut total_candidate_windows = 0_i32;
+    let mut data_quality_blocked_windows = 0_i32;
+    let mut insufficient_candle_windows = 0_i32;
+    let mut cursor = request.start_time;
+    let window_size = Duration::hours(request.window_hours);
+    let step_size = Duration::hours(request.step_hours);
+
+    while cursor + window_size <= request.end_time {
+        let window_start = cursor;
+        let window_end = cursor + window_size;
+        total_candidate_windows += 1;
+        let window_candles = candles
+            .iter()
+            .filter(|candle| {
+                candle.symbol == symbol
+                    && candle.interval == interval
+                    && candle.is_closed
+                    && candle.open_time >= window_start
+                    && candle.close_time <= window_end
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let quality = summarize_candle_continuity(
+            &MarketDataQualityRequest {
+                exchange: MarketDataSource::Binance,
+                symbol: request.symbol.clone(),
+                interval: request.timeframe.clone(),
+                start_time: window_start,
+                end_time: window_end,
+                expected_interval_seconds: Some(interval.duration().num_seconds()),
+                max_allowed_gap_count: Some(0),
+                max_allowed_gap_pct: Some(Decimal::ZERO),
+            },
+            &window_candles,
+            0,
+        )?;
+        if window_candles.len() < request.min_candles_per_window as usize {
+            insufficient_candle_windows += 1;
+            cursor += step_size;
+            continue;
+        }
+        if request.require_good_data_quality && quality.status != MarketDataQualityStatus::Good {
+            data_quality_blocked_windows += 1;
+            cursor += step_size;
+            continue;
+        }
+
+        let metric = classify_research_regime(
+            request.symbol.clone(),
+            request.timeframe.clone(),
+            window_start,
+            window_end,
+            &window_candles,
+        );
+        if !target_set.contains(&metric.label) {
+            cursor += step_size;
+            continue;
+        }
+        candidate_windows.push(regime_window_from_metric(metric, quality.status));
+        cursor += step_size;
+    }
+
+    let mut by_regime = BTreeMap::<ResearchRegimeLabel, Vec<ResearchRegimeWindow>>::new();
+    for window in candidate_windows {
+        by_regime
+            .entry(window.regime_label)
+            .or_default()
+            .push(window);
+    }
+
+    let mut selected = Vec::new();
+    for regime in &target_regimes {
+        if let Some(mut windows) = by_regime.remove(regime) {
+            windows.sort_by(|left, right| {
+                right
+                    .confidence
+                    .cmp(&left.confidence)
+                    .then_with(|| left.start_time.cmp(&right.start_time))
+            });
+            if let Some(max_windows) = request.max_windows_per_regime {
+                windows.truncate(max_windows as usize);
+            }
+            selected.extend(windows);
+        }
+    }
+    selected.sort_by(|left, right| {
+        left.regime_label
+            .cmp(&right.regime_label)
+            .then_with(|| right.confidence.cmp(&left.confidence))
+            .then_with(|| left.start_time.cmp(&right.start_time))
+    });
+
+    let mut regime_counts = BTreeMap::new();
+    for window in &selected {
+        *regime_counts.entry(window.regime_label).or_insert(0) += 1;
+    }
+    let missing_regimes = target_regimes
+        .iter()
+        .copied()
+        .filter(|regime| regime_counts.get(regime).copied().unwrap_or(0) == 0)
+        .collect::<Vec<_>>();
+    let recommendations = regime_dataset_recommendations(
+        &missing_regimes,
+        data_quality_blocked_windows,
+        insufficient_candle_windows,
+    );
+    let selected_windows = i32::try_from(selected.len()).unwrap_or(i32::MAX);
+    let status = if selected_windows == 0 {
+        ResearchRegimeDatasetStatus::Failed
+    } else if missing_regimes.is_empty() {
+        ResearchRegimeDatasetStatus::Completed
+    } else {
+        ResearchRegimeDatasetStatus::Partial
+    };
+
+    Ok(ResearchRegimeDatasetResult {
+        dataset_id,
+        status,
+        request,
+        summary: ResearchRegimeDatasetSummary {
+            total_candidate_windows,
+            selected_windows,
+            data_quality_blocked_windows,
+            insufficient_candle_windows,
+            regime_counts,
+            missing_regimes,
+            recommendations,
+        },
+        windows: selected,
+        created_at,
+    })
+}
+
+fn regime_window_from_metric(
+    metric: ResearchRegimeMetric,
+    data_quality_status: MarketDataQualityStatus,
+) -> ResearchRegimeWindow {
+    let trend_slope = if metric.candle_count > 0 {
+        (metric.return_pct / Decimal::from(metric.candle_count)).round_dp(8)
+    } else {
+        Decimal::ZERO
+    };
+    let confidence = regime_confidence(&metric).round_dp(4);
+    ResearchRegimeWindow {
+        id: Uuid::new_v4(),
+        symbol: metric.symbol.clone(),
+        timeframe: metric.timeframe.clone(),
+        start_time: metric.window_start,
+        end_time: metric.window_end,
+        regime_label: metric.label,
+        return_pct: metric.return_pct,
+        realized_volatility: metric.realized_volatility,
+        avg_range_pct: metric.average_candle_range_pct,
+        trend_slope,
+        choppiness_proxy: metric.choppiness_pct,
+        data_quality_status,
+        candle_count: metric.candle_count,
+        score: confidence,
+        confidence,
+        metrics: vec![
+            ResearchRegimeWindowMetric {
+                name: "return_pct".to_string(),
+                value: metric.return_pct,
+                threshold: Some(Decimal::new(3, 0)),
+                passed: metric.return_pct.abs() >= Decimal::new(3, 0),
+            },
+            ResearchRegimeWindowMetric {
+                name: "realized_volatility".to_string(),
+                value: metric.realized_volatility,
+                threshold: Some(Decimal::new(8, 0)),
+                passed: metric.realized_volatility >= Decimal::new(8, 0),
+            },
+            ResearchRegimeWindowMetric {
+                name: "directional_movement_pct".to_string(),
+                value: metric.directional_movement_pct,
+                threshold: Some(Decimal::new(55, 0)),
+                passed: metric.directional_movement_pct >= Decimal::new(55, 0),
+            },
+            ResearchRegimeWindowMetric {
+                name: "choppiness_pct".to_string(),
+                value: metric.choppiness_pct,
+                threshold: Some(Decimal::new(65, 0)),
+                passed: metric.choppiness_pct >= Decimal::new(65, 0),
+            },
+        ],
+    }
+}
+
+fn regime_confidence(metric: &ResearchRegimeMetric) -> Decimal {
+    let hundred = Decimal::new(100, 0);
+    match metric.label {
+        ResearchRegimeLabel::HighVolatility => (metric.realized_volatility * Decimal::new(10, 0))
+            .max(metric.average_candle_range_pct * Decimal::new(10, 0))
+            .min(hundred),
+        ResearchRegimeLabel::TrendUp | ResearchRegimeLabel::TrendDown => (metric.return_pct.abs()
+            * Decimal::new(12, 0)
+            + metric.directional_movement_pct / Decimal::new(2, 0))
+        .min(hundred),
+        ResearchRegimeLabel::Range => (metric.choppiness_pct
+            + (Decimal::new(5, 0) - metric.return_pct.abs()).max(Decimal::ZERO)
+                * Decimal::new(5, 0))
+        .min(hundred),
+        ResearchRegimeLabel::LowVolatility => {
+            (hundred - (metric.realized_volatility * Decimal::new(20, 0))).max(Decimal::ZERO)
+        }
+        ResearchRegimeLabel::Mixed => Decimal::new(50, 0),
+        ResearchRegimeLabel::Unknown => Decimal::ZERO,
+    }
+}
+
+fn regime_dataset_recommendations(
+    missing_regimes: &[ResearchRegimeLabel],
+    data_quality_blocked_windows: i32,
+    insufficient_candle_windows: i32,
+) -> Vec<ResearchRegimeDatasetRecommendation> {
+    let mut recommendations = Vec::new();
+    if missing_regimes.contains(&ResearchRegimeLabel::TrendUp)
+        || missing_regimes.contains(&ResearchRegimeLabel::TrendDown)
+    {
+        recommendations.push(ResearchRegimeDatasetRecommendation {
+            priority: "MEDIUM".to_string(),
+            code: "expand_trend_history".to_string(),
+            message:
+                "Research dataset lacks trend regimes; extend the historical window or add symbols."
+                    .to_string(),
+        });
+    }
+    if missing_regimes.contains(&ResearchRegimeLabel::HighVolatility) {
+        recommendations.push(ResearchRegimeDatasetRecommendation {
+            priority: "MEDIUM".to_string(),
+            code: "expand_high_volatility_history".to_string(),
+            message:
+                "Research dataset lacks high-volatility regimes; include known stress windows."
+                    .to_string(),
+        });
+    }
+    if data_quality_blocked_windows > 0 || insufficient_candle_windows > 0 {
+        recommendations.push(ResearchRegimeDatasetRecommendation {
+            priority: "LOW".to_string(),
+            code: "repair_market_data".to_string(),
+            message: "Repair or backfill candle gaps before judging missing regimes.".to_string(),
+        });
+    }
+    recommendations.push(ResearchRegimeDatasetRecommendation {
+        priority: "LOW".to_string(),
+        code: "research_only".to_string(),
+        message: "Regime datasets are research-only and must not auto-promote candidates or submit orders."
+            .to_string(),
+    });
+    recommendations
 }
 
 pub fn summarize_research_campaign(
@@ -2223,6 +2655,7 @@ pub fn summarize_research_campaign(
             candidate.strategy_id, candidate.symbol, candidate.timeframe
         )
     });
+    let per_regime_performance = summarize_research_campaign_regimes(batches);
 
     let mut findings = Vec::new();
     let mut recommendations = Vec::new();
@@ -2287,9 +2720,51 @@ pub fn summarize_research_campaign(
         candidates_created,
         top_candidates,
         best_strategy_symbol_timeframe,
+        per_regime_performance,
         findings,
         recommendations,
     }
+}
+
+fn summarize_research_campaign_regimes(
+    batches: &[ResearchCampaignBatchResult],
+) -> Vec<ResearchCampaignRegimePerformance> {
+    let mut by_regime = BTreeMap::<ResearchRegimeLabel, ResearchCampaignRegimePerformance>::new();
+    for batch in batches {
+        let Some(regime_label) = batch.plan.regime_label else {
+            continue;
+        };
+        let entry =
+            by_regime
+                .entry(regime_label)
+                .or_insert_with(|| ResearchCampaignRegimePerformance {
+                    regime_label,
+                    planned_batches: 0,
+                    completed_batches: 0,
+                    failed_batches: 0,
+                    actionable_batches: 0,
+                    weak_batches: 0,
+                    candidates_created: 0,
+                });
+        entry.planned_batches += 1;
+        if batch.error.is_none() && batch.batch_status != Some(ResearchBatchStatus::Failed) {
+            entry.completed_batches += 1;
+        }
+        if batch.error.is_some()
+            || batch.batch_status == Some(ResearchBatchStatus::Failed)
+            || batch.triage_status == ResearchBatchTriageStatus::Failed
+        {
+            entry.failed_batches += 1;
+        }
+        if batch.triage_status == ResearchBatchTriageStatus::Actionable {
+            entry.actionable_batches += 1;
+        }
+        if batch.triage_status == ResearchBatchTriageStatus::Weak {
+            entry.weak_batches += 1;
+        }
+        entry.candidates_created += batch.candidates_created;
+    }
+    by_regime.into_values().collect()
 }
 
 pub fn status_from_campaign_summary(summary: &ResearchCampaignSummary) -> ResearchCampaignStatus {
@@ -9442,6 +9917,9 @@ mod tests {
             fee_bps: Decimal::new(10, 0),
             slippage_bps: Decimal::new(5, 0),
             max_batches: None,
+            regime_dataset_id: None,
+            target_regimes: None,
+            max_windows_per_regime: None,
             max_candidates_per_batch: 2,
             repair_degraded_data: true,
             walk_forward_top_n: 3,
@@ -9476,6 +9954,7 @@ mod tests {
                 timeframe: "5m".to_string(),
                 start_time: ts(1, 0, 0),
                 end_time: ts(2, 0, 0),
+                regime_label: None,
             },
             research_batch_id: Some(Uuid::from_u128(plan_index as u128)),
             batch_status: Some(if status == ResearchBatchTriageStatus::Failed {
@@ -9537,6 +10016,87 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn decimal_regime_candles(closes: &[&str]) -> Vec<Candle> {
+        closes
+            .windows(2)
+            .enumerate()
+            .map(|(index, pair)| {
+                let open = pair[0].parse::<Decimal>().unwrap();
+                let close = pair[1].parse::<Decimal>().unwrap();
+                Candle {
+                    id: Uuid::new_v4(),
+                    exchange: MarketDataSource::Binance,
+                    symbol: Symbol::new("BTCUSDT").unwrap(),
+                    interval: CandleInterval::OneMinute,
+                    open_time: ts(0, index as u32, 0),
+                    close_time: ts(0, index as u32, 59),
+                    open,
+                    high: open.max(close),
+                    low: open.min(close),
+                    close,
+                    volume: Decimal::ONE,
+                    quote_volume: None,
+                    trade_count: 1,
+                    is_closed: true,
+                    created_at: ts(0, index as u32, 59),
+                    updated_at: ts(0, index as u32, 59),
+                }
+            })
+            .collect()
+    }
+
+    fn dataset_range_candles(hours: u32) -> Vec<Candle> {
+        let mut candles = Vec::new();
+        for hour in 0..hours {
+            for minute in 0..6 {
+                let open = if minute % 2 == 0 {
+                    Decimal::new(100, 0)
+                } else {
+                    Decimal::new(101, 0)
+                };
+                let close = if minute % 2 == 0 {
+                    Decimal::new(101, 0)
+                } else {
+                    Decimal::new(100, 0)
+                };
+                candles.push(Candle {
+                    id: Uuid::new_v4(),
+                    exchange: MarketDataSource::Binance,
+                    symbol: Symbol::new("BTCUSDT").unwrap(),
+                    interval: CandleInterval::OneMinute,
+                    open_time: ts(hour, minute, 0),
+                    close_time: ts(hour, minute, 59),
+                    open,
+                    high: open.max(close),
+                    low: open.min(close),
+                    close,
+                    volume: Decimal::ONE,
+                    quote_volume: None,
+                    trade_count: 1,
+                    is_closed: true,
+                    created_at: ts(hour, minute, 59),
+                    updated_at: ts(hour, minute, 59),
+                });
+            }
+        }
+        candles
+    }
+
+    fn regime_dataset_request(max_windows_per_regime: Option<u32>) -> ResearchRegimeDatasetRequest {
+        ResearchRegimeDatasetRequest {
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            start_time: ts(0, 0, 0),
+            end_time: ts(3, 0, 0),
+            window_hours: 1,
+            step_hours: 1,
+            min_candles_per_window: 5,
+            target_regimes: Some(vec![ResearchRegimeLabel::Range]),
+            max_windows_per_regime,
+            require_good_data_quality: false,
+        }
     }
 
     fn sample_failure_input() -> ResearchCandidateFailureInput {
@@ -9734,6 +10294,14 @@ mod tests {
     }
 
     #[test]
+    fn regime_classification_detects_trend_down() {
+        let candles = regime_candles(&[112, 110, 108, 106, 104, 102, 100]);
+        let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
+
+        assert_eq!(metric.label, ResearchRegimeLabel::TrendDown);
+    }
+
+    #[test]
     fn regime_classification_detects_range() {
         let candles = regime_candles(&[100, 101, 100, 101, 100, 101, 100]);
         let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
@@ -9747,6 +10315,84 @@ mod tests {
         let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
 
         assert_eq!(metric.label, ResearchRegimeLabel::HighVolatility);
+    }
+
+    #[test]
+    fn regime_classification_detects_low_volatility() {
+        let candles = decimal_regime_candles(&["100", "100.4", "100.8", "101.2", "101.6", "102.0"]);
+        let metric = classify_research_regime("BTCUSDT", "5m", ts(0, 0, 0), ts(1, 0, 0), &candles);
+
+        assert_eq!(metric.label, ResearchRegimeLabel::LowVolatility);
+    }
+
+    #[test]
+    fn regime_dataset_window_generation_is_deterministic() {
+        let candles = dataset_range_candles(3);
+        let request = regime_dataset_request(None);
+
+        let first = build_research_regime_dataset(
+            Uuid::from_u128(1),
+            request.clone(),
+            &candles,
+            ts(3, 0, 0),
+        )
+        .expect("dataset should build");
+        let second =
+            build_research_regime_dataset(Uuid::from_u128(1), request, &candles, ts(3, 0, 0))
+                .expect("dataset should build");
+
+        assert_eq!(first.summary.selected_windows, 3);
+        assert_eq!(
+            first
+                .windows
+                .iter()
+                .map(|window| (window.start_time, window.end_time, window.regime_label))
+                .collect::<Vec<_>>(),
+            second
+                .windows
+                .iter()
+                .map(|window| (window.start_time, window.end_time, window.regime_label))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn regime_dataset_max_windows_per_regime_is_enforced() {
+        let candles = dataset_range_candles(3);
+        let request = regime_dataset_request(Some(2));
+
+        let dataset =
+            build_research_regime_dataset(Uuid::from_u128(1), request, &candles, ts(3, 0, 0))
+                .expect("dataset should build");
+
+        assert_eq!(
+            dataset
+                .summary
+                .regime_counts
+                .get(&ResearchRegimeLabel::Range)
+                .copied(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn regime_dataset_reports_missing_regimes() {
+        let candles = dataset_range_candles(1);
+        let mut request = regime_dataset_request(None);
+        request.target_regimes = Some(vec![
+            ResearchRegimeLabel::Range,
+            ResearchRegimeLabel::TrendUp,
+        ]);
+
+        let dataset =
+            build_research_regime_dataset(Uuid::from_u128(1), request, &candles, ts(3, 0, 0))
+                .expect("dataset should build");
+
+        assert_eq!(dataset.status, ResearchRegimeDatasetStatus::Partial);
+        assert!(dataset
+            .summary
+            .missing_regimes
+            .contains(&ResearchRegimeLabel::TrendUp));
     }
 
     #[test]

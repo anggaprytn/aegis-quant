@@ -82,6 +82,10 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  ResearchRegimeDatasetRequest,
+  ResearchRegimeDatasetResponse,
+  ResearchRegimeDatasetsResponse,
+  ResearchRegimeDatasetWindowsResponse,
   ResearchCandidateQualificationResponse,
   ResearchCandidateQualificationEvaluateResponse,
   ResearchCandidateQualificationHistoryResponse,
@@ -448,6 +452,17 @@ export const api = {
     request<ResearchDatasetBuildsResponse>("/research/data/builds", undefined, { limit }),
   getResearchDatasetBuild: (id: string) =>
     request<ResearchDatasetBuildResponse>(`/research/data/builds/${id}`),
+  buildResearchRegimeDataset: (payload: ResearchRegimeDatasetRequest) =>
+    request<ResearchRegimeDatasetResponse>("/research/regime-datasets/build", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchRegimeDatasets: (limit = 20) =>
+    request<ResearchRegimeDatasetsResponse>("/research/regime-datasets", undefined, { limit }),
+  getResearchRegimeDataset: (id: string) =>
+    request<ResearchRegimeDatasetResponse>(`/research/regime-datasets/${id}`),
+  getResearchRegimeDatasetWindows: (id: string) =>
+    request<ResearchRegimeDatasetWindowsResponse>(`/research/regime-datasets/${id}/windows`),
   runResearchBatch: (payload: ResearchBatchRequest) =>
     request<ResearchBatchResponse>("/research/batches/run", {
       method: "POST",

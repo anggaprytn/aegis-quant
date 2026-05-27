@@ -44,6 +44,9 @@ import type {
   ResearchCampaignResult,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
+  ResearchRegimeDatasetRequest,
+  ResearchRegimeDatasetResult,
+  ResearchRegimeWindow,
   ResearchCandidateObservationHistoryItem,
   ResearchCandidateQualificationResult,
   ResearchCandidateObservationSummary,
@@ -407,6 +410,19 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   lower_band_pct_candidates: ["10", "20", "30"],
   min_range_width_pct_candidates: ["0.15"],
   max_range_width_pct_candidates: ["3.0"],
+};
+
+const DEFAULT_RESEARCH_REGIME_DATASET_FORM: ResearchRegimeDatasetRequest = {
+  symbol: "BTCUSDT",
+  timeframe: "15m",
+  start_time: "2024-01-01T00:00:00Z",
+  end_time: "2024-02-01T00:00:00Z",
+  window_hours: 24,
+  step_hours: 12,
+  min_candles_per_window: 80,
+  target_regimes: ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY", "LOW_VOLATILITY"],
+  max_windows_per_regime: 20,
+  require_good_data_quality: true,
 };
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
@@ -924,6 +940,12 @@ function AuthenticatedDashboard({
     useState<ResearchDataCoverageResult | null>(null);
   const [lastResearchBuild, setLastResearchBuild] =
     useState<ResearchDatasetBuildResult | null>(null);
+  const [researchRegimeDatasetForm, setResearchRegimeDatasetForm] =
+    useState<ResearchRegimeDatasetRequest>(DEFAULT_RESEARCH_REGIME_DATASET_FORM);
+  const [selectedResearchRegimeDatasetId, setSelectedResearchRegimeDatasetId] =
+    useState<string | null>(null);
+  const [lastResearchRegimeDataset, setLastResearchRegimeDataset] =
+    useState<ResearchRegimeDatasetResult | null>(null);
   const [researchBatchForm, setResearchBatchForm] =
     useState<ResearchBatchRequest>(DEFAULT_RESEARCH_BATCH_FORM);
   const [selectedResearchBatchId, setSelectedResearchBatchId] = useState<string | null>(null);
@@ -1332,6 +1354,22 @@ function AuthenticatedDashboard({
     queryKey: ["research-build", selectedResearchBuildId],
     queryFn: () => api.getResearchDatasetBuild(selectedResearchBuildId ?? ""),
     enabled: Boolean(selectedResearchBuildId),
+  });
+  const researchRegimeDatasetsQuery = useQuery({
+    queryKey: ["research-regime-datasets"],
+    queryFn: () => api.listResearchRegimeDatasets(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchRegimeDatasetQuery = useQuery({
+    queryKey: ["research-regime-dataset", selectedResearchRegimeDatasetId],
+    queryFn: () => api.getResearchRegimeDataset(selectedResearchRegimeDatasetId ?? ""),
+    enabled: Boolean(selectedResearchRegimeDatasetId),
+  });
+  const selectedResearchRegimeDatasetWindowsQuery = useQuery({
+    queryKey: ["research-regime-dataset-windows", selectedResearchRegimeDatasetId],
+    queryFn: () => api.getResearchRegimeDatasetWindows(selectedResearchRegimeDatasetId ?? ""),
+    enabled: Boolean(selectedResearchRegimeDatasetId),
   });
   const researchBatchesQuery = useQuery({
     queryKey: ["research-batches"],
@@ -1747,6 +1785,14 @@ function AuthenticatedDashboard({
       setSelectedResearchBuildId(researchBuildsQuery.data.builds[0].build_id);
     }
   }, [researchBuildsQuery.data?.builds, selectedResearchBuildId]);
+
+  useEffect(() => {
+    if (!selectedResearchRegimeDatasetId && researchRegimeDatasetsQuery.data?.datasets[0]) {
+      setSelectedResearchRegimeDatasetId(
+        researchRegimeDatasetsQuery.data.datasets[0].dataset_id,
+      );
+    }
+  }, [researchRegimeDatasetsQuery.data?.datasets, selectedResearchRegimeDatasetId]);
 
   useEffect(() => {
     if (!selectedResearchBatchId && researchBatchesQuery.data?.batches[0]) {
@@ -2379,6 +2425,16 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
     },
   });
+  const researchRegimeDatasetMutation = useMutation({
+    mutationFn: () => api.buildResearchRegimeDataset(researchRegimeDatasetForm),
+    onSuccess: async (response) => {
+      setLastResearchRegimeDataset(response.dataset);
+      setSelectedResearchRegimeDatasetId(response.dataset.dataset_id);
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-datasets"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-dataset"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-dataset-windows"] });
+    },
+  });
   const researchCampaignMutation = useMutation({
     mutationFn: () => api.runResearchCampaign(researchCampaignForm),
     onSuccess: async (response) => {
@@ -2571,6 +2627,13 @@ function AuthenticatedDashboard({
   const strategyExperiments = strategyExperimentsQuery.data?.experiments ?? [];
   const strategyWalkForwards = strategyWalkForwardsQuery.data?.walk_forwards ?? [];
   const researchBatches = researchBatchesQuery.data?.batches ?? [];
+  const researchRegimeDatasets = researchRegimeDatasetsQuery.data?.datasets ?? [];
+  const selectedResearchRegimeDataset: ResearchRegimeDatasetResult | null =
+    selectedResearchRegimeDatasetQuery.data?.dataset ?? lastResearchRegimeDataset;
+  const selectedResearchRegimeWindows: ResearchRegimeWindow[] =
+    selectedResearchRegimeDatasetWindowsQuery.data?.windows ??
+    selectedResearchRegimeDataset?.windows ??
+    [];
   const selectedResearchBatch: ResearchBatchResult | null =
     selectedResearchBatchQuery.data?.batch ?? lastResearchBatch;
   const researchCampaigns = researchCampaignsQuery.data?.campaigns ?? [];
@@ -5446,6 +5509,156 @@ function AuthenticatedDashboard({
           {section === "experiments" && (
             <section className="grid gap-4 xl:grid-cols-12">
               <ResearchRobustnessMatrixPanel />
+              <Panel className="xl:col-span-12" title="Regime Datasets">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <Field
+                    label="Symbol"
+                    value={researchRegimeDatasetForm.symbol}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({ ...current, symbol: value }))
+                    }
+                  />
+                  <Field
+                    label="Timeframe"
+                    value={researchRegimeDatasetForm.timeframe}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({ ...current, timeframe: value }))
+                    }
+                  />
+                  <Field
+                    label="Start"
+                    value={researchRegimeDatasetForm.start_time}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({ ...current, start_time: value }))
+                    }
+                  />
+                  <Field
+                    label="End"
+                    value={researchRegimeDatasetForm.end_time}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({ ...current, end_time: value }))
+                    }
+                  />
+                  <Field
+                    label="Window Hours"
+                    value={String(researchRegimeDatasetForm.window_hours)}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({
+                        ...current,
+                        window_hours: Number(value) || 24,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Step Hours"
+                    value={String(researchRegimeDatasetForm.step_hours)}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({
+                        ...current,
+                        step_hours: Number(value) || 12,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Min Candles"
+                    value={String(researchRegimeDatasetForm.min_candles_per_window)}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({
+                        ...current,
+                        min_candles_per_window: Number(value) || 5,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max / Regime"
+                    value={String(researchRegimeDatasetForm.max_windows_per_regime ?? "")}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({
+                        ...current,
+                        max_windows_per_regime: value ? Number(value) || null : null,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Target Regimes"
+                    value={researchRegimeDatasetForm.target_regimes?.join(",") ?? ""}
+                    onChange={(value) =>
+                      setResearchRegimeDatasetForm((current) => ({
+                        ...current,
+                        target_regimes: parseStringList(value) as ResearchRegimeDatasetRequest["target_regimes"],
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={researchRegimeDatasetForm.require_good_data_quality ?? true}
+                      onChange={(event) =>
+                        setResearchRegimeDatasetForm((current) => ({
+                          ...current,
+                          require_good_data_quality: event.target.checked,
+                        }))
+                      }
+                    />
+                    Require good data quality
+                  </label>
+                  <ActionButton
+                    label="Build Dataset"
+                    onClick={() => researchRegimeDatasetMutation.mutate()}
+                    busy={researchRegimeDatasetMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(researchRegimeDatasetMutation.error)}
+                    success={
+                      lastResearchRegimeDataset
+                        ? `Dataset ${shortenId(lastResearchRegimeDataset.dataset_id)} ${lastResearchRegimeDataset.status}`
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <ResearchRegimeDatasetsTable
+                    datasets={researchRegimeDatasets}
+                    selectedId={selectedResearchRegimeDatasetId}
+                    onSelect={setSelectedResearchRegimeDatasetId}
+                  />
+                  <ResearchRegimeSummaryTable dataset={selectedResearchRegimeDataset} />
+                  <div>
+                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+                      Recommendations
+                    </div>
+                    <SimpleList
+                      items={[
+                        ...(selectedResearchRegimeDataset?.summary.missing_regimes.length
+                          ? [
+                              `Missing regimes: ${selectedResearchRegimeDataset.summary.missing_regimes.join(", ")}`,
+                            ]
+                          : []),
+                        ...(selectedResearchRegimeDataset?.summary.recommendations ?? []).map(
+                          (recommendation) =>
+                            `${recommendation.priority} ${recommendation.code}: ${recommendation.message}`,
+                        ),
+                      ]}
+                    />
+                    <InlineStatus
+                      error={getErrorMessage(selectedResearchRegimeDatasetQuery.error)}
+                      success={selectedResearchRegimeDatasetQuery.isLoading ? "Loading dataset" : undefined}
+                    />
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <ResearchRegimeWindowsTable windows={selectedResearchRegimeWindows} />
+                  <InlineStatus
+                    error={getErrorMessage(selectedResearchRegimeDatasetWindowsQuery.error)}
+                    success={
+                      selectedResearchRegimeDatasetWindowsQuery.isLoading ? "Loading windows" : undefined
+                    }
+                  />
+                </div>
+              </Panel>
               <Panel className="xl:col-span-12" title="Research Campaigns">
                 <div className="grid gap-3 md:grid-cols-4">
                   <Field
@@ -5552,6 +5765,36 @@ function AuthenticatedDashboard({
                       setResearchCampaignForm((current) => ({
                         ...current,
                         max_batches: value ? Number(value) || null : null,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Regime Dataset ID"
+                    value={researchCampaignForm.regime_dataset_id ?? ""}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        regime_dataset_id: value || null,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Target Regimes"
+                    value={researchCampaignForm.target_regimes?.join(",") ?? ""}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        target_regimes: parseStringList(value) as ResearchCampaignRequest["target_regimes"],
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Windows / Regime"
+                    value={String(researchCampaignForm.max_windows_per_regime ?? "")}
+                    onChange={(value) =>
+                      setResearchCampaignForm((current) => ({
+                        ...current,
+                        max_windows_per_regime: value ? Number(value) || null : null,
                       }))
                     }
                   />
@@ -9628,6 +9871,109 @@ function ResearchCampaignsTable({
   );
 }
 
+function ResearchRegimeDatasetsTable({
+  datasets,
+  selectedId,
+  onSelect,
+}: {
+  datasets: ResearchRegimeDatasetResult[];
+  selectedId: string | null;
+  onSelect: (datasetId: string) => void;
+}) {
+  if (!datasets.length) {
+    return <EmptyState label="No regime datasets found." />;
+  }
+
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Recent Datasets
+      </div>
+      <div className="space-y-2">
+        {datasets.map((dataset) => (
+          <button
+            key={dataset.dataset_id}
+            className={cn(
+              "w-full rounded-xl border p-3 text-left",
+              dataset.dataset_id === selectedId
+                ? "border-accent bg-accent/5"
+                : "border-border bg-surface/60",
+            )}
+            onClick={() => onSelect(dataset.dataset_id)}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-mono text-xs">{shortenId(dataset.dataset_id)}</span>
+              <span className="text-xs uppercase text-muted">{dataset.status}</span>
+            </div>
+            <div className="mt-1 text-xs text-slate-300">
+              {dataset.request.symbol} {dataset.request.timeframe} selected=
+              {dataset.summary.selected_windows} missing={dataset.summary.missing_regimes.length}
+            </div>
+            <div className="mt-1 text-xs text-muted">{formatDateTime(dataset.created_at)}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ResearchRegimeSummaryTable({ dataset }: { dataset: ResearchRegimeDatasetResult | null }) {
+  const counts = dataset?.summary.regime_counts ?? {};
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Regime Summary
+      </div>
+      <Table
+        headers={["Regime", "Windows"]}
+        rows={["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY", "LOW_VOLATILITY"].map(
+          (regime) => [regime, String(counts[regime as keyof typeof counts] ?? 0)],
+        )}
+      />
+      {dataset?.summary.missing_regimes.length ? (
+        <div className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 p-2 text-xs text-amber-100">
+          Missing: {dataset.summary.missing_regimes.join(", ")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ResearchRegimeWindowsTable({ windows }: { windows: ResearchRegimeWindow[] }) {
+  if (!windows.length) {
+    return <EmptyState label="No regime windows." />;
+  }
+
+  return (
+    <Table
+      headers={[
+        "Regime",
+        "Symbol",
+        "Window",
+        "Confidence",
+        "Return %",
+        "Vol",
+        "Range",
+        "Chop",
+        "Quality",
+        "Candles",
+      ]}
+      rows={windows.slice(0, 80).map((window) => [
+        window.regime_label,
+        `${window.symbol} ${window.timeframe}`,
+        `${formatDateTime(window.start_time)} -> ${formatDateTime(window.end_time)}`,
+        window.confidence,
+        window.return_pct,
+        window.realized_volatility,
+        window.avg_range_pct,
+        window.choppiness_proxy,
+        window.data_quality_status,
+        String(window.candle_count),
+      ])}
+    />
+  );
+}
+
 function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatchResult[] }) {
   if (!batches.length) {
     return <EmptyState label="No campaign batches." />;
@@ -9635,12 +9981,13 @@ function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatc
 
   return (
     <Table
-      headers={["Plan", "Strategy", "Symbol", "TF", "Window", "Triage", "Candidates", "Error"]}
+      headers={["Plan", "Strategy", "Symbol", "TF", "Regime", "Window", "Triage", "Candidates", "Error"]}
       rows={batches.map((batch) => [
         String(batch.plan.plan_index),
         batch.plan.strategy_id,
         batch.plan.symbol,
         batch.plan.timeframe,
+        batch.plan.regime_label ?? "-",
         `${formatDateTime(batch.plan.start_time)} -> ${formatDateTime(batch.plan.end_time)}`,
         batch.triage_status,
         String(batch.candidates_created),

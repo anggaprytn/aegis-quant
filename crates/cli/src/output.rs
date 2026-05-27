@@ -10,8 +10,9 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult,
-    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, User,
+    ResearchCandidateWatchlistEntry, ResearchRegimeDatasetResult, ResearchRegimeWindow,
+    ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
+    StrategyRobustnessMatrixResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -159,6 +160,104 @@ pub fn print_research_campaign(campaign: &ResearchCampaignResult) {
     print_research_campaign_summary(&campaign.summary);
 }
 
+pub fn print_research_regime_dataset(dataset: &ResearchRegimeDatasetResult) {
+    println!("Regime dataset: {}", dataset.dataset_id);
+    println!("Status: {}", dataset.status.as_str());
+    println!(
+        "Scope: {} {} {} -> {}",
+        dataset.request.symbol,
+        dataset.request.timeframe,
+        dataset.request.start_time,
+        dataset.request.end_time
+    );
+    println!(
+        "Windows: candidates={} selected={} data_quality_blocked={} insufficient_candles={}",
+        dataset.summary.total_candidate_windows,
+        dataset.summary.selected_windows,
+        dataset.summary.data_quality_blocked_windows,
+        dataset.summary.insufficient_candle_windows
+    );
+    print_regime_counts(dataset);
+    if !dataset.summary.missing_regimes.is_empty() {
+        println!(
+            "Missing regimes: {}",
+            dataset
+                .summary
+                .missing_regimes
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("Top windows:");
+    for window in dataset.windows.iter().take(10) {
+        println!(
+            "  {} {} -> {} confidence={} return_pct={} vol={} quality={} candles={}",
+            window.regime_label.as_str(),
+            window.start_time,
+            window.end_time,
+            window.confidence,
+            window.return_pct,
+            window.realized_volatility,
+            window.data_quality_status.as_str(),
+            window.candle_count
+        );
+    }
+    if !dataset.summary.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &dataset.summary.recommendations {
+            println!(
+                "  {} {}: {}",
+                recommendation.priority, recommendation.code, recommendation.message
+            );
+        }
+    }
+}
+
+pub fn print_research_regime_datasets(datasets: &[ResearchRegimeDatasetResult]) {
+    println!("Regime datasets:");
+    for dataset in datasets {
+        println!(
+            "  {} status={} {} {} selected={} missing={} created={}",
+            dataset.dataset_id,
+            dataset.status.as_str(),
+            dataset.request.symbol,
+            dataset.request.timeframe,
+            dataset.summary.selected_windows,
+            dataset.summary.missing_regimes.len(),
+            dataset.created_at
+        );
+    }
+}
+
+pub fn print_research_regime_windows(windows: &[ResearchRegimeWindow]) {
+    println!("Regime windows:");
+    for window in windows {
+        println!(
+            "  {} {} {} -> {} confidence={} return_pct={} vol={} range={} chop={} quality={} candles={}",
+            window.regime_label.as_str(),
+            window.symbol,
+            window.start_time,
+            window.end_time,
+            window.confidence,
+            window.return_pct,
+            window.realized_volatility,
+            window.avg_range_pct,
+            window.choppiness_proxy,
+            window.data_quality_status.as_str(),
+            window.candle_count
+        );
+    }
+}
+
+fn print_regime_counts(dataset: &ResearchRegimeDatasetResult) {
+    println!("Regime counts:");
+    for (regime, count) in &dataset.summary.regime_counts {
+        println!("  {}: {}", regime.as_str(), count);
+    }
+}
+
 pub fn print_research_campaigns(campaigns: &[ResearchCampaignResult]) {
     println!("Research campaigns:");
     for campaign in campaigns {
@@ -224,6 +323,21 @@ pub fn print_research_campaign_summary(summary: &ResearchCampaignSummary) {
             .as_deref()
             .unwrap_or("-")
     );
+    if !summary.per_regime_performance.is_empty() {
+        println!("Per-regime performance:");
+        for regime in &summary.per_regime_performance {
+            println!(
+                "  {} planned={} completed={} failed={} actionable={} weak={} candidates={}",
+                regime.regime_label.as_str(),
+                regime.planned_batches,
+                regime.completed_batches,
+                regime.failed_batches,
+                regime.actionable_batches,
+                regime.weak_batches,
+                regime.candidates_created
+            );
+        }
+    }
     if !summary.top_candidates.is_empty() {
         println!("Top candidates:");
         for candidate in summary.top_candidates.iter().take(10) {

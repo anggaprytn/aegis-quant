@@ -22,7 +22,8 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
+    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult, ResearchRegimeLabel,
+    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
     StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
@@ -807,6 +808,40 @@ impl ApiClient {
     ) -> Result<ResearchCampaignFailureAttributionResponse, ApiClientError> {
         self.get(
             &format!("/research/campaigns/{campaign_id}/failure-attribution"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn build_research_regime_dataset(
+        &self,
+        request: &ResearchRegimeDatasetRequest,
+    ) -> Result<ResearchRegimeDatasetResponse, ApiClientError> {
+        self.post("/research/regime-datasets/build", request).await
+    }
+
+    pub async fn list_research_regime_datasets(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchRegimeDatasetsResponse, ApiClientError> {
+        self.get("/research/regime-datasets", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_research_regime_dataset(
+        &self,
+        dataset_id: Uuid,
+    ) -> Result<ResearchRegimeDatasetResponse, ApiClientError> {
+        self.get(&format!("/research/regime-datasets/{dataset_id}"), &[])
+            .await
+    }
+
+    pub async fn get_research_regime_dataset_windows(
+        &self,
+        dataset_id: Uuid,
+    ) -> Result<ResearchRegimeDatasetWindowsResponse, ApiClientError> {
+        self.get(
+            &format!("/research/regime-datasets/{dataset_id}/windows"),
             &[],
         )
         .await
@@ -2560,6 +2595,30 @@ pub struct ResearchCampaignFailureAttributionResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeDatasetResponse {
+    pub dataset: ResearchRegimeDatasetResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeDatasetsResponse {
+    pub datasets: Vec<ResearchRegimeDatasetResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeDatasetWindowsResponse {
+    pub windows: Vec<ResearchRegimeWindow>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidatesResponse {
     pub candidates: Vec<ResearchCandidate>,
@@ -3906,6 +3965,16 @@ pub fn build_research_batch_request(
 pub fn build_research_campaign_request(
     args: &crate::cli::ResearchCampaignRunArgs,
 ) -> anyhow::Result<ResearchCampaignRequest> {
+    let target_regimes = args
+        .target_regimes
+        .as_ref()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| value.parse::<ResearchRegimeLabel>())
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
     let request = ResearchCampaignRequest {
         strategies: args.strategies.clone(),
         symbols: args.symbols.clone(),
@@ -3919,6 +3988,9 @@ pub fn build_research_campaign_request(
         fee_bps: args.fee_bps,
         slippage_bps: args.slippage_bps,
         max_batches: args.max_batches,
+        regime_dataset_id: args.regime_dataset_id,
+        target_regimes,
+        max_windows_per_regime: args.max_windows_per_regime,
         max_candidates_per_batch: args.max_candidates_per_batch,
         repair_degraded_data: !args.no_repair_degraded_data,
         walk_forward_top_n: args.walk_forward_top_n,
@@ -3940,6 +4012,37 @@ pub fn build_research_campaign_request(
     request
         .validate()
         .context("invalid research campaign request")?;
+    Ok(request)
+}
+
+pub fn build_research_regime_dataset_request(
+    args: &crate::cli::ResearchRegimeDatasetBuildArgs,
+) -> anyhow::Result<ResearchRegimeDatasetRequest> {
+    let target_regimes = args
+        .target_regimes
+        .as_ref()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| value.parse::<ResearchRegimeLabel>())
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let request = ResearchRegimeDatasetRequest {
+        symbol: args.symbol.clone(),
+        timeframe: args.timeframe.clone(),
+        start_time: args.start,
+        end_time: args.end,
+        window_hours: args.window_hours,
+        step_hours: args.step_hours,
+        min_candles_per_window: args.min_candles_per_window,
+        target_regimes,
+        max_windows_per_regime: args.max_windows_per_regime,
+        require_good_data_quality: !args.allow_degraded_data,
+    };
+    request
+        .validate()
+        .context("invalid research regime dataset request")?;
     Ok(request)
 }
 

@@ -13,8 +13,8 @@ use cli::api::{
     build_multi_timeframe_strategy_experiment_request, build_pipeline_request,
     build_research_batch_request, build_research_campaign_request,
     build_research_data_build_request, build_research_data_coverage_query,
-    build_research_robustness_matrix_request, build_risk_config_request,
-    build_strategy_config_request, build_strategy_experiment_request,
+    build_research_regime_dataset_request, build_research_robustness_matrix_request,
+    build_risk_config_request, build_strategy_config_request, build_strategy_experiment_request,
     build_strategy_walk_forward_request, ApiClient, ApiClientError,
     CreateResearchCandidateFromExperimentRunRequest, CreateResearchCandidateRequest,
     RecentEventsQuery, ResearchCandidatesQuery, RiskDecisionsQuery,
@@ -26,9 +26,9 @@ use cli::cli::{
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
     ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
-    ResearchRobustnessMatrixCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
-    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
-    TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchRegimeDatasetCommands, ResearchRobustnessMatrixCommands, RiskCommands,
+    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -609,6 +609,43 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_dataset_build(&response.build);
+                    }
+                }
+            },
+            ResearchCommands::RegimeDatasets(command) => match command {
+                ResearchRegimeDatasetCommands::Build(args) => {
+                    let request = build_research_regime_dataset_request(&args)?;
+                    let response = client.build_research_regime_dataset(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_dataset(&response.dataset);
+                    }
+                }
+                ResearchRegimeDatasetCommands::List(args) => {
+                    let response = client.list_research_regime_datasets(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_datasets(&response.datasets);
+                    }
+                }
+                ResearchRegimeDatasetCommands::Get { dataset_id } => {
+                    let response = client.get_research_regime_dataset(dataset_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_dataset(&response.dataset);
+                    }
+                }
+                ResearchRegimeDatasetCommands::Windows { dataset_id } => {
+                    let response = client
+                        .get_research_regime_dataset_windows(dataset_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_regime_windows(&response.windows);
                     }
                 }
             },

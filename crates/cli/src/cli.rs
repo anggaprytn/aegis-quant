@@ -810,6 +810,8 @@ pub enum MarketCommands {
 pub enum ResearchCommands {
     #[command(subcommand)]
     Data(ResearchDataCommands),
+    #[command(name = "regime-datasets", subcommand)]
+    RegimeDatasets(ResearchRegimeDatasetCommands),
     #[command(subcommand)]
     Campaigns(ResearchCampaignCommands),
     #[command(subcommand)]
@@ -818,6 +820,38 @@ pub enum ResearchCommands {
     Candidates(ResearchCandidateCommands),
     #[command(name = "robustness-matrix", subcommand)]
     RobustnessMatrix(ResearchRobustnessMatrixCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchRegimeDatasetCommands {
+    Build(ResearchRegimeDatasetBuildArgs),
+    List(ResearchBatchListArgs),
+    Get { dataset_id: Uuid },
+    Windows { dataset_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchRegimeDatasetBuildArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "window-hours")]
+    pub window_hours: i64,
+    #[arg(long = "step-hours")]
+    pub step_hours: i64,
+    #[arg(long = "min-candles-per-window", default_value_t = 5)]
+    pub min_candles_per_window: i32,
+    #[arg(long = "target-regimes", value_delimiter = ',')]
+    pub target_regimes: Option<Vec<String>>,
+    #[arg(long = "max-windows-per-regime")]
+    pub max_windows_per_regime: Option<u32>,
+    #[arg(long = "allow-degraded-data", default_value_t = false)]
+    pub allow_degraded_data: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -965,6 +999,12 @@ pub struct ResearchCampaignRunArgs {
     pub slippage_bps: rust_decimal::Decimal,
     #[arg(long = "max-batches")]
     pub max_batches: Option<u32>,
+    #[arg(long = "regime-dataset-id")]
+    pub regime_dataset_id: Option<Uuid>,
+    #[arg(long = "target-regimes", value_delimiter = ',')]
+    pub target_regimes: Option<Vec<String>>,
+    #[arg(long = "max-windows-per-regime")]
+    pub max_windows_per_regime: Option<u32>,
     #[arg(long = "max-candidates-per-batch", default_value_t = 3)]
     pub max_candidates_per_batch: u32,
     #[arg(long = "walk-forward-top-n", default_value_t = 3)]

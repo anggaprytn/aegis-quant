@@ -110,6 +110,16 @@ struct StrategyRobustnessMatrixReportSnapshot {
     latest_status: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ResearchRegimeDatasetReportSnapshot {
+    dataset_count: i64,
+    selected_window_count: i64,
+    data_quality_blocked_windows: i64,
+    missing_trend_regime_count: i64,
+    missing_high_volatility_count: i64,
+    latest_status: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -194,6 +204,7 @@ pub async fn generate_operator_report(
     let research_campaigns = load_research_campaign_snapshot(&state.db_pool, &window).await?;
     let robustness_matrix =
         load_strategy_robustness_matrix_snapshot(&state.db_pool, &window).await?;
+    let regime_datasets = load_research_regime_dataset_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -209,6 +220,7 @@ pub async fn generate_operator_report(
         &research_batches,
         &research_campaigns,
         &robustness_matrix,
+        &regime_datasets,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -247,6 +259,7 @@ pub async fn generate_operator_report(
             &research_batches,
             &research_campaigns,
             &robustness_matrix,
+            &regime_datasets,
         )?,
         format: request.format,
         persisted: false,
@@ -1464,6 +1477,58 @@ async fn load_strategy_robustness_matrix_snapshot(
     Ok(snapshot)
 }
 
+async fn load_research_regime_dataset_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<ResearchRegimeDatasetReportSnapshot> {
+    let rows = query(
+        r#"
+        SELECT summary, status
+        FROM research_regime_datasets
+        WHERE created_at >= $1 AND created_at <= $2
+        ORDER BY created_at DESC, id DESC
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_all(pool)
+    .await?;
+    let mut snapshot = ResearchRegimeDatasetReportSnapshot {
+        dataset_count: rows.len() as i64,
+        ..Default::default()
+    };
+    for (index, row) in rows.iter().enumerate() {
+        let status: String = row.get("status");
+        if index == 0 {
+            snapshot.latest_status = Some(status);
+        }
+        let summary: serde_json::Value = row.get("summary");
+        snapshot.selected_window_count += summary
+            .get("selected_windows")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        snapshot.data_quality_blocked_windows += summary
+            .get("data_quality_blocked_windows")
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        let missing = summary
+            .get("missing_regimes")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if missing
+            .iter()
+            .any(|value| value == "TREND_UP" || value == "TREND_DOWN")
+        {
+            snapshot.missing_trend_regime_count += 1;
+        }
+        if missing.iter().any(|value| value == "HIGH_VOLATILITY") {
+            snapshot.missing_high_volatility_count += 1;
+        }
+    }
+    Ok(snapshot)
+}
+
 async fn load_candidate_shadow_pnl_snapshot(
     state: &AppState,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
@@ -1523,6 +1588,7 @@ fn build_findings(
     research_batches: &ResearchBatchReportSnapshot,
     research_campaigns: &ResearchCampaignReportSnapshot,
     robustness_matrix: &StrategyRobustnessMatrixReportSnapshot,
+    regime_datasets: &ResearchRegimeDatasetReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -1874,6 +1940,34 @@ fn build_findings(
             "Strategy robustness blocked by bad data quality",
             "Recent matrix output includes material market-data quality penalties.",
             "strategy_robustness_matrix",
+        ));
+    }
+
+    if regime_datasets.dataset_count > 0 {
+        findings.push(finding(
+            "research_regime_dataset_built",
+            OperatorReportSeverity::Low,
+            "Regime dataset built successfully",
+            "At least one research-only regime dataset was built in the selected window.",
+            "research_regime_datasets",
+        ));
+    }
+    if regime_datasets.missing_trend_regime_count > 0 {
+        findings.push(finding(
+            "research_dataset_lacks_trend_regimes",
+            OperatorReportSeverity::Medium,
+            "Research dataset lacks trend regimes",
+            "One or more recent regime datasets are missing TREND_UP or TREND_DOWN windows.",
+            "research_regime_datasets",
+        ));
+    }
+    if regime_datasets.missing_high_volatility_count > 0 {
+        findings.push(finding(
+            "research_dataset_lacks_high_volatility_regimes",
+            OperatorReportSeverity::Medium,
+            "Research dataset lacks high-volatility regimes",
+            "One or more recent regime datasets are missing HIGH_VOLATILITY windows.",
+            "research_regime_datasets",
         ));
     }
 
@@ -2278,6 +2372,7 @@ fn build_sections(
     research_batches: &ResearchBatchReportSnapshot,
     research_campaigns: &ResearchCampaignReportSnapshot,
     robustness_matrix: &StrategyRobustnessMatrixReportSnapshot,
+    regime_datasets: &ResearchRegimeDatasetReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -2591,6 +2686,43 @@ fn build_sections(
                 ),
             ],
             robustness_matrix,
+        )?,
+        section(
+            "research_regime_datasets",
+            "Research Regime Datasets",
+            if regime_datasets.missing_trend_regime_count > 0
+                || regime_datasets.missing_high_volatility_count > 0
+                || regime_datasets.data_quality_blocked_windows > 0
+            {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Research-only labeled candle windows for regime-diverse strategy campaigns.",
+            vec![
+                highlight("Datasets Built", regime_datasets.dataset_count.to_string()),
+                highlight("Selected Windows", regime_datasets.selected_window_count.to_string()),
+                highlight(
+                    "Data-quality Blocked",
+                    regime_datasets.data_quality_blocked_windows.to_string(),
+                ),
+                highlight(
+                    "Missing Trend Datasets",
+                    regime_datasets.missing_trend_regime_count.to_string(),
+                ),
+                highlight(
+                    "Missing High-vol Datasets",
+                    regime_datasets.missing_high_volatility_count.to_string(),
+                ),
+                highlight(
+                    "Latest Status",
+                    regime_datasets
+                        .latest_status
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+            ],
+            regime_datasets,
         )?,
         section(
             "research_candidate_qualification",
@@ -3104,7 +3236,8 @@ fn yes_no(value: bool) -> &'static str {
 mod tests {
     use super::{
         build_findings, build_recommendations, status_from_findings, BacktestActivity,
-        ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot, StrategyBehaviorData,
+        ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot,
+        ResearchRegimeDatasetReportSnapshot, StrategyBehaviorData,
         StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
     };
     use aegis_core::{
@@ -3274,6 +3407,7 @@ mod tests {
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
             &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3306,6 +3440,7 @@ mod tests {
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
             &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3333,6 +3468,7 @@ mod tests {
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
             &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3360,6 +3496,7 @@ mod tests {
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
             &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3413,6 +3550,7 @@ mod tests {
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
             &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -3451,6 +3589,7 @@ mod tests {
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
             &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3486,6 +3625,7 @@ mod tests {
             &ResearchBatchReportSnapshot::default(),
             &ResearchCampaignReportSnapshot::default(),
             &StrategyRobustnessMatrixReportSnapshot::default(),
+            &ResearchRegimeDatasetReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {

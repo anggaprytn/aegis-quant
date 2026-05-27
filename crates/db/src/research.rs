@@ -18,7 +18,8 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchShadowPnlAttributionRequest,
+    ResearchDatasetBuildStepStatus, ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeDatasetStatus, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
     ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput,
     StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
     StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
@@ -113,6 +114,37 @@ pub struct ResearchCampaignBatchRecord {
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchRegimeDatasetRecord {
+    pub id: Uuid,
+    pub request: Value,
+    pub summary: Value,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchRegimeWindowRecord {
+    pub id: Uuid,
+    pub dataset_id: Uuid,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub regime_label: String,
+    pub return_pct: Decimal,
+    pub realized_volatility: Decimal,
+    pub avg_range_pct: Decimal,
+    pub trend_slope: Decimal,
+    pub choppiness_proxy: Decimal,
+    pub data_quality_status: String,
+    pub candle_count: i32,
+    pub score: Decimal,
+    pub confidence: Decimal,
+    pub metrics: Value,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,6 +533,39 @@ fn map_research_campaign_batch(row: sqlx::postgres::PgRow) -> ResearchCampaignBa
     }
 }
 
+fn map_research_regime_dataset(row: sqlx::postgres::PgRow) -> ResearchRegimeDatasetRecord {
+    ResearchRegimeDatasetRecord {
+        id: row.get("id"),
+        request: row.get("request"),
+        summary: row.get("summary"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_research_regime_window(row: sqlx::postgres::PgRow) -> ResearchRegimeWindowRecord {
+    ResearchRegimeWindowRecord {
+        id: row.get("id"),
+        dataset_id: row.get("dataset_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        regime_label: row.get("regime_label"),
+        return_pct: row.get("return_pct"),
+        realized_volatility: row.get("realized_volatility"),
+        avg_range_pct: row.get("avg_range_pct"),
+        trend_slope: row.get("trend_slope"),
+        choppiness_proxy: row.get("choppiness_proxy"),
+        data_quality_status: row.get("data_quality_status"),
+        candle_count: row.get("candle_count"),
+        score: row.get("score"),
+        confidence: row.get("confidence"),
+        metrics: row.get("metrics"),
+        created_at: row.get("created_at"),
+    }
+}
+
 pub fn research_campaign_batch_result_from_record(
     record: &ResearchCampaignBatchRecord,
 ) -> Result<ResearchCampaignBatchResult> {
@@ -532,6 +597,46 @@ pub fn research_campaign_result_from_records(
     result.created_at = record.created_at;
     result.completed_at = record.completed_at;
     Ok(result)
+}
+
+pub fn research_regime_window_from_record(
+    record: &ResearchRegimeWindowRecord,
+) -> Result<ResearchRegimeWindow> {
+    Ok(ResearchRegimeWindow {
+        id: record.id,
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        start_time: record.start_time,
+        end_time: record.end_time,
+        regime_label: record.regime_label.parse()?,
+        return_pct: record.return_pct,
+        realized_volatility: record.realized_volatility,
+        avg_range_pct: record.avg_range_pct,
+        trend_slope: record.trend_slope,
+        choppiness_proxy: record.choppiness_proxy,
+        data_quality_status: record.data_quality_status.parse()?,
+        candle_count: record.candle_count,
+        score: record.score,
+        confidence: record.confidence,
+        metrics: serde_json::from_value(record.metrics.clone())?,
+    })
+}
+
+pub fn research_regime_dataset_result_from_records(
+    record: &ResearchRegimeDatasetRecord,
+    window_records: &[ResearchRegimeWindowRecord],
+) -> Result<ResearchRegimeDatasetResult> {
+    Ok(ResearchRegimeDatasetResult {
+        dataset_id: record.id,
+        status: record.status.parse::<ResearchRegimeDatasetStatus>()?,
+        request: serde_json::from_value::<ResearchRegimeDatasetRequest>(record.request.clone())?,
+        summary: serde_json::from_value(record.summary.clone())?,
+        windows: window_records
+            .iter()
+            .map(research_regime_window_from_record)
+            .collect::<Result<Vec<_>>>()?,
+        created_at: record.created_at,
+    })
 }
 
 pub fn research_batch_step_from_record(
@@ -1102,6 +1207,156 @@ pub async fn list_research_campaign_batches(
     .await?;
 
     Ok(rows.into_iter().map(map_research_campaign_batch).collect())
+}
+
+pub async fn insert_research_regime_dataset(
+    pool: &PgPool,
+    result: &ResearchRegimeDatasetResult,
+) -> Result<ResearchRegimeDatasetRecord> {
+    let request = serde_json::to_value(&result.request)?;
+    let summary = serde_json::to_value(&result.summary)?;
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_regime_datasets (
+            id, request, summary, status, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, request, summary, status, created_at
+        "#,
+    )
+    .bind(result.dataset_id)
+    .bind(request)
+    .bind(summary)
+    .bind(result.status.as_str())
+    .bind(result.created_at)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    for window in &result.windows {
+        sqlx::query(
+            r#"
+            INSERT INTO research_regime_windows (
+                id,
+                dataset_id,
+                symbol,
+                timeframe,
+                start_time,
+                end_time,
+                regime_label,
+                return_pct,
+                realized_volatility,
+                avg_range_pct,
+                trend_slope,
+                choppiness_proxy,
+                data_quality_status,
+                candle_count,
+                score,
+                confidence,
+                metrics,
+                created_at
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9,
+                $10, $11, $12, $13, $14, $15, $16, $17, $18
+            )
+            "#,
+        )
+        .bind(window.id)
+        .bind(result.dataset_id)
+        .bind(&window.symbol)
+        .bind(&window.timeframe)
+        .bind(window.start_time)
+        .bind(window.end_time)
+        .bind(window.regime_label.as_str())
+        .bind(window.return_pct)
+        .bind(window.realized_volatility)
+        .bind(window.avg_range_pct)
+        .bind(window.trend_slope)
+        .bind(window.choppiness_proxy)
+        .bind(window.data_quality_status.as_str())
+        .bind(window.candle_count)
+        .bind(window.score)
+        .bind(window.confidence)
+        .bind(serde_json::to_value(&window.metrics)?)
+        .bind(result.created_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(map_research_regime_dataset(row))
+}
+
+pub async fn get_research_regime_dataset(
+    pool: &PgPool,
+    dataset_id: Uuid,
+) -> Result<Option<ResearchRegimeDatasetRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, request, summary, status, created_at
+        FROM research_regime_datasets
+        WHERE id = $1
+        "#,
+    )
+    .bind(dataset_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(map_research_regime_dataset))
+}
+
+pub async fn list_research_regime_datasets(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ResearchRegimeDatasetRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, request, summary, status, created_at
+        FROM research_regime_datasets
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(map_research_regime_dataset).collect())
+}
+
+pub async fn list_research_regime_windows(
+    pool: &PgPool,
+    dataset_id: Uuid,
+) -> Result<Vec<ResearchRegimeWindowRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            dataset_id,
+            symbol,
+            timeframe,
+            start_time,
+            end_time,
+            regime_label,
+            return_pct,
+            realized_volatility,
+            avg_range_pct,
+            trend_slope,
+            choppiness_proxy,
+            data_quality_status,
+            candle_count,
+            score,
+            confidence,
+            metrics,
+            created_at
+        FROM research_regime_windows
+        WHERE dataset_id = $1
+        ORDER BY regime_label ASC, confidence DESC, start_time ASC, id ASC
+        "#,
+    )
+    .bind(dataset_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(map_research_regime_window).collect())
 }
 
 fn parse_qualification_status(value: &str) -> Result<ResearchCandidateQualificationStatus> {

@@ -7773,6 +7773,8 @@ pub enum CoreError {
     UnsupportedResearchBatchStepStatus(String),
     #[error("unsupported research campaign status: {0}")]
     UnsupportedResearchCampaignStatus(String),
+    #[error("unsupported research regime dataset status: {0}")]
+    UnsupportedResearchRegimeDatasetStatus(String),
     #[error("unsupported research regime label: {0}")]
     UnsupportedResearchRegimeLabel(String),
     #[error("unsupported strategy robustness matrix status: {0}")]
@@ -7797,6 +7799,12 @@ pub enum CoreError {
     InvalidResearchCampaignTimeRange,
     #[error("invalid research campaign window or step hours")]
     InvalidResearchCampaignWindowStep,
+    #[error("invalid research regime dataset time range")]
+    InvalidResearchRegimeDatasetTimeRange,
+    #[error("invalid research regime dataset window or step hours")]
+    InvalidResearchRegimeDatasetWindowStep,
+    #[error("research regime dataset min_candles_per_window must be greater than zero")]
+    InvalidResearchRegimeDatasetMinCandles,
     #[error("invalid strategy robustness matrix time range")]
     InvalidStrategyRobustnessMatrixTimeRange,
     #[error("invalid strategy robustness matrix window or step hours")]

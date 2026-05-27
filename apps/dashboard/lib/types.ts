@@ -1249,6 +1249,7 @@ export type ResearchCampaignStatus =
 export type ResearchCampaignWindow = {
   start_time: string;
   end_time: string;
+  regime_label?: ResearchRegimeLabel | null;
 };
 
 export type ResearchCampaignRequest = {
@@ -1264,6 +1265,9 @@ export type ResearchCampaignRequest = {
   fee_bps: string;
   slippage_bps: string;
   max_batches?: number | null;
+  regime_dataset_id?: string | null;
+  target_regimes?: ResearchRegimeLabel[] | null;
+  max_windows_per_regime?: number | null;
   max_candidates_per_batch?: number;
   repair_degraded_data?: boolean;
   walk_forward_top_n?: number;
@@ -1290,6 +1294,7 @@ export type ResearchCampaignBatchPlan = {
   timeframe: string;
   start_time: string;
   end_time: string;
+  regime_label?: ResearchRegimeLabel | null;
 };
 
 export type ResearchCampaignBatchResult = {
@@ -1328,8 +1333,19 @@ export type ResearchCampaignSummary = {
   candidates_created: number;
   top_candidates: ResearchBatchCandidateSummary[];
   best_strategy_symbol_timeframe: string | null;
+  per_regime_performance?: ResearchCampaignRegimePerformance[];
   findings: ResearchCampaignFinding[];
   recommendations: ResearchCampaignRecommendation[];
+};
+
+export type ResearchCampaignRegimePerformance = {
+  regime_label: ResearchRegimeLabel;
+  planned_batches: number;
+  completed_batches: number;
+  failed_batches: number;
+  actionable_batches: number;
+  weak_batches: number;
+  candidates_created: number;
 };
 
 export type ResearchRegimeLabel =
@@ -1446,6 +1462,93 @@ export type ResearchCampaignBatchesResponse = {
 
 export type ResearchCampaignSummaryResponse = {
   summary: ResearchCampaignSummary;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeDatasetStatus = "COMPLETED" | "PARTIAL" | "FAILED";
+
+export type ResearchRegimeDatasetRequest = {
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  window_hours: number;
+  step_hours: number;
+  min_candles_per_window: number;
+  target_regimes?: ResearchRegimeLabel[] | null;
+  max_windows_per_regime?: number | null;
+  require_good_data_quality?: boolean;
+};
+
+export type ResearchRegimeWindowMetric = {
+  name: string;
+  value: string;
+  threshold: string | null;
+  passed: boolean;
+};
+
+export type ResearchRegimeWindow = {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  regime_label: ResearchRegimeLabel;
+  return_pct: string;
+  realized_volatility: string;
+  avg_range_pct: string;
+  trend_slope: string;
+  choppiness_proxy: string;
+  data_quality_status: MarketDataQualityStatus;
+  candle_count: number;
+  score: string;
+  confidence: string;
+  metrics: ResearchRegimeWindowMetric[];
+};
+
+export type ResearchRegimeDatasetRecommendation = {
+  priority: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchRegimeDatasetSummary = {
+  total_candidate_windows: number;
+  selected_windows: number;
+  data_quality_blocked_windows: number;
+  insufficient_candle_windows: number;
+  regime_counts: Partial<Record<ResearchRegimeLabel, number>>;
+  missing_regimes: ResearchRegimeLabel[];
+  recommendations: ResearchRegimeDatasetRecommendation[];
+};
+
+export type ResearchRegimeDatasetResult = {
+  dataset_id: string;
+  status: ResearchRegimeDatasetStatus;
+  request: ResearchRegimeDatasetRequest;
+  summary: ResearchRegimeDatasetSummary;
+  windows: ResearchRegimeWindow[];
+  created_at: string;
+};
+
+export type ResearchRegimeDatasetResponse = {
+  dataset: ResearchRegimeDatasetResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeDatasetsResponse = {
+  datasets: ResearchRegimeDatasetResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeDatasetWindowsResponse = {
+  windows: ResearchRegimeWindow[];
   request_id: string;
   correlation_id: string;
   timestamp: string;
