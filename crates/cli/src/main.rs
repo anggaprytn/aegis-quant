@@ -435,6 +435,14 @@ async fn main() -> anyhow::Result<()> {
                     output::print_backfill_run(&response);
                 }
             }
+            MarketCommands::ProviderHealth(args) => {
+                let response = client.market_provider_health(&args.provider).await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_provider_health(&response);
+                }
+            }
             MarketCommands::AggregateCandles(args) => {
                 let request = build_candle_aggregation_request(&args)?;
                 let response = client.aggregate_candles(&request).await?;

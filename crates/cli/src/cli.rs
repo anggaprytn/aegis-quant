@@ -722,6 +722,7 @@ pub enum MarketCommands {
     Backfill(MarketBackfillArgs),
     Backfills(MarketBackfillsArgs),
     BackfillGet { run_id: Uuid },
+    ProviderHealth(MarketProviderHealthArgs),
     AggregateCandles(MarketAggregateCandlesArgs),
     CandleCoverage(MarketCandleCoverageArgs),
     CandleQuality(MarketCandleQualityArgs),
@@ -1020,6 +1021,12 @@ pub struct MarketBackfillArgs {
 pub struct MarketBackfillsArgs {
     #[arg(long, default_value_t = 20)]
     pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct MarketProviderHealthArgs {
+    #[arg(long, default_value = "binance")]
+    pub provider: String,
 }
 
 #[derive(Debug, Args)]

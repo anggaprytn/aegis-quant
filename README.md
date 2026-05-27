@@ -271,8 +271,25 @@ Health:
 Feed status:
 `curl http://127.0.0.1:3000/market/feed-status`
 
+Public provider health:
+`cargo run -p cli -- market provider-health --provider binance`
+
 Backfill example:
 `cargo run -p cli -- market backfill --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z`
+
+### Public Binance market-data troubleshooting
+
+Backfill and ingest use public market-data endpoints only. They do not use Binance credentials and do not call production trading endpoints.
+
+Configure REST fallback endpoints when the local network blocks or degrades `https://api.binance.com`:
+
+```env
+BINANCE_REST_BASE_URL=https://api.binance.com
+BINANCE_REST_FALLBACK_BASE_URLS=https://data-api.binance.vision,https://api1.binance.com,https://api2.binance.com,https://api3.binance.com,https://api4.binance.com
+BINANCE_WS_BASE_URL=wss://stream.binance.com:443
+```
+
+If REST or WebSocket traffic is blocked, try a VPN or the public Binance data endpoints such as `https://data-api.binance.vision` for REST backfill. Failed backfills return structured diagnostics with provider, base URL, endpoint, HTTP status when available, error kind, retryability, and recommendation; they do not pretend candles were inserted.
 
 Aggregate higher timeframe candles from stored 1m candles:
 `cargo run -p cli -- market aggregate-candles --symbol BTCUSDT --source 1m --target 5m --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z`

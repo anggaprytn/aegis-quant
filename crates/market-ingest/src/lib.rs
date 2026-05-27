@@ -2,18 +2,20 @@ use std::{collections::HashMap, env, time::Duration};
 
 use aegis_core::{
     Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult, CandleInterval,
-    DataFreshnessStatus, FeedStatus, MarketDataSource, MarketTick, MarketTrade, Symbol,
+    DataFreshnessStatus, FeedStatus, MarketDataSource, MarketProviderAttempt,
+    MarketProviderDiagnostic, MarketProviderErrorKind, MarketProviderHealth, MarketTick,
+    MarketTrade, Symbol,
 };
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use db::{
     candle_backfill_result_from_record, complete_candle_backfill_run, fail_candle_backfill_run,
     insert_candle_backfill_run, process_market_trade, update_candle_backfill_progress,
-    upsert_candles_batch, upsert_market_feed_status, PgPool,
+    update_candle_backfill_run_config, upsert_candles_batch, upsert_market_feed_status, PgPool,
 };
 use events::{EventPublisher, PostgresEventPublisher, SystemEventType};
 use futures_util::StreamExt;
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,6 +36,7 @@ pub struct MarketIngestConfig {
     pub stale_threshold: Duration,
     pub binance_ws_base_url: String,
     pub binance_rest_base_url: String,
+    pub binance_rest_fallback_base_urls: Vec<String>,
 }
 
 impl MarketIngestConfig {
@@ -50,9 +53,11 @@ impl MarketIngestConfig {
             .unwrap_or_else(|_| "10".to_string())
             .parse::<u64>()?;
         let binance_ws_base_url = env::var("BINANCE_WS_BASE_URL")
-            .unwrap_or_else(|_| "wss://stream.binance.com:9443".to_string());
+            .unwrap_or_else(|_| "wss://stream.binance.com:443".to_string());
         let binance_rest_base_url = env::var("BINANCE_REST_BASE_URL")
             .unwrap_or_else(|_| "https://api.binance.com".to_string());
+        let binance_rest_fallback_base_urls =
+            parse_base_url_list(&env::var("BINANCE_REST_FALLBACK_BASE_URLS").unwrap_or_default());
 
         Ok(Self {
             exchange,
@@ -60,6 +65,7 @@ impl MarketIngestConfig {
             stale_threshold: Duration::from_secs(stale_threshold_seconds),
             binance_ws_base_url,
             binance_rest_base_url,
+            binance_rest_fallback_base_urls,
         })
     }
 
@@ -508,16 +514,20 @@ pub fn parse_binance_trade_message(message: &str) -> Result<MarketTrade> {
 
 #[derive(Debug, Clone)]
 pub struct BinanceRestKlineClient {
-    base_url: Url,
+    base_url: String,
     http: reqwest::Client,
 }
 
 impl BinanceRestKlineClient {
     pub fn new(base_url: &str) -> Result<Self> {
         Ok(Self {
-            base_url: Url::parse(base_url)?,
+            base_url: base_url.to_string(),
             http: reqwest::Client::new(),
         })
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     pub async fn fetch_klines(
@@ -527,8 +537,26 @@ impl BinanceRestKlineClient {
         start_time: DateTime<Utc>,
         end_time: DateTime<Utc>,
         limit: u16,
-    ) -> Result<Vec<BinanceKlineRow>> {
-        let url = self.base_url.join("/api/v3/klines")?;
+    ) -> std::result::Result<(Vec<BinanceKlineRow>, MarketProviderAttempt), MarketProviderDiagnostic>
+    {
+        let endpoint = "/api/v3/klines";
+        let started_at = std::time::Instant::now();
+        let url = Url::parse(&self.base_url)
+            .and_then(|base| base.join(endpoint))
+            .map_err(|err| {
+                provider_diagnostic(
+                    &self.base_url,
+                    endpoint,
+                    Some(symbol),
+                    Some(interval),
+                    Some(start_time),
+                    Some(end_time),
+                    None,
+                    MarketProviderErrorKind::ConnectError,
+                    false,
+                    format!("invalid Binance REST base URL: {err}"),
+                )
+            })?;
         let response = self
             .http
             .get(url)
@@ -540,10 +568,63 @@ impl BinanceRestKlineClient {
                 ("limit", limit.to_string()),
             ])
             .send()
-            .await?
-            .error_for_status()?;
+            .await
+            .map_err(|err| {
+                provider_diagnostic_from_reqwest_error(
+                    &self.base_url,
+                    endpoint,
+                    Some(symbol),
+                    Some(interval),
+                    Some(start_time),
+                    Some(end_time),
+                    &err,
+                )
+            })?;
 
-        Ok(response.json::<Vec<BinanceKlineRow>>().await?)
+        let http_status = response.status();
+        if !http_status.is_success() {
+            return Err(provider_diagnostic(
+                &self.base_url,
+                endpoint,
+                Some(symbol),
+                Some(interval),
+                Some(start_time),
+                Some(end_time),
+                Some(http_status.as_u16()),
+                http_error_kind(http_status),
+                http_status.is_server_error() || http_status == StatusCode::TOO_MANY_REQUESTS,
+                format!("Binance public REST returned HTTP {http_status}"),
+            ));
+        }
+
+        let rows = response
+            .json::<Vec<BinanceKlineRow>>()
+            .await
+            .map_err(|err| {
+                provider_diagnostic(
+                    &self.base_url,
+                    endpoint,
+                    Some(symbol),
+                    Some(interval),
+                    Some(start_time),
+                    Some(end_time),
+                    Some(http_status.as_u16()),
+                    MarketProviderErrorKind::ParseError,
+                    false,
+                    format!("failed to parse Binance kline response: {err}"),
+                )
+            })?;
+        let attempt = MarketProviderAttempt {
+            provider: "binance".to_string(),
+            base_url: self.base_url.clone(),
+            endpoint: endpoint.to_string(),
+            success: true,
+            latency_ms: Some(started_at.elapsed().as_millis()),
+            http_status: Some(http_status.as_u16()),
+            error_kind: None,
+            recommendation: None,
+        };
+        Ok((rows, attempt))
     }
 }
 
@@ -551,7 +632,8 @@ impl BinanceRestKlineClient {
 pub struct HistoricalCandleBackfillService {
     pool: PgPool,
     source: String,
-    client: BinanceRestKlineClient,
+    primary_base_url: String,
+    fallback_base_urls: Vec<String>,
 }
 
 impl HistoricalCandleBackfillService {
@@ -563,8 +645,14 @@ impl HistoricalCandleBackfillService {
         Ok(Self {
             pool,
             source: source.into(),
-            client: BinanceRestKlineClient::new(binance_rest_base_url)?,
+            primary_base_url: binance_rest_base_url.to_string(),
+            fallback_base_urls: Vec::new(),
         })
+    }
+
+    pub fn with_fallback_base_urls(mut self, fallback_base_urls: Vec<String>) -> Self {
+        self.fallback_base_urls = fallback_base_urls;
+        self
     }
 
     pub async fn run(&self, request: CandleBackfillRequest) -> Result<CandleBackfillResult> {
@@ -581,6 +669,9 @@ impl HistoricalCandleBackfillService {
             interval,
             request.effective_limit_per_request(),
         )?;
+        let base_urls = provider_base_urls(&self.primary_base_url, &self.fallback_base_urls);
+        let mut provider_attempts = Vec::new();
+        let mut selected_provider: Option<String> = None;
 
         insert_candle_backfill_run(
             &self.pool,
@@ -610,16 +701,65 @@ impl HistoricalCandleBackfillService {
                 .await?;
 
             for (index, page) in pages.iter().enumerate() {
-                let rows = self
-                    .client
-                    .fetch_klines(
-                        symbol.as_str(),
-                        interval,
-                        page.start_time,
-                        page.end_time,
-                        request.effective_limit_per_request(),
-                    )
-                    .await?;
+                let rows = match fetch_klines_with_fallback(
+                    &base_urls,
+                    selected_provider.as_deref(),
+                    symbol.as_str(),
+                    interval,
+                    page.start_time,
+                    page.end_time,
+                    request.effective_limit_per_request(),
+                    &mut provider_attempts,
+                )
+                .await
+                {
+                    Ok((rows, base_url)) => {
+                        if selected_provider.as_deref() != Some(base_url.as_str()) {
+                            if base_url != self.primary_base_url {
+                                event_publisher
+                                    .publish(
+                                        SystemEventType::MarketBackfillProviderFallbackUsed
+                                            .into_event(
+                                                correlation_id,
+                                                self.source.clone(),
+                                                serde_json::json!({
+                                                    "run_id": run_id,
+                                                    "provider": "binance",
+                                                    "base_url": base_url,
+                                                    "primary_base_url": self.primary_base_url,
+                                                    "symbol": symbol.as_str(),
+                                                    "interval": interval.as_str(),
+                                                }),
+                                            ),
+                                    )
+                                    .await?;
+                            }
+                            selected_provider = Some(base_url);
+                        }
+                        rows
+                    }
+                    Err(diagnostic) => {
+                        return Err(anyhow!(serde_json::to_string(&diagnostic)?));
+                    }
+                };
+
+                if rows.is_empty() {
+                    let base_url = selected_provider
+                        .as_deref()
+                        .unwrap_or(self.primary_base_url.as_str());
+                    return Err(anyhow!(serde_json::to_string(&provider_diagnostic(
+                        base_url,
+                        "/api/v3/klines",
+                        Some(symbol.as_str()),
+                        Some(interval),
+                        Some(page.start_time),
+                        Some(page.end_time),
+                        Some(200),
+                        MarketProviderErrorKind::EmptyResponse,
+                        false,
+                        "No candles returned for requested window.".to_string(),
+                    ))?));
+                }
 
                 let mut candles = Vec::new();
                 let now = Utc::now();
@@ -667,6 +807,18 @@ impl HistoricalCandleBackfillService {
             }
 
             let completed = complete_candle_backfill_run(&self.pool, run_id, Utc::now()).await?;
+            let completed = update_candle_backfill_run_config(
+                &self.pool,
+                run_id,
+                backfill_metadata(
+                    &request,
+                    &provider_attempts,
+                    selected_provider.as_deref(),
+                    None,
+                ),
+            )
+            .await
+            .unwrap_or(completed);
             let result = candle_backfill_result_from_record(&completed)?;
             event_publisher
                 .publish(SystemEventType::MarketBackfillCompleted.into_event(
@@ -681,6 +833,7 @@ impl HistoricalCandleBackfillService {
                         "inserted_candles": result.inserted_candles,
                         "updated_candles": result.updated_candles,
                         "skipped_candles": result.skipped_candles,
+                        "selected_provider": result.selected_provider,
                     }),
                 ))
                 .await?;
@@ -721,8 +874,33 @@ impl HistoricalCandleBackfillService {
                     symbol.as_str(),
                     "failed",
                 );
-                let _ = fail_candle_backfill_run(&self.pool, run_id, &err.to_string(), Utc::now())
-                    .await;
+                let diagnostic = diagnostic_from_error_string(&err.to_string());
+                let recommendation = diagnostic
+                    .as_ref()
+                    .map(|value| value.recommendation.clone());
+                let failed_reason = diagnostic
+                    .as_ref()
+                    .map(|value| value.message.clone())
+                    .unwrap_or_else(|| err.to_string());
+                let failed_record =
+                    fail_candle_backfill_run(&self.pool, run_id, &failed_reason, Utc::now()).await;
+                let failed_record = match failed_record {
+                    Ok(record) => update_candle_backfill_run_config(
+                        &self.pool,
+                        run_id,
+                        backfill_metadata(
+                            &request,
+                            &provider_attempts,
+                            selected_provider.as_deref(),
+                            diagnostic.as_ref(),
+                        ),
+                    )
+                    .await
+                    .unwrap_or(record),
+                    Err(_) => {
+                        return Err(err);
+                    }
+                };
                 let _ = event_publisher
                     .publish(SystemEventType::MarketBackfillFailed.into_event(
                         correlation_id,
@@ -732,13 +910,367 @@ impl HistoricalCandleBackfillService {
                             "exchange": request.exchange.as_str(),
                             "symbol": symbol.as_str(),
                             "interval": interval.as_str(),
-                            "error": err.to_string(),
+                            "error": failed_reason,
+                            "diagnostic": diagnostic,
+                            "recommendation": recommendation,
                         }),
                     ))
                     .await;
-                Err(err)
+                candle_backfill_result_from_record(&failed_record)
             }
         }
+    }
+}
+
+pub fn parse_base_url_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub fn provider_base_urls(primary: &str, fallbacks: &[String]) -> Vec<String> {
+    let mut urls = Vec::new();
+    for url in std::iter::once(primary.to_string()).chain(fallbacks.iter().cloned()) {
+        if !urls.iter().any(|existing| existing == &url) {
+            urls.push(url);
+        }
+    }
+    urls
+}
+
+async fn fetch_klines_with_fallback(
+    base_urls: &[String],
+    preferred_base_url: Option<&str>,
+    symbol: &str,
+    interval: CandleInterval,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    limit: u16,
+    attempts: &mut Vec<MarketProviderAttempt>,
+) -> std::result::Result<(Vec<BinanceKlineRow>, String), MarketProviderDiagnostic> {
+    let mut ordered = Vec::new();
+    if let Some(preferred) = preferred_base_url {
+        ordered.push(preferred.to_string());
+    }
+    for base_url in base_urls {
+        if !ordered.iter().any(|existing| existing == base_url) {
+            ordered.push(base_url.clone());
+        }
+    }
+
+    let mut last_retryable: Option<MarketProviderDiagnostic> = None;
+    for base_url in ordered {
+        let client = match BinanceRestKlineClient::new(&base_url) {
+            Ok(client) => client,
+            Err(err) => {
+                let diagnostic = provider_diagnostic(
+                    &base_url,
+                    "/api/v3/klines",
+                    Some(symbol),
+                    Some(interval),
+                    Some(start_time),
+                    Some(end_time),
+                    None,
+                    MarketProviderErrorKind::ConnectError,
+                    false,
+                    format!("invalid Binance REST base URL: {err}"),
+                );
+                attempts.push(attempt_from_diagnostic(&diagnostic));
+                return Err(diagnostic);
+            }
+        };
+
+        match client
+            .fetch_klines(symbol, interval, start_time, end_time, limit)
+            .await
+        {
+            Ok((rows, attempt)) => {
+                attempts.push(attempt);
+                return Ok((rows, base_url));
+            }
+            Err(diagnostic) => {
+                attempts.push(attempt_from_diagnostic(&diagnostic));
+                if diagnostic.retryable {
+                    last_retryable = Some(diagnostic);
+                    continue;
+                }
+                return Err(diagnostic);
+            }
+        }
+    }
+
+    Err(last_retryable.unwrap_or_else(|| {
+        provider_diagnostic(
+            "",
+            "/api/v3/klines",
+            Some(symbol),
+            Some(interval),
+            Some(start_time),
+            Some(end_time),
+            None,
+            MarketProviderErrorKind::Unknown,
+            false,
+            "No Binance REST providers were configured.".to_string(),
+        )
+    }))
+}
+
+fn attempt_from_diagnostic(diagnostic: &MarketProviderDiagnostic) -> MarketProviderAttempt {
+    MarketProviderAttempt {
+        provider: diagnostic.provider.clone(),
+        base_url: diagnostic.base_url.clone(),
+        endpoint: diagnostic.endpoint.clone(),
+        success: false,
+        latency_ms: None,
+        http_status: diagnostic.http_status,
+        error_kind: Some(diagnostic.error_kind),
+        recommendation: Some(diagnostic.recommendation.clone()),
+    }
+}
+
+fn backfill_metadata(
+    request: &CandleBackfillRequest,
+    provider_attempts: &[MarketProviderAttempt],
+    selected_provider: Option<&str>,
+    failure_diagnostic: Option<&MarketProviderDiagnostic>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "request": request,
+        "provider_attempts": provider_attempts,
+        "selected_provider": selected_provider,
+        "failure_diagnostic": failure_diagnostic,
+        "recommendation": failure_diagnostic.map(|value| value.recommendation.as_str()),
+    })
+}
+
+fn diagnostic_from_error_string(value: &str) -> Option<MarketProviderDiagnostic> {
+    serde_json::from_str(value).ok()
+}
+
+fn http_error_kind(status: StatusCode) -> MarketProviderErrorKind {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        MarketProviderErrorKind::RateLimited
+    } else if status.is_client_error() {
+        MarketProviderErrorKind::Http4xx
+    } else if status.is_server_error() {
+        MarketProviderErrorKind::Http5xx
+    } else {
+        MarketProviderErrorKind::Unknown
+    }
+}
+
+pub fn classify_reqwest_error_kind(err: &reqwest::Error) -> MarketProviderErrorKind {
+    if err.is_timeout() {
+        MarketProviderErrorKind::Timeout
+    } else if err.is_decode() {
+        MarketProviderErrorKind::ParseError
+    } else if err.is_connect() {
+        let message = err.to_string().to_ascii_lowercase();
+        if message.contains("dns") || message.contains("name") {
+            MarketProviderErrorKind::DnsError
+        } else {
+            MarketProviderErrorKind::ConnectError
+        }
+    } else {
+        MarketProviderErrorKind::Unknown
+    }
+}
+
+fn provider_diagnostic_from_reqwest_error(
+    base_url: &str,
+    endpoint: &str,
+    symbol: Option<&str>,
+    interval: Option<CandleInterval>,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    err: &reqwest::Error,
+) -> MarketProviderDiagnostic {
+    let kind = classify_reqwest_error_kind(err);
+    provider_diagnostic(
+        base_url,
+        endpoint,
+        symbol,
+        interval,
+        start_time,
+        end_time,
+        err.status().map(|status| status.as_u16()),
+        kind,
+        matches!(
+            kind,
+            MarketProviderErrorKind::DnsError
+                | MarketProviderErrorKind::ConnectError
+                | MarketProviderErrorKind::Timeout
+                | MarketProviderErrorKind::Http5xx
+                | MarketProviderErrorKind::RateLimited
+                | MarketProviderErrorKind::Unknown
+        ),
+        err.to_string(),
+    )
+}
+
+fn provider_diagnostic(
+    base_url: &str,
+    endpoint: &str,
+    symbol: Option<&str>,
+    interval: Option<CandleInterval>,
+    start_time: Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    http_status: Option<u16>,
+    error_kind: MarketProviderErrorKind,
+    retryable: bool,
+    message: String,
+) -> MarketProviderDiagnostic {
+    MarketProviderDiagnostic {
+        provider: "binance".to_string(),
+        base_url: base_url.to_string(),
+        endpoint: endpoint.to_string(),
+        symbol: symbol.map(ToString::to_string),
+        interval: interval.map(|value| value.as_str().to_string()),
+        start_time,
+        end_time,
+        http_status,
+        error_kind,
+        retryable,
+        message,
+        recommendation: recommendation_for(error_kind),
+    }
+}
+
+fn recommendation_for(error_kind: MarketProviderErrorKind) -> String {
+    match error_kind {
+        MarketProviderErrorKind::DnsError | MarketProviderErrorKind::ConnectError => {
+            "Binance public REST is unreachable from this network. Try BINANCE_REST_BASE_URL=https://data-api.binance.vision or run through VPN.".to_string()
+        }
+        MarketProviderErrorKind::Timeout => {
+            "Binance public REST timed out from this network. Retry later, use a fallback base URL, or run through VPN.".to_string()
+        }
+        MarketProviderErrorKind::RateLimited => {
+            "Rate limited. Reduce request frequency or retry later.".to_string()
+        }
+        MarketProviderErrorKind::Http5xx => {
+            "Binance public REST returned a server error. Retry later or use a configured fallback base URL.".to_string()
+        }
+        MarketProviderErrorKind::Http4xx => {
+            "Check the requested symbol, interval, and time window for Binance public market data compatibility.".to_string()
+        }
+        MarketProviderErrorKind::ParseError => {
+            "Provider response could not be parsed. Do not trust this backfill until the endpoint and response format are verified.".to_string()
+        }
+        MarketProviderErrorKind::EmptyResponse => {
+            "No candles returned for requested window.".to_string()
+        }
+        MarketProviderErrorKind::Unknown => {
+            "Provider failure was not classified. Inspect API logs and try a configured fallback base URL.".to_string()
+        }
+    }
+}
+
+pub async fn check_binance_provider_health(
+    primary_base_url: &str,
+    fallback_base_urls: &[String],
+) -> MarketProviderHealth {
+    let base_urls = provider_base_urls(primary_base_url, fallback_base_urls);
+    let endpoint = "/api/v3/time";
+    let mut attempts = Vec::new();
+
+    for base_url in &base_urls {
+        let started_at = std::time::Instant::now();
+        let result = async {
+            let url = Url::parse(base_url)?.join(endpoint)?;
+            let response = reqwest::Client::new().get(url).send().await?;
+            Ok::<_, anyhow::Error>(response)
+        }
+        .await;
+
+        match result {
+            Ok(response) if response.status().is_success() => {
+                let latency_ms = started_at.elapsed().as_millis();
+                attempts.push(MarketProviderAttempt {
+                    provider: "binance".to_string(),
+                    base_url: base_url.clone(),
+                    endpoint: endpoint.to_string(),
+                    success: true,
+                    latency_ms: Some(latency_ms),
+                    http_status: Some(response.status().as_u16()),
+                    error_kind: None,
+                    recommendation: None,
+                });
+                return MarketProviderHealth {
+                    provider: "binance".to_string(),
+                    status: if base_url == primary_base_url {
+                        "OK"
+                    } else {
+                        "DEGRADED"
+                    }
+                    .to_string(),
+                    base_url: base_url.clone(),
+                    endpoint: endpoint.to_string(),
+                    latency_ms: Some(latency_ms),
+                    http_status: Some(response.status().as_u16()),
+                    error_kind: None,
+                    recommendation: if base_url == primary_base_url {
+                        None
+                    } else {
+                        Some("Primary Binance public REST failed; using fallback for public market data.".to_string())
+                    },
+                    fallback_available: fallback_base_urls.iter().any(|url| !url.trim().is_empty()),
+                    fallback_base_urls: fallback_base_urls.to_vec(),
+                    attempts,
+                };
+            }
+            Ok(response) => {
+                let diagnostic = provider_diagnostic(
+                    base_url,
+                    endpoint,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(response.status().as_u16()),
+                    http_error_kind(response.status()),
+                    response.status().is_server_error()
+                        || response.status() == StatusCode::TOO_MANY_REQUESTS,
+                    format!("Binance public REST returned HTTP {}", response.status()),
+                );
+                attempts.push(attempt_from_diagnostic(&diagnostic));
+                if !diagnostic.retryable {
+                    break;
+                }
+            }
+            Err(err) => {
+                let diagnostic = provider_diagnostic(
+                    base_url,
+                    endpoint,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    MarketProviderErrorKind::ConnectError,
+                    true,
+                    err.to_string(),
+                );
+                attempts.push(attempt_from_diagnostic(&diagnostic));
+            }
+        }
+    }
+
+    let last = attempts.last().cloned();
+    MarketProviderHealth {
+        provider: "binance".to_string(),
+        status: "FAILED".to_string(),
+        base_url: primary_base_url.to_string(),
+        endpoint: endpoint.to_string(),
+        latency_ms: None,
+        http_status: last.as_ref().and_then(|attempt| attempt.http_status),
+        error_kind: last.as_ref().and_then(|attempt| attempt.error_kind),
+        recommendation: last.and_then(|attempt| attempt.recommendation),
+        fallback_available: fallback_base_urls.iter().any(|url| !url.trim().is_empty()),
+        fallback_base_urls: fallback_base_urls.to_vec(),
+        attempts,
     }
 }
 
@@ -895,11 +1427,16 @@ fn chrono_duration(duration: Duration) -> Result<TimeDelta> {
 #[cfg(test)]
 mod tests {
     use super::{
-        binance_kline_row_to_closed_candle, parse_binance_trade_message, plan_backfill_pages,
-        BinanceKlineRow, CandleBuilder, CandleBuilderError,
+        attempt_from_diagnostic, binance_kline_row_to_closed_candle, http_error_kind,
+        parse_base_url_list, parse_binance_trade_message, plan_backfill_pages, provider_base_urls,
+        provider_diagnostic, recommendation_for, BinanceKlineRow, CandleBuilder,
+        CandleBuilderError,
     };
-    use aegis_core::{CandleInterval, MarketDataSource, MarketTrade, Symbol};
+    use aegis_core::{
+        CandleInterval, MarketDataSource, MarketProviderErrorKind, MarketTrade, Symbol,
+    };
     use chrono::{TimeZone, Utc};
+    use reqwest::StatusCode;
     use rust_decimal::Decimal;
 
     fn trade(price: i64, quantity: i64, second: u32) -> MarketTrade {
@@ -933,6 +1470,73 @@ mod tests {
         assert_eq!(update.active.volume, Decimal::new(2, 0));
         assert_eq!(update.active.trade_count, 1);
         assert!(update.closed.is_none());
+    }
+
+    #[test]
+    fn fallback_base_urls_keep_primary_first_and_dedupe() {
+        let fallbacks = parse_base_url_list(
+            " https://data-api.binance.vision,https://api1.binance.com,https://api.binance.com ",
+        );
+        let urls = provider_base_urls("https://api.binance.com", &fallbacks);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://api.binance.com".to_string(),
+                "https://data-api.binance.vision".to_string(),
+                "https://api1.binance.com".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn http_errors_are_classified_for_backfill_diagnostics() {
+        assert_eq!(
+            http_error_kind(StatusCode::TOO_MANY_REQUESTS),
+            MarketProviderErrorKind::RateLimited
+        );
+        assert_eq!(
+            http_error_kind(StatusCode::BAD_REQUEST),
+            MarketProviderErrorKind::Http4xx
+        );
+        assert_eq!(
+            http_error_kind(StatusCode::BAD_GATEWAY),
+            MarketProviderErrorKind::Http5xx
+        );
+    }
+
+    #[test]
+    fn parse_errors_are_not_retryable() {
+        let diagnostic = provider_diagnostic(
+            "https://api.binance.com",
+            "/api/v3/klines",
+            Some("BTCUSDT"),
+            Some(CandleInterval::OneMinute),
+            None,
+            None,
+            Some(200),
+            MarketProviderErrorKind::ParseError,
+            false,
+            "bad json".to_string(),
+        );
+        let attempt = attempt_from_diagnostic(&diagnostic);
+
+        assert!(!diagnostic.retryable);
+        assert_eq!(
+            attempt.error_kind,
+            Some(MarketProviderErrorKind::ParseError)
+        );
+    }
+
+    #[test]
+    fn failure_recommendations_are_actionable() {
+        assert!(recommendation_for(MarketProviderErrorKind::ConnectError).contains("VPN"));
+        assert!(recommendation_for(MarketProviderErrorKind::RateLimited)
+            .contains("Reduce request frequency"));
+        assert_eq!(
+            recommendation_for(MarketProviderErrorKind::EmptyResponse),
+            "No candles returned for requested window."
+        );
     }
 
     #[test]

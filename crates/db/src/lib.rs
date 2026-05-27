@@ -5411,6 +5411,44 @@ pub async fn fail_candle_backfill_run(
     Ok(map_candle_backfill_run(&row))
 }
 
+pub async fn update_candle_backfill_run_config(
+    pool: &PgPool,
+    run_id: Uuid,
+    config: Value,
+) -> Result<CandleBackfillRunRecord> {
+    let row = sqlx::query(
+        r#"
+        UPDATE candle_backfill_runs
+        SET config = $2
+        WHERE id = $1
+        RETURNING
+            id,
+            exchange,
+            symbol,
+            interval,
+            start_time,
+            end_time,
+            status,
+            requested_candles_estimate,
+            fetched_candles,
+            inserted_candles,
+            updated_candles,
+            skipped_candles,
+            failed_reason,
+            correlation_id,
+            created_at,
+            completed_at,
+            config
+        "#,
+    )
+    .bind(run_id)
+    .bind(config)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candle_backfill_run(&row))
+}
+
 pub async fn list_candle_backfill_runs(
     pool: &PgPool,
     limit: i64,
@@ -10253,6 +10291,31 @@ pub fn strategy_walk_forward_result_from_records(
 pub fn candle_backfill_result_from_record(
     record: &CandleBackfillRunRecord,
 ) -> Result<CandleBackfillResult> {
+    let provider_attempts = record
+        .config
+        .get("provider_attempts")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?
+        .unwrap_or_default();
+    let selected_provider = record
+        .config
+        .get("selected_provider")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let failure_diagnostic = record
+        .config
+        .get("failure_diagnostic")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()?;
+    let recommendation = record
+        .config
+        .get("recommendation")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+
     Ok(CandleBackfillResult {
         run_id: record.id,
         exchange: record.exchange.parse()?,
@@ -10267,6 +10330,10 @@ pub fn candle_backfill_result_from_record(
         updated_candles: record.updated_candles,
         skipped_candles: record.skipped_candles,
         failed_reason: record.failed_reason.clone(),
+        provider_attempts,
+        selected_provider,
+        failure_diagnostic,
+        recommendation,
         correlation_id: record.correlation_id,
         created_at: record.created_at,
         completed_at: record.completed_at,

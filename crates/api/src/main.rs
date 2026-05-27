@@ -35,22 +35,22 @@ use aegis_core::{
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
     MarketDataQualityReport, MarketDataQualityRequest, MarketDataSource, MarketMode,
-    OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode, PaperClosePositionRequest,
-    PaperCloseReason, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, ResearchCandidate, ResearchCandidateDecision,
-    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidatePromotionReadiness, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewContext,
-    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
-    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    MarketProviderHealth, OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode,
+    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest, ResearchCandidate,
+    ResearchCandidateDecision, ResearchCandidateDecisionRejection,
+    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ResearchCandidateObservationFreshnessStatus, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidatePromotionReadiness,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationRequest,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
+    ResearchCandidateReviewContext, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
+    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -186,7 +186,10 @@ use exchange::{
     map_exchange_ack_to_transition, map_rest_reconciliation_status_to_transition, mask_listen_key,
     BinanceSpotTestnetAdapter, BinanceSpotTestnetConfig, BinanceTestnetStatus, ExchangeAdapter,
 };
-use market_ingest::{HistoricalCandleBackfillService, MarketIngestConfig, ResearchDatasetService};
+use market_ingest::{
+    check_binance_provider_health, HistoricalCandleBackfillService, MarketIngestConfig,
+    ResearchDatasetService,
+};
 use replay_engine::ReplayEngine;
 use research_candidate_observation::evaluate_candidate_observation;
 use risk_engine::{validate_risk_config, RiskEvaluator};
@@ -1344,6 +1347,23 @@ struct BackfillRunsQuery {
 }
 
 #[derive(Deserialize)]
+struct ProviderHealthQuery {
+    provider: Option<String>,
+    rest: Option<bool>,
+    websocket: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct ProviderHealthResponse {
+    health: MarketProviderHealth,
+    websocket_checked: bool,
+    websocket_base_url: Option<String>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
 struct CandleCoverageQuery {
     symbol: String,
 }
@@ -2483,6 +2503,7 @@ async fn main() {
         .route("/market/symbols", get(get_market_symbols))
         .route("/market/ticks/latest", get(get_latest_tick))
         .route("/market/candles", get(get_market_candles))
+        .route("/market/provider-health", get(get_market_provider_health))
         .route("/market/candles/coverage", get(get_market_candle_coverage))
         .route("/market/candles/quality", get(get_market_candle_quality))
         .route(
@@ -13738,7 +13759,8 @@ async fn post_market_backfill_candles(
         state.config.app_name.clone(),
         &state.market_config.binance_rest_base_url,
     ) {
-        Ok(service) => service,
+        Ok(service) => service
+            .with_fallback_base_urls(state.market_config.binance_rest_fallback_base_urls.clone()),
         Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -13795,6 +13817,63 @@ async fn post_market_backfill_candles(
                 .into_response()
         }
     }
+}
+
+async fn get_market_provider_health(
+    State(state): State<AppState>,
+    Query(query): Query<ProviderHealthQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let provider = query.provider.unwrap_or_else(|| "binance".to_string());
+    if provider.trim().to_ascii_lowercase() != "binance" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "unsupported_market_provider",
+                message: "Only Binance public market-data provider health is supported."
+                    .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    if query.rest == Some(false) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "unsupported_provider_health_check",
+                message: "REST provider health check must be enabled for Binance.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let health = check_binance_provider_health(
+        &state.market_config.binance_rest_base_url,
+        &state.market_config.binance_rest_fallback_base_urls,
+    )
+    .await;
+    (
+        StatusCode::OK,
+        Json(ProviderHealthResponse {
+            health,
+            websocket_checked: query.websocket.unwrap_or(false),
+            websocket_base_url: query
+                .websocket
+                .unwrap_or(false)
+                .then(|| state.market_config.binance_ws_base_url.clone()),
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
 }
 
 async fn get_market_backfill_runs(
@@ -21567,6 +21646,7 @@ mod tests {
                 stale_threshold: std::time::Duration::from_secs(10),
                 binance_ws_base_url: "wss://example.invalid".to_string(),
                 binance_rest_base_url: "https://example.invalid".to_string(),
+                binance_rest_fallback_base_urls: Vec::new(),
             },
             strategy_runtime: StrategyRuntimeConfig {
                 default_symbols: vec![Symbol::new("BTCUSDT").expect("symbol")],
@@ -30304,6 +30384,7 @@ mod tests {
                 stale_threshold: std::time::Duration::from_secs(10),
                 binance_ws_base_url: "wss://example.invalid".to_string(),
                 binance_rest_base_url: "https://example.invalid".to_string(),
+                binance_rest_fallback_base_urls: Vec::new(),
             },
             strategy_runtime: StrategyRuntimeConfig {
                 default_symbols: vec![Symbol::new("BTCUSDT").expect("symbol")],

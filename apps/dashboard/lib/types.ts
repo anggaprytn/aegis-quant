@@ -61,6 +61,55 @@ export type HealthResponse = {
   timestamp: string;
 };
 
+export type MarketProviderAttempt = {
+  provider: string;
+  base_url: string;
+  endpoint: string;
+  success: boolean;
+  latency_ms: number | null;
+  http_status: number | null;
+  error_kind: string | null;
+  recommendation: string | null;
+};
+
+export type MarketProviderDiagnostic = {
+  provider: string;
+  base_url: string;
+  endpoint: string;
+  symbol: string | null;
+  interval: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  http_status: number | null;
+  error_kind: string;
+  retryable: boolean;
+  message: string;
+  recommendation: string;
+};
+
+export type MarketProviderHealth = {
+  provider: string;
+  status: string;
+  base_url: string;
+  endpoint: string;
+  latency_ms: number | null;
+  http_status: number | null;
+  error_kind: string | null;
+  recommendation: string | null;
+  fallback_available: boolean;
+  fallback_base_urls: string[];
+  attempts: MarketProviderAttempt[];
+};
+
+export type ProviderHealthResponse = {
+  health: MarketProviderHealth;
+  websocket_checked: boolean;
+  websocket_base_url: string | null;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type StrategyPerformanceSummary = {
   strategy_id: string | null;
   symbol: string | null;
@@ -714,6 +763,10 @@ export type CandleBackfillResult = {
   updated_candles: number;
   skipped_candles: number;
   failed_reason: string | null;
+  provider_attempts: MarketProviderAttempt[];
+  selected_provider: string | null;
+  failure_diagnostic: MarketProviderDiagnostic | null;
+  recommendation: string | null;
   correlation_id: string;
   created_at: string;
   completed_at: string | null;

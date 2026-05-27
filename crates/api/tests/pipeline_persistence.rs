@@ -82,6 +82,7 @@ fn app_state(pool: db::PgPool) -> AppState {
             stale_threshold: Duration::from_secs(10),
             binance_ws_base_url: "wss://example.invalid".to_string(),
             binance_rest_base_url: "https://example.invalid".to_string(),
+            binance_rest_fallback_base_urls: Vec::new(),
         },
         strategy_runtime: runtime_config(),
     }

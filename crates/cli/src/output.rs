@@ -1440,6 +1440,29 @@ pub fn print_backfill_result(result: &aegis_core::CandleBackfillResult) {
     println!("Exchange: {}", result.exchange.as_str());
     println!("Symbol: {}", result.symbol);
     println!("Interval: {}", result.interval);
+    println!(
+        "Selected provider: {}",
+        result.selected_provider.as_deref().unwrap_or("-")
+    );
+    if !result.provider_attempts.is_empty() {
+        println!("Provider attempts:");
+        for attempt in &result.provider_attempts {
+            println!(
+                "  {} {} success={} status={} kind={}",
+                attempt.provider,
+                attempt.base_url,
+                attempt.success,
+                attempt
+                    .http_status
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                attempt
+                    .error_kind
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+        }
+    }
     println!("Fetched candles: {}", result.fetched_candles);
     println!("Inserted candles: {}", result.inserted_candles);
     println!("Updated candles: {}", result.updated_candles);
@@ -1447,6 +1470,13 @@ pub fn print_backfill_result(result: &aegis_core::CandleBackfillResult) {
     println!("Correlation ID: {}", result.correlation_id);
     if let Some(reason) = &result.failed_reason {
         println!("Failure reason: {}", reason);
+    }
+    if let Some(diagnostic) = &result.failure_diagnostic {
+        println!("Error kind: {}", diagnostic.error_kind.as_str());
+        println!("Retryable: {}", diagnostic.retryable);
+    }
+    if let Some(recommendation) = &result.recommendation {
+        println!("Recommendation: {}", recommendation);
     }
 }
 
@@ -1469,6 +1499,52 @@ pub fn print_backfill_runs(response: &CandleBackfillRunsResponse) {
 
 pub fn print_backfill_run(response: &CandleBackfillRunResponse) {
     print_backfill_result(&response.run);
+}
+
+pub fn print_provider_health(response: &crate::api::ProviderHealthResponse) {
+    let health = &response.health;
+    println!("Provider: {}", health.provider);
+    println!("Status: {}", health.status);
+    println!("Base URL: {}", health.base_url);
+    println!("Endpoint: {}", health.endpoint);
+    println!(
+        "Latency: {} ms",
+        health
+            .latency_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Error kind: {}",
+        health
+            .error_kind
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Recommendation: {}",
+        health.recommendation.as_deref().unwrap_or("-")
+    );
+    println!("Fallback available: {}", health.fallback_available);
+    if !health.attempts.is_empty() {
+        println!("Provider attempts:");
+        for attempt in &health.attempts {
+            println!(
+                "  {} {} success={} status={} kind={}",
+                attempt.provider,
+                attempt.base_url,
+                attempt.success,
+                attempt
+                    .http_status
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                attempt
+                    .error_kind
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            );
+        }
+    }
 }
 
 pub fn print_candle_aggregation_result(result: &CandleAggregationResult) {

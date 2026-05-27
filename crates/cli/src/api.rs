@@ -5,32 +5,32 @@ use aegis_core::{
     CandleBackfillResult, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
-    OperatorReport, OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ResearchCandidate, ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewRequest, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
-    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
-    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
-    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
-    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
-    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
-    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
-    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
-    StrategyPerformanceSummary, StrategyWalkForwardRequest, StrategyWalkForwardResult,
-    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
-    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
-    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
-    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
-    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
-    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    MarketProviderHealth, OperatorReport, OperatorReportRequest, PaperTradingPipelineRequest,
+    PaperTradingPipelineResult, ResearchCandidate, ResearchCandidateDecisionRequest,
+    ResearchCandidateLifecycleEvent, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewRequest,
+    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWatchlistEntry, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, ResearchShadowPnlAttributionResult, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
+    StrategyDryRunResult, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    StrategyMultiTimeframeExperimentResult, StrategyPerformanceSummary, StrategyWalkForwardRequest,
+    StrategyWalkForwardResult, StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow,
+    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
+    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
+    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -558,6 +558,20 @@ impl ApiClient {
 
     pub async fn market_feed_status(&self) -> Result<FeedStatusResponse, ApiClientError> {
         self.get("/market/feed-status", &[]).await
+    }
+
+    pub async fn market_provider_health(
+        &self,
+        provider: &str,
+    ) -> Result<ProviderHealthResponse, ApiClientError> {
+        self.get(
+            "/market/provider-health",
+            &[
+                ("provider", provider.to_string()),
+                ("rest", "true".to_string()),
+            ],
+        )
+        .await
     }
 
     pub async fn backfill_candles(
@@ -2114,6 +2128,16 @@ pub struct MarketFeedStatusRecord {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FeedStatusResponse {
     pub feeds: Vec<MarketFeedStatusRecord>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProviderHealthResponse {
+    pub health: MarketProviderHealth,
+    pub websocket_checked: bool,
+    pub websocket_base_url: Option<String>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

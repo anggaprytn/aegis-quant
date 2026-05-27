@@ -801,6 +801,11 @@ function AuthenticatedDashboard({
     queryFn: api.getSystemHealth,
     refetchInterval: 10_000,
   });
+  const providerHealthQuery = useQuery({
+    queryKey: ["market-provider-health"],
+    queryFn: api.getMarketProviderHealth,
+    refetchInterval: 30_000,
+  });
   const statusQuery = useQuery({
     queryKey: ["system-status"],
     queryFn: api.getSystemStatus,
@@ -2500,6 +2505,29 @@ function AuthenticatedDashboard({
                 />
               </Panel>
 
+              <Panel className="xl:col-span-4" title="Market Provider">
+                <KeyValue
+                  items={[
+                    ["Status", providerHealthQuery.data?.health.status ?? "N/A"],
+                    ["Provider", providerHealthQuery.data?.health.provider ?? "N/A"],
+                    ["Base URL", providerHealthQuery.data?.health.base_url ?? "N/A"],
+                    [
+                      "Latency",
+                      providerHealthQuery.data?.health.latency_ms !== null &&
+                      providerHealthQuery.data?.health.latency_ms !== undefined
+                        ? `${providerHealthQuery.data.health.latency_ms} ms`
+                        : "N/A",
+                    ],
+                    [
+                      "Recommendation",
+                      providerHealthQuery.data?.health.recommendation ?? "N/A",
+                    ],
+                  ]}
+                  loading={providerHealthQuery.isLoading}
+                  error={getErrorMessage(providerHealthQuery.error)}
+                />
+              </Panel>
+
               <Panel className="xl:col-span-4" title="System Status">
                 <KeyValue
                   items={[
@@ -3206,7 +3234,11 @@ function AuthenticatedDashboard({
                   />
                   <InlineStatus
                     error={getErrorMessage(backfillMutation.error)}
-                    success={lastBackfillResult ? `Completed ${lastBackfillResult.inserted_candles} inserts` : undefined}
+                    success={
+                      lastBackfillResult
+                        ? `${lastBackfillResult.status} ${lastBackfillResult.inserted_candles} inserts`
+                        : undefined
+                    }
                   />
                 </div>
               </Panel>
@@ -3227,6 +3259,18 @@ function AuthenticatedDashboard({
                     ["Symbol", selectedBackfillRunQuery.data?.run.symbol ?? "N/A"],
                     ["Interval", selectedBackfillRunQuery.data?.run.interval ?? "N/A"],
                     [
+                      "Provider URL",
+                      selectedBackfillRunQuery.data?.run.selected_provider ?? "N/A",
+                    ],
+                    [
+                      "Provider Attempts",
+                      selectedBackfillRunQuery.data?.run.provider_attempts
+                        ?.map((attempt) =>
+                          `${attempt.base_url} ${attempt.success ? "OK" : attempt.error_kind ?? "FAILED"}`,
+                        )
+                        .join(" | ") ?? "N/A",
+                    ],
+                    [
                       "Counts",
                       selectedBackfillRunQuery.data
                         ? `${selectedBackfillRunQuery.data.run.inserted_candles} inserted / ${selectedBackfillRunQuery.data.run.updated_candles} updated / ${selectedBackfillRunQuery.data.run.skipped_candles} skipped`
@@ -3235,6 +3279,15 @@ function AuthenticatedDashboard({
                     [
                       "Failure Reason",
                       selectedBackfillRunQuery.data?.run.failed_reason ?? "N/A",
+                    ],
+                    [
+                      "Error Kind",
+                      selectedBackfillRunQuery.data?.run.failure_diagnostic?.error_kind ??
+                        "N/A",
+                    ],
+                    [
+                      "Recommendation",
+                      selectedBackfillRunQuery.data?.run.recommendation ?? "N/A",
                     ],
                   ]}
                   loading={selectedBackfillRunQuery.isLoading}

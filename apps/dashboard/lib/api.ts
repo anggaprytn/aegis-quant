@@ -45,6 +45,7 @@ import type {
   ExecutionReadinessSnapshotsResponse,
   FeedStatusResponse,
   HealthResponse,
+  ProviderHealthResponse,
   MarketSymbolsResponse,
   MarketTickResponse,
   OrderResponse,
@@ -351,6 +352,11 @@ export const api = {
       }),
     }),
   getMarketSymbols: () => request<MarketSymbolsResponse>("/market/symbols"),
+  getMarketProviderHealth: () =>
+    request<ProviderHealthResponse>("/market/provider-health", undefined, {
+      provider: "binance",
+      rest: "true",
+    }),
   getLatestTick: (symbol: string) =>
     request<MarketTickResponse>("/market/ticks/latest", undefined, { symbol }),
   getMarketCandles: (symbol: string, interval: string, limit = 50) =>

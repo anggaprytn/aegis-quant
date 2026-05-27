@@ -1738,6 +1738,79 @@ pub struct BackfilledCandleSummary {
     pub candle_count: i32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MarketProviderErrorKind {
+    DnsError,
+    ConnectError,
+    Timeout,
+    Http4xx,
+    Http5xx,
+    RateLimited,
+    ParseError,
+    EmptyResponse,
+    Unknown,
+}
+
+impl MarketProviderErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DnsError => "DNS_ERROR",
+            Self::ConnectError => "CONNECT_ERROR",
+            Self::Timeout => "TIMEOUT",
+            Self::Http4xx => "HTTP_4XX",
+            Self::Http5xx => "HTTP_5XX",
+            Self::RateLimited => "RATE_LIMITED",
+            Self::ParseError => "PARSE_ERROR",
+            Self::EmptyResponse => "EMPTY_RESPONSE",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketProviderDiagnostic {
+    pub provider: String,
+    pub base_url: String,
+    pub endpoint: String,
+    pub symbol: Option<String>,
+    pub interval: Option<String>,
+    pub start_time: Option<DateTime<Utc>>,
+    pub end_time: Option<DateTime<Utc>>,
+    pub http_status: Option<u16>,
+    pub error_kind: MarketProviderErrorKind,
+    pub retryable: bool,
+    pub message: String,
+    pub recommendation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketProviderAttempt {
+    pub provider: String,
+    pub base_url: String,
+    pub endpoint: String,
+    pub success: bool,
+    pub latency_ms: Option<u128>,
+    pub http_status: Option<u16>,
+    pub error_kind: Option<MarketProviderErrorKind>,
+    pub recommendation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketProviderHealth {
+    pub provider: String,
+    pub status: String,
+    pub base_url: String,
+    pub endpoint: String,
+    pub latency_ms: Option<u128>,
+    pub http_status: Option<u16>,
+    pub error_kind: Option<MarketProviderErrorKind>,
+    pub recommendation: Option<String>,
+    pub fallback_available: bool,
+    pub fallback_base_urls: Vec<String>,
+    pub attempts: Vec<MarketProviderAttempt>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CandleBackfillResult {
     pub run_id: Uuid,
@@ -1753,6 +1826,10 @@ pub struct CandleBackfillResult {
     pub updated_candles: i32,
     pub skipped_candles: i32,
     pub failed_reason: Option<String>,
+    pub provider_attempts: Vec<MarketProviderAttempt>,
+    pub selected_provider: Option<String>,
+    pub failure_diagnostic: Option<MarketProviderDiagnostic>,
+    pub recommendation: Option<String>,
     pub correlation_id: Uuid,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
