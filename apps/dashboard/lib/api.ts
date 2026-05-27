@@ -82,6 +82,8 @@ import type {
   ResearchHypothesisGenerationResponse,
   ResearchHypothesesResponse,
   ResearchHypothesisResponse,
+  ResearchExperimentPlanResponse,
+  ResearchExperimentPlansResponse,
   ResearchRegimeStrategyLeaderboardResponse,
   ResearchCampaignSummaryResponse,
   ResearchDatasetBuildRequest,
@@ -556,6 +558,25 @@ export const api = {
     request<ResearchHypothesisResponse>(`/research/hypotheses/${id}/decision`, {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  createResearchExperimentPlan: (id: string) =>
+    request<ResearchExperimentPlanResponse>(`/research/hypotheses/${id}/plan`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  listResearchExperimentPlans: (limit = 50) =>
+    request<ResearchExperimentPlansResponse>("/research/experiment-plans", undefined, { limit }),
+  getResearchExperimentPlan: (id: string) =>
+    request<ResearchExperimentPlanResponse>(`/research/experiment-plans/${id}`),
+  validateResearchExperimentPlan: (id: string) =>
+    request<ResearchExperimentPlanResponse>(`/research/experiment-plans/${id}/validate`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  archiveResearchExperimentPlan: (id: string, reason?: string) =>
+    request<ResearchExperimentPlanResponse>(`/research/experiment-plans/${id}/archive`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
     }),
   createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
     request<ResearchCandidateResponse>("/research/candidates", {

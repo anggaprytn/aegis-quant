@@ -2241,6 +2241,157 @@ pub struct ResearchHypothesis {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchExperimentPlanStatus {
+    Draft,
+    Ready,
+    Invalid,
+    Runnable,
+    Archived,
+}
+
+impl ResearchExperimentPlanStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "DRAFT",
+            Self::Ready => "READY",
+            Self::Invalid => "INVALID",
+            Self::Runnable => "RUNNABLE",
+            Self::Archived => "ARCHIVED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchExperimentPlanStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "DRAFT" => Ok(Self::Draft),
+            "READY" => Ok(Self::Ready),
+            "INVALID" => Ok(Self::Invalid),
+            "RUNNABLE" => Ok(Self::Runnable),
+            "ARCHIVED" => Ok(Self::Archived),
+            other => Err(CoreError::UnsupportedResearchExperimentPlanStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchExperimentPlanSource {
+    AcceptedHypothesis,
+    OperatorDraft,
+}
+
+impl ResearchExperimentPlanSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AcceptedHypothesis => "ACCEPTED_HYPOTHESIS",
+            Self::OperatorDraft => "OPERATOR_DRAFT",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchExperimentPlanSource {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ACCEPTED_HYPOTHESIS" => Ok(Self::AcceptedHypothesis),
+            "OPERATOR_DRAFT" => Ok(Self::OperatorDraft),
+            other => Err(CoreError::UnsupportedResearchExperimentPlanSource(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchExperimentPlanType {
+    StrategyExperiment,
+    ResearchBatch,
+    ResearchCampaign,
+    RobustnessMatrix,
+    WalkForward,
+}
+
+impl ResearchExperimentPlanType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StrategyExperiment => "STRATEGY_EXPERIMENT",
+            Self::ResearchBatch => "RESEARCH_BATCH",
+            Self::ResearchCampaign => "RESEARCH_CAMPAIGN",
+            Self::RobustnessMatrix => "ROBUSTNESS_MATRIX",
+            Self::WalkForward => "WALK_FORWARD",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchExperimentPlanType {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "STRATEGY_EXPERIMENT" => Ok(Self::StrategyExperiment),
+            "RESEARCH_BATCH" => Ok(Self::ResearchBatch),
+            "RESEARCH_CAMPAIGN" => Ok(Self::ResearchCampaign),
+            "ROBUSTNESS_MATRIX" => Ok(Self::RobustnessMatrix),
+            "WALK_FORWARD" => Ok(Self::WalkForward),
+            other => Err(CoreError::UnsupportedResearchExperimentPlanType(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchExperimentPlanStep {
+    pub step_index: i32,
+    pub code: String,
+    pub description: String,
+    pub research_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchExperimentPlanValidation {
+    pub status: ResearchExperimentPlanStatus,
+    pub issues: Vec<String>,
+    pub validated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchExperimentPlanRecommendation {
+    pub code: String,
+    pub action: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchExperimentPlan {
+    pub id: Option<Uuid>,
+    pub hypothesis_id: Uuid,
+    pub source: ResearchExperimentPlanSource,
+    pub source_campaign_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: Option<String>,
+    pub timeframe: Option<String>,
+    pub proposed_request: Value,
+    pub plan_type: ResearchExperimentPlanType,
+    pub status: ResearchExperimentPlanStatus,
+    pub validation_status: ResearchExperimentPlanStatus,
+    pub validation_issues: Vec<String>,
+    pub steps: Vec<ResearchExperimentPlanStep>,
+    pub recommendation: ResearchExperimentPlanRecommendation,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResearchHypothesisIncludedSource {
@@ -3593,6 +3744,432 @@ fn dedupe_and_sort_hypotheses(hypotheses: Vec<ResearchHypothesis>) -> Vec<Resear
             .then_with(|| left.recommendation.code.cmp(&right.recommendation.code))
     });
     values
+}
+
+pub fn plan_research_experiment_from_hypothesis(
+    hypothesis: &ResearchHypothesis,
+    planned_at: DateTime<Utc>,
+    correlation_id: Option<Uuid>,
+) -> Result<ResearchExperimentPlan, CoreError> {
+    if hypothesis.status != ResearchHypothesisStatus::AcceptedForExperiment {
+        return Err(CoreError::ResearchExperimentPlanRequiresAcceptedHypothesis);
+    }
+    let Some(hypothesis_id) = hypothesis.id else {
+        return Err(CoreError::ResearchExperimentPlanRequiresPersistedHypothesis);
+    };
+    let strategy_id = hypothesis
+        .strategy_id
+        .clone()
+        .unwrap_or_else(|| "operator_selected_strategy".to_string());
+    let source_campaign_id = hypothesis
+        .evidence
+        .details
+        .get("campaign_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let (plan_type, request, steps, recommendation) =
+        research_experiment_plan_template(hypothesis, &strategy_id, source_campaign_id);
+    let mut plan = ResearchExperimentPlan {
+        id: None,
+        hypothesis_id,
+        source: ResearchExperimentPlanSource::AcceptedHypothesis,
+        source_campaign_id,
+        strategy_id,
+        symbol: hypothesis.symbol.clone(),
+        timeframe: hypothesis.timeframe.clone(),
+        proposed_request: request,
+        plan_type,
+        status: ResearchExperimentPlanStatus::Draft,
+        validation_status: ResearchExperimentPlanStatus::Draft,
+        validation_issues: Vec::new(),
+        steps,
+        recommendation,
+        created_at: planned_at,
+        updated_at: planned_at,
+        correlation_id,
+    };
+    let validation = validate_research_experiment_plan(&plan, planned_at);
+    plan.validation_status = validation.status;
+    plan.validation_issues = validation.issues;
+    plan.status = match plan.validation_status {
+        ResearchExperimentPlanStatus::Ready => ResearchExperimentPlanStatus::Ready,
+        ResearchExperimentPlanStatus::Runnable => ResearchExperimentPlanStatus::Runnable,
+        ResearchExperimentPlanStatus::Invalid => ResearchExperimentPlanStatus::Invalid,
+        _ => ResearchExperimentPlanStatus::Draft,
+    };
+    Ok(plan)
+}
+
+pub fn validate_research_experiment_plan(
+    plan: &ResearchExperimentPlan,
+    validated_at: DateTime<Utc>,
+) -> ResearchExperimentPlanValidation {
+    let mut issues = Vec::new();
+    if plan.strategy_id.trim().is_empty() || plan.strategy_id == "operator_selected_strategy" {
+        issues.push("missing strategy_id".to_string());
+    }
+    if plan
+        .symbol
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        issues.push("missing symbol".to_string());
+    }
+    if plan
+        .timeframe
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        issues.push("missing timeframe".to_string());
+    } else if let Some(timeframe) = plan.timeframe.as_deref() {
+        if timeframe.parse::<CandleInterval>().is_err() {
+            issues.push("invalid timeframe".to_string());
+        }
+    }
+    let has_window = plan.source_campaign_id.is_some()
+        || plan
+            .proposed_request
+            .get("source_campaign_id")
+            .is_some_and(|value| !value.is_null())
+        || plan
+            .proposed_request
+            .get("regime_dataset_id")
+            .is_some_and(|value| !value.is_null())
+        || plan
+            .proposed_request
+            .get("windows")
+            .and_then(Value::as_array)
+            .is_some_and(|windows| !windows.is_empty())
+        || (plan.proposed_request.get("start_time").is_some()
+            && plan.proposed_request.get("end_time").is_some());
+    if !has_window {
+        issues.push("missing research window".to_string());
+    }
+    if plan.proposed_request.get("research_only") != Some(&Value::Bool(true)) {
+        issues.push("proposed_request must be explicitly research_only".to_string());
+    }
+    if plan
+        .proposed_request
+        .get("auto_run")
+        .is_some_and(|value| value == &Value::Bool(true))
+    {
+        issues.push("auto_run is not allowed for experiment plans".to_string());
+    }
+    let status = if issues.is_empty() {
+        ResearchExperimentPlanStatus::Ready
+    } else {
+        ResearchExperimentPlanStatus::Invalid
+    };
+    ResearchExperimentPlanValidation {
+        status,
+        issues,
+        validated_at: Some(validated_at),
+    }
+}
+
+fn research_experiment_plan_template(
+    hypothesis: &ResearchHypothesis,
+    strategy_id: &str,
+    source_campaign_id: Option<Uuid>,
+) -> (
+    ResearchExperimentPlanType,
+    Value,
+    Vec<ResearchExperimentPlanStep>,
+    ResearchExperimentPlanRecommendation,
+) {
+    let reason_set = hypothesis
+        .failure_reasons
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let base = json!({
+        "research_only": true,
+        "auto_run": false,
+        "hypothesis_id": hypothesis.id,
+        "source_campaign_id": source_campaign_id,
+        "strategy_id": strategy_id,
+        "symbol": hypothesis.symbol,
+        "timeframe": hypothesis.timeframe,
+        "regime": hypothesis.regime.map(|value| value.as_str()),
+        "evidence_summary": hypothesis.evidence.summary,
+        "hypothesis_recommendation": hypothesis.recommendation,
+        "operator_review_required": true
+    });
+    if reason_set.contains(&ResearchCandidateFailureReason::OverfitRisk) {
+        return (
+            ResearchExperimentPlanType::RobustnessMatrix,
+            merge_json(
+                base,
+                json!({
+                    "plan": "broader_robustness_matrix",
+                    "strategy_ids": [strategy_id],
+                    "symbols": hypothesis.symbol.iter().collect::<Vec<_>>(),
+                    "timeframes": hypothesis.timeframe.iter().collect::<Vec<_>>(),
+                    "validation": {
+                        "expand_windows": true,
+                        "expand_symbols": true,
+                        "require_walk_forward_review": true
+                    }
+                }),
+            ),
+            plan_steps(&[
+                (
+                    "define_matrix",
+                    "Review broader windows and symbols before running.",
+                ),
+                (
+                    "run_research_only_matrix",
+                    "Run robustness matrix only after operator approval.",
+                ),
+                (
+                    "review_overfit",
+                    "Reject candidates unless robustness materially improves.",
+                ),
+            ]),
+            plan_recommendation(
+                "broaden_validation",
+                "Review robustness matrix plan",
+                hypothesis,
+            ),
+        );
+    }
+    if reason_set.contains(&ResearchCandidateFailureReason::RegimeMismatch) {
+        return (
+            ResearchExperimentPlanType::ResearchCampaign,
+            merge_json(
+                base,
+                json!({
+                    "plan": "regime_filtered_campaign",
+                    "strategies": [strategy_id],
+                    "symbols": hypothesis.symbol.iter().collect::<Vec<_>>(),
+                    "experiment_timeframes": hypothesis.timeframe.iter().collect::<Vec<_>>(),
+                    "target_regimes": hypothesis.regime.map(|value| vec![value.as_str()]),
+                    "metadata": {
+                        "disable_mismatched_regimes": true,
+                        "mismatched_regime": hypothesis.regime.map(|value| value.as_str())
+                    }
+                }),
+            ),
+            plan_steps(&[
+                (
+                    "confirm_regime",
+                    "Confirm target regime dataset and excluded regimes.",
+                ),
+                (
+                    "run_campaign",
+                    "Run a research-only regime-filtered campaign explicitly.",
+                ),
+                (
+                    "review_results",
+                    "Compare against unrestricted campaign evidence.",
+                ),
+            ]),
+            plan_recommendation(
+                "regime_filter_campaign",
+                "Review regime-filtered campaign",
+                hypothesis,
+            ),
+        );
+    }
+    if reason_set.contains(&ResearchCandidateFailureReason::FeeDrag)
+        || reason_set.contains(&ResearchCandidateFailureReason::TooManyTrades)
+    {
+        return (
+            ResearchExperimentPlanType::ResearchCampaign,
+            merge_json(
+                base,
+                json!({
+                    "plan": "current_vs_stricter_configs",
+                    "adjustments": {
+                        "increase_timeframe": true,
+                        "cooldown_multiplier": 2,
+                        "entry_filter": "tighter",
+                        "max_trade_frequency": "below_current_median"
+                    },
+                    "comparison": ["current_config", "stricter_config"]
+                }),
+            ),
+            plan_steps(&[
+                (
+                    "baseline",
+                    "Keep current config as the baseline comparator.",
+                ),
+                (
+                    "stricter_variant",
+                    "Increase timeframe/cooldown and tighten entries.",
+                ),
+                (
+                    "compare",
+                    "Compare net PnL, fee drag, trade count, and drawdown.",
+                ),
+            ]),
+            plan_recommendation(
+                "reduce_turnover",
+                "Review stricter turnover experiment",
+                hypothesis,
+            ),
+        );
+    }
+    if reason_set.contains(&ResearchCandidateFailureReason::TooFewTrades) {
+        return (
+            ResearchExperimentPlanType::ResearchBatch,
+            merge_json(
+                base,
+                json!({
+                    "plan": "looser_entry_opportunity_test",
+                    "precheck": "run opportunity analysis first if sample remains too small",
+                    "adjustments": {
+                        "loosen_thresholds": true,
+                        "expand_entry_band": true,
+                        "min_trade_count_gate": "above_too_few_threshold"
+                    }
+                }),
+            ),
+            plan_steps(&[
+                (
+                    "opportunity_check",
+                    "Confirm the window has enough candle opportunity.",
+                ),
+                (
+                    "looser_variant",
+                    "Loosen thresholds and expand entry bands.",
+                ),
+                (
+                    "sample_gate",
+                    "Reject the variant if trade count remains too low.",
+                ),
+            ]),
+            plan_recommendation(
+                "increase_sample_size",
+                "Review looser-entry experiment",
+                hypothesis,
+            ),
+        );
+    }
+    if hypothesis.recommendation.code == "use_promising_feature_bucket" {
+        return (
+            ResearchExperimentPlanType::StrategyExperiment,
+            merge_json(
+                base,
+                json!({
+                    "plan": "feature_bucket_config_boundary",
+                    "feature_bucket": hypothesis.evidence.details,
+                    "bounds": {
+                        "include_promising_bucket": true,
+                        "avoid_worst_buckets": true
+                    }
+                }),
+            ),
+            plan_steps(&[
+                (
+                    "derive_bounds",
+                    "Translate the feature bucket into config boundaries.",
+                ),
+                (
+                    "run_experiment",
+                    "Run a strategy experiment explicitly after review.",
+                ),
+                (
+                    "walk_forward",
+                    "Require walk-forward validation before candidate creation.",
+                ),
+            ]),
+            plan_recommendation(
+                "test_feature_bucket",
+                "Review feature-bucket experiment",
+                hypothesis,
+            ),
+        );
+    }
+    if hypothesis.recommendation.code == "reject_before_exit_tweaks" {
+        return (
+            ResearchExperimentPlanType::StrategyExperiment,
+            merge_json(
+                base,
+                json!({
+                    "plan": "alternative_entry_logic",
+                    "exit_only_optimization_allowed": false,
+                    "decision": "reject_exit_only_tweak"
+                }),
+            ),
+            plan_steps(&[
+                (
+                    "reject_exit_only",
+                    "Do not optimize exits before entry quality improves.",
+                ),
+                (
+                    "define_entry_variant",
+                    "Plan alternative entry logic if research continues.",
+                ),
+                ("review", "Require operator review before any run."),
+            ]),
+            plan_recommendation(
+                "avoid_exit_only_optimization",
+                "Review alternative-entry plan",
+                hypothesis,
+            ),
+        );
+    }
+    (
+        ResearchExperimentPlanType::StrategyExperiment,
+        merge_json(
+            base,
+            json!({
+                "plan": "diagnostic_strategy_experiment",
+                "diagnostics": ["feature_attribution", "opportunity_analysis"]
+            }),
+        ),
+        plan_steps(&[
+            ("diagnose", "Run attribution or opportunity analysis first."),
+            (
+                "define_variant",
+                "Define a bounded strategy variant from the diagnostic evidence.",
+            ),
+            ("review", "Review before explicitly running research."),
+        ]),
+        plan_recommendation(
+            "diagnose_before_variant",
+            "Review diagnostic experiment",
+            hypothesis,
+        ),
+    )
+}
+
+fn merge_json(mut base: Value, extra: Value) -> Value {
+    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+        for (key, value) in extra {
+            base.insert(key.clone(), value.clone());
+        }
+    }
+    base
+}
+
+fn plan_steps(values: &[(&str, &str)]) -> Vec<ResearchExperimentPlanStep> {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, (code, description))| ResearchExperimentPlanStep {
+            step_index: i32::try_from(index + 1).unwrap_or(i32::MAX),
+            code: (*code).to_string(),
+            description: (*description).to_string(),
+            research_only: true,
+        })
+        .collect()
+}
+
+fn plan_recommendation(
+    code: &str,
+    action: &str,
+    hypothesis: &ResearchHypothesis,
+) -> ResearchExperimentPlanRecommendation {
+    ResearchExperimentPlanRecommendation {
+        code: code.to_string(),
+        action: action.to_string(),
+        rationale: format!(
+            "{} Expected effect: {}",
+            hypothesis.proposed_action, hypothesis.expected_effect
+        ),
+    }
 }
 
 pub fn campaign_windows(
@@ -14004,6 +14581,158 @@ mod tests {
                 .map(|recommendation| recommendation.code.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn accepted_hypothesis_with_reason(
+        reason: ResearchCandidateFailureReason,
+        code: &str,
+    ) -> ResearchHypothesis {
+        ResearchHypothesis {
+            id: Some(Uuid::from_u128(42)),
+            source_type: ResearchHypothesisSource::CampaignFailureAttribution,
+            status: ResearchHypothesisStatus::AcceptedForExperiment,
+            strategy_id: Some("trend_filter_momentum_v2".to_string()),
+            symbol: Some("BTCUSDT".to_string()),
+            timeframe: Some("15m".to_string()),
+            regime: Some(ResearchRegimeLabel::TrendUp),
+            failure_reasons: vec![reason],
+            evidence: ResearchHypothesisEvidence {
+                summary: "sample accepted hypothesis".to_string(),
+                details: json!({ "campaign_id": Uuid::from_u128(7) }),
+            },
+            recommendation: ResearchHypothesisRecommendation {
+                code: code.to_string(),
+                actions: vec!["review".to_string()],
+            },
+            proposed_action: "Review deterministic research plan.".to_string(),
+            proposed_experiment_config: json!({ "source": "test" }),
+            priority: ResearchHypothesisPriority::High,
+            expected_effect: "Improve research evidence.".to_string(),
+            risk: "May reject the variant.".to_string(),
+            created_at: ts(0, 0, 0),
+        }
+    }
+
+    #[test]
+    fn fee_drag_hypothesis_creates_stricter_config_plan() {
+        let hypothesis = accepted_hypothesis_with_reason(
+            ResearchCandidateFailureReason::FeeDrag,
+            "reduce_fee_drag_and_turnover",
+        );
+
+        let plan =
+            plan_research_experiment_from_hypothesis(&hypothesis, ts(1, 0, 0), None).unwrap();
+
+        assert_eq!(plan.plan_type, ResearchExperimentPlanType::ResearchCampaign);
+        assert_eq!(plan.validation_status, ResearchExperimentPlanStatus::Ready);
+        assert_eq!(
+            plan.proposed_request["adjustments"]["entry_filter"],
+            "tighter"
+        );
+        assert_eq!(
+            plan.proposed_request["adjustments"]["cooldown_multiplier"],
+            2
+        );
+    }
+
+    #[test]
+    fn too_few_trades_hypothesis_creates_looser_config_plan() {
+        let hypothesis = accepted_hypothesis_with_reason(
+            ResearchCandidateFailureReason::TooFewTrades,
+            "loosen_entry_opportunity",
+        );
+
+        let plan =
+            plan_research_experiment_from_hypothesis(&hypothesis, ts(1, 0, 0), None).unwrap();
+
+        assert_eq!(plan.plan_type, ResearchExperimentPlanType::ResearchBatch);
+        assert_eq!(
+            plan.proposed_request["adjustments"]["loosen_thresholds"],
+            true
+        );
+        assert_eq!(
+            plan.proposed_request["adjustments"]["expand_entry_band"],
+            true
+        );
+    }
+
+    #[test]
+    fn overfit_hypothesis_creates_robustness_plan() {
+        let hypothesis = accepted_hypothesis_with_reason(
+            ResearchCandidateFailureReason::OverfitRisk,
+            "broaden_walk_forward_validation",
+        );
+
+        let plan =
+            plan_research_experiment_from_hypothesis(&hypothesis, ts(1, 0, 0), None).unwrap();
+
+        assert_eq!(plan.plan_type, ResearchExperimentPlanType::RobustnessMatrix);
+        assert_eq!(plan.proposed_request["validation"]["expand_windows"], true);
+    }
+
+    #[test]
+    fn regime_mismatch_hypothesis_creates_regime_filtered_campaign_plan() {
+        let hypothesis = accepted_hypothesis_with_reason(
+            ResearchCandidateFailureReason::RegimeMismatch,
+            "split_or_disable_mismatched_regime",
+        );
+
+        let plan =
+            plan_research_experiment_from_hypothesis(&hypothesis, ts(1, 0, 0), None).unwrap();
+
+        assert_eq!(plan.plan_type, ResearchExperimentPlanType::ResearchCampaign);
+        assert_eq!(
+            plan.proposed_request["metadata"]["disable_mismatched_regimes"],
+            true
+        );
+    }
+
+    #[test]
+    fn plan_validation_catches_missing_strategy_symbol_window() {
+        let mut hypothesis = accepted_hypothesis_with_reason(
+            ResearchCandidateFailureReason::WeakEdge,
+            "diagnose_weak_edge",
+        );
+        hypothesis.strategy_id = None;
+        hypothesis.symbol = None;
+        hypothesis.evidence.details = json!({});
+
+        let plan =
+            plan_research_experiment_from_hypothesis(&hypothesis, ts(1, 0, 0), None).unwrap();
+
+        assert_eq!(
+            plan.validation_status,
+            ResearchExperimentPlanStatus::Invalid
+        );
+        assert!(plan
+            .validation_issues
+            .iter()
+            .any(|issue| issue == "missing strategy_id"));
+        assert!(plan
+            .validation_issues
+            .iter()
+            .any(|issue| issue == "missing symbol"));
+        assert!(plan
+            .validation_issues
+            .iter()
+            .any(|issue| issue == "missing research window"));
+    }
+
+    #[test]
+    fn accepted_hypothesis_is_required_for_plan_generation() {
+        let mut hypothesis = accepted_hypothesis_with_reason(
+            ResearchCandidateFailureReason::FeeDrag,
+            "reduce_fee_drag_and_turnover",
+        );
+        hypothesis.status = ResearchHypothesisStatus::Proposed;
+
+        let err =
+            plan_research_experiment_from_hypothesis(&hypothesis, ts(1, 0, 0), None).unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoreError::ResearchExperimentPlanRequiresAcceptedHypothesis
+        ));
     }
 
     fn matrix_request() -> StrategyRobustnessMatrixRequest {

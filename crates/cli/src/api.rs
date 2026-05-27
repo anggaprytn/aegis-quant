@@ -22,19 +22,20 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchHypothesis, ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
-    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
-    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
-    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
-    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
-    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyExitAttributionResult, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
+    ResearchExperimentPlan, ResearchHypothesis, ResearchHypothesisGenerationRequest,
+    ResearchHypothesisGenerationResult, ResearchHypothesisStatus,
+    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
+    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
+    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeStrategyLeaderboard,
+    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
+    StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
+    StrategyConfigValidationResult, StrategyConfigVersion, StrategyDecisionBreakdown,
+    StrategyDiagnosticsResult, StrategyDryRunRequest, StrategyDryRunResult,
+    StrategyExitAttributionResult, StrategyExperimentRequest, StrategyExperimentResult,
+    StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
     StrategyMultiTimeframeExperimentResult, StrategyOpportunityAnalysisResult,
     StrategyPerformanceSummary, StrategyRobustnessMatrixCell, StrategyRobustnessMatrixRequest,
     StrategyRobustnessMatrixResult, StrategySignalFeatureAttributionResult,
@@ -861,6 +862,59 @@ impl ApiClient {
         self.post(
             &format!("/research/hypotheses/{hypothesis_id}/decision"),
             &serde_json::json!({ "decision": decision, "reason": reason }),
+        )
+        .await
+    }
+
+    pub async fn create_research_experiment_plan(
+        &self,
+        hypothesis_id: Uuid,
+    ) -> Result<ResearchExperimentPlanResponse, ApiClientError> {
+        self.post(
+            &format!("/research/hypotheses/{hypothesis_id}/plan"),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn list_research_experiment_plans(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchExperimentPlansResponse, ApiClientError> {
+        self.get(
+            "/research/experiment-plans",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn get_research_experiment_plan(
+        &self,
+        plan_id: Uuid,
+    ) -> Result<ResearchExperimentPlanResponse, ApiClientError> {
+        self.get(&format!("/research/experiment-plans/{plan_id}"), &[])
+            .await
+    }
+
+    pub async fn validate_research_experiment_plan(
+        &self,
+        plan_id: Uuid,
+    ) -> Result<ResearchExperimentPlanResponse, ApiClientError> {
+        self.post(
+            &format!("/research/experiment-plans/{plan_id}/validate"),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn archive_research_experiment_plan(
+        &self,
+        plan_id: Uuid,
+        reason: Option<String>,
+    ) -> Result<ResearchExperimentPlanResponse, ApiClientError> {
+        self.post(
+            &format!("/research/experiment-plans/{plan_id}/archive"),
+            &serde_json::json!({ "reason": reason }),
         )
         .await
     }
@@ -2759,6 +2813,22 @@ pub struct ResearchHypothesesResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchHypothesisResponse {
     pub hypothesis: ResearchHypothesis,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchExperimentPlansResponse {
+    pub plans: Vec<ResearchExperimentPlan>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchExperimentPlanResponse {
+    pub plan: ResearchExperimentPlan,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

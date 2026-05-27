@@ -154,6 +154,16 @@ struct ResearchHypothesisReportSnapshot {
     archived_count: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ResearchExperimentPlanReportSnapshot {
+    created_count: i64,
+    ready_count: i64,
+    invalid_count: i64,
+    stale_draft_count: i64,
+    run_count: i64,
+    accepted_without_plan_count: i64,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -244,6 +254,8 @@ pub async fn generate_operator_report(
     let regime_calibrations =
         load_research_regime_calibration_snapshot(&state.db_pool, &window).await?;
     let research_hypotheses = load_research_hypothesis_snapshot(&state.db_pool, &window).await?;
+    let research_experiment_plans =
+        load_research_experiment_plan_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -263,6 +275,7 @@ pub async fn generate_operator_report(
         &regime_discoveries,
         &regime_calibrations,
         &research_hypotheses,
+        &research_experiment_plans,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -305,6 +318,7 @@ pub async fn generate_operator_report(
             &regime_discoveries,
             &regime_calibrations,
             &research_hypotheses,
+            &research_experiment_plans,
         )?,
         format: request.format,
         persisted: false,
@@ -1791,6 +1805,39 @@ async fn load_research_hypothesis_snapshot(
     })
 }
 
+async fn load_research_experiment_plan_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<ResearchExperimentPlanReportSnapshot> {
+    let row = query(
+        r#"
+        SELECT
+            COUNT(*) FILTER (WHERE p.created_at >= $1 AND p.created_at <= $2) AS created_count,
+            COUNT(*) FILTER (WHERE p.validation_status IN ('READY', 'RUNNABLE') AND p.created_at >= $1 AND p.created_at <= $2) AS ready_count,
+            COUNT(*) FILTER (WHERE p.validation_status = 'INVALID' AND p.created_at >= $1 AND p.created_at <= $2) AS invalid_count,
+            COUNT(*) FILTER (WHERE p.status = 'DRAFT' AND p.created_at < $1) AS stale_draft_count,
+            0::BIGINT AS run_count,
+            COUNT(DISTINCT h.id) FILTER (WHERE p.id IS NULL) AS accepted_without_plan_count
+        FROM research_hypotheses h
+        LEFT JOIN research_experiment_plans p ON p.hypothesis_id = h.id
+        WHERE h.status = 'ACCEPTED_FOR_EXPERIMENT'
+           OR (p.created_at >= $1 AND p.created_at <= $2)
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .fetch_one(pool)
+    .await?;
+    Ok(ResearchExperimentPlanReportSnapshot {
+        created_count: row.get("created_count"),
+        ready_count: row.get("ready_count"),
+        invalid_count: row.get("invalid_count"),
+        stale_draft_count: row.get("stale_draft_count"),
+        run_count: row.get("run_count"),
+        accepted_without_plan_count: row.get("accepted_without_plan_count"),
+    })
+}
+
 async fn load_candidate_shadow_pnl_snapshot(
     state: &AppState,
     research_qualification: &OperatorReportResearchQualificationSnapshot,
@@ -1854,6 +1901,7 @@ fn build_findings(
     regime_discoveries: &ResearchRegimeDiscoveryReportSnapshot,
     regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
     research_hypotheses: &ResearchHypothesisReportSnapshot,
+    research_experiment_plans: &ResearchExperimentPlanReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -2364,6 +2412,42 @@ fn build_findings(
             "research_hypotheses",
         ));
     }
+    if research_experiment_plans.ready_count > 0 {
+        findings.push(finding(
+            "research_experiment_plans_ready",
+            OperatorReportSeverity::Low,
+            "Research experiment plans ready for review",
+            &format!(
+                "{} research experiment plans are ready for operator review.",
+                research_experiment_plans.ready_count
+            ),
+            "research_experiment_plans",
+        ));
+    }
+    if research_experiment_plans.accepted_without_plan_count > 0 {
+        findings.push(finding(
+            "accepted_hypotheses_without_experiment_plans",
+            OperatorReportSeverity::Medium,
+            "Accepted hypotheses without experiment plans",
+            &format!(
+                "{} accepted hypotheses do not have experiment plans.",
+                research_experiment_plans.accepted_without_plan_count
+            ),
+            "research_experiment_plans",
+        ));
+    }
+    if research_experiment_plans.invalid_count > 0 {
+        findings.push(finding(
+            "invalid_research_experiment_plans",
+            OperatorReportSeverity::Medium,
+            "Invalid experiment plans need review",
+            &format!(
+                "{} research experiment plans are invalid and need operator review.",
+                research_experiment_plans.invalid_count
+            ),
+            "research_experiment_plans",
+        ));
+    }
 
     if system_market.market.stale_feed_count == 0 {
         let threshold = i64::from(system_market.stale_threshold_seconds);
@@ -2770,6 +2854,7 @@ fn build_sections(
     regime_discoveries: &ResearchRegimeDiscoveryReportSnapshot,
     regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
     research_hypotheses: &ResearchHypothesisReportSnapshot,
+    research_experiment_plans: &ResearchExperimentPlanReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -3152,6 +3237,34 @@ fn build_sections(
                 highlight("Archived", research_hypotheses.archived_count.to_string()),
             ],
             research_hypotheses,
+        )?,
+        section(
+            "research_experiment_plans",
+            "Research Experiment Plans",
+            if research_experiment_plans.invalid_count > 0
+                || research_experiment_plans.accepted_without_plan_count > 0
+            {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            if research_experiment_plans.created_count > 0 {
+                "Research experiment plans are available for operator review."
+            } else {
+                "No research experiment plans were created in this window."
+            },
+            vec![
+                highlight("Created", research_experiment_plans.created_count.to_string()),
+                highlight("Ready", research_experiment_plans.ready_count.to_string()),
+                highlight("Invalid", research_experiment_plans.invalid_count.to_string()),
+                highlight("Stale Drafts", research_experiment_plans.stale_draft_count.to_string()),
+                highlight("Plans Run", research_experiment_plans.run_count.to_string()),
+                highlight(
+                    "Accepted Without Plan",
+                    research_experiment_plans.accepted_without_plan_count.to_string(),
+                ),
+            ],
+            research_experiment_plans,
         )?,
         section(
             "research_regime_datasets",
@@ -3776,9 +3889,10 @@ mod tests {
     use super::{
         build_findings, build_recommendations, status_from_findings, BacktestActivity,
         ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot,
-        ResearchHypothesisReportSnapshot, ResearchRegimeCalibrationReportSnapshot,
-        ResearchRegimeDatasetReportSnapshot, ResearchRegimeDiscoveryReportSnapshot,
-        StrategyBehaviorData, StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
+        ResearchExperimentPlanReportSnapshot, ResearchHypothesisReportSnapshot,
+        ResearchRegimeCalibrationReportSnapshot, ResearchRegimeDatasetReportSnapshot,
+        ResearchRegimeDiscoveryReportSnapshot, StrategyBehaviorData,
+        StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
@@ -3951,6 +4065,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -3987,6 +4102,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4018,6 +4134,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4049,6 +4166,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4106,6 +4224,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -4148,6 +4267,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4187,6 +4307,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4232,6 +4353,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(!findings
@@ -4279,6 +4401,7 @@ mod tests {
             &ResearchRegimeDiscoveryReportSnapshot::default(),
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
+            &ResearchExperimentPlanReportSnapshot::default(),
         );
 
         assert!(findings

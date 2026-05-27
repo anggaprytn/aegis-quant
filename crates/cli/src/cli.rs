@@ -824,6 +824,8 @@ pub enum ResearchCommands {
     Candidates(ResearchCandidateCommands),
     #[command(subcommand)]
     Hypotheses(ResearchHypothesisCommands),
+    #[command(name = "experiment-plans", subcommand)]
+    ExperimentPlans(ResearchExperimentPlanCommands),
     #[command(name = "robustness-matrix", subcommand)]
     RobustnessMatrix(ResearchRobustnessMatrixCommands),
 }
@@ -834,6 +836,22 @@ pub enum ResearchHypothesisCommands {
     List(ResearchBatchListArgs),
     Get { hypothesis_id: Uuid },
     Decide(ResearchHypothesisDecisionArgs),
+    Plan { hypothesis_id: Uuid },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchExperimentPlanCommands {
+    List(ResearchBatchListArgs),
+    Get { plan_id: Uuid },
+    Validate { plan_id: Uuid },
+    Archive(ResearchExperimentPlanArchiveArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchExperimentPlanArchiveArgs {
+    pub plan_id: Uuid,
+    #[arg(long)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Args)]

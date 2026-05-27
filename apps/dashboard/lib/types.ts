@@ -1596,6 +1596,54 @@ export type ResearchHypothesisResponse = {
   timestamp: string;
 };
 
+export type ResearchExperimentPlanStatus =
+  | "DRAFT"
+  | "READY"
+  | "INVALID"
+  | "RUNNABLE"
+  | "ARCHIVED";
+
+export type ResearchExperimentPlanType =
+  | "STRATEGY_EXPERIMENT"
+  | "RESEARCH_BATCH"
+  | "RESEARCH_CAMPAIGN"
+  | "ROBUSTNESS_MATRIX"
+  | "WALK_FORWARD";
+
+export type ResearchExperimentPlan = {
+  id: string | null;
+  hypothesis_id: string;
+  source: "ACCEPTED_HYPOTHESIS" | "OPERATOR_DRAFT";
+  source_campaign_id: string | null;
+  strategy_id: string;
+  symbol: string | null;
+  timeframe: string | null;
+  proposed_request: unknown;
+  plan_type: ResearchExperimentPlanType;
+  status: ResearchExperimentPlanStatus;
+  validation_status: ResearchExperimentPlanStatus;
+  validation_issues: string[];
+  steps: { step_index: number; code: string; description: string; research_only: boolean }[];
+  recommendation: { code: string; action: string; rationale: string };
+  created_at: string;
+  updated_at: string;
+  correlation_id: string | null;
+};
+
+export type ResearchExperimentPlansResponse = {
+  plans: ResearchExperimentPlan[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchExperimentPlanResponse = {
+  plan: ResearchExperimentPlan;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCampaignResult = {
   campaign_id: string;
   status: ResearchCampaignStatus;

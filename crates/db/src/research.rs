@@ -18,7 +18,9 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchHypothesis, ResearchHypothesisEvidence,
+    ResearchDatasetBuildStepStatus, ResearchExperimentPlan, ResearchExperimentPlanRecommendation,
+    ResearchExperimentPlanSource, ResearchExperimentPlanStatus, ResearchExperimentPlanStep,
+    ResearchExperimentPlanType, ResearchHypothesis, ResearchHypothesisEvidence,
     ResearchHypothesisPriority, ResearchHypothesisRecommendation, ResearchHypothesisSource,
     ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
     ResearchRegimeCalibrationResult, ResearchRegimeClassifierConfig, ResearchRegimeDatasetRequest,
@@ -221,6 +223,20 @@ pub struct ResearchHypothesisEventRecord {
     pub hypothesis_id: Uuid,
     pub previous_status: Option<String>,
     pub next_status: String,
+    pub reason: Option<String>,
+    pub actor_id: Option<Uuid>,
+    pub payload: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchExperimentPlanEventRecord {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub previous_status: Option<String>,
+    pub next_status: String,
+    pub event_type: String,
     pub reason: Option<String>,
     pub actor_id: Option<Uuid>,
     pub payload: Value,
@@ -1514,6 +1530,289 @@ pub async fn decide_research_hypothesis(
 
     tx.commit().await?;
     map_research_hypothesis(row).map(Some)
+}
+
+pub async fn insert_research_experiment_plan(
+    pool: &PgPool,
+    plan: &ResearchExperimentPlan,
+) -> Result<ResearchExperimentPlan> {
+    let id = plan.id.unwrap_or_else(Uuid::new_v4);
+    let validation_issues = serde_json::to_value(&plan.validation_issues)?;
+    let steps = serde_json::to_value(&plan.steps)?;
+    let recommendation = serde_json::to_value(&plan.recommendation)?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_experiment_plans (
+            id,
+            hypothesis_id,
+            source,
+            source_campaign_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            proposed_request,
+            plan_type,
+            status,
+            validation_status,
+            validation_issues,
+            steps,
+            recommendation,
+            created_at,
+            updated_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        RETURNING
+            id, hypothesis_id, source, source_campaign_id, strategy_id, symbol, timeframe,
+            proposed_request, plan_type, status, validation_status, validation_issues,
+            steps, recommendation, created_at, updated_at, correlation_id
+        "#,
+    )
+    .bind(id)
+    .bind(plan.hypothesis_id)
+    .bind(plan.source.as_str())
+    .bind(plan.source_campaign_id)
+    .bind(&plan.strategy_id)
+    .bind(&plan.symbol)
+    .bind(&plan.timeframe)
+    .bind(&plan.proposed_request)
+    .bind(plan.plan_type.as_str())
+    .bind(plan.status.as_str())
+    .bind(plan.validation_status.as_str())
+    .bind(validation_issues)
+    .bind(steps)
+    .bind(recommendation)
+    .bind(plan.created_at)
+    .bind(plan.updated_at)
+    .bind(plan.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    let plan = map_research_experiment_plan(row)?;
+    append_research_experiment_plan_event(
+        pool,
+        plan.id.expect("inserted plan returns id"),
+        None,
+        plan.status,
+        "CREATED",
+        None,
+        None,
+        &serde_json::json!({ "validation_status": plan.validation_status.as_str() }),
+        plan.correlation_id,
+    )
+    .await?;
+    Ok(plan)
+}
+
+pub async fn list_research_experiment_plans(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ResearchExperimentPlan>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id, hypothesis_id, source, source_campaign_id, strategy_id, symbol, timeframe,
+            proposed_request, plan_type, status, validation_status, validation_issues,
+            steps, recommendation, created_at, updated_at, correlation_id
+        FROM research_experiment_plans
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter().map(map_research_experiment_plan).collect()
+}
+
+pub async fn get_research_experiment_plan(
+    pool: &PgPool,
+    plan_id: Uuid,
+) -> Result<Option<ResearchExperimentPlan>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id, hypothesis_id, source, source_campaign_id, strategy_id, symbol, timeframe,
+            proposed_request, plan_type, status, validation_status, validation_issues,
+            steps, recommendation, created_at, updated_at, correlation_id
+        FROM research_experiment_plans
+        WHERE id = $1
+        "#,
+    )
+    .bind(plan_id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(map_research_experiment_plan).transpose()
+}
+
+pub async fn update_research_experiment_plan_validation(
+    pool: &PgPool,
+    plan: &ResearchExperimentPlan,
+    status: ResearchExperimentPlanStatus,
+    validation_status: ResearchExperimentPlanStatus,
+    validation_issues: &[String],
+    actor_id: Option<Uuid>,
+    correlation_id: Option<Uuid>,
+) -> Result<Option<ResearchExperimentPlan>> {
+    let Some(plan_id) = plan.id else {
+        return Ok(None);
+    };
+    let mut tx = pool.begin().await?;
+    let previous =
+        sqlx::query("SELECT status FROM research_experiment_plans WHERE id = $1 FOR UPDATE")
+            .bind(plan_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(previous) = previous else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+    let previous_status: String = previous.get("status");
+    let row = sqlx::query(
+        r#"
+        UPDATE research_experiment_plans
+        SET status = $2,
+            validation_status = $3,
+            validation_issues = $4,
+            updated_at = $5,
+            correlation_id = $6
+        WHERE id = $1
+        RETURNING
+            id, hypothesis_id, source, source_campaign_id, strategy_id, symbol, timeframe,
+            proposed_request, plan_type, status, validation_status, validation_issues,
+            steps, recommendation, created_at, updated_at, correlation_id
+        "#,
+    )
+    .bind(plan_id)
+    .bind(status.as_str())
+    .bind(validation_status.as_str())
+    .bind(serde_json::to_value(validation_issues)?)
+    .bind(Utc::now())
+    .bind(correlation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let next = map_research_experiment_plan(row)?;
+    sqlx::query(
+        r#"
+        INSERT INTO research_experiment_plan_events (
+            id, plan_id, previous_status, next_status, event_type, reason,
+            actor_id, payload, created_at, correlation_id
+        )
+        VALUES ($1, $2, $3, $4, 'VALIDATED', NULL, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(previous_status)
+    .bind(next.status.as_str())
+    .bind(actor_id)
+    .bind(serde_json::json!({
+        "validation_status": next.validation_status.as_str(),
+        "validation_issues": next.validation_issues
+    }))
+    .bind(Utc::now())
+    .bind(correlation_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(next))
+}
+
+pub async fn archive_research_experiment_plan(
+    pool: &PgPool,
+    plan_id: Uuid,
+    reason: Option<&str>,
+    actor_id: Option<Uuid>,
+    correlation_id: Option<Uuid>,
+) -> Result<Option<ResearchExperimentPlan>> {
+    let mut tx = pool.begin().await?;
+    let previous =
+        sqlx::query("SELECT status FROM research_experiment_plans WHERE id = $1 FOR UPDATE")
+            .bind(plan_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(previous) = previous else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+    let previous_status: String = previous.get("status");
+    let row = sqlx::query(
+        r#"
+        UPDATE research_experiment_plans
+        SET status = 'ARCHIVED',
+            updated_at = $2,
+            correlation_id = $3
+        WHERE id = $1
+        RETURNING
+            id, hypothesis_id, source, source_campaign_id, strategy_id, symbol, timeframe,
+            proposed_request, plan_type, status, validation_status, validation_issues,
+            steps, recommendation, created_at, updated_at, correlation_id
+        "#,
+    )
+    .bind(plan_id)
+    .bind(Utc::now())
+    .bind(correlation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let next = map_research_experiment_plan(row)?;
+    sqlx::query(
+        r#"
+        INSERT INTO research_experiment_plan_events (
+            id, plan_id, previous_status, next_status, event_type, reason,
+            actor_id, payload, created_at, correlation_id
+        )
+        VALUES ($1, $2, $3, 'ARCHIVED', 'ARCHIVED', $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(previous_status)
+    .bind(reason)
+    .bind(actor_id)
+    .bind(serde_json::json!({ "reason": reason }))
+    .bind(Utc::now())
+    .bind(correlation_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(next))
+}
+
+async fn append_research_experiment_plan_event(
+    pool: &PgPool,
+    plan_id: Uuid,
+    previous_status: Option<ResearchExperimentPlanStatus>,
+    next_status: ResearchExperimentPlanStatus,
+    event_type: &str,
+    reason: Option<&str>,
+    actor_id: Option<Uuid>,
+    payload: &Value,
+    correlation_id: Option<Uuid>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO research_experiment_plan_events (
+            id, plan_id, previous_status, next_status, event_type, reason,
+            actor_id, payload, created_at, correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(plan_id)
+    .bind(previous_status.map(|status| status.as_str().to_string()))
+    .bind(next_status.as_str())
+    .bind(event_type)
+    .bind(reason)
+    .bind(actor_id)
+    .bind(payload)
+    .bind(Utc::now())
+    .bind(correlation_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn insert_research_campaign_batch(
@@ -5135,6 +5434,40 @@ fn parse_research_hypothesis_priority(value: &str) -> Result<ResearchHypothesisP
         "MEDIUM" => ResearchHypothesisPriority::Medium,
         "LOW" => ResearchHypothesisPriority::Low,
         other => anyhow::bail!("unsupported research hypothesis priority: {other}"),
+    })
+}
+
+fn map_research_experiment_plan(row: sqlx::postgres::PgRow) -> Result<ResearchExperimentPlan> {
+    let source: String = row.get("source");
+    let plan_type: String = row.get("plan_type");
+    let status: String = row.get("status");
+    let validation_status: String = row.get("validation_status");
+    let validation_issues: Value = row.get("validation_issues");
+    let steps: Value = row.get("steps");
+    let recommendation: Value = row.get("recommendation");
+    Ok(ResearchExperimentPlan {
+        id: Some(row.get("id")),
+        hypothesis_id: row.get("hypothesis_id"),
+        source: source.parse::<ResearchExperimentPlanSource>()?,
+        source_campaign_id: row.get("source_campaign_id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        proposed_request: row.get("proposed_request"),
+        plan_type: plan_type.parse::<ResearchExperimentPlanType>()?,
+        status: status.parse::<ResearchExperimentPlanStatus>()?,
+        validation_status: validation_status.parse::<ResearchExperimentPlanStatus>()?,
+        validation_issues: serde_json::from_value(validation_issues)
+            .context("invalid research_experiment_plans.validation_issues")?,
+        steps: serde_json::from_value::<Vec<ResearchExperimentPlanStep>>(steps)
+            .context("invalid research_experiment_plans.steps")?,
+        recommendation: serde_json::from_value::<ResearchExperimentPlanRecommendation>(
+            recommendation,
+        )
+        .context("invalid research_experiment_plans.recommendation")?,
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        correlation_id: row.get("correlation_id"),
     })
 }
 

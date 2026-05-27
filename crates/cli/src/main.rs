@@ -28,11 +28,12 @@ use cli::cli::{
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
-    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands, ResearchHypothesisCommands,
-    ResearchRegimeCalibrationCommands, ResearchRegimeDatasetCommands,
-    ResearchRegimeDiscoveryCommands, ResearchRobustnessMatrixCommands, RiskCommands,
-    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
-    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
+    ResearchExperimentPlanCommands, ResearchHypothesisCommands, ResearchRegimeCalibrationCommands,
+    ResearchRegimeDatasetCommands, ResearchRegimeDiscoveryCommands,
+    ResearchRobustnessMatrixCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
+    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
+    TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -1230,6 +1231,52 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_hypothesis(&response.hypothesis);
+                    }
+                }
+                ResearchHypothesisCommands::Plan { hypothesis_id } => {
+                    let response = client
+                        .create_research_experiment_plan(hypothesis_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_experiment_plan(&response.plan);
+                    }
+                }
+            },
+            ResearchCommands::ExperimentPlans(command) => match command {
+                ResearchExperimentPlanCommands::List(args) => {
+                    let response = client.list_research_experiment_plans(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_experiment_plans(&response.plans);
+                    }
+                }
+                ResearchExperimentPlanCommands::Get { plan_id } => {
+                    let response = client.get_research_experiment_plan(plan_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_experiment_plan(&response.plan);
+                    }
+                }
+                ResearchExperimentPlanCommands::Validate { plan_id } => {
+                    let response = client.validate_research_experiment_plan(plan_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_experiment_plan(&response.plan);
+                    }
+                }
+                ResearchExperimentPlanCommands::Archive(args) => {
+                    let response = client
+                        .archive_research_experiment_plan(args.plan_id, args.reason.clone())
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_experiment_plan(&response.plan);
                     }
                 }
             },

@@ -7781,6 +7781,12 @@ pub enum CoreError {
     UnsupportedResearchRegimeCalibrationStatus(String),
     #[error("unsupported research regime label: {0}")]
     UnsupportedResearchRegimeLabel(String),
+    #[error("unsupported research experiment plan status: {0}")]
+    UnsupportedResearchExperimentPlanStatus(String),
+    #[error("unsupported research experiment plan source: {0}")]
+    UnsupportedResearchExperimentPlanSource(String),
+    #[error("unsupported research experiment plan type: {0}")]
+    UnsupportedResearchExperimentPlanType(String),
     #[error("unsupported strategy robustness matrix status: {0}")]
     UnsupportedStrategyRobustnessMatrixStatus(String),
     #[error("research campaign requires at least one strategy")]
@@ -7791,6 +7797,10 @@ pub enum CoreError {
     EmptyResearchCampaignTimeframes,
     #[error("research campaign requires at least one window")]
     EmptyResearchCampaignWindows,
+    #[error("research experiment plan generation requires an accepted hypothesis")]
+    ResearchExperimentPlanRequiresAcceptedHypothesis,
+    #[error("research experiment plan generation requires a persisted hypothesis id")]
+    ResearchExperimentPlanRequiresPersistedHypothesis,
     #[error("strategy robustness matrix requires at least one strategy")]
     EmptyStrategyRobustnessMatrixStrategies,
     #[error("strategy robustness matrix requires at least one symbol")]

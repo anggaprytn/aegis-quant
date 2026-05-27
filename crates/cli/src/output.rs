@@ -10,12 +10,12 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchHypothesis, ResearchHypothesisGenerationResult,
-    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationResult,
-    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
-    ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
-    StrategyRobustnessMatrixResult, User,
+    ResearchCandidateWatchlistEntry, ResearchExperimentPlan, ResearchHypothesis,
+    ResearchHypothesisGenerationResult, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationResult, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult,
+    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
+    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -807,6 +807,47 @@ pub fn print_research_hypothesis(hypothesis: &ResearchHypothesis) {
     );
     println!("  expected effect: {}", hypothesis.expected_effect);
     println!("  risk: {}", hypothesis.risk);
+}
+
+pub fn print_research_experiment_plans(plans: &[ResearchExperimentPlan]) {
+    if plans.is_empty() {
+        println!("No research experiment plans.");
+        return;
+    }
+    for plan in plans {
+        print_research_experiment_plan(plan);
+    }
+}
+
+pub fn print_research_experiment_plan(plan: &ResearchExperimentPlan) {
+    println!(
+        "Experiment plan {} status={} validation={} type={} hypothesis={}",
+        display_option(plan.id),
+        plan.status.as_str(),
+        plan.validation_status.as_str(),
+        plan.plan_type.as_str(),
+        plan.hypothesis_id
+    );
+    println!(
+        "  scope: strategy={} symbol={} timeframe={} source_campaign={}",
+        plan.strategy_id,
+        plan.symbol.as_deref().unwrap_or("-"),
+        plan.timeframe.as_deref().unwrap_or("-"),
+        plan.source_campaign_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  recommendation: {} - {}",
+        plan.recommendation.code, plan.recommendation.action
+    );
+    if !plan.validation_issues.is_empty() {
+        println!("  validation issues: {}", plan.validation_issues.join("; "));
+    }
+    println!(
+        "  proposed request: {}",
+        serde_json::to_string(&plan.proposed_request).unwrap_or_else(|_| "{}".to_string())
+    );
 }
 
 pub fn print_status(

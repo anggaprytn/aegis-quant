@@ -64,21 +64,21 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchHypothesis, ResearchHypothesisGenerationEvidence,
-    ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
-    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
-    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
-    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
-    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult,
-    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
-    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchDatasetBuildResult, ResearchExperimentPlan, ResearchHypothesis,
+    ResearchHypothesisGenerationEvidence, ResearchHypothesisGenerationRequest,
+    ResearchHypothesisGenerationResult, ResearchHypothesisStatus,
+    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
+    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
+    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
+    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side, SignalReason,
+    StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
+    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExitAttributionRequest,
     StrategyExitAttributionResult, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
@@ -129,7 +129,7 @@ use axum::{
 use chrono::{DateTime, TimeZone, Utc};
 use db::{
     append_exchange_testnet_lifecycle_event_and_update_order, append_research_candidate_event,
-    apply_research_candidate_review, backtest_result_from_record,
+    apply_research_candidate_review, archive_research_experiment_plan, backtest_result_from_record,
     candle_backfill_result_from_record, check_health, complete_market_data_repair_run,
     complete_research_batch_step, connect_pool, count_users, create_paper_order,
     create_research_candidate, decide_research_hypothesis, ensure_system_state,
@@ -144,21 +144,22 @@ use db::{
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
-    get_research_hypothesis, get_research_regime_calibration, get_research_regime_dataset,
-    get_research_regime_discovery, get_risk_config, get_risk_decision_by_id, get_session_by_id,
-    get_session_by_id_and_hash, get_strategy_backtest_breakdown, get_strategy_experiment,
-    get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_research_candidate,
-    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown,
-    get_strategy_status, get_strategy_walk_forward_run, get_system_event, get_system_state,
-    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
-    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
-    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
-    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
-    insert_research_campaign, insert_research_campaign_batch,
-    insert_research_candidate_qualification_evaluation, insert_research_hypothesis,
+    get_research_experiment_plan, get_research_hypothesis, get_research_regime_calibration,
+    get_research_regime_dataset, get_research_regime_discovery, get_risk_config,
+    get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
+    get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_research_candidate, get_strategy_robustness_matrix_run,
+    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
+    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
+    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
+    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
+    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
+    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
+    insert_research_batch, insert_research_batch_step, insert_research_campaign,
+    insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
+    insert_research_experiment_plan, insert_research_hypothesis,
     insert_research_regime_calibration, insert_research_regime_dataset,
     insert_research_regime_discovery, insert_risk_config_audit, insert_risk_evaluation,
     insert_session, insert_signal_deduped, insert_strategy_config_audit,
@@ -175,7 +176,8 @@ use db::{
     list_research_campaigns, list_research_candidate_events,
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
-    list_research_candidate_watchlist_rows, list_research_candidates, list_research_hypotheses,
+    list_research_candidate_watchlist_rows, list_research_candidates,
+    list_research_experiment_plans, list_research_hypotheses,
     list_research_regime_calibration_candidates, list_research_regime_calibrations,
     list_research_regime_datasets, list_research_regime_discoveries,
     list_research_regime_discovery_windows, list_research_regime_windows, list_risk_config_audit,
@@ -208,11 +210,11 @@ use db::{
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
     summarize_candle_continuity_report, update_research_batch_summary,
     update_research_campaign_batch, update_research_campaign_summary,
-    update_research_candidate_status, update_strategy_state,
-    update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
-    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
-    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
-    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    update_research_candidate_status, update_research_experiment_plan_validation,
+    update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
+    upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
+    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
@@ -1685,9 +1687,30 @@ struct ResearchHypothesisResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Serialize)]
+struct ResearchExperimentPlansResponse {
+    plans: Vec<ResearchExperimentPlan>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchExperimentPlanResponse {
+    plan: ResearchExperimentPlan,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ResearchHypothesesListQuery {
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchExperimentPlanArchiveRequest {
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3056,8 +3079,28 @@ async fn main() {
             post(decide_research_hypothesis_handler),
         )
         .route(
+            "/research/hypotheses/:id/plan",
+            post(create_research_experiment_plan_handler),
+        )
+        .route(
             "/research/hypotheses/:id",
             get(get_research_hypothesis_handler),
+        )
+        .route(
+            "/research/experiment-plans",
+            get(list_research_experiment_plans_handler),
+        )
+        .route(
+            "/research/experiment-plans/:id/validate",
+            post(validate_research_experiment_plan_handler),
+        )
+        .route(
+            "/research/experiment-plans/:id/archive",
+            post(archive_research_experiment_plan_handler),
+        )
+        .route(
+            "/research/experiment-plans/:id",
+            get(get_research_experiment_plan_handler),
         )
         .route("/research/batches/run", post(run_research_batch_handler))
         .route("/research/batches", get(list_research_batches_handler))
@@ -18490,6 +18533,286 @@ async fn decide_research_hypothesis_handler(
         )
             .into_response(),
     }
+}
+
+async fn create_research_experiment_plan_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let Some(actor) = actor else {
+        return unauthorized_response(request, "unauthorized", "Authentication is required.");
+    };
+    if !matches!(actor.role, UserRole::Owner | UserRole::Operator) {
+        return research_forbidden_response(
+            &request,
+            "Only OPERATOR or OWNER can create research experiment plans.",
+        );
+    }
+    match get_research_hypothesis(&state.db_pool, id).await {
+        Ok(Some(hypothesis)) => match aegis_core::plan_research_experiment_from_hypothesis(
+            &hypothesis,
+            Utc::now(),
+            Uuid::parse_str(&request.correlation_id).ok(),
+        ) {
+            Ok(plan) => match insert_research_experiment_plan(&state.db_pool, &plan).await {
+                Ok(plan) => (
+                    StatusCode::OK,
+                    Json(ResearchExperimentPlanResponse {
+                        plan,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => research_internal_error_response(
+                    "failed_to_create_research_experiment_plan",
+                    &request,
+                    err.to_string(),
+                ),
+            },
+            Err(err) => (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_research_experiment_plan_request",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => research_hypothesis_not_found_response(&request),
+        Err(err) => research_internal_error_response(
+            "failed_to_get_research_hypothesis",
+            &request,
+            err.to_string(),
+        ),
+    }
+}
+
+async fn list_research_experiment_plans_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchHypothesesListQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_experiment_plans(&state.db_pool, query.limit.unwrap_or(50).clamp(1, 200))
+        .await
+    {
+        Ok(plans) => (
+            StatusCode::OK,
+            Json(ResearchExperimentPlansResponse {
+                plans,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => research_internal_error_response(
+            "failed_to_list_research_experiment_plans",
+            &request,
+            err.to_string(),
+        ),
+    }
+}
+
+async fn get_research_experiment_plan_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_research_experiment_plan(&state.db_pool, id).await {
+        Ok(Some(plan)) => (
+            StatusCode::OK,
+            Json(ResearchExperimentPlanResponse {
+                plan,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => research_experiment_plan_not_found_response(&request),
+        Err(err) => research_internal_error_response(
+            "failed_to_get_research_experiment_plan",
+            &request,
+            err.to_string(),
+        ),
+    }
+}
+
+async fn validate_research_experiment_plan_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let Some(actor) = actor else {
+        return unauthorized_response(request, "unauthorized", "Authentication is required.");
+    };
+    if !matches!(actor.role, UserRole::Owner | UserRole::Operator) {
+        return research_forbidden_response(
+            &request,
+            "Only OPERATOR or OWNER can validate research experiment plans.",
+        );
+    }
+    match get_research_experiment_plan(&state.db_pool, id).await {
+        Ok(Some(plan)) => {
+            let validation = aegis_core::validate_research_experiment_plan(&plan, Utc::now());
+            let status = if plan.status == aegis_core::ResearchExperimentPlanStatus::Archived {
+                aegis_core::ResearchExperimentPlanStatus::Archived
+            } else {
+                validation.status
+            };
+            match update_research_experiment_plan_validation(
+                &state.db_pool,
+                &plan,
+                status,
+                validation.status,
+                &validation.issues,
+                Some(actor.user_id),
+                Uuid::parse_str(&request.correlation_id).ok(),
+            )
+            .await
+            {
+                Ok(Some(plan)) => (
+                    StatusCode::OK,
+                    Json(ResearchExperimentPlanResponse {
+                        plan,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Ok(None) => research_experiment_plan_not_found_response(&request),
+                Err(err) => research_internal_error_response(
+                    "failed_to_validate_research_experiment_plan",
+                    &request,
+                    err.to_string(),
+                ),
+            }
+        }
+        Ok(None) => research_experiment_plan_not_found_response(&request),
+        Err(err) => research_internal_error_response(
+            "failed_to_get_research_experiment_plan",
+            &request,
+            err.to_string(),
+        ),
+    }
+}
+
+async fn archive_research_experiment_plan_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchExperimentPlanArchiveRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let Some(actor) = actor else {
+        return unauthorized_response(request, "unauthorized", "Authentication is required.");
+    };
+    if !matches!(actor.role, UserRole::Owner | UserRole::Operator) {
+        return research_forbidden_response(
+            &request,
+            "Only OPERATOR or OWNER can archive research experiment plans.",
+        );
+    }
+    match archive_research_experiment_plan(
+        &state.db_pool,
+        id,
+        payload.reason.as_deref(),
+        Some(actor.user_id),
+        Uuid::parse_str(&request.correlation_id).ok(),
+    )
+    .await
+    {
+        Ok(Some(plan)) => (
+            StatusCode::OK,
+            Json(ResearchExperimentPlanResponse {
+                plan,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => research_experiment_plan_not_found_response(&request),
+        Err(err) => research_internal_error_response(
+            "failed_to_archive_research_experiment_plan",
+            &request,
+            err.to_string(),
+        ),
+    }
+}
+
+fn research_internal_error_response(
+    error: &'static str,
+    request: &RequestContext,
+    message: String,
+) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error,
+            message,
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+fn research_forbidden_response(request: &RequestContext, message: &'static str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorResponse {
+            error: "forbidden",
+            message: message.to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+fn research_hypothesis_not_found_response(request: &RequestContext) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: "research_hypothesis_not_found",
+            message: "Research hypothesis was not found.".to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+fn research_experiment_plan_not_found_response(request: &RequestContext) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            error: "research_experiment_plan_not_found",
+            message: "Research experiment plan was not found.".to_string(),
+            request_id: request.request_id.clone(),
+            correlation_id: request.correlation_id.clone(),
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
 }
 
 async fn build_research_hypothesis_evidence(
