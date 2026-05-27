@@ -85,6 +85,10 @@ fn default_research_regime_dataset_require_good_data_quality() -> bool {
     true
 }
 
+fn default_research_regime_discovery_max_windows_per_regime() -> u32 {
+    20
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchBatchStatus {
@@ -679,6 +683,42 @@ impl std::str::FromStr for ResearchRegimeDatasetStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchRegimeDiscoveryStatus {
+    Completed,
+    Partial,
+    InsufficientData,
+    Failed,
+}
+
+impl ResearchRegimeDiscoveryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "COMPLETED",
+            Self::Partial => "PARTIAL",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchRegimeDiscoveryStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "COMPLETED" => Ok(Self::Completed),
+            "PARTIAL" => Ok(Self::Partial),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            "FAILED" => Ok(Self::Failed),
+            other => Err(CoreError::UnsupportedResearchRegimeDiscoveryStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchRegimeDatasetRequest {
     pub symbol: String,
@@ -710,6 +750,54 @@ impl ResearchRegimeDatasetRequest {
         }
         if self.min_candles_per_window <= 0 {
             return Err(CoreError::InvalidResearchRegimeDatasetMinCandles);
+        }
+        Ok(())
+    }
+
+    pub fn target_regime_set(&self) -> Vec<ResearchRegimeLabel> {
+        self.target_regimes.clone().unwrap_or_else(|| {
+            vec![
+                ResearchRegimeLabel::TrendUp,
+                ResearchRegimeLabel::TrendDown,
+                ResearchRegimeLabel::Range,
+                ResearchRegimeLabel::HighVolatility,
+                ResearchRegimeLabel::LowVolatility,
+            ]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDiscoveryRequest {
+    pub symbol: String,
+    pub timeframe: String,
+    pub scan_start: DateTime<Utc>,
+    pub scan_end: DateTime<Utc>,
+    pub window_hours: i64,
+    pub step_hours: i64,
+    #[serde(default)]
+    pub target_regimes: Option<Vec<ResearchRegimeLabel>>,
+    #[serde(default = "default_research_regime_discovery_max_windows_per_regime")]
+    pub max_windows_per_regime: u32,
+    #[serde(default)]
+    pub min_confidence: Option<Decimal>,
+    #[serde(default = "default_true")]
+    pub require_existing_candles: bool,
+    #[serde(default)]
+    pub auto_backfill_missing: bool,
+}
+
+impl ResearchRegimeDiscoveryRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptySymbol);
+        }
+        self.timeframe.parse::<CandleInterval>()?;
+        if self.scan_end <= self.scan_start {
+            return Err(CoreError::InvalidResearchRegimeDatasetTimeRange);
+        }
+        if self.window_hours <= 0 || self.step_hours <= 0 {
+            return Err(CoreError::InvalidResearchRegimeDatasetWindowStep);
         }
         Ok(())
     }
@@ -781,6 +869,68 @@ pub struct ResearchRegimeDatasetResult {
     pub summary: ResearchRegimeDatasetSummary,
     pub windows: Vec<ResearchRegimeWindow>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDiscoveryCandidateWindow {
+    pub id: Uuid,
+    pub regime_label: ResearchRegimeLabel,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub confidence: Decimal,
+    pub return_pct: Decimal,
+    pub realized_volatility: Decimal,
+    pub avg_range_pct: Decimal,
+    pub trend_slope: Decimal,
+    pub choppiness_proxy: Decimal,
+    pub data_quality_status: MarketDataQualityStatus,
+    pub candle_count: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchRegimeDiscoveryRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDiscoverySummary {
+    pub total_windows_scanned: i32,
+    pub selected_window_count: i32,
+    pub counts_by_regime: BTreeMap<ResearchRegimeLabel, i32>,
+    pub missing_regimes: Vec<ResearchRegimeLabel>,
+    pub data_quality_blocked_count: i32,
+    pub insufficient_data_count: i32,
+    pub recommendations: Vec<ResearchRegimeDiscoveryRecommendation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDiscoveryResult {
+    pub discovery_id: Uuid,
+    pub status: ResearchRegimeDiscoveryStatus,
+    pub symbol: String,
+    pub timeframe: String,
+    pub scan_start: DateTime<Utc>,
+    pub scan_end: DateTime<Utc>,
+    pub total_windows_scanned: i32,
+    pub selected_windows: Vec<ResearchRegimeDiscoveryCandidateWindow>,
+    pub counts_by_regime: BTreeMap<ResearchRegimeLabel, i32>,
+    pub missing_regimes: Vec<ResearchRegimeLabel>,
+    pub data_quality_blocked_count: i32,
+    pub recommendations: Vec<ResearchRegimeDiscoveryRecommendation>,
+    pub request: ResearchRegimeDiscoveryRequest,
+    pub summary: ResearchRegimeDiscoverySummary,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchRegimeDatasetFromDiscoveryRequest {
+    pub discovery_id: Uuid,
+    #[serde(default)]
+    pub target_regimes: Option<Vec<ResearchRegimeLabel>>,
+    #[serde(default)]
+    pub max_windows_per_regime: Option<u32>,
 }
 
 impl std::str::FromStr for ResearchRegimeLabel {
@@ -2482,6 +2632,288 @@ pub fn build_research_regime_dataset(
     })
 }
 
+pub fn run_research_regime_discovery(
+    discovery_id: Uuid,
+    request: ResearchRegimeDiscoveryRequest,
+    candles: &[Candle],
+    created_at: DateTime<Utc>,
+) -> Result<ResearchRegimeDiscoveryResult, CoreError> {
+    request.validate()?;
+    let interval = request.timeframe.parse::<CandleInterval>()?;
+    let symbol = Symbol::new(request.symbol.clone())?;
+    let target_regimes = request.target_regime_set();
+    let target_set = target_regimes.iter().copied().collect::<BTreeSet<_>>();
+    let mut candidates = Vec::new();
+    let mut total_windows_scanned = 0_i32;
+    let mut data_quality_blocked_count = 0_i32;
+    let mut insufficient_data_count = 0_i32;
+    let mut cursor = request.scan_start;
+    let window_size = Duration::hours(request.window_hours);
+    let step_size = Duration::hours(request.step_hours);
+
+    while cursor + window_size <= request.scan_end {
+        let window_start = cursor;
+        let window_end = cursor + window_size;
+        total_windows_scanned += 1;
+        let window_candles = candles
+            .iter()
+            .filter(|candle| {
+                candle.symbol == symbol
+                    && candle.interval == interval
+                    && candle.is_closed
+                    && candle.open_time >= window_start
+                    && candle.close_time <= window_end
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let quality = summarize_candle_continuity(
+            &MarketDataQualityRequest {
+                exchange: MarketDataSource::Binance,
+                symbol: request.symbol.clone(),
+                interval: request.timeframe.clone(),
+                start_time: window_start,
+                end_time: window_end,
+                expected_interval_seconds: Some(interval.duration().num_seconds()),
+                max_allowed_gap_count: Some(0),
+                max_allowed_gap_pct: Some(Decimal::ZERO),
+            },
+            &window_candles,
+            0,
+        )?;
+        if window_candles.len() < REGIME_MIN_CANDLES {
+            insufficient_data_count += 1;
+            cursor += step_size;
+            continue;
+        }
+        if request.require_existing_candles && quality.status != MarketDataQualityStatus::Good {
+            data_quality_blocked_count += 1;
+            cursor += step_size;
+            continue;
+        }
+
+        let metric = classify_research_regime(
+            request.symbol.clone(),
+            request.timeframe.clone(),
+            window_start,
+            window_end,
+            &window_candles,
+        );
+        if !target_set.contains(&metric.label) {
+            cursor += step_size;
+            continue;
+        }
+        let window = regime_window_from_metric(metric, quality.status);
+        if request
+            .min_confidence
+            .is_some_and(|min_confidence| window.confidence < min_confidence)
+        {
+            cursor += step_size;
+            continue;
+        }
+        candidates.push(discovery_candidate_from_window(window));
+        cursor += step_size;
+    }
+
+    let mut by_regime =
+        BTreeMap::<ResearchRegimeLabel, Vec<ResearchRegimeDiscoveryCandidateWindow>>::new();
+    for window in candidates {
+        by_regime
+            .entry(window.regime_label)
+            .or_default()
+            .push(window);
+    }
+
+    let mut selected_windows = Vec::new();
+    for regime in &target_regimes {
+        if let Some(mut windows) = by_regime.remove(regime) {
+            windows.sort_by(|left, right| {
+                right
+                    .confidence
+                    .cmp(&left.confidence)
+                    .then_with(|| left.start_time.cmp(&right.start_time))
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            let mut selected_for_regime = Vec::new();
+            for window in windows {
+                if selected_for_regime.iter().any(
+                    |selected: &ResearchRegimeDiscoveryCandidateWindow| {
+                        windows_overlap(
+                            selected.start_time,
+                            selected.end_time,
+                            window.start_time,
+                            window.end_time,
+                        )
+                    },
+                ) {
+                    continue;
+                }
+                selected_for_regime.push(window);
+                if selected_for_regime.len() >= request.max_windows_per_regime as usize {
+                    break;
+                }
+            }
+            selected_windows.extend(selected_for_regime);
+        }
+    }
+    selected_windows.sort_by(|left, right| {
+        left.regime_label
+            .cmp(&right.regime_label)
+            .then_with(|| right.confidence.cmp(&left.confidence))
+            .then_with(|| left.start_time.cmp(&right.start_time))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut counts_by_regime = BTreeMap::new();
+    for window in &selected_windows {
+        *counts_by_regime.entry(window.regime_label).or_insert(0) += 1;
+    }
+    let missing_regimes = target_regimes
+        .iter()
+        .copied()
+        .filter(|regime| counts_by_regime.get(regime).copied().unwrap_or(0) == 0)
+        .collect::<Vec<_>>();
+    let recommendations = regime_discovery_recommendations(
+        &missing_regimes,
+        data_quality_blocked_count,
+        insufficient_data_count,
+        request.auto_backfill_missing,
+        !selected_windows.is_empty() && missing_regimes.is_empty(),
+    );
+    let selected_window_count = i32::try_from(selected_windows.len()).unwrap_or(i32::MAX);
+    let status = if total_windows_scanned == 0 || selected_window_count == 0 {
+        ResearchRegimeDiscoveryStatus::InsufficientData
+    } else if missing_regimes.is_empty() {
+        ResearchRegimeDiscoveryStatus::Completed
+    } else {
+        ResearchRegimeDiscoveryStatus::Partial
+    };
+    let summary = ResearchRegimeDiscoverySummary {
+        total_windows_scanned,
+        selected_window_count,
+        counts_by_regime: counts_by_regime.clone(),
+        missing_regimes: missing_regimes.clone(),
+        data_quality_blocked_count,
+        insufficient_data_count,
+        recommendations: recommendations.clone(),
+    };
+
+    Ok(ResearchRegimeDiscoveryResult {
+        discovery_id,
+        status,
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        scan_start: request.scan_start,
+        scan_end: request.scan_end,
+        total_windows_scanned,
+        selected_windows,
+        counts_by_regime,
+        missing_regimes,
+        data_quality_blocked_count,
+        recommendations,
+        request,
+        summary,
+        created_at,
+    })
+}
+
+pub fn build_research_regime_dataset_from_discovery(
+    dataset_id: Uuid,
+    discovery: &ResearchRegimeDiscoveryResult,
+    request: ResearchRegimeDatasetFromDiscoveryRequest,
+    created_at: DateTime<Utc>,
+) -> Result<ResearchRegimeDatasetResult, CoreError> {
+    let mut windows = discovery.selected_windows.clone();
+    if let Some(target_regimes) = request.target_regimes.as_ref() {
+        windows.retain(|window| target_regimes.contains(&window.regime_label));
+    }
+    if let Some(max_windows_per_regime) = request.max_windows_per_regime {
+        let mut counts = BTreeMap::<ResearchRegimeLabel, u32>::new();
+        windows.retain(|window| {
+            let count = counts.entry(window.regime_label).or_insert(0);
+            if *count >= max_windows_per_regime {
+                false
+            } else {
+                *count += 1;
+                true
+            }
+        });
+    }
+    let target_regimes = request
+        .target_regimes
+        .clone()
+        .unwrap_or_else(|| discovery.request.target_regime_set());
+    let selected = windows
+        .into_iter()
+        .map(|window| ResearchRegimeWindow {
+            id: Uuid::new_v4(),
+            symbol: discovery.symbol.clone(),
+            timeframe: discovery.timeframe.clone(),
+            start_time: window.start_time,
+            end_time: window.end_time,
+            regime_label: window.regime_label,
+            return_pct: window.return_pct,
+            realized_volatility: window.realized_volatility,
+            avg_range_pct: window.avg_range_pct,
+            trend_slope: window.trend_slope,
+            choppiness_proxy: window.choppiness_proxy,
+            data_quality_status: window.data_quality_status,
+            candle_count: window.candle_count,
+            score: window.confidence,
+            confidence: window.confidence,
+            metrics: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let mut regime_counts = BTreeMap::new();
+    for window in &selected {
+        *regime_counts.entry(window.regime_label).or_insert(0) += 1;
+    }
+    let missing_regimes = target_regimes
+        .iter()
+        .copied()
+        .filter(|regime| regime_counts.get(regime).copied().unwrap_or(0) == 0)
+        .collect::<Vec<_>>();
+    let selected_windows = i32::try_from(selected.len()).unwrap_or(i32::MAX);
+    let status = if selected_windows == 0 {
+        ResearchRegimeDatasetStatus::Failed
+    } else if missing_regimes.is_empty() {
+        ResearchRegimeDatasetStatus::Completed
+    } else {
+        ResearchRegimeDatasetStatus::Partial
+    };
+
+    Ok(ResearchRegimeDatasetResult {
+        dataset_id,
+        status,
+        request: ResearchRegimeDatasetRequest {
+            symbol: discovery.symbol.clone(),
+            timeframe: discovery.timeframe.clone(),
+            start_time: discovery.scan_start,
+            end_time: discovery.scan_end,
+            window_hours: discovery.request.window_hours,
+            step_hours: discovery.request.step_hours,
+            min_candles_per_window: REGIME_MIN_CANDLES as i32,
+            target_regimes: Some(target_regimes),
+            max_windows_per_regime: request.max_windows_per_regime,
+            require_good_data_quality: discovery.request.require_existing_candles,
+        },
+        summary: ResearchRegimeDatasetSummary {
+            total_candidate_windows: discovery.total_windows_scanned,
+            selected_windows,
+            data_quality_blocked_windows: discovery.data_quality_blocked_count,
+            insufficient_candle_windows: discovery.summary.insufficient_data_count,
+            regime_counts,
+            missing_regimes: missing_regimes.clone(),
+            recommendations: regime_dataset_recommendations(
+                &missing_regimes,
+                discovery.data_quality_blocked_count,
+                discovery.summary.insufficient_data_count,
+            ),
+        },
+        windows: selected,
+        created_at,
+    })
+}
+
 fn regime_window_from_metric(
     metric: ResearchRegimeMetric,
     data_quality_status: MarketDataQualityStatus,
@@ -2537,6 +2969,34 @@ fn regime_window_from_metric(
     }
 }
 
+fn discovery_candidate_from_window(
+    window: ResearchRegimeWindow,
+) -> ResearchRegimeDiscoveryCandidateWindow {
+    ResearchRegimeDiscoveryCandidateWindow {
+        id: window.id,
+        regime_label: window.regime_label,
+        start_time: window.start_time,
+        end_time: window.end_time,
+        confidence: window.confidence,
+        return_pct: window.return_pct,
+        realized_volatility: window.realized_volatility,
+        avg_range_pct: window.avg_range_pct,
+        trend_slope: window.trend_slope,
+        choppiness_proxy: window.choppiness_proxy,
+        data_quality_status: window.data_quality_status,
+        candle_count: window.candle_count,
+    }
+}
+
+fn windows_overlap(
+    left_start: DateTime<Utc>,
+    left_end: DateTime<Utc>,
+    right_start: DateTime<Utc>,
+    right_end: DateTime<Utc>,
+) -> bool {
+    left_start < right_end && right_start < left_end
+}
+
 fn regime_confidence(metric: &ResearchRegimeMetric) -> Decimal {
     let hundred = Decimal::new(100, 0);
     match metric.label {
@@ -2557,6 +3017,66 @@ fn regime_confidence(metric: &ResearchRegimeMetric) -> Decimal {
         ResearchRegimeLabel::Mixed => Decimal::new(50, 0),
         ResearchRegimeLabel::Unknown => Decimal::ZERO,
     }
+}
+
+fn regime_discovery_recommendations(
+    missing_regimes: &[ResearchRegimeLabel],
+    data_quality_blocked_count: i32,
+    insufficient_data_count: i32,
+    auto_backfill_missing: bool,
+    balanced: bool,
+) -> Vec<ResearchRegimeDiscoveryRecommendation> {
+    let mut recommendations = Vec::new();
+    if missing_regimes.contains(&ResearchRegimeLabel::TrendUp)
+        || missing_regimes.contains(&ResearchRegimeLabel::TrendDown)
+    {
+        recommendations.push(ResearchRegimeDiscoveryRecommendation {
+            priority: "MEDIUM".to_string(),
+            code: "missing_trend_regimes".to_string(),
+            message: "Missing trend regimes; scan a wider range, reduce confidence threshold, or add symbols."
+                .to_string(),
+        });
+    }
+    if missing_regimes.contains(&ResearchRegimeLabel::HighVolatility) {
+        recommendations.push(ResearchRegimeDiscoveryRecommendation {
+            priority: "MEDIUM".to_string(),
+            code: "missing_high_volatility_regimes".to_string(),
+            message: "Missing high-volatility regimes; include known stress windows before judging strategy families."
+                .to_string(),
+        });
+    }
+    if data_quality_blocked_count > 0 || insufficient_data_count > 0 {
+        recommendations.push(ResearchRegimeDiscoveryRecommendation {
+            priority: "LOW".to_string(),
+            code: "repair_or_backfill_market_data".to_string(),
+            message: "Some windows lacked complete existing candles; repair or public-backfill market data before rerunning discovery."
+                .to_string(),
+        });
+    }
+    if auto_backfill_missing {
+        recommendations.push(ResearchRegimeDiscoveryRecommendation {
+            priority: "LOW".to_string(),
+            code: "auto_backfill_requested".to_string(),
+            message: "Auto-backfill was requested; API handlers must use only public market-data backfill paths."
+                .to_string(),
+        });
+    }
+    if balanced {
+        recommendations.push(ResearchRegimeDiscoveryRecommendation {
+            priority: "LOW".to_string(),
+            code: "balanced_candidates_found".to_string(),
+            message:
+                "Regime discovery found balanced dataset candidates for research-only campaigns."
+                    .to_string(),
+        });
+    }
+    recommendations.push(ResearchRegimeDiscoveryRecommendation {
+        priority: "LOW".to_string(),
+        code: "research_only".to_string(),
+        message: "Discovery is research-only and must not submit orders, mutate execution state, or auto-promote candidates."
+            .to_string(),
+    });
+    recommendations
 }
 
 fn regime_dataset_recommendations(
@@ -10393,6 +10913,148 @@ mod tests {
             .summary
             .missing_regimes
             .contains(&ResearchRegimeLabel::TrendUp));
+    }
+
+    fn regime_discovery_request(max_windows_per_regime: u32) -> ResearchRegimeDiscoveryRequest {
+        ResearchRegimeDiscoveryRequest {
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            scan_start: ts(0, 0, 0),
+            scan_end: ts(4, 0, 0),
+            window_hours: 1,
+            step_hours: 1,
+            target_regimes: Some(vec![ResearchRegimeLabel::Range]),
+            max_windows_per_regime,
+            min_confidence: None,
+            require_existing_candles: false,
+            auto_backfill_missing: false,
+        }
+    }
+
+    #[test]
+    fn regime_discovery_selects_max_windows_per_regime() {
+        let candles = dataset_range_candles(4);
+        let request = regime_discovery_request(2);
+
+        let discovery =
+            run_research_regime_discovery(Uuid::from_u128(1), request, &candles, ts(4, 0, 0))
+                .expect("discovery should run");
+
+        assert_eq!(
+            discovery
+                .counts_by_regime
+                .get(&ResearchRegimeLabel::Range)
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(discovery.summary.selected_window_count, 2);
+    }
+
+    #[test]
+    fn regime_discovery_reports_missing_regimes() {
+        let candles = dataset_range_candles(1);
+        let mut request = regime_discovery_request(10);
+        request.scan_end = ts(1, 0, 0);
+        request.target_regimes = Some(vec![
+            ResearchRegimeLabel::Range,
+            ResearchRegimeLabel::TrendUp,
+        ]);
+
+        let discovery =
+            run_research_regime_discovery(Uuid::from_u128(1), request, &candles, ts(2, 0, 0))
+                .expect("discovery should run");
+
+        assert_eq!(discovery.status, ResearchRegimeDiscoveryStatus::Partial);
+        assert!(discovery
+            .missing_regimes
+            .contains(&ResearchRegimeLabel::TrendUp));
+    }
+
+    #[test]
+    fn regime_discovery_confidence_ordering_is_deterministic() {
+        let candles = dataset_range_candles(3);
+        let request = regime_discovery_request(3);
+
+        let discovery =
+            run_research_regime_discovery(Uuid::from_u128(1), request, &candles, ts(4, 0, 0))
+                .expect("discovery should run");
+
+        assert_eq!(
+            discovery
+                .selected_windows
+                .iter()
+                .map(|window| window.start_time)
+                .collect::<Vec<_>>(),
+            vec![ts(0, 0, 0), ts(1, 0, 0), ts(2, 0, 0)]
+        );
+    }
+
+    #[test]
+    fn regime_discovery_reduces_overlapping_windows() {
+        let candles = dataset_range_candles(4);
+        let mut request = regime_discovery_request(10);
+        request.window_hours = 2;
+        request.step_hours = 1;
+
+        let discovery =
+            run_research_regime_discovery(Uuid::from_u128(1), request, &candles, ts(4, 0, 0))
+                .expect("discovery should run");
+
+        assert_eq!(discovery.selected_windows.len(), 2);
+        assert!(discovery.selected_windows[0].end_time <= discovery.selected_windows[1].start_time);
+    }
+
+    #[test]
+    fn regime_discovery_no_candles_is_insufficient_data() {
+        let request = regime_discovery_request(10);
+
+        let discovery =
+            run_research_regime_discovery(Uuid::from_u128(1), request, &[], ts(4, 0, 0))
+                .expect("discovery should run");
+
+        assert_eq!(
+            discovery.status,
+            ResearchRegimeDiscoveryStatus::InsufficientData
+        );
+        assert!(discovery.selected_windows.is_empty());
+    }
+
+    #[test]
+    fn regime_dataset_from_discovery_preserves_windows() {
+        let candles = dataset_range_candles(2);
+        let discovery = run_research_regime_discovery(
+            Uuid::from_u128(1),
+            regime_discovery_request(2),
+            &candles,
+            ts(3, 0, 0),
+        )
+        .expect("discovery should run");
+
+        let dataset = build_research_regime_dataset_from_discovery(
+            Uuid::from_u128(2),
+            &discovery,
+            ResearchRegimeDatasetFromDiscoveryRequest {
+                discovery_id: discovery.discovery_id,
+                target_regimes: None,
+                max_windows_per_regime: None,
+            },
+            ts(4, 0, 0),
+        )
+        .expect("dataset should build");
+
+        assert_eq!(dataset.windows.len(), discovery.selected_windows.len());
+        assert_eq!(
+            dataset
+                .windows
+                .iter()
+                .map(|window| (window.start_time, window.end_time, window.regime_label))
+                .collect::<Vec<_>>(),
+            discovery
+                .selected_windows
+                .iter()
+                .map(|window| (window.start_time, window.end_time, window.regime_label))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

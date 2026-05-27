@@ -64,14 +64,17 @@ use aegis_core::{
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeWindow, ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
-    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
-    RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult, RiskRejectionReason, Side,
-    SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
-    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
-    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
-    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    ResearchDatasetBuildResult, ResearchRegimeDatasetFromDiscoveryRequest,
+    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
+    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
+    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
+    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
+    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
+    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExitAttributionRequest,
     StrategyExitAttributionResult, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
@@ -137,26 +140,26 @@ use db::{
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
-    get_research_regime_dataset, get_risk_config, get_risk_decision_by_id, get_session_by_id,
-    get_session_by_id_and_hash, get_strategy_backtest_breakdown, get_strategy_experiment,
-    get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
-    get_strategy_performance_summary, get_strategy_research_candidate,
-    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown,
-    get_strategy_status, get_strategy_walk_forward_run, get_system_event, get_system_state,
-    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
-    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
-    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
-    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
-    insert_research_campaign, insert_research_campaign_batch,
-    insert_research_candidate_qualification_evaluation, insert_research_regime_dataset,
-    insert_risk_config_audit, insert_risk_evaluation, insert_session, insert_signal_deduped,
-    insert_strategy_config_audit, insert_strategy_research_candidate,
-    insert_strategy_research_candidate_promotion, insert_system_event,
-    insert_testnet_shadow_promotion, insert_user, link_research_candidate_walk_forward_run,
-    list_backtest_runs, list_candle_backfill_runs, list_candles,
-    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    get_research_regime_dataset, get_research_regime_discovery, get_risk_config,
+    get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
+    get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
+    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
+    get_strategy_research_candidate, get_strategy_robustness_matrix_run,
+    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
+    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
+    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
+    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
+    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
+    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
+    insert_research_batch, insert_research_batch_step, insert_research_campaign,
+    insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
+    insert_research_regime_dataset, insert_research_regime_discovery, insert_risk_config_audit,
+    insert_risk_evaluation, insert_session, insert_signal_deduped, insert_strategy_config_audit,
+    insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
+    insert_system_event, insert_testnet_shadow_promotion, insert_user,
+    link_research_candidate_walk_forward_run, list_backtest_runs, list_candle_backfill_runs,
+    list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions,
     list_market_data_repair_runs, list_market_feed_statuses, list_open_paper_positions,
@@ -167,7 +170,8 @@ use db::{
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
     list_research_candidate_watchlist_rows, list_research_candidates,
-    list_research_regime_datasets, list_research_regime_windows, list_risk_config_audit,
+    list_research_regime_datasets, list_research_regime_discoveries,
+    list_research_regime_discovery_windows, list_research_regime_windows, list_risk_config_audit,
     list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
@@ -183,7 +187,8 @@ use db::{
     research_candidate_event_from_record, research_candidate_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row,
-    research_regime_dataset_result_from_records, research_regime_window_from_record,
+    research_regime_dataset_result_from_records, research_regime_discovery_result_from_records,
+    research_regime_discovery_window_from_record, research_regime_window_from_record,
     revoke_session, risk_config_audit_from_record, risk_config_from_record,
     risk_config_version_from_record, rotate_session_refresh_token, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_config_audit_from_record,
@@ -1665,6 +1670,30 @@ struct ResearchRegimeDatasetWindowsResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchRegimeDiscoveryResponse {
+    discovery: ResearchRegimeDiscoveryResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchRegimeDiscoveriesResponse {
+    discoveries: Vec<ResearchRegimeDiscoveryResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchRegimeDiscoveryWindowsResponse {
+    windows: Vec<ResearchRegimeDiscoveryCandidateWindow>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateEventsResponse {
     events: Vec<ResearchCandidateLifecycleEvent>,
     request_id: String,
@@ -2867,6 +2896,10 @@ async fn main() {
             post(build_research_regime_dataset_handler),
         )
         .route(
+            "/research/regime-datasets/from-discovery",
+            post(build_research_regime_dataset_from_discovery_handler),
+        )
+        .route(
             "/research/regime-datasets",
             get(list_research_regime_datasets_handler),
         )
@@ -2877,6 +2910,22 @@ async fn main() {
         .route(
             "/research/regime-datasets/:id",
             get(get_research_regime_dataset_handler),
+        )
+        .route(
+            "/research/regime-discovery/run",
+            post(run_research_regime_discovery_handler),
+        )
+        .route(
+            "/research/regime-discovery",
+            get(list_research_regime_discoveries_handler),
+        )
+        .route(
+            "/research/regime-discovery/:id/windows",
+            get(get_research_regime_discovery_windows_handler),
+        )
+        .route(
+            "/research/regime-discovery/:id",
+            get(get_research_regime_discovery_handler),
         )
         .route(
             "/research/campaigns/run",
@@ -17024,6 +17073,290 @@ async fn get_research_regime_dataset_windows_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_query_research_regime_windows",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn run_research_regime_discovery_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<ResearchRegimeDiscoveryRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let result = async {
+        payload.validate()?;
+        if payload.auto_backfill_missing {
+            let service = HistoricalCandleBackfillService::new(
+                state.db_pool.clone(),
+                state.config.app_name.clone(),
+                &state.market_config.binance_rest_base_url,
+            )?
+            .with_fallback_base_urls(state.market_config.binance_rest_fallback_base_urls.clone());
+            service
+                .run(CandleBackfillRequest {
+                    exchange: MarketDataSource::Binance,
+                    symbol: payload.symbol.clone(),
+                    interval: payload.timeframe.clone(),
+                    start_time: payload.scan_start,
+                    end_time: payload.scan_end,
+                    limit_per_request: Some(1000),
+                    correlation_id: Uuid::parse_str(&request.correlation_id).ok(),
+                })
+                .await?;
+        }
+        let symbol = Symbol::new(payload.symbol.clone())?;
+        let interval = payload.timeframe.parse::<CandleInterval>()?;
+        let candles = get_closed_candles_range(
+            &state.db_pool,
+            &symbol,
+            interval,
+            payload.scan_start,
+            payload.scan_end,
+        )
+        .await?;
+        let result = aegis_core::run_research_regime_discovery(
+            Uuid::new_v4(),
+            payload,
+            &candles,
+            Utc::now(),
+        )?;
+        insert_research_regime_discovery(&state.db_pool, &result).await?;
+        anyhow::Ok(result)
+    }
+    .await;
+
+    match result {
+        Ok(discovery) => (
+            StatusCode::OK,
+            Json(ResearchRegimeDiscoveryResponse {
+                discovery,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_run_research_regime_discovery",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn research_regime_discovery_read_model(
+    state: &AppState,
+    id: Uuid,
+) -> anyhow::Result<Option<ResearchRegimeDiscoveryResult>> {
+    let Some(record) = get_research_regime_discovery(&state.db_pool, id).await? else {
+        return Ok(None);
+    };
+    let windows = list_research_regime_discovery_windows(&state.db_pool, id).await?;
+    Ok(Some(research_regime_discovery_result_from_records(
+        &record, &windows,
+    )?))
+}
+
+async fn list_research_regime_discoveries_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchBatchesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_regime_discoveries(&state.db_pool, bounded_backfill_runs_limit(query.limit))
+        .await
+    {
+        Ok(records) => {
+            let mut discoveries = Vec::new();
+            for record in records {
+                match research_regime_discovery_read_model(&state, record.id).await {
+                    Ok(Some(discovery)) => discoveries.push(discovery),
+                    Ok(None) => {}
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_map_research_regime_discovery",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: Utc::now(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(ResearchRegimeDiscoveriesResponse {
+                    discoveries,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_discoveries",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_regime_discovery_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match research_regime_discovery_read_model(&state, id).await {
+        Ok(Some(discovery)) => (
+            StatusCode::OK,
+            Json(ResearchRegimeDiscoveryResponse {
+                discovery,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_regime_discovery_not_found",
+                message: "Regime discovery not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_discovery",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_regime_discovery_windows_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_regime_discovery_windows(&state.db_pool, id).await {
+        Ok(records) => {
+            let windows = match records
+                .iter()
+                .map(research_regime_discovery_window_from_record)
+                .collect::<anyhow::Result<Vec<_>>>()
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_research_regime_discovery_windows",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(ResearchRegimeDiscoveryWindowsResponse {
+                    windows,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_regime_discovery_windows",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn build_research_regime_dataset_from_discovery_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<ResearchRegimeDatasetFromDiscoveryRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let result = async {
+        let Some(discovery) =
+            research_regime_discovery_read_model(&state, payload.discovery_id).await?
+        else {
+            anyhow::bail!("regime discovery not found: {}", payload.discovery_id);
+        };
+        let result = aegis_core::build_research_regime_dataset_from_discovery(
+            Uuid::new_v4(),
+            &discovery,
+            payload,
+            Utc::now(),
+        )?;
+        insert_research_regime_dataset(&state.db_pool, &result).await?;
+        anyhow::Ok(result)
+    }
+    .await;
+
+    match result {
+        Ok(dataset) => (
+            StatusCode::OK,
+            Json(ResearchRegimeDatasetResponse {
+                dataset,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_research_regime_dataset_from_discovery",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

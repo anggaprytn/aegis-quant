@@ -1468,6 +1468,11 @@ export type ResearchCampaignSummaryResponse = {
 };
 
 export type ResearchRegimeDatasetStatus = "COMPLETED" | "PARTIAL" | "FAILED";
+export type ResearchRegimeDiscoveryStatus =
+  | "COMPLETED"
+  | "PARTIAL"
+  | "INSUFFICIENT_DATA"
+  | "FAILED";
 
 export type ResearchRegimeDatasetRequest = {
   symbol: string;
@@ -1480,6 +1485,26 @@ export type ResearchRegimeDatasetRequest = {
   target_regimes?: ResearchRegimeLabel[] | null;
   max_windows_per_regime?: number | null;
   require_good_data_quality?: boolean;
+};
+
+export type ResearchRegimeDiscoveryRequest = {
+  symbol: string;
+  timeframe: string;
+  scan_start: string;
+  scan_end: string;
+  window_hours: number;
+  step_hours: number;
+  target_regimes?: ResearchRegimeLabel[] | null;
+  max_windows_per_regime?: number;
+  min_confidence?: string | null;
+  require_existing_candles?: boolean;
+  auto_backfill_missing?: boolean;
+};
+
+export type ResearchRegimeDatasetFromDiscoveryRequest = {
+  discovery_id: string;
+  target_regimes?: ResearchRegimeLabel[] | null;
+  max_windows_per_regime?: number | null;
 };
 
 export type ResearchRegimeWindowMetric = {
@@ -1533,8 +1558,78 @@ export type ResearchRegimeDatasetResult = {
   created_at: string;
 };
 
+export type ResearchRegimeDiscoveryCandidateWindow = {
+  id: string;
+  regime_label: ResearchRegimeLabel;
+  start_time: string;
+  end_time: string;
+  confidence: string;
+  return_pct: string;
+  realized_volatility: string;
+  avg_range_pct: string;
+  trend_slope: string;
+  choppiness_proxy: string;
+  data_quality_status: MarketDataQualityStatus;
+  candle_count: number;
+};
+
+export type ResearchRegimeDiscoveryRecommendation = {
+  priority: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchRegimeDiscoverySummary = {
+  total_windows_scanned: number;
+  selected_window_count: number;
+  counts_by_regime: Partial<Record<ResearchRegimeLabel, number>>;
+  missing_regimes: ResearchRegimeLabel[];
+  data_quality_blocked_count: number;
+  insufficient_data_count: number;
+  recommendations: ResearchRegimeDiscoveryRecommendation[];
+};
+
+export type ResearchRegimeDiscoveryResult = {
+  discovery_id: string;
+  status: ResearchRegimeDiscoveryStatus;
+  symbol: string;
+  timeframe: string;
+  scan_start: string;
+  scan_end: string;
+  total_windows_scanned: number;
+  selected_windows: ResearchRegimeDiscoveryCandidateWindow[];
+  counts_by_regime: Partial<Record<ResearchRegimeLabel, number>>;
+  missing_regimes: ResearchRegimeLabel[];
+  data_quality_blocked_count: number;
+  recommendations: ResearchRegimeDiscoveryRecommendation[];
+  request: ResearchRegimeDiscoveryRequest;
+  summary: ResearchRegimeDiscoverySummary;
+  created_at: string;
+};
+
 export type ResearchRegimeDatasetResponse = {
   dataset: ResearchRegimeDatasetResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeDiscoveryResponse = {
+  discovery: ResearchRegimeDiscoveryResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeDiscoveriesResponse = {
+  discoveries: ResearchRegimeDiscoveryResult[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchRegimeDiscoveryWindowsResponse = {
+  windows: ResearchRegimeDiscoveryCandidateWindow[];
   request_id: string;
   correlation_id: string;
   timestamp: string;

@@ -44,8 +44,12 @@ import type {
   ResearchCampaignResult,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
+  ResearchRegimeDatasetFromDiscoveryRequest,
   ResearchRegimeDatasetRequest,
   ResearchRegimeDatasetResult,
+  ResearchRegimeDiscoveryCandidateWindow,
+  ResearchRegimeDiscoveryRequest,
+  ResearchRegimeDiscoveryResult,
   ResearchRegimeWindow,
   ResearchCandidateObservationHistoryItem,
   ResearchCandidateQualificationResult,
@@ -423,6 +427,20 @@ const DEFAULT_RESEARCH_REGIME_DATASET_FORM: ResearchRegimeDatasetRequest = {
   target_regimes: ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY", "LOW_VOLATILITY"],
   max_windows_per_regime: 20,
   require_good_data_quality: true,
+};
+
+const DEFAULT_RESEARCH_REGIME_DISCOVERY_FORM: ResearchRegimeDiscoveryRequest = {
+  symbol: "BTCUSDT",
+  timeframe: "15m",
+  scan_start: "2024-01-01T00:00:00Z",
+  scan_end: "2025-01-01T00:00:00Z",
+  window_hours: 24,
+  step_hours: 12,
+  target_regimes: ["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY", "LOW_VOLATILITY"],
+  max_windows_per_regime: 10,
+  min_confidence: null,
+  require_existing_candles: true,
+  auto_backfill_missing: false,
 };
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
@@ -946,6 +964,12 @@ function AuthenticatedDashboard({
     useState<string | null>(null);
   const [lastResearchRegimeDataset, setLastResearchRegimeDataset] =
     useState<ResearchRegimeDatasetResult | null>(null);
+  const [researchRegimeDiscoveryForm, setResearchRegimeDiscoveryForm] =
+    useState<ResearchRegimeDiscoveryRequest>(DEFAULT_RESEARCH_REGIME_DISCOVERY_FORM);
+  const [selectedResearchRegimeDiscoveryId, setSelectedResearchRegimeDiscoveryId] =
+    useState<string | null>(null);
+  const [lastResearchRegimeDiscovery, setLastResearchRegimeDiscovery] =
+    useState<ResearchRegimeDiscoveryResult | null>(null);
   const [researchBatchForm, setResearchBatchForm] =
     useState<ResearchBatchRequest>(DEFAULT_RESEARCH_BATCH_FORM);
   const [selectedResearchBatchId, setSelectedResearchBatchId] = useState<string | null>(null);
@@ -1371,6 +1395,22 @@ function AuthenticatedDashboard({
     queryFn: () => api.getResearchRegimeDatasetWindows(selectedResearchRegimeDatasetId ?? ""),
     enabled: Boolean(selectedResearchRegimeDatasetId),
   });
+  const researchRegimeDiscoveriesQuery = useQuery({
+    queryKey: ["research-regime-discoveries"],
+    queryFn: () => api.listResearchRegimeDiscoveries(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const selectedResearchRegimeDiscoveryQuery = useQuery({
+    queryKey: ["research-regime-discovery", selectedResearchRegimeDiscoveryId],
+    queryFn: () => api.getResearchRegimeDiscovery(selectedResearchRegimeDiscoveryId ?? ""),
+    enabled: Boolean(selectedResearchRegimeDiscoveryId),
+  });
+  const selectedResearchRegimeDiscoveryWindowsQuery = useQuery({
+    queryKey: ["research-regime-discovery-windows", selectedResearchRegimeDiscoveryId],
+    queryFn: () => api.getResearchRegimeDiscoveryWindows(selectedResearchRegimeDiscoveryId ?? ""),
+    enabled: Boolean(selectedResearchRegimeDiscoveryId),
+  });
   const researchBatchesQuery = useQuery({
     queryKey: ["research-batches"],
     queryFn: () => api.listResearchBatches(20),
@@ -1793,6 +1833,14 @@ function AuthenticatedDashboard({
       );
     }
   }, [researchRegimeDatasetsQuery.data?.datasets, selectedResearchRegimeDatasetId]);
+
+  useEffect(() => {
+    if (!selectedResearchRegimeDiscoveryId && researchRegimeDiscoveriesQuery.data?.discoveries[0]) {
+      setSelectedResearchRegimeDiscoveryId(
+        researchRegimeDiscoveriesQuery.data.discoveries[0].discovery_id,
+      );
+    }
+  }, [researchRegimeDiscoveriesQuery.data?.discoveries, selectedResearchRegimeDiscoveryId]);
 
   useEffect(() => {
     if (!selectedResearchBatchId && researchBatchesQuery.data?.batches[0]) {
@@ -2435,6 +2483,34 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["research-regime-dataset-windows"] });
     },
   });
+  const researchRegimeDiscoveryMutation = useMutation({
+    mutationFn: () => api.runResearchRegimeDiscovery(researchRegimeDiscoveryForm),
+    onSuccess: async (response) => {
+      setLastResearchRegimeDiscovery(response.discovery);
+      setSelectedResearchRegimeDiscoveryId(response.discovery.discovery_id);
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-discoveries"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-discovery"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-discovery-windows"] });
+    },
+  });
+  const researchRegimeDatasetFromDiscoveryMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedResearchRegimeDiscoveryId) {
+        throw new Error("Select a regime discovery first.");
+      }
+      const payload: ResearchRegimeDatasetFromDiscoveryRequest = {
+        discovery_id: selectedResearchRegimeDiscoveryId,
+      };
+      return api.buildResearchRegimeDatasetFromDiscovery(payload);
+    },
+    onSuccess: async (response) => {
+      setLastResearchRegimeDataset(response.dataset);
+      setSelectedResearchRegimeDatasetId(response.dataset.dataset_id);
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-datasets"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-dataset"] });
+      await queryClient.invalidateQueries({ queryKey: ["research-regime-dataset-windows"] });
+    },
+  });
   const researchCampaignMutation = useMutation({
     mutationFn: () => api.runResearchCampaign(researchCampaignForm),
     onSuccess: async (response) => {
@@ -2633,6 +2709,13 @@ function AuthenticatedDashboard({
   const selectedResearchRegimeWindows: ResearchRegimeWindow[] =
     selectedResearchRegimeDatasetWindowsQuery.data?.windows ??
     selectedResearchRegimeDataset?.windows ??
+    [];
+  const researchRegimeDiscoveries = researchRegimeDiscoveriesQuery.data?.discoveries ?? [];
+  const selectedResearchRegimeDiscovery: ResearchRegimeDiscoveryResult | null =
+    selectedResearchRegimeDiscoveryQuery.data?.discovery ?? lastResearchRegimeDiscovery;
+  const selectedResearchRegimeDiscoveryWindows: ResearchRegimeDiscoveryCandidateWindow[] =
+    selectedResearchRegimeDiscoveryWindowsQuery.data?.windows ??
+    selectedResearchRegimeDiscovery?.selected_windows ??
     [];
   const selectedResearchBatch: ResearchBatchResult | null =
     selectedResearchBatchQuery.data?.batch ?? lastResearchBatch;
@@ -5509,6 +5592,167 @@ function AuthenticatedDashboard({
           {section === "experiments" && (
             <section className="grid gap-4 xl:grid-cols-12">
               <ResearchRobustnessMatrixPanel />
+              <Panel className="xl:col-span-12" title="Regime Discovery">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <Field
+                    label="Symbol"
+                    value={researchRegimeDiscoveryForm.symbol}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({ ...current, symbol: value }))
+                    }
+                  />
+                  <Field
+                    label="Timeframe"
+                    value={researchRegimeDiscoveryForm.timeframe}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({ ...current, timeframe: value }))
+                    }
+                  />
+                  <Field
+                    label="Scan Start"
+                    value={researchRegimeDiscoveryForm.scan_start}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({ ...current, scan_start: value }))
+                    }
+                  />
+                  <Field
+                    label="Scan End"
+                    value={researchRegimeDiscoveryForm.scan_end}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({ ...current, scan_end: value }))
+                    }
+                  />
+                  <Field
+                    label="Window Hours"
+                    value={String(researchRegimeDiscoveryForm.window_hours)}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({
+                        ...current,
+                        window_hours: Number(value) || 24,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Step Hours"
+                    value={String(researchRegimeDiscoveryForm.step_hours)}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({
+                        ...current,
+                        step_hours: Number(value) || 12,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max / Regime"
+                    value={String(researchRegimeDiscoveryForm.max_windows_per_regime ?? 10)}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({
+                        ...current,
+                        max_windows_per_regime: Number(value) || 10,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Min Confidence"
+                    value={researchRegimeDiscoveryForm.min_confidence ?? ""}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({
+                        ...current,
+                        min_confidence: value || null,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Target Regimes"
+                    value={researchRegimeDiscoveryForm.target_regimes?.join(",") ?? ""}
+                    onChange={(value) =>
+                      setResearchRegimeDiscoveryForm((current) => ({
+                        ...current,
+                        target_regimes: parseStringList(value) as ResearchRegimeDiscoveryRequest["target_regimes"],
+                      }))
+                    }
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={researchRegimeDiscoveryForm.require_existing_candles ?? true}
+                      onChange={(event) =>
+                        setResearchRegimeDiscoveryForm((current) => ({
+                          ...current,
+                          require_existing_candles: event.target.checked,
+                        }))
+                      }
+                    />
+                    Require existing candles
+                  </label>
+                  <ActionButton
+                    label="Run Discovery"
+                    onClick={() => researchRegimeDiscoveryMutation.mutate()}
+                    busy={researchRegimeDiscoveryMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <ActionButton
+                    label="Create Dataset"
+                    onClick={() => researchRegimeDatasetFromDiscoveryMutation.mutate()}
+                    busy={researchRegimeDatasetFromDiscoveryMutation.isPending}
+                    disabled={user.role === "VIEWER" || !selectedResearchRegimeDiscoveryId}
+                  />
+                  <InlineStatus
+                    error={
+                      getErrorMessage(researchRegimeDiscoveryMutation.error) ||
+                      getErrorMessage(researchRegimeDatasetFromDiscoveryMutation.error)
+                    }
+                    success={
+                      lastResearchRegimeDiscovery
+                        ? `Discovery ${shortenId(lastResearchRegimeDiscovery.discovery_id)} ${lastResearchRegimeDiscovery.status}`
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <ResearchRegimeDiscoveriesTable
+                    discoveries={researchRegimeDiscoveries}
+                    selectedId={selectedResearchRegimeDiscoveryId}
+                    onSelect={setSelectedResearchRegimeDiscoveryId}
+                  />
+                  <ResearchRegimeDiscoverySummaryTable discovery={selectedResearchRegimeDiscovery} />
+                  <div>
+                    <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+                      Recommendations
+                    </div>
+                    <SimpleList
+                      items={[
+                        ...(selectedResearchRegimeDiscovery?.missing_regimes.length
+                          ? [
+                              `Missing regimes: ${selectedResearchRegimeDiscovery.missing_regimes.join(", ")}`,
+                            ]
+                          : []),
+                        ...(selectedResearchRegimeDiscovery?.recommendations ?? []).map(
+                          (recommendation) =>
+                            `${recommendation.priority} ${recommendation.code}: ${recommendation.message}`,
+                        ),
+                      ]}
+                    />
+                    <InlineStatus
+                      error={getErrorMessage(selectedResearchRegimeDiscoveryQuery.error)}
+                      success={selectedResearchRegimeDiscoveryQuery.isLoading ? "Loading discovery" : undefined}
+                    />
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <ResearchRegimeDiscoveryWindowsTable windows={selectedResearchRegimeDiscoveryWindows} />
+                  <InlineStatus
+                    error={getErrorMessage(selectedResearchRegimeDiscoveryWindowsQuery.error)}
+                    success={
+                      selectedResearchRegimeDiscoveryWindowsQuery.isLoading
+                        ? "Loading discovery windows"
+                        : undefined
+                    }
+                  />
+                </div>
+              </Panel>
               <Panel className="xl:col-span-12" title="Regime Datasets">
                 <div className="grid gap-3 md:grid-cols-4">
                   <Field
@@ -9914,6 +10158,115 @@ function ResearchRegimeDatasetsTable({
         ))}
       </div>
     </div>
+  );
+}
+
+function ResearchRegimeDiscoveriesTable({
+  discoveries,
+  selectedId,
+  onSelect,
+}: {
+  discoveries: ResearchRegimeDiscoveryResult[];
+  selectedId: string | null;
+  onSelect: (discoveryId: string) => void;
+}) {
+  if (!discoveries.length) {
+    return <EmptyState label="No regime discoveries found." />;
+  }
+
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Recent Discoveries
+      </div>
+      <div className="space-y-2">
+        {discoveries.map((discovery) => (
+          <button
+            key={discovery.discovery_id}
+            className={cn(
+              "w-full rounded-xl border p-3 text-left",
+              discovery.discovery_id === selectedId
+                ? "border-accent bg-accent/5"
+                : "border-border bg-surface/60",
+            )}
+            onClick={() => onSelect(discovery.discovery_id)}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-mono text-xs">{shortenId(discovery.discovery_id)}</span>
+              <span className="text-xs uppercase text-muted">{discovery.status}</span>
+            </div>
+            <div className="mt-1 text-xs text-slate-300">
+              {discovery.symbol} {discovery.timeframe} selected=
+              {discovery.summary.selected_window_count} missing={discovery.missing_regimes.length}
+            </div>
+            <div className="mt-1 text-xs text-muted">{formatDateTime(discovery.created_at)}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ResearchRegimeDiscoverySummaryTable({
+  discovery,
+}: {
+  discovery: ResearchRegimeDiscoveryResult | null;
+}) {
+  const counts = discovery?.counts_by_regime ?? {};
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Discovery Summary
+      </div>
+      <Table
+        headers={["Regime", "Windows"]}
+        rows={["TREND_UP", "TREND_DOWN", "RANGE", "HIGH_VOLATILITY", "LOW_VOLATILITY"].map(
+          (regime) => [regime, String(counts[regime as keyof typeof counts] ?? 0)],
+        )}
+      />
+      {discovery?.missing_regimes.length ? (
+        <div className="mt-2 rounded-md border border-amber-400/40 bg-amber-400/10 p-2 text-xs text-amber-100">
+          Missing: {discovery.missing_regimes.join(", ")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ResearchRegimeDiscoveryWindowsTable({
+  windows,
+}: {
+  windows: ResearchRegimeDiscoveryCandidateWindow[];
+}) {
+  if (!windows.length) {
+    return <EmptyState label="No discovery windows." />;
+  }
+
+  return (
+    <Table
+      headers={[
+        "Regime",
+        "Window",
+        "Confidence",
+        "Return %",
+        "Vol",
+        "Range",
+        "Chop",
+        "Quality",
+        "Candles",
+      ]}
+      rows={windows.slice(0, 80).map((window) => [
+        window.regime_label,
+        `${formatDateTime(window.start_time)} -> ${formatDateTime(window.end_time)}`,
+        window.confidence,
+        window.return_pct,
+        window.realized_volatility,
+        window.avg_range_pct,
+        window.choppiness_proxy,
+        window.data_quality_status,
+        String(window.candle_count),
+      ])}
+    />
   );
 }
 

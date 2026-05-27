@@ -11,9 +11,12 @@ use aegis_core::{
     ReplayRunStatus, ResearchCandidate, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
     ResearchCandidateStatus, ResearchDataCoverageResult, ResearchDataReadinessStatus,
     ResearchDatasetBuildRequest, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
-    ResearchDatasetBuildStepStatus, ResearchRegimeLabel, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
+    ResearchDatasetBuildStepStatus, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRecommendation, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus, ResearchRegimeDiscoverySummary,
+    ResearchRegimeLabel, ResearchShadowPnlAttributionRequest, ResearchShadowPnlStatus,
+    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
+    RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
     StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
     StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
@@ -42,17 +45,18 @@ use db::{
     get_closed_1m_candles_range, get_closed_candles_range, get_exchange_private_stream_state,
     get_exchange_reconciliation_run, get_exchange_testnet_order_by_client_order_id,
     get_order_by_idempotency_key, get_research_candidate_shadow_performance,
-    get_research_candidate_shadow_pnl_attribution, get_research_dataset_build, get_risk_decision,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown, get_system_state,
-    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
-    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_research_candidate_shadow_pnl_attribution, get_research_dataset_build,
+    get_research_regime_discovery, get_risk_decision, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_robustness_matrix_run,
+    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_shadow_run_by_id,
+    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
+    insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_market_data_repair_run, insert_paper_account, insert_research_candidate_shadow_run_link,
-    insert_research_dataset_build, insert_risk_decision, insert_signal_deduped,
-    insert_strategy_candidate_observation, insert_strategy_experiment,
+    insert_research_dataset_build, insert_research_regime_discovery, insert_risk_decision,
+    insert_signal_deduped, insert_strategy_candidate_observation, insert_strategy_experiment,
     insert_strategy_experiment_runs, insert_strategy_research_candidate,
     insert_strategy_robustness_matrix_cells, insert_strategy_robustness_matrix_run,
     insert_strategy_walk_forward_run, insert_strategy_walk_forward_windows,
@@ -60,15 +64,16 @@ use db::{
     list_closed_candle_open_times_in_range, list_exchange_private_stream_events,
     list_exchange_reconciliation_mismatches, list_exchange_testnet_order_lifecycle_events,
     list_orders, list_recent_signals, list_research_candidate_shadow_runs,
-    list_research_dataset_build_steps, list_strategy_candidate_observations,
-    list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
-    list_strategy_research_candidates, list_strategy_robustness_matrix_cells,
-    list_strategy_robustness_matrix_runs, list_strategy_walk_forward_runs,
-    list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
-    list_testnet_shadow_runs, list_testnet_shadow_runs_in_window,
-    mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
-    replace_research_dataset_build_steps, research_candidate_event_from_record,
-    research_candidate_from_record, research_dataset_build_result_from_records,
+    list_research_dataset_build_steps, list_research_regime_discovery_windows,
+    list_strategy_candidate_observations, list_strategy_experiment_runs, list_strategy_experiments,
+    list_strategy_performance_rankings, list_strategy_research_candidates,
+    list_strategy_robustness_matrix_cells, list_strategy_robustness_matrix_runs,
+    list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
+    list_testnet_promotion_funnel_rows, list_testnet_shadow_runs,
+    list_testnet_shadow_runs_in_window, mark_strategy_research_candidate_promoted,
+    market_data_repair_result_from_record, replace_research_dataset_build_steps,
+    research_candidate_event_from_record, research_candidate_from_record,
+    research_dataset_build_result_from_records, research_regime_discovery_result_from_records,
     resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
     strategy_research_candidate_from_record, strategy_robustness_matrix_cell_from_record,
@@ -4540,4 +4545,89 @@ async fn research_candidate_lifecycle_events_are_ordered_and_append_on_decision(
     let last = research_candidate_event_from_record(&events[1]).expect("event should map");
     assert_eq!(last.decision, ResearchCandidateDecision::Reject);
     assert_eq!(last.reason.as_deref(), Some("bad drawdown"));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn research_regime_discovery_and_windows_persist() {
+    let test_db = TestDatabase::setup().await.expect("db should setup");
+    let discovery_id = Uuid::new_v4();
+    let created_at = fixed_time();
+    let request = ResearchRegimeDiscoveryRequest {
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "15m".to_string(),
+        scan_start: created_at,
+        scan_end: created_at + chrono::Duration::days(1),
+        window_hours: 24,
+        step_hours: 12,
+        target_regimes: Some(vec![ResearchRegimeLabel::Range]),
+        max_windows_per_regime: 1,
+        min_confidence: None,
+        require_existing_candles: true,
+        auto_backfill_missing: false,
+    };
+    let window = ResearchRegimeDiscoveryCandidateWindow {
+        id: Uuid::new_v4(),
+        regime_label: ResearchRegimeLabel::Range,
+        start_time: request.scan_start,
+        end_time: request.scan_end,
+        confidence: Decimal::new(90, 0),
+        return_pct: Decimal::ZERO,
+        realized_volatility: Decimal::new(1, 0),
+        avg_range_pct: Decimal::new(1, 0),
+        trend_slope: Decimal::ZERO,
+        choppiness_proxy: Decimal::new(80, 0),
+        data_quality_status: MarketDataQualityStatus::Good,
+        candle_count: 96,
+    };
+    let summary = ResearchRegimeDiscoverySummary {
+        total_windows_scanned: 1,
+        selected_window_count: 1,
+        counts_by_regime: [(ResearchRegimeLabel::Range, 1)].into_iter().collect(),
+        missing_regimes: Vec::new(),
+        data_quality_blocked_count: 0,
+        insufficient_data_count: 0,
+        recommendations: vec![ResearchRegimeDiscoveryRecommendation {
+            priority: "LOW".to_string(),
+            code: "research_only".to_string(),
+            message: "Research only.".to_string(),
+        }],
+    };
+    let result = ResearchRegimeDiscoveryResult {
+        discovery_id,
+        status: ResearchRegimeDiscoveryStatus::Completed,
+        symbol: request.symbol.clone(),
+        timeframe: request.timeframe.clone(),
+        scan_start: request.scan_start,
+        scan_end: request.scan_end,
+        total_windows_scanned: 1,
+        selected_windows: vec![window],
+        counts_by_regime: summary.counts_by_regime.clone(),
+        missing_regimes: Vec::new(),
+        data_quality_blocked_count: 0,
+        recommendations: summary.recommendations.clone(),
+        request,
+        summary,
+        created_at,
+    };
+
+    insert_research_regime_discovery(&test_db.pool, &result)
+        .await
+        .expect("discovery should persist");
+    let record = get_research_regime_discovery(&test_db.pool, discovery_id)
+        .await
+        .expect("discovery should load")
+        .expect("discovery should exist");
+    let windows = list_research_regime_discovery_windows(&test_db.pool, discovery_id)
+        .await
+        .expect("windows should load");
+    let hydrated =
+        research_regime_discovery_result_from_records(&record, &windows).expect("should map");
+
+    assert_eq!(hydrated.discovery_id, discovery_id);
+    assert_eq!(hydrated.selected_windows.len(), 1);
+    assert_eq!(
+        hydrated.selected_windows[0].regime_label,
+        ResearchRegimeLabel::Range
+    );
 }

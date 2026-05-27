@@ -22,7 +22,9 @@ use aegis_core::{
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult, ResearchRegimeLabel,
+    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
     ResearchRegimeWindow, ResearchShadowPnlAttributionResult, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, StrategyCandidateObservationResult,
     StrategyComparisonSummary, StrategyConfigAuditEntry, StrategyConfigUpdateRequest,
@@ -820,6 +822,14 @@ impl ApiClient {
         self.post("/research/regime-datasets/build", request).await
     }
 
+    pub async fn build_research_regime_dataset_from_discovery(
+        &self,
+        request: &ResearchRegimeDatasetFromDiscoveryRequest,
+    ) -> Result<ResearchRegimeDatasetResponse, ApiClientError> {
+        self.post("/research/regime-datasets/from-discovery", request)
+            .await
+    }
+
     pub async fn list_research_regime_datasets(
         &self,
         limit: i64,
@@ -842,6 +852,43 @@ impl ApiClient {
     ) -> Result<ResearchRegimeDatasetWindowsResponse, ApiClientError> {
         self.get(
             &format!("/research/regime-datasets/{dataset_id}/windows"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn run_research_regime_discovery(
+        &self,
+        request: &ResearchRegimeDiscoveryRequest,
+    ) -> Result<ResearchRegimeDiscoveryResponse, ApiClientError> {
+        self.post("/research/regime-discovery/run", request).await
+    }
+
+    pub async fn list_research_regime_discoveries(
+        &self,
+        limit: i64,
+    ) -> Result<ResearchRegimeDiscoveriesResponse, ApiClientError> {
+        self.get(
+            "/research/regime-discovery",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn get_research_regime_discovery(
+        &self,
+        discovery_id: Uuid,
+    ) -> Result<ResearchRegimeDiscoveryResponse, ApiClientError> {
+        self.get(&format!("/research/regime-discovery/{discovery_id}"), &[])
+            .await
+    }
+
+    pub async fn get_research_regime_discovery_windows(
+        &self,
+        discovery_id: Uuid,
+    ) -> Result<ResearchRegimeDiscoveryWindowsResponse, ApiClientError> {
+        self.get(
+            &format!("/research/regime-discovery/{discovery_id}/windows"),
             &[],
         )
         .await
@@ -2619,6 +2666,30 @@ pub struct ResearchRegimeDatasetWindowsResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeDiscoveryResponse {
+    pub discovery: ResearchRegimeDiscoveryResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeDiscoveriesResponse {
+    pub discoveries: Vec<ResearchRegimeDiscoveryResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchRegimeDiscoveryWindowsResponse {
+    pub windows: Vec<ResearchRegimeDiscoveryCandidateWindow>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidatesResponse {
     pub candidates: Vec<ResearchCandidate>,
@@ -4043,6 +4114,58 @@ pub fn build_research_regime_dataset_request(
     request
         .validate()
         .context("invalid research regime dataset request")?;
+    Ok(request)
+}
+
+pub fn build_research_regime_dataset_from_discovery_request(
+    args: &crate::cli::ResearchRegimeDatasetFromDiscoveryArgs,
+) -> anyhow::Result<ResearchRegimeDatasetFromDiscoveryRequest> {
+    let target_regimes = args
+        .target_regimes
+        .as_ref()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| value.parse::<ResearchRegimeLabel>())
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    Ok(ResearchRegimeDatasetFromDiscoveryRequest {
+        discovery_id: args.discovery_id,
+        target_regimes,
+        max_windows_per_regime: args.max_windows_per_regime,
+    })
+}
+
+pub fn build_research_regime_discovery_request(
+    args: &crate::cli::ResearchRegimeDiscoveryRunArgs,
+) -> anyhow::Result<ResearchRegimeDiscoveryRequest> {
+    let target_regimes = args
+        .target_regimes
+        .as_ref()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| value.parse::<ResearchRegimeLabel>())
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let request = ResearchRegimeDiscoveryRequest {
+        symbol: args.symbol.clone(),
+        timeframe: args.timeframe.clone(),
+        scan_start: args.scan_start,
+        scan_end: args.scan_end,
+        window_hours: args.window_hours,
+        step_hours: args.step_hours,
+        target_regimes,
+        max_windows_per_regime: args.max_windows_per_regime,
+        min_confidence: args.min_confidence,
+        require_existing_candles: !args.allow_missing_candles,
+        auto_backfill_missing: args.auto_backfill_missing,
+    };
+    request
+        .validate()
+        .context("invalid research regime discovery request")?;
     Ok(request)
 }
 

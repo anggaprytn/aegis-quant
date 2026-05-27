@@ -82,10 +82,15 @@ import type {
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
+  ResearchRegimeDatasetFromDiscoveryRequest,
   ResearchRegimeDatasetRequest,
   ResearchRegimeDatasetResponse,
   ResearchRegimeDatasetsResponse,
   ResearchRegimeDatasetWindowsResponse,
+  ResearchRegimeDiscoveriesResponse,
+  ResearchRegimeDiscoveryRequest,
+  ResearchRegimeDiscoveryResponse,
+  ResearchRegimeDiscoveryWindowsResponse,
   ResearchCandidateQualificationResponse,
   ResearchCandidateQualificationEvaluateResponse,
   ResearchCandidateQualificationHistoryResponse,
@@ -457,12 +462,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  buildResearchRegimeDatasetFromDiscovery: (payload: ResearchRegimeDatasetFromDiscoveryRequest) =>
+    request<ResearchRegimeDatasetResponse>("/research/regime-datasets/from-discovery", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   listResearchRegimeDatasets: (limit = 20) =>
     request<ResearchRegimeDatasetsResponse>("/research/regime-datasets", undefined, { limit }),
   getResearchRegimeDataset: (id: string) =>
     request<ResearchRegimeDatasetResponse>(`/research/regime-datasets/${id}`),
   getResearchRegimeDatasetWindows: (id: string) =>
     request<ResearchRegimeDatasetWindowsResponse>(`/research/regime-datasets/${id}/windows`),
+  runResearchRegimeDiscovery: (payload: ResearchRegimeDiscoveryRequest) =>
+    request<ResearchRegimeDiscoveryResponse>("/research/regime-discovery/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listResearchRegimeDiscoveries: (limit = 20) =>
+    request<ResearchRegimeDiscoveriesResponse>("/research/regime-discovery", undefined, { limit }),
+  getResearchRegimeDiscovery: (id: string) =>
+    request<ResearchRegimeDiscoveryResponse>(`/research/regime-discovery/${id}`),
+  getResearchRegimeDiscoveryWindows: (id: string) =>
+    request<ResearchRegimeDiscoveryWindowsResponse>(`/research/regime-discovery/${id}/windows`),
   runResearchBatch: (payload: ResearchBatchRequest) =>
     request<ResearchBatchResponse>("/research/batches/run", {
       method: "POST",

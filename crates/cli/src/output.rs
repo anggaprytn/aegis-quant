@@ -10,7 +10,8 @@ use aegis_core::{
     ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchRegimeDatasetResult, ResearchRegimeWindow,
+    ResearchCandidateWatchlistEntry, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryResult, ResearchRegimeWindow,
     ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
     StrategyRobustnessMatrixResult, User,
 };
@@ -238,6 +239,86 @@ pub fn print_research_regime_windows(windows: &[ResearchRegimeWindow]) {
             "  {} {} {} -> {} confidence={} return_pct={} vol={} range={} chop={} quality={} candles={}",
             window.regime_label.as_str(),
             window.symbol,
+            window.start_time,
+            window.end_time,
+            window.confidence,
+            window.return_pct,
+            window.realized_volatility,
+            window.avg_range_pct,
+            window.choppiness_proxy,
+            window.data_quality_status.as_str(),
+            window.candle_count
+        );
+    }
+}
+
+pub fn print_research_regime_discovery(discovery: &ResearchRegimeDiscoveryResult) {
+    println!("Regime discovery: {}", discovery.discovery_id);
+    println!("Status: {}", discovery.status.as_str());
+    println!(
+        "Scope: {} {} {} -> {}",
+        discovery.symbol, discovery.timeframe, discovery.scan_start, discovery.scan_end
+    );
+    println!(
+        "Windows: scanned={} selected={} data_quality_blocked={} insufficient_data={}",
+        discovery.total_windows_scanned,
+        discovery.summary.selected_window_count,
+        discovery.data_quality_blocked_count,
+        discovery.summary.insufficient_data_count
+    );
+    println!("Regime counts:");
+    for (regime, count) in &discovery.counts_by_regime {
+        println!("  {}: {}", regime.as_str(), count);
+    }
+    if !discovery.missing_regimes.is_empty() {
+        println!(
+            "Missing regimes: {}",
+            discovery
+                .missing_regimes
+                .iter()
+                .map(|regime| regime.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("Top windows:");
+    for window in discovery.selected_windows.iter().take(10) {
+        println!(
+            "  {} {} -> {} confidence={} return_pct={} vol={} quality={} candles={}",
+            window.regime_label.as_str(),
+            window.start_time,
+            window.end_time,
+            window.confidence,
+            window.return_pct,
+            window.realized_volatility,
+            window.data_quality_status.as_str(),
+            window.candle_count
+        );
+    }
+}
+
+pub fn print_research_regime_discoveries(discoveries: &[ResearchRegimeDiscoveryResult]) {
+    println!("Regime discoveries:");
+    for discovery in discoveries {
+        println!(
+            "  {} status={} {} {} selected={} missing={} created={}",
+            discovery.discovery_id,
+            discovery.status.as_str(),
+            discovery.symbol,
+            discovery.timeframe,
+            discovery.summary.selected_window_count,
+            discovery.missing_regimes.len(),
+            discovery.created_at
+        );
+    }
+}
+
+pub fn print_research_regime_discovery_windows(windows: &[ResearchRegimeDiscoveryCandidateWindow]) {
+    println!("Regime discovery windows:");
+    for window in windows {
+        println!(
+            "  {} {} -> {} confidence={} return_pct={} vol={} range={} chop={} quality={} candles={}",
+            window.regime_label.as_str(),
             window.start_time,
             window.end_time,
             window.confidence,

@@ -7775,6 +7775,8 @@ pub enum CoreError {
     UnsupportedResearchCampaignStatus(String),
     #[error("unsupported research regime dataset status: {0}")]
     UnsupportedResearchRegimeDatasetStatus(String),
+    #[error("unsupported research regime discovery status: {0}")]
+    UnsupportedResearchRegimeDiscoveryStatus(String),
     #[error("unsupported research regime label: {0}")]
     UnsupportedResearchRegimeLabel(String),
     #[error("unsupported strategy robustness matrix status: {0}")]

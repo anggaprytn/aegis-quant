@@ -19,7 +19,9 @@ use aegis_core::{
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
     ResearchDatasetBuildStepStatus, ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeDatasetStatus, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
+    ResearchRegimeDatasetStatus, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus,
+    ResearchRegimeDiscoverySummary, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
     ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput,
     StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
     StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
@@ -144,6 +146,37 @@ pub struct ResearchRegimeWindowRecord {
     pub score: Decimal,
     pub confidence: Decimal,
     pub metrics: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchRegimeDiscoveryRecord {
+    pub id: Uuid,
+    pub request: Value,
+    pub summary: Value,
+    pub status: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub scan_start: DateTime<Utc>,
+    pub scan_end: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchRegimeDiscoveryWindowRecord {
+    pub id: Uuid,
+    pub discovery_id: Uuid,
+    pub regime_label: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub confidence: Decimal,
+    pub return_pct: Decimal,
+    pub realized_volatility: Decimal,
+    pub avg_range_pct: Decimal,
+    pub trend_slope: Decimal,
+    pub choppiness_proxy: Decimal,
+    pub data_quality_status: String,
+    pub candle_count: i32,
     pub created_at: DateTime<Utc>,
 }
 
@@ -566,6 +599,41 @@ fn map_research_regime_window(row: sqlx::postgres::PgRow) -> ResearchRegimeWindo
     }
 }
 
+fn map_research_regime_discovery(row: sqlx::postgres::PgRow) -> ResearchRegimeDiscoveryRecord {
+    ResearchRegimeDiscoveryRecord {
+        id: row.get("id"),
+        request: row.get("request"),
+        summary: row.get("summary"),
+        status: row.get("status"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        scan_start: row.get("scan_start"),
+        scan_end: row.get("scan_end"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_research_regime_discovery_window(
+    row: sqlx::postgres::PgRow,
+) -> ResearchRegimeDiscoveryWindowRecord {
+    ResearchRegimeDiscoveryWindowRecord {
+        id: row.get("id"),
+        discovery_id: row.get("discovery_id"),
+        regime_label: row.get("regime_label"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        confidence: row.get("confidence"),
+        return_pct: row.get("return_pct"),
+        realized_volatility: row.get("realized_volatility"),
+        avg_range_pct: row.get("avg_range_pct"),
+        trend_slope: row.get("trend_slope"),
+        choppiness_proxy: row.get("choppiness_proxy"),
+        data_quality_status: row.get("data_quality_status"),
+        candle_count: row.get("candle_count"),
+        created_at: row.get("created_at"),
+    }
+}
+
 pub fn research_campaign_batch_result_from_record(
     record: &ResearchCampaignBatchRecord,
 ) -> Result<ResearchCampaignBatchResult> {
@@ -635,6 +703,54 @@ pub fn research_regime_dataset_result_from_records(
             .iter()
             .map(research_regime_window_from_record)
             .collect::<Result<Vec<_>>>()?,
+        created_at: record.created_at,
+    })
+}
+
+pub fn research_regime_discovery_window_from_record(
+    record: &ResearchRegimeDiscoveryWindowRecord,
+) -> Result<ResearchRegimeDiscoveryCandidateWindow> {
+    Ok(ResearchRegimeDiscoveryCandidateWindow {
+        id: record.id,
+        regime_label: record.regime_label.parse()?,
+        start_time: record.start_time,
+        end_time: record.end_time,
+        confidence: record.confidence,
+        return_pct: record.return_pct,
+        realized_volatility: record.realized_volatility,
+        avg_range_pct: record.avg_range_pct,
+        trend_slope: record.trend_slope,
+        choppiness_proxy: record.choppiness_proxy,
+        data_quality_status: record.data_quality_status.parse()?,
+        candle_count: record.candle_count,
+    })
+}
+
+pub fn research_regime_discovery_result_from_records(
+    record: &ResearchRegimeDiscoveryRecord,
+    window_records: &[ResearchRegimeDiscoveryWindowRecord],
+) -> Result<ResearchRegimeDiscoveryResult> {
+    let request = serde_json::from_value::<ResearchRegimeDiscoveryRequest>(record.request.clone())?;
+    let summary: ResearchRegimeDiscoverySummary = serde_json::from_value(record.summary.clone())?;
+    let selected_windows = window_records
+        .iter()
+        .map(research_regime_discovery_window_from_record)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ResearchRegimeDiscoveryResult {
+        discovery_id: record.id,
+        status: record.status.parse::<ResearchRegimeDiscoveryStatus>()?,
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        scan_start: record.scan_start,
+        scan_end: record.scan_end,
+        total_windows_scanned: summary.total_windows_scanned,
+        selected_windows,
+        counts_by_regime: summary.counts_by_regime.clone(),
+        missing_regimes: summary.missing_regimes.clone(),
+        data_quality_blocked_count: summary.data_quality_blocked_count,
+        recommendations: summary.recommendations.clone(),
+        request,
+        summary,
         created_at: record.created_at,
     })
 }
@@ -1357,6 +1473,151 @@ pub async fn list_research_regime_windows(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(map_research_regime_window).collect())
+}
+
+pub async fn insert_research_regime_discovery(
+    pool: &PgPool,
+    result: &ResearchRegimeDiscoveryResult,
+) -> Result<ResearchRegimeDiscoveryRecord> {
+    let request = serde_json::to_value(&result.request)?;
+    let summary = serde_json::to_value(&result.summary)?;
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_regime_discoveries (
+            id, request, summary, status, symbol, timeframe, scan_start, scan_end, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, request, summary, status, symbol, timeframe, scan_start, scan_end, created_at
+        "#,
+    )
+    .bind(result.discovery_id)
+    .bind(request)
+    .bind(summary)
+    .bind(result.status.as_str())
+    .bind(&result.symbol)
+    .bind(&result.timeframe)
+    .bind(result.scan_start)
+    .bind(result.scan_end)
+    .bind(result.created_at)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    for window in &result.selected_windows {
+        sqlx::query(
+            r#"
+            INSERT INTO research_regime_discovery_windows (
+                id,
+                discovery_id,
+                regime_label,
+                start_time,
+                end_time,
+                confidence,
+                return_pct,
+                realized_volatility,
+                avg_range_pct,
+                trend_slope,
+                choppiness_proxy,
+                data_quality_status,
+                candle_count,
+                created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            "#,
+        )
+        .bind(window.id)
+        .bind(result.discovery_id)
+        .bind(window.regime_label.as_str())
+        .bind(window.start_time)
+        .bind(window.end_time)
+        .bind(window.confidence)
+        .bind(window.return_pct)
+        .bind(window.realized_volatility)
+        .bind(window.avg_range_pct)
+        .bind(window.trend_slope)
+        .bind(window.choppiness_proxy)
+        .bind(window.data_quality_status.as_str())
+        .bind(window.candle_count)
+        .bind(result.created_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(map_research_regime_discovery(row))
+}
+
+pub async fn get_research_regime_discovery(
+    pool: &PgPool,
+    discovery_id: Uuid,
+) -> Result<Option<ResearchRegimeDiscoveryRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, request, summary, status, symbol, timeframe, scan_start, scan_end, created_at
+        FROM research_regime_discoveries
+        WHERE id = $1
+        "#,
+    )
+    .bind(discovery_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(map_research_regime_discovery))
+}
+
+pub async fn list_research_regime_discoveries(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ResearchRegimeDiscoveryRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, request, summary, status, symbol, timeframe, scan_start, scan_end, created_at
+        FROM research_regime_discoveries
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(map_research_regime_discovery)
+        .collect())
+}
+
+pub async fn list_research_regime_discovery_windows(
+    pool: &PgPool,
+    discovery_id: Uuid,
+) -> Result<Vec<ResearchRegimeDiscoveryWindowRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            discovery_id,
+            regime_label,
+            start_time,
+            end_time,
+            confidence,
+            return_pct,
+            realized_volatility,
+            avg_range_pct,
+            trend_slope,
+            choppiness_proxy,
+            data_quality_status,
+            candle_count,
+            created_at
+        FROM research_regime_discovery_windows
+        WHERE discovery_id = $1
+        ORDER BY regime_label ASC, confidence DESC, start_time ASC, id ASC
+        "#,
+    )
+    .bind(discovery_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(map_research_regime_discovery_window)
+        .collect())
 }
 
 fn parse_qualification_status(value: &str) -> Result<ResearchCandidateQualificationStatus> {

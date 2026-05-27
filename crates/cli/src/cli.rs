@@ -812,6 +812,8 @@ pub enum ResearchCommands {
     Data(ResearchDataCommands),
     #[command(name = "regime-datasets", subcommand)]
     RegimeDatasets(ResearchRegimeDatasetCommands),
+    #[command(name = "regime-discovery", subcommand)]
+    RegimeDiscovery(ResearchRegimeDiscoveryCommands),
     #[command(subcommand)]
     Campaigns(ResearchCampaignCommands),
     #[command(subcommand)]
@@ -825,6 +827,7 @@ pub enum ResearchCommands {
 #[derive(Debug, Subcommand)]
 pub enum ResearchRegimeDatasetCommands {
     Build(ResearchRegimeDatasetBuildArgs),
+    FromDiscovery(ResearchRegimeDatasetFromDiscoveryArgs),
     List(ResearchBatchListArgs),
     Get { dataset_id: Uuid },
     Windows { dataset_id: Uuid },
@@ -852,6 +855,49 @@ pub struct ResearchRegimeDatasetBuildArgs {
     pub max_windows_per_regime: Option<u32>,
     #[arg(long = "allow-degraded-data", default_value_t = false)]
     pub allow_degraded_data: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchRegimeDatasetFromDiscoveryArgs {
+    pub discovery_id: Uuid,
+    #[arg(long = "target-regimes", value_delimiter = ',')]
+    pub target_regimes: Option<Vec<String>>,
+    #[arg(long = "max-windows-per-regime")]
+    pub max_windows_per_regime: Option<u32>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchRegimeDiscoveryCommands {
+    Run(ResearchRegimeDiscoveryRunArgs),
+    List(ResearchBatchListArgs),
+    Get { discovery_id: Uuid },
+    Windows { discovery_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchRegimeDiscoveryRunArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "scan-start")]
+    pub scan_start: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "scan-end")]
+    pub scan_end: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "window-hours")]
+    pub window_hours: i64,
+    #[arg(long = "step-hours")]
+    pub step_hours: i64,
+    #[arg(long = "target-regimes", value_delimiter = ',')]
+    pub target_regimes: Option<Vec<String>>,
+    #[arg(long = "max-windows-per-regime", default_value_t = 20)]
+    pub max_windows_per_regime: u32,
+    #[arg(long = "min-confidence")]
+    pub min_confidence: Option<rust_decimal::Decimal>,
+    #[arg(long = "allow-missing-candles", default_value_t = false)]
+    pub allow_missing_candles: bool,
+    #[arg(long = "auto-backfill-missing", default_value_t = false)]
+    pub auto_backfill_missing: bool,
 }
 
 #[derive(Debug, Subcommand)]
