@@ -756,6 +756,7 @@ pub enum ResearchBatchCommands {
     List(ResearchBatchListArgs),
     Get { batch_id: Uuid },
     Steps { batch_id: Uuid },
+    Triage { batch_id: Uuid },
 }
 
 #[derive(Debug, Args)]

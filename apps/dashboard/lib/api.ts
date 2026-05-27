@@ -72,6 +72,7 @@ import type {
   ResearchBatchResponse,
   ResearchBatchesResponse,
   ResearchBatchStepsResponse,
+  ResearchBatchTriageResponse,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResponse,
   ResearchDatasetBuildsResponse,
@@ -444,6 +445,8 @@ export const api = {
     request<ResearchBatchResponse>(`/research/batches/${id}`),
   getResearchBatchSteps: (id: string) =>
     request<ResearchBatchStepsResponse>(`/research/batches/${id}/steps`),
+  getResearchBatchTriage: (id: string) =>
+    request<ResearchBatchTriageResponse>(`/research/batches/${id}/triage`),
   createResearchCandidate: (payload: CreateResearchCandidateRequest) =>
     request<ResearchCandidateResponse>("/research/candidates", {
       method: "POST",

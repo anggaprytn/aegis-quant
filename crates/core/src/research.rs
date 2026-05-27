@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     calculate_strategy_rejection_rate, Candle, CandleInterval, CoreError, ExecutionReadinessStatus,
-    MarketDataQualityReport, MarketDataSource, MarketProviderHealth,
+    MarketDataQualityReport, MarketDataQualityStatus, MarketDataSource, MarketProviderHealth,
     StrategyWalkForwardRobustnessStatus, Symbol, TestnetShadowRunnerConfig,
 };
 
@@ -252,6 +252,295 @@ pub struct ResearchBatchResult {
     pub recommendations: Vec<ResearchBatchRecommendation>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchBatchTriageStatus {
+    Actionable,
+    Weak,
+    OverfitOnly,
+    NoCandidates,
+    DataQualityBlocked,
+    Failed,
+    Unknown,
+}
+
+impl ResearchBatchTriageStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Actionable => "ACTIONABLE",
+            Self::Weak => "WEAK",
+            Self::OverfitOnly => "OVERFIT_ONLY",
+            Self::NoCandidates => "NO_CANDIDATES",
+            Self::DataQualityBlocked => "DATA_QUALITY_BLOCKED",
+            Self::Failed => "FAILED",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchTriageFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchTriageRecommendation {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchCandidateTriage {
+    pub candidate_id: Uuid,
+    pub experiment_run_id: Uuid,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub experiment_score: Decimal,
+    pub experiment_pnl_pct: Decimal,
+    pub walk_forward_status: Option<String>,
+    pub walk_forward_recommendation: Option<String>,
+    pub qualification_status: Option<String>,
+    pub dossier_status: Option<String>,
+    pub triage_status: ResearchBatchTriageStatus,
+    pub rank: i32,
+    pub reasons: Vec<String>,
+    pub recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchBatchTriage {
+    pub batch_id: Uuid,
+    pub status: ResearchBatchTriageStatus,
+    pub candidate_count: i32,
+    pub actionable_count: i32,
+    pub weak_count: i32,
+    pub overfit_count: i32,
+    pub candidates: Vec<ResearchBatchCandidateTriage>,
+    pub findings: Vec<ResearchBatchTriageFinding>,
+    pub recommendations: Vec<ResearchBatchTriageRecommendation>,
+    pub generated_at: DateTime<Utc>,
+}
+
+pub fn build_research_batch_triage(
+    batch: &ResearchBatchResult,
+    mut candidates: Vec<ResearchBatchCandidateTriage>,
+    generated_at: DateTime<Utc>,
+) -> ResearchBatchTriage {
+    for candidate in &mut candidates {
+        let overfit = candidate.walk_forward_status.as_deref() == Some("OVERFIT_RISK")
+            || candidate.walk_forward_recommendation.as_deref() == Some("DO_NOT_ACCEPT");
+        let actionable = !overfit
+            && candidate.walk_forward_status.as_deref() == Some("ROBUST")
+            && candidate.experiment_score > Decimal::ZERO
+            && candidate.experiment_pnl_pct > Decimal::ZERO;
+
+        candidate.triage_status = if overfit {
+            candidate
+                .reasons
+                .push("walk_forward_overfit_or_do_not_accept".to_string());
+            candidate
+                .recommendations
+                .push("Do not accept automatically; review overfit evidence.".to_string());
+            ResearchBatchTriageStatus::OverfitOnly
+        } else if actionable {
+            candidate
+                .reasons
+                .push("robust_walk_forward_and_positive_experiment_score".to_string());
+            candidate.recommendations.push(
+                "Review candidate evidence manually before any lifecycle decision.".to_string(),
+            );
+            ResearchBatchTriageStatus::Actionable
+        } else {
+            candidate
+                .reasons
+                .push("insufficient_or_weak_candidate_evidence".to_string());
+            candidate.recommendations.push(
+                "Gather stronger walk-forward, qualification, or shadow evidence.".to_string(),
+            );
+            ResearchBatchTriageStatus::Weak
+        };
+    }
+
+    candidates.sort_by(|left, right| {
+        candidate_triage_sort_bucket(left.triage_status)
+            .cmp(&candidate_triage_sort_bucket(right.triage_status))
+            .then_with(|| right.experiment_score.cmp(&left.experiment_score))
+            .then_with(|| right.experiment_pnl_pct.cmp(&left.experiment_pnl_pct))
+            .then_with(|| left.strategy_id.cmp(&right.strategy_id))
+            .then_with(|| left.symbol.cmp(&right.symbol))
+            .then_with(|| left.timeframe.cmp(&right.timeframe))
+            .then_with(|| left.experiment_run_id.cmp(&right.experiment_run_id))
+            .then_with(|| left.candidate_id.cmp(&right.candidate_id))
+    });
+    for (index, candidate) in candidates.iter_mut().enumerate() {
+        candidate.rank = i32::try_from(index + 1).unwrap_or(i32::MAX);
+    }
+
+    let actionable_count = candidates
+        .iter()
+        .filter(|candidate| candidate.triage_status == ResearchBatchTriageStatus::Actionable)
+        .count() as i32;
+    let overfit_count = candidates
+        .iter()
+        .filter(|candidate| candidate.triage_status == ResearchBatchTriageStatus::OverfitOnly)
+        .count() as i32;
+    let weak_count = candidates
+        .iter()
+        .filter(|candidate| candidate.triage_status == ResearchBatchTriageStatus::Weak)
+        .count() as i32;
+
+    let mut findings = Vec::new();
+    let mut recommendations = Vec::new();
+    let data_quality_blocked = matches!(
+        batch.quality_after.as_ref().map(|quality| quality.status),
+        Some(MarketDataQualityStatus::Bad | MarketDataQualityStatus::InsufficientData)
+    );
+    if data_quality_blocked {
+        findings.push(triage_finding(
+            "MEDIUM",
+            "research_batch_data_quality_blocked",
+            "Research batch blocked by degraded market data.",
+        ));
+        recommendations.push(triage_recommendation(
+            "MEDIUM",
+            "repair_or_rebuild_market_data",
+            "Repair or rebuild market data before reviewing candidates.",
+        ));
+    } else if matches!(
+        batch.quality_after.as_ref().map(|quality| quality.status),
+        Some(MarketDataQualityStatus::Degraded)
+    ) {
+        findings.push(triage_finding(
+            "MEDIUM",
+            "research_batch_degraded_market_data",
+            "Research batch completed with degraded market data.",
+        ));
+        recommendations.push(triage_recommendation(
+            "MEDIUM",
+            "review_market_data_quality",
+            "Review data quality warnings before trusting candidate evidence.",
+        ));
+    }
+
+    let status = if batch.status == ResearchBatchStatus::Failed {
+        findings.push(triage_finding(
+            "MEDIUM",
+            "research_batch_failed",
+            "Research batch failed.",
+        ));
+        recommendations.push(triage_recommendation(
+            "MEDIUM",
+            "rerun_failed_batch",
+            "Inspect failed steps and rerun the batch after fixing the cause.",
+        ));
+        ResearchBatchTriageStatus::Failed
+    } else if data_quality_blocked {
+        ResearchBatchTriageStatus::DataQualityBlocked
+    } else if candidates.is_empty() {
+        findings.push(triage_finding(
+            "LOW",
+            "research_batch_no_actionable_candidates",
+            "No actionable candidates found.",
+        ));
+        recommendations.push(triage_recommendation(
+            "LOW",
+            "expand_research_sweep",
+            "Expand the research sweep or improve data coverage.",
+        ));
+        ResearchBatchTriageStatus::NoCandidates
+    } else if overfit_count == candidates.len() as i32 {
+        findings.push(triage_finding(
+            "MEDIUM",
+            "research_batch_only_overfit_candidates",
+            "Research batch produced only overfit candidates.",
+        ));
+        recommendations.push(triage_recommendation(
+            "MEDIUM",
+            "reject_overfit_candidates",
+            "Do not accept these candidates without stronger out-of-sample evidence.",
+        ));
+        ResearchBatchTriageStatus::OverfitOnly
+    } else if actionable_count > 0 {
+        findings.push(triage_finding(
+            "LOW",
+            "research_batch_candidates_for_review",
+            "Research batch produced candidates for review.",
+        ));
+        recommendations.push(triage_recommendation(
+            "LOW",
+            "manual_candidate_review",
+            "Review top-ranked candidates manually; triage does not promote candidates.",
+        ));
+        ResearchBatchTriageStatus::Actionable
+    } else {
+        findings.push(triage_finding(
+            "LOW",
+            "research_batch_no_actionable_candidates",
+            "No actionable candidates found.",
+        ));
+        recommendations.push(triage_recommendation(
+            "LOW",
+            "gather_more_evidence",
+            "Gather stronger experiment or walk-forward evidence before review.",
+        ));
+        ResearchBatchTriageStatus::Weak
+    };
+
+    ResearchBatchTriage {
+        batch_id: batch.batch_id,
+        status,
+        candidate_count: candidates.len() as i32,
+        actionable_count,
+        weak_count,
+        overfit_count,
+        candidates,
+        findings,
+        recommendations,
+        generated_at,
+    }
+}
+
+fn candidate_triage_sort_bucket(status: ResearchBatchTriageStatus) -> i32 {
+    match status {
+        ResearchBatchTriageStatus::Actionable => 0,
+        ResearchBatchTriageStatus::Weak => 1,
+        ResearchBatchTriageStatus::OverfitOnly => 2,
+        ResearchBatchTriageStatus::DataQualityBlocked => 3,
+        ResearchBatchTriageStatus::NoCandidates => 4,
+        ResearchBatchTriageStatus::Failed => 5,
+        ResearchBatchTriageStatus::Unknown => 6,
+    }
+}
+
+fn triage_finding(
+    severity: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchBatchTriageFinding {
+    ResearchBatchTriageFinding {
+        severity: severity.into(),
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn triage_recommendation(
+    priority: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> ResearchBatchTriageRecommendation {
+    ResearchBatchTriageRecommendation {
+        priority: priority.into(),
+        code: code.into(),
+        message: message.into(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -6909,5 +7198,205 @@ mod tests {
             candidate_id,
             "PROMOTE CANDIDATE 1a5e9b4b-0a5a-4bb4-907d-49f2648b2b6f TO TESTNET"
         ));
+    }
+
+    fn sample_batch() -> ResearchBatchResult {
+        ResearchBatchResult {
+            batch_id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+            status: ResearchBatchStatus::Completed,
+            steps: Vec::new(),
+            provider_health_summary: None,
+            backfill_summary: None,
+            quality_before: None,
+            repair_summary: None,
+            quality_after: None,
+            aggregation_summary: None,
+            experiment_ids: Vec::new(),
+            walk_forward_run_ids: Vec::new(),
+            created_candidate_ids: Vec::new(),
+            top_candidates: Vec::new(),
+            recommendations: Vec::new(),
+            created_at: ts(0, 0, 0),
+            completed_at: Some(ts(1, 0, 0)),
+        }
+    }
+
+    fn sample_candidate(
+        index: u128,
+        score: Decimal,
+        pnl_pct: Decimal,
+        walk_forward_status: Option<&str>,
+        walk_forward_recommendation: Option<&str>,
+    ) -> ResearchBatchCandidateTriage {
+        ResearchBatchCandidateTriage {
+            candidate_id: Uuid::from_u128(index),
+            experiment_run_id: Uuid::from_u128(100 + index),
+            walk_forward_run_id: Some(Uuid::from_u128(200 + index)),
+            strategy_id: "trend_filter_momentum_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "5m".to_string(),
+            experiment_score: score,
+            experiment_pnl_pct: pnl_pct,
+            walk_forward_status: walk_forward_status.map(str::to_string),
+            walk_forward_recommendation: walk_forward_recommendation.map(str::to_string),
+            qualification_status: None,
+            dossier_status: None,
+            triage_status: ResearchBatchTriageStatus::Unknown,
+            rank: 0,
+            reasons: Vec::new(),
+            recommendations: Vec::new(),
+        }
+    }
+
+    fn sample_quality(status: MarketDataQualityStatus) -> MarketDataQualityReport {
+        MarketDataQualityReport {
+            exchange: MarketDataSource::Binance,
+            symbol: "BTCUSDT".to_string(),
+            interval: "1m".to_string(),
+            window_start: ts(0, 0, 0),
+            window_end: ts(1, 0, 0),
+            expected_candle_count: 60,
+            actual_candle_count: 60,
+            closed_candle_count: 60,
+            open_candle_count: 0,
+            missing_candle_count: 0,
+            coverage_pct: Decimal::new(100, 0),
+            gap_count: 0,
+            largest_gap_seconds: 0,
+            gaps: Vec::new(),
+            first_candle_time: Some(ts(0, 0, 0)),
+            last_candle_time: Some(ts(0, 59, 0)),
+            status,
+            findings: Vec::new(),
+            recommendations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn research_batch_triage_no_candidates() {
+        let triage = build_research_batch_triage(&sample_batch(), Vec::new(), ts(2, 0, 0));
+
+        assert_eq!(triage.status, ResearchBatchTriageStatus::NoCandidates);
+        assert_eq!(triage.candidate_count, 0);
+    }
+
+    #[test]
+    fn research_batch_triage_all_overfit() {
+        let candidates = vec![
+            sample_candidate(
+                1,
+                Decimal::new(10, 0),
+                Decimal::new(2, 0),
+                Some("OVERFIT_RISK"),
+                Some("DO_NOT_ACCEPT"),
+            ),
+            sample_candidate(
+                2,
+                Decimal::new(8, 0),
+                Decimal::new(1, 0),
+                Some("OVERFIT_RISK"),
+                None,
+            ),
+        ];
+        let triage = build_research_batch_triage(&sample_batch(), candidates, ts(2, 0, 0));
+
+        assert_eq!(triage.status, ResearchBatchTriageStatus::OverfitOnly);
+        assert_eq!(triage.overfit_count, 2);
+    }
+
+    #[test]
+    fn research_batch_triage_one_actionable() {
+        let candidates = vec![
+            sample_candidate(1, Decimal::new(1, 0), Decimal::ZERO, Some("WEAK"), None),
+            sample_candidate(
+                2,
+                Decimal::new(10, 0),
+                Decimal::new(2, 0),
+                Some("ROBUST"),
+                Some("REVIEW"),
+            ),
+        ];
+        let triage = build_research_batch_triage(&sample_batch(), candidates, ts(2, 0, 0));
+
+        assert_eq!(triage.status, ResearchBatchTriageStatus::Actionable);
+        assert_eq!(triage.actionable_count, 1);
+        assert_eq!(triage.candidates[0].candidate_id, Uuid::from_u128(2));
+    }
+
+    #[test]
+    fn research_batch_triage_degraded_data_quality_warns_without_blocking() {
+        let mut batch = sample_batch();
+        batch.quality_after = Some(sample_quality(MarketDataQualityStatus::Degraded));
+        let candidates = vec![sample_candidate(
+            1,
+            Decimal::new(10, 0),
+            Decimal::new(2, 0),
+            Some("ROBUST"),
+            Some("REVIEW"),
+        )];
+        let triage = build_research_batch_triage(&batch, candidates, ts(2, 0, 0));
+
+        assert_eq!(triage.status, ResearchBatchTriageStatus::Actionable);
+        assert!(triage
+            .findings
+            .iter()
+            .any(|finding| finding.code == "research_batch_degraded_market_data"));
+    }
+
+    #[test]
+    fn research_batch_triage_bad_data_quality_blocks() {
+        let mut batch = sample_batch();
+        batch.quality_after = Some(sample_quality(MarketDataQualityStatus::Bad));
+        let candidates = vec![sample_candidate(
+            1,
+            Decimal::new(10, 0),
+            Decimal::new(2, 0),
+            Some("ROBUST"),
+            Some("REVIEW"),
+        )];
+        let triage = build_research_batch_triage(&batch, candidates, ts(2, 0, 0));
+
+        assert_eq!(triage.status, ResearchBatchTriageStatus::DataQualityBlocked);
+    }
+
+    #[test]
+    fn research_batch_triage_ranking_is_deterministic() {
+        let candidates = vec![
+            sample_candidate(
+                3,
+                Decimal::new(5, 0),
+                Decimal::new(2, 0),
+                Some("ROBUST"),
+                None,
+            ),
+            sample_candidate(
+                1,
+                Decimal::new(5, 0),
+                Decimal::new(2, 0),
+                Some("ROBUST"),
+                None,
+            ),
+            sample_candidate(
+                2,
+                Decimal::new(7, 0),
+                Decimal::new(1, 0),
+                Some("ROBUST"),
+                None,
+            ),
+        ];
+        let triage = build_research_batch_triage(&sample_batch(), candidates, ts(2, 0, 0));
+
+        assert_eq!(
+            triage
+                .candidates
+                .iter()
+                .map(|candidate| (candidate.rank, candidate.candidate_id))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, Uuid::from_u128(2)),
+                (2, Uuid::from_u128(1)),
+                (3, Uuid::from_u128(3)),
+            ]
+        );
     }
 }

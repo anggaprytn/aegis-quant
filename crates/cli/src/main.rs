@@ -584,6 +584,14 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_batch_steps(&response.steps);
                     }
                 }
+                ResearchBatchCommands::Triage { batch_id } => {
+                    let response = client.get_research_batch_triage(batch_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_batch_triage(&response.triage);
+                    }
+                }
             },
             ResearchCommands::Candidates(command) => match command {
                 ResearchCandidateCommands::List(args) => {

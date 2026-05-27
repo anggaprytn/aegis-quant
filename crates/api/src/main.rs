@@ -41,22 +41,22 @@ use aegis_core::{
     MarketProviderAttempt, MarketProviderHealth, OperatorReport, OperatorReportRequest,
     OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
     PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchRecommendation,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus, ResearchBatchStep,
-    ResearchBatchStepStatus, ResearchCandidate, ResearchCandidateDecision,
-    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidatePromotionReadiness, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewContext,
-    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
-    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchCandidateTriage,
+    ResearchBatchRecommendation, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus,
+    ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
+    ResearchCandidate, ResearchCandidateDecision, ResearchCandidateDecisionRejection,
+    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ResearchCandidateObservationFreshnessStatus, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidatePromotionReadiness,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationRequest,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
+    ResearchCandidateReviewContext, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
+    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -1574,6 +1574,14 @@ struct ResearchBatchStepsResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchBatchTriageResponse {
+    triage: ResearchBatchTriage,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateEventsResponse {
     events: Vec<ResearchCandidateLifecycleEvent>,
     request_id: String,
@@ -2604,6 +2612,10 @@ async fn main() {
         .route("/research/data/builds/:id", get(get_research_data_build))
         .route("/research/batches/run", post(run_research_batch_handler))
         .route("/research/batches", get(list_research_batches_handler))
+        .route(
+            "/research/batches/:id/triage",
+            get(get_research_batch_triage_handler),
+        )
         .route("/research/batches/:id", get(get_research_batch_handler))
         .route(
             "/research/batches/:id/steps",
@@ -15975,6 +15987,152 @@ async fn get_research_batch_handler(
                     }),
                 )
                     .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_batch",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            },
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_batch_steps",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_batch_not_found",
+                message: "Research batch was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_batch",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn build_research_batch_triage_read_model(
+    state: &AppState,
+    batch: &ResearchBatchResult,
+) -> anyhow::Result<ResearchBatchTriage> {
+    let mut candidates = Vec::new();
+    for candidate in &batch.top_candidates {
+        let Some(candidate_id) = candidate.candidate_id else {
+            continue;
+        };
+        let walk_forward_evidence =
+            get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate_id)
+                .await?;
+        let latest_qualification =
+            get_latest_research_candidate_qualification_evaluation(&state.db_pool, candidate_id)
+                .await?;
+        let walk_forward_status = walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.robustness_status.as_str().to_string())
+            .or_else(|| {
+                candidate
+                    .robustness_status
+                    .map(|status| status.as_str().to_string())
+            });
+        let walk_forward_recommendation = walk_forward_evidence
+            .as_ref()
+            .and_then(|evidence| evidence.recommendation_action.clone())
+            .or_else(|| {
+                latest_qualification
+                    .as_ref()
+                    .and_then(|evaluation| evaluation.walk_forward_recommendation.clone())
+            });
+        let walk_forward_run_id = walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.walk_forward_run_id)
+            .or(candidate.walk_forward_run_id);
+
+        candidates.push(ResearchBatchCandidateTriage {
+            candidate_id,
+            experiment_run_id: candidate.experiment_run_id,
+            walk_forward_run_id,
+            strategy_id: candidate.strategy_id.clone(),
+            symbol: candidate.symbol.clone(),
+            timeframe: candidate.timeframe.clone(),
+            experiment_score: candidate.score,
+            experiment_pnl_pct: candidate.pnl_pct,
+            walk_forward_status,
+            walk_forward_recommendation,
+            qualification_status: latest_qualification
+                .as_ref()
+                .map(|evaluation| evaluation.status.clone()),
+            dossier_status: None,
+            triage_status: ResearchBatchTriageStatus::Unknown,
+            rank: 0,
+            reasons: Vec::new(),
+            recommendations: Vec::new(),
+        });
+    }
+
+    Ok(aegis_core::build_research_batch_triage(
+        batch,
+        candidates,
+        Utc::now(),
+    ))
+}
+
+async fn get_research_batch_triage_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_research_batch(&state.db_pool, id).await {
+        Ok(Some(record)) => match list_research_batch_steps(&state.db_pool, id).await {
+            Ok(steps) => match research_batch_result_from_records(&record, &steps) {
+                Ok(batch) => match build_research_batch_triage_read_model(&state, &batch).await {
+                    Ok(triage) => (
+                        StatusCode::OK,
+                        Json(ResearchBatchTriageResponse {
+                            triage,
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response(),
+                    Err(err) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_build_research_batch_triage",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response(),
+                },
                 Err(err) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {

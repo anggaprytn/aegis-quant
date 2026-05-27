@@ -8,8 +8,8 @@ use aegis_core::{
     MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
     MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
     OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchCandidate,
-    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCandidate, ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
@@ -747,6 +747,14 @@ impl ApiClient {
         batch_id: Uuid,
     ) -> Result<ResearchBatchStepsResponse, ApiClientError> {
         self.get(&format!("/research/batches/{batch_id}/steps"), &[])
+            .await
+    }
+
+    pub async fn get_research_batch_triage(
+        &self,
+        batch_id: Uuid,
+    ) -> Result<ResearchBatchTriageResponse, ApiClientError> {
+        self.get(&format!("/research/batches/{batch_id}/triage"), &[])
             .await
     }
 
@@ -2309,6 +2317,14 @@ pub struct ResearchBatchesResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchBatchStepsResponse {
     pub steps: Vec<ResearchBatchStep>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchBatchTriageResponse {
+    pub triage: ResearchBatchTriage,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

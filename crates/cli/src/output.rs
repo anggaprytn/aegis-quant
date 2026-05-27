@@ -1,15 +1,15 @@
 use aegis_core::{
     CandleAggregationResult, MarketCandleCoverageSummary, MarketDataQualityReport,
     MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
-    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
-    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
-    ResearchShadowPnlAttributionResult, User,
+    ResearchBatchTriage, ResearchCandidateDecisionRejection,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWatchlistEntry, ResearchShadowPnlAttributionResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -108,6 +108,42 @@ pub fn print_research_batch_steps(steps: &[ResearchBatchStep]) {
             display_option(step.completed_at),
             step.error.as_deref().unwrap_or("-")
         );
+    }
+}
+
+pub fn print_research_batch_triage(triage: &ResearchBatchTriage) {
+    println!("Batch: {}", triage.batch_id);
+    println!("Triage status: {}", triage.status.as_str());
+    println!("Candidates: {}", triage.candidate_count);
+    println!("Actionable: {}", triage.actionable_count);
+    println!("Weak: {}", triage.weak_count);
+    println!("Overfit: {}", triage.overfit_count);
+    if !triage.candidates.is_empty() {
+        println!("Top candidates:");
+        for candidate in triage.candidates.iter().take(10) {
+            println!(
+                "  #{} {} {} candidate={} run={} score={} pnl_pct={} status={} wf={} recommendation={}",
+                candidate.rank,
+                candidate.symbol,
+                candidate.timeframe,
+                candidate.candidate_id,
+                candidate.experiment_run_id,
+                candidate.experiment_score,
+                candidate.experiment_pnl_pct,
+                candidate.triage_status.as_str(),
+                candidate.walk_forward_status.as_deref().unwrap_or("-"),
+                candidate.walk_forward_recommendation.as_deref().unwrap_or("-")
+            );
+        }
+    }
+    if !triage.recommendations.is_empty() {
+        println!("Recommendations:");
+        for recommendation in &triage.recommendations {
+            println!(
+                "  {} {}: {}",
+                recommendation.priority, recommendation.code, recommendation.message
+            );
+        }
     }
 }
 

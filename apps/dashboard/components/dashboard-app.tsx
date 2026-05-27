@@ -36,6 +36,7 @@ import type {
   ResearchDataCoverageResult,
   ResearchBatchRequest,
   ResearchBatchResult,
+  ResearchBatchTriage,
   ResearchDatasetBuildRequest,
   ResearchDatasetBuildResult,
   ResearchCandidateObservationHistoryItem,
@@ -1212,6 +1213,11 @@ function AuthenticatedDashboard({
   const selectedResearchBatchQuery = useQuery({
     queryKey: ["research-batch", selectedResearchBatchId],
     queryFn: () => api.getResearchBatch(selectedResearchBatchId ?? ""),
+    enabled: Boolean(selectedResearchBatchId),
+  });
+  const selectedResearchBatchTriageQuery = useQuery({
+    queryKey: ["research-batch-triage", selectedResearchBatchId],
+    queryFn: () => api.getResearchBatchTriage(selectedResearchBatchId ?? ""),
     enabled: Boolean(selectedResearchBatchId),
   });
   const backfillRunsQuery = useQuery({
@@ -4844,7 +4850,11 @@ function AuthenticatedDashboard({
                     selectedId={selectedResearchBatchId}
                     onSelect={setSelectedResearchBatchId}
                   />
-                  <ResearchBatchDetail batch={selectedResearchBatch} />
+                  <ResearchBatchDetail
+                    batch={selectedResearchBatch}
+                    triage={selectedResearchBatchTriageQuery.data?.triage ?? null}
+                    onSelectCandidate={setSelectedResearchCandidateId}
+                  />
                 </div>
               </Panel>
               <Panel className="xl:col-span-7" title="Strategy Experiment Form">
@@ -8524,7 +8534,15 @@ function ResearchBatchesTable({
   );
 }
 
-function ResearchBatchDetail({ batch }: { batch: ResearchBatchResult | null }) {
+function ResearchBatchDetail({
+  batch,
+  triage,
+  onSelectCandidate,
+}: {
+  batch: ResearchBatchResult | null;
+  triage: ResearchBatchTriage | null;
+  onSelectCandidate: (candidateId: string) => void;
+}) {
   if (!batch) {
     return <EmptyState label="No research batch selected." />;
   }
@@ -8543,6 +8561,31 @@ function ResearchBatchDetail({ batch }: { batch: ResearchBatchResult | null }) {
           ["Candidates", String(batch.created_candidate_ids.length)],
         ]}
       />
+      {triage ? (
+        <div className="rounded-xl border border-border bg-surface/50 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold">Triage</div>
+            <span className="rounded-md border border-border px-2 py-1 text-xs uppercase text-slate-200">
+              {triage.status}
+            </span>
+          </div>
+          <div className="mt-3 grid gap-2 text-xs text-muted md:grid-cols-4">
+            <span>actionable={triage.actionable_count}</span>
+            <span>weak={triage.weak_count}</span>
+            <span>overfit={triage.overfit_count}</span>
+            <span>generated={formatDateTime(triage.generated_at)}</span>
+          </div>
+          {triage.recommendations.length ? (
+            <div className="mt-3 space-y-1 text-sm text-slate-300">
+              {triage.recommendations.map((item) => (
+                <div key={item.code}>
+                  <span className="font-semibold">{item.priority}</span> {item.message}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <Table
         headers={["Step", "Status", "Started", "Completed", "Error"]}
         rows={batch.steps.map((step) => [
@@ -8565,6 +8608,27 @@ function ResearchBatchDetail({ batch }: { batch: ResearchBatchResult | null }) {
           candidate.robustness_status ?? "-",
         ])}
       />
+      {triage?.candidates.length ? (
+        <Table
+          headers={["Rank", "Status", "Candidate", "Run", "Score", "PnL %", "WF", "Recommendation"]}
+          rows={triage.candidates.map((candidate) => [
+            mono(String(candidate.rank)),
+            candidate.triage_status,
+            <button
+              key={candidate.candidate_id}
+              className="font-mono text-accent underline-offset-2 hover:underline"
+              onClick={() => onSelectCandidate(candidate.candidate_id)}
+            >
+              {shortenId(candidate.candidate_id)}
+            </button>,
+            shortenId(candidate.experiment_run_id),
+            candidate.experiment_score,
+            candidate.experiment_pnl_pct,
+            candidate.walk_forward_status ?? "-",
+            candidate.walk_forward_recommendation ?? "-",
+          ])}
+        />
+      ) : null}
       {batch.recommendations.length ? (
         <div className="space-y-2">
           {batch.recommendations.map((item) => (

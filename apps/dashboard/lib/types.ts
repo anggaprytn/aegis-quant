@@ -1071,6 +1071,14 @@ export type ResearchDatasetBuildsResponse = {
 };
 
 export type ResearchBatchStatus = "STARTED" | "PARTIAL" | "COMPLETED" | "FAILED";
+export type ResearchBatchTriageStatus =
+  | "ACTIONABLE"
+  | "WEAK"
+  | "OVERFIT_ONLY"
+  | "NO_CANDIDATES"
+  | "DATA_QUALITY_BLOCKED"
+  | "FAILED"
+  | "UNKNOWN";
 export type ResearchBatchStepStatus =
   | "PENDING"
   | "RUNNING"
@@ -1155,6 +1163,57 @@ export type ResearchBatchResult = {
 
 export type ResearchBatchResponse = {
   batch: ResearchBatchResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchBatchTriageFinding = {
+  severity: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchBatchTriageRecommendation = {
+  priority: string;
+  code: string;
+  message: string;
+};
+
+export type ResearchBatchCandidateTriage = {
+  candidate_id: string;
+  experiment_run_id: string;
+  walk_forward_run_id: string | null;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  experiment_score: string;
+  experiment_pnl_pct: string;
+  walk_forward_status: string | null;
+  walk_forward_recommendation: string | null;
+  qualification_status: string | null;
+  dossier_status: string | null;
+  triage_status: ResearchBatchTriageStatus;
+  rank: number;
+  reasons: string[];
+  recommendations: string[];
+};
+
+export type ResearchBatchTriage = {
+  batch_id: string;
+  status: ResearchBatchTriageStatus;
+  candidate_count: number;
+  actionable_count: number;
+  weak_count: number;
+  overfit_count: number;
+  candidates: ResearchBatchCandidateTriage[];
+  findings: ResearchBatchTriageFinding[];
+  recommendations: ResearchBatchTriageRecommendation[];
+  generated_at: string;
+};
+
+export type ResearchBatchTriageResponse = {
+  triage: ResearchBatchTriage;
   request_id: string;
   correlation_id: string;
   timestamp: string;

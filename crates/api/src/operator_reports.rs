@@ -76,6 +76,9 @@ struct BacktestActivity {
 struct ResearchBatchReportSnapshot {
     run_count: i64,
     failed_count: i64,
+    actionable_batch_count: i64,
+    overfit_only_batch_count: i64,
+    data_quality_blocked_batch_count: i64,
     candidates_created_count: i64,
     overfit_candidate_count: i64,
     robust_candidate_count: i64,
@@ -1234,17 +1237,35 @@ async fn load_research_batch_snapshot(
         SELECT
             COUNT(*) AS run_count,
             COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_count,
-            COALESCE(SUM(jsonb_array_length(COALESCE(summary->'created_candidate_ids', '[]'::jsonb))), 0) AS candidates_created_count,
+            COUNT(*) FILTER (
+                WHERE COALESCE((
+                    SELECT COUNT(*)
+                    FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
+                    WHERE candidate->>'robustness_status' = 'ROBUST'
+                ), 0) > 0
+            ) AS actionable_batch_count,
+            COUNT(*) FILTER (
+                WHERE jsonb_array_length(COALESCE(summary->'top_candidates', '[]'::jsonb)) > 0
+                  AND COALESCE((
+                    SELECT COUNT(*)
+                    FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
+                    WHERE candidate->>'robustness_status' = 'OVERFIT_RISK'
+                  ), 0) = jsonb_array_length(COALESCE(summary->'top_candidates', '[]'::jsonb))
+            ) AS overfit_only_batch_count,
+            COUNT(*) FILTER (
+                WHERE summary->'quality_after'->>'status' IN ('BAD', 'INSUFFICIENT_DATA')
+            ) AS data_quality_blocked_batch_count,
+            COALESCE(SUM(jsonb_array_length(COALESCE(summary->'created_candidate_ids', '[]'::jsonb))), 0)::BIGINT AS candidates_created_count,
             COALESCE(SUM((
                 SELECT COUNT(*)
                 FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
                 WHERE candidate->>'robustness_status' = 'OVERFIT_RISK'
-            )), 0) AS overfit_candidate_count,
+            )), 0)::BIGINT AS overfit_candidate_count,
             COALESCE(SUM((
                 SELECT COUNT(*)
                 FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
                 WHERE candidate->>'robustness_status' = 'ROBUST'
-            )), 0) AS robust_candidate_count
+            )), 0)::BIGINT AS robust_candidate_count
         FROM research_batches
         WHERE created_at >= $1
           AND created_at <= $2
@@ -1258,6 +1279,9 @@ async fn load_research_batch_snapshot(
     Ok(ResearchBatchReportSnapshot {
         run_count: row.get("run_count"),
         failed_count: row.get("failed_count"),
+        actionable_batch_count: row.get("actionable_batch_count"),
+        overfit_only_batch_count: row.get("overfit_only_batch_count"),
+        data_quality_blocked_batch_count: row.get("data_quality_blocked_batch_count"),
         candidates_created_count: row.get("candidates_created_count"),
         overfit_candidate_count: row.get("overfit_candidate_count"),
         robust_candidate_count: row.get("robust_candidate_count"),
@@ -1527,6 +1551,24 @@ fn build_findings(
             OperatorReportSeverity::Medium,
             "Research batch produced only overfit candidates",
             "Research batch top candidates include OVERFIT_RISK evidence and no ROBUST evidence.",
+            "research_batches",
+        ));
+    }
+    if research_batches.data_quality_blocked_batch_count > 0 {
+        findings.push(finding(
+            "research_batch_data_quality_blocked",
+            OperatorReportSeverity::Medium,
+            "Research batch blocked by degraded market data",
+            "At least one research batch ended with BAD or INSUFFICIENT_DATA market quality after repair.",
+            "research_batches",
+        ));
+    }
+    if research_batches.actionable_batch_count == 0 && research_batches.run_count > 0 {
+        findings.push(finding(
+            "research_batch_no_actionable_candidates",
+            OperatorReportSeverity::Low,
+            "No actionable candidates found",
+            "Research batches in the selected window did not produce robust candidate evidence.",
             "research_batches",
         ));
     }
@@ -2085,8 +2127,8 @@ fn build_sections(
             "research_batches",
             "Research Batches",
             if research_batches.failed_count > 0
-                || (research_batches.overfit_candidate_count > 0
-                    && research_batches.robust_candidate_count == 0)
+                || research_batches.data_quality_blocked_batch_count > 0
+                || research_batches.overfit_only_batch_count > 0
             {
                 OperatorReportStatus::Warning
             } else {
@@ -2095,7 +2137,21 @@ fn build_sections(
             "Read-only/data-only research batch activity in the selected window.",
             vec![
                 highlight("Batches Run", research_batches.run_count.to_string()),
+                highlight(
+                    "Actionable Batches",
+                    research_batches.actionable_batch_count.to_string(),
+                ),
+                highlight(
+                    "Overfit-only Batches",
+                    research_batches.overfit_only_batch_count.to_string(),
+                ),
                 highlight("Failed", research_batches.failed_count.to_string()),
+                highlight(
+                    "Data Quality Blocked",
+                    research_batches
+                        .data_quality_blocked_batch_count
+                        .to_string(),
+                ),
                 highlight(
                     "Candidates Created",
                     research_batches.candidates_created_count.to_string(),
