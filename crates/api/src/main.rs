@@ -48,20 +48,21 @@ use aegis_core::{
     ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
     ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
     ResearchCampaignResult, ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate,
-    ResearchCandidateDecision, ResearchCandidateDecisionRejection,
+    ResearchCandidateCreationGateResult, ResearchCandidateCreationInput,
+    ResearchCandidateCreationPolicy, ResearchCandidateDecision, ResearchCandidateDecisionRejection,
     ResearchCandidateDecisionRequest, ResearchCandidateFailureInput,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidatePromotionReadiness, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewContext,
-    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
-    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidatePromotionReadiness, ResearchCandidateProposal,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationRequest,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
+    ResearchCandidateReviewContext, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
+    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -154,7 +155,7 @@ use db::{
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
-    get_research_candidate_qualification_evaluation_by_id,
+    get_research_candidate_proposal, get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
     get_research_experiment_plan, get_research_hypothesis, get_research_regime_calibration,
     get_research_regime_dataset, get_research_regime_discovery, get_risk_config,
@@ -170,7 +171,7 @@ use db::{
     insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
     insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
     insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
-    insert_research_campaign, insert_research_campaign_batch,
+    insert_research_campaign, insert_research_campaign_batch, insert_research_candidate_proposal,
     insert_research_candidate_qualification_evaluation, insert_research_experiment_plan,
     insert_research_experiment_plan_run, insert_research_hypothesis,
     insert_research_regime_calibration, insert_research_regime_dataset,
@@ -187,7 +188,7 @@ use db::{
     list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
     list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
     list_research_batch_steps, list_research_batches, list_research_campaign_batches,
-    list_research_campaigns, list_research_candidate_events,
+    list_research_campaigns, list_research_candidate_events, list_research_candidate_proposals,
     list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
     list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
     list_research_candidate_watchlist_rows, list_research_candidates,
@@ -202,13 +203,14 @@ use db::{
     list_strategy_robustness_matrix_cells, list_strategy_robustness_matrix_runs,
     list_strategy_status, list_strategy_walk_forward_runs, list_strategy_walk_forward_windows,
     list_testnet_promotion_funnel_rows, list_testnet_shadow_promotions, list_testnet_shadow_runs,
-    load_risk_state_snapshot, mark_research_experiment_plan_completed,
-    mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
-    paper_account_from_record, paper_equity_snapshot_from_record, paper_position_from_record,
-    persist_risk_config_version, persist_strategy_config_version,
-    research_batch_result_from_records, research_batch_step_from_record,
-    research_campaign_batch_result_from_record, research_campaign_result_from_records,
-    research_candidate_event_from_record, research_candidate_from_record,
+    load_risk_state_snapshot, mark_research_candidate_proposal_promoted,
+    mark_research_experiment_plan_completed, mark_strategy_research_candidate_promoted,
+    market_data_repair_result_from_record, paper_account_from_record,
+    paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
+    persist_strategy_config_version, research_batch_result_from_records,
+    research_batch_step_from_record, research_campaign_batch_result_from_record,
+    research_campaign_result_from_records, research_candidate_event_from_record,
+    research_candidate_from_record, research_candidate_proposal_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row,
     research_regime_calibration_candidate_from_record,
@@ -1642,6 +1644,31 @@ struct ResearchCandidateResponse {
 struct ResearchCandidateWalkForwardEvidenceResponse {
     evidence: Vec<ResearchCandidateWalkForwardEvidence>,
     latest: Option<ResearchCandidateWalkForwardEvidence>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateProposalsResponse {
+    proposals: Vec<ResearchCandidateProposal>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateProposalResponse {
+    proposal: ResearchCandidateProposal,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateProposalPromotionResponse {
+    proposal: ResearchCandidateProposal,
+    candidate: ResearchCandidate,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3249,6 +3276,18 @@ async fn main() {
         .route(
             "/research/candidates/watchlist",
             get(get_research_candidate_watchlist_handler),
+        )
+        .route(
+            "/research/candidate-proposals",
+            get(list_research_candidate_proposals_handler),
+        )
+        .route(
+            "/research/candidate-proposals/:id/promote-to-candidate",
+            post(promote_research_candidate_proposal_handler),
+        )
+        .route(
+            "/research/candidate-proposals/:id",
+            get(get_research_candidate_proposal_handler),
         )
         .route(
             "/research/candidates/:id",
@@ -16572,6 +16611,9 @@ async fn execute_research_batch(
         experiment_ids: Vec::new(),
         walk_forward_run_ids: Vec::new(),
         created_candidate_ids: Vec::new(),
+        candidates_blocked_by_gate: 0,
+        proposals_created: 0,
+        gate_decisions: Vec::new(),
         top_candidates: Vec::new(),
         recommendations: Vec::new(),
         created_at: now,
@@ -16901,8 +16943,72 @@ async fn execute_research_batch(
     let candidate_step =
         start_research_batch_step(state, &mut result, "create_research_candidates").await?;
     if payload.create_candidates {
+        let policy = ResearchCandidateCreationPolicy::for_mode(payload.candidate_creation_mode);
+        let triage = build_research_batch_triage_read_model(state, &result).await?;
         let max_candidates = usize::try_from(payload.max_candidates).unwrap_or(usize::MAX);
         for candidate in result.top_candidates.iter_mut().take(max_candidates) {
+            let candidate_triage_status = triage
+                .candidates
+                .iter()
+                .find(|item| item.experiment_run_id == candidate.experiment_run_id)
+                .map(|item| item.triage_status)
+                .unwrap_or(triage.status);
+            let decision = aegis_core::evaluate_research_candidate_creation(
+                &policy,
+                ResearchCandidateCreationInput {
+                    source_batch_id: Some(result.batch_id),
+                    experiment_run_id: candidate.experiment_run_id,
+                    walk_forward_status: candidate.robustness_status,
+                    batch_triage_status: candidate_triage_status,
+                    robustness_status: None,
+                    data_quality_status: result
+                        .quality_after
+                        .as_ref()
+                        .map(|quality| quality.status),
+                    trade_count: candidate.trade_count,
+                    pnl_pct: candidate.pnl_pct,
+                    score: candidate.score,
+                },
+            );
+            result.gate_decisions.push(decision.clone());
+            if !decision.should_create_candidate {
+                result.candidates_blocked_by_gate += 1;
+                if decision.should_create_proposal {
+                    let lifecycle = lifecycle_candidate_from_experiment_run(
+                        state,
+                        candidate.experiment_run_id,
+                        Some(format!(
+                            "candidate proposal from research batch {}",
+                            result.batch_id
+                        )),
+                        correlation_id,
+                    )
+                    .await?;
+                    let proposal = ResearchCandidateProposal {
+                        id: Uuid::new_v4(),
+                        source_batch_id: Some(result.batch_id),
+                        experiment_run_id: candidate.experiment_run_id,
+                        strategy_id: candidate.strategy_id.clone(),
+                        symbol: candidate.symbol.clone(),
+                        timeframe: candidate.timeframe.clone(),
+                        config: lifecycle.config,
+                        score: candidate.score,
+                        pnl_pct: candidate.pnl_pct,
+                        triage_status: candidate_triage_status,
+                        walk_forward_status: candidate
+                            .robustness_status
+                            .map(|status| status.as_str().to_string()),
+                        gate_decision: decision,
+                        reason: "candidate_creation_gate_blocked".to_string(),
+                        promoted_candidate_id: None,
+                        promoted_at: None,
+                        created_at: Utc::now(),
+                    };
+                    insert_research_candidate_proposal(&state.db_pool, &proposal).await?;
+                    result.proposals_created += 1;
+                }
+                continue;
+            }
             let lifecycle = lifecycle_candidate_from_experiment_run(
                 state,
                 candidate.experiment_run_id,
@@ -16935,8 +17041,20 @@ async fn execute_research_batch(
             candidate.candidate_id = Some(record.id);
             result.created_candidate_ids.push(record.id);
         }
-        let candidate_step_summary =
-            json!({ "created_candidate_ids": result.created_candidate_ids.clone() });
+        let gate = ResearchCandidateCreationGateResult {
+            policy,
+            decisions: result.gate_decisions.clone(),
+            candidates_created: i32::try_from(result.created_candidate_ids.len())
+                .unwrap_or(i32::MAX),
+            candidates_blocked_by_gate: result.candidates_blocked_by_gate,
+            proposals_created: result.proposals_created,
+        };
+        let candidate_step_summary = json!({
+            "created_candidate_ids": result.created_candidate_ids.clone(),
+            "candidates_blocked_by_gate": result.candidates_blocked_by_gate,
+            "proposals_created": result.proposals_created,
+            "gate": gate,
+        });
         finish_research_batch_step(
             state,
             &mut result,
@@ -16952,7 +17070,7 @@ async fn execute_research_batch(
             &mut result,
             candidate_step,
             ResearchBatchStepStatus::Skipped,
-            json!({ "create_candidates": false }),
+            json!({ "create_candidates": false, "candidate_creation_mode": "DISABLED" }),
             None,
         )
         .await?;
@@ -17166,15 +17284,20 @@ async fn build_research_batch_triage_read_model(
 ) -> anyhow::Result<ResearchBatchTriage> {
     let mut candidates = Vec::new();
     for candidate in &batch.top_candidates {
-        let Some(candidate_id) = candidate.candidate_id else {
-            continue;
+        let walk_forward_evidence = match candidate.candidate_id {
+            Some(candidate_id) => {
+                get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate_id)
+                    .await?
+            }
+            None => None,
         };
-        let walk_forward_evidence =
-            get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate_id)
-                .await?;
-        let latest_qualification =
-            get_latest_research_candidate_qualification_evaluation(&state.db_pool, candidate_id)
-                .await?;
+        let latest_qualification = match candidate.candidate_id {
+            Some(candidate_id) => {
+                get_latest_research_candidate_qualification_evaluation(&state.db_pool, candidate_id)
+                    .await?
+            }
+            None => None,
+        };
         let walk_forward_status = walk_forward_evidence
             .as_ref()
             .map(|evidence| evidence.robustness_status.as_str().to_string())
@@ -17197,7 +17320,7 @@ async fn build_research_batch_triage_read_model(
             .or(candidate.walk_forward_run_id);
 
         candidates.push(ResearchBatchCandidateTriage {
-            candidate_id,
+            candidate_id: candidate.candidate_id,
             experiment_run_id: candidate.experiment_run_id,
             walk_forward_run_id,
             strategy_id: candidate.strategy_id.clone(),
@@ -18709,6 +18832,9 @@ async fn execute_research_campaign(
             batch_status: Some(ResearchBatchStatus::Started),
             triage_status: ResearchBatchTriageStatus::Unknown,
             candidates_created: 0,
+            candidates_blocked_by_gate: 0,
+            proposals_created: 0,
+            gate_decisions: Vec::new(),
             top_candidates: Vec::new(),
             error: None,
             started_at,
@@ -18738,6 +18864,9 @@ async fn execute_research_campaign(
                         triage_status: triage.status,
                         candidates_created: i32::try_from(batch.created_candidate_ids.len())
                             .unwrap_or(i32::MAX),
+                        candidates_blocked_by_gate: batch.candidates_blocked_by_gate,
+                        proposals_created: batch.proposals_created,
+                        gate_decisions: batch.gate_decisions.clone(),
                         top_candidates: batch.top_candidates.clone(),
                         error: None,
                         started_at: campaign_batch.created_at,
@@ -18750,6 +18879,9 @@ async fn execute_research_campaign(
                     batch_status: Some(ResearchBatchStatus::Failed),
                     triage_status: ResearchBatchTriageStatus::Failed,
                     candidates_created: 0,
+                    candidates_blocked_by_gate: 0,
+                    proposals_created: 0,
+                    gate_decisions: Vec::new(),
                     top_candidates: Vec::new(),
                     error: Some(err.to_string()),
                     started_at: campaign_batch.created_at,
@@ -18766,6 +18898,8 @@ async fn execute_research_campaign(
                 .unwrap_or(ResearchBatchStatus::Failed),
             batch_result.triage_status,
             batch_result.candidates_created,
+            batch_result.candidates_blocked_by_gate,
+            batch_result.proposals_created,
             &batch_summary,
             batch_result.error.as_deref(),
         )
@@ -20161,6 +20295,7 @@ async fn research_batch_request_from_plan(
     {
         request.correlation_id = Some(correlation_id);
         request.create_candidates = false;
+        request.candidate_creation_mode = aegis_core::ResearchCandidateCreationMode::Disabled;
         return Ok(request);
     }
     let (start_time, end_time) = research_plan_window_bounds(state, plan)
@@ -20252,6 +20387,7 @@ async fn research_batch_request_from_plan(
         walk_forward_top_n: 1,
         repair_degraded_data: false,
         create_candidates: false,
+        candidate_creation_mode: aegis_core::ResearchCandidateCreationMode::Disabled,
         max_candidates: 1,
         correlation_id: Some(correlation_id),
     })
@@ -20266,6 +20402,8 @@ async fn research_campaign_request_from_plan(
         serde_json::from_value::<ResearchCampaignRequest>(plan.proposed_request.clone())
     {
         request.correlation_id = Some(correlation_id);
+        request.create_candidates = false;
+        request.candidate_creation_mode = aegis_core::ResearchCandidateCreationMode::Disabled;
         return Ok(request);
     }
     let source = source_campaign_request(state, plan).await?;
@@ -20321,6 +20459,7 @@ async fn research_campaign_request_from_plan(
         max_windows_per_regime: None,
         max_candidates_per_batch: 1,
         create_candidates: false,
+        candidate_creation_mode: aegis_core::ResearchCandidateCreationMode::Disabled,
         repair_degraded_data: false,
         walk_forward_top_n: 1,
         base_interval: "1m".to_string(),
@@ -22208,6 +22347,316 @@ async fn list_research_candidates_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_list_research_candidates",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_research_candidate_proposals_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchCandidatesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_research_candidate_proposals(
+        &state.db_pool,
+        bounded_research_candidate_limit(query.limit),
+    )
+    .await
+    {
+        Ok(records) => match records
+            .iter()
+            .map(research_candidate_proposal_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(proposals) => (
+                StatusCode::OK,
+                Json(ResearchCandidateProposalsResponse {
+                    proposals,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate_proposals",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_research_candidate_proposals",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_proposal_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_research_candidate_proposal(&state.db_pool, id).await {
+        Ok(Some(record)) => match research_candidate_proposal_from_record(&record) {
+            Ok(proposal) => (
+                StatusCode::OK,
+                Json(ResearchCandidateProposalResponse {
+                    proposal,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_research_candidate_proposal",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_candidate_proposal_not_found",
+                message: "Research candidate proposal was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_research_candidate_proposal",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn promote_research_candidate_proposal_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return research_forbidden_response(
+                &request,
+                "Only OPERATOR or OWNER can promote candidate proposals.",
+            )
+        }
+    };
+    let correlation_id = parse_correlation_id(&request.correlation_id);
+    let proposal = match get_research_candidate_proposal(&state.db_pool, id).await {
+        Ok(Some(record)) => match research_candidate_proposal_from_record(&record) {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate_proposal",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_proposal_not_found",
+                    message: "Research candidate proposal was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate_proposal",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    if let Some(candidate_id) = proposal.promoted_candidate_id {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "research_candidate_proposal_already_promoted",
+                message: format!("Proposal was already promoted to candidate {candidate_id}."),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let candidate = match lifecycle_candidate_from_experiment_run(
+        &state,
+        proposal.experiment_run_id,
+        Some(format!("promoted from proposal {}", proposal.id)),
+        correlation_id,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse {
+                    error: "failed_to_build_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match create_research_candidate(
+        &state.db_pool,
+        &candidate,
+        Some(actor.user_id),
+        ResearchCandidateDecision::Reopen,
+        Some("promoted_from_candidate_proposal"),
+        candidate.notes.as_deref(),
+        &json!({
+            "proposal_id": proposal.id,
+            "source_batch_id": proposal.source_batch_id,
+            "experiment_run_id": proposal.experiment_run_id,
+            "gate_decision": proposal.gate_decision,
+        }),
+    )
+    .await
+    {
+        Ok((record, _)) => {
+            let candidate = match research_candidate_from_record(&record) {
+                Ok(value) => value,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_research_candidate",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            };
+            match mark_research_candidate_proposal_promoted(
+                &state.db_pool,
+                proposal.id,
+                candidate.id,
+                Utc::now(),
+            )
+            .await
+            {
+                Ok(Some(record)) => match research_candidate_proposal_from_record(&record) {
+                    Ok(proposal) => (
+                        StatusCode::OK,
+                        Json(ResearchCandidateProposalPromotionResponse {
+                            proposal,
+                            candidate,
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response(),
+                    Err(err) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_map_research_candidate_proposal",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response(),
+                },
+                Ok(None) => (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "research_candidate_proposal_not_found",
+                        message: "Research candidate proposal was not found.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_mark_research_candidate_proposal_promoted",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_research_candidate",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

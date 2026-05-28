@@ -4428,6 +4428,12 @@ pub fn build_research_batch_request(
         walk_forward_top_n: args.walk_forward_top_n,
         repair_degraded_data: !args.no_repair_degraded_data,
         create_candidates: !args.no_create_candidates,
+        candidate_creation_mode: args
+            .candidate_creation_mode
+            .as_deref()
+            .map(str::parse)
+            .transpose()?
+            .unwrap_or_else(aegis_core::default_batch_candidate_creation_mode),
         max_candidates: args.max_candidates,
         correlation_id: args.correlation_id,
     };
@@ -4468,6 +4474,12 @@ pub fn build_research_campaign_request(
         max_windows_per_regime: args.max_windows_per_regime,
         max_candidates_per_batch: args.max_candidates_per_batch,
         create_candidates: true,
+        candidate_creation_mode: args
+            .candidate_creation_mode
+            .as_deref()
+            .map(str::parse)
+            .transpose()?
+            .unwrap_or_else(aegis_core::default_campaign_candidate_creation_mode),
         repair_degraded_data: !args.no_repair_degraded_data,
         walk_forward_top_n: args.walk_forward_top_n,
         base_interval: args.base_interval.clone(),

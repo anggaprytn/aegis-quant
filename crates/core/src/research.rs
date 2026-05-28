@@ -492,6 +492,8 @@ pub struct ResearchBatchRequest {
     pub repair_degraded_data: bool,
     #[serde(default = "default_research_batch_create_candidates")]
     pub create_candidates: bool,
+    #[serde(default = "default_batch_candidate_creation_mode")]
+    pub candidate_creation_mode: ResearchCandidateCreationMode,
     #[serde(default = "default_research_batch_max_candidates")]
     pub max_candidates: u32,
     pub correlation_id: Option<Uuid>,
@@ -591,6 +593,12 @@ pub struct ResearchBatchResult {
     pub experiment_ids: Vec<Uuid>,
     pub walk_forward_run_ids: Vec<Uuid>,
     pub created_candidate_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub candidates_blocked_by_gate: i32,
+    #[serde(default)]
+    pub proposals_created: i32,
+    #[serde(default)]
+    pub gate_decisions: Vec<ResearchCandidateCreationDecision>,
     pub top_candidates: Vec<ResearchBatchCandidateSummary>,
     pub recommendations: Vec<ResearchBatchRecommendation>,
     pub created_at: DateTime<Utc>,
@@ -656,7 +664,7 @@ pub struct ResearchBatchTriageRecommendation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchBatchCandidateTriage {
-    pub candidate_id: Uuid,
+    pub candidate_id: Option<Uuid>,
     pub experiment_run_id: Uuid,
     pub walk_forward_run_id: Option<Uuid>,
     pub strategy_id: String,
@@ -686,6 +694,283 @@ pub struct ResearchBatchTriage {
     pub findings: Vec<ResearchBatchTriageFinding>,
     pub recommendations: Vec<ResearchBatchTriageRecommendation>,
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateCreationMode {
+    CreateAll,
+    CreateActionableOnly,
+    CreatePromisingOnly,
+    ProposalOnly,
+    Disabled,
+}
+
+impl ResearchCandidateCreationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateAll => "CREATE_ALL",
+            Self::CreateActionableOnly => "CREATE_ACTIONABLE_ONLY",
+            Self::CreatePromisingOnly => "CREATE_PROMISING_ONLY",
+            Self::ProposalOnly => "PROPOSAL_ONLY",
+            Self::Disabled => "DISABLED",
+        }
+    }
+
+    pub fn should_create_proposal_for_blocked(self) -> bool {
+        matches!(
+            self,
+            Self::CreateActionableOnly | Self::CreatePromisingOnly | Self::ProposalOnly
+        )
+    }
+}
+
+impl std::str::FromStr for ResearchCandidateCreationMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let normalized = value.trim().replace('-', "_").to_ascii_uppercase();
+        match normalized.as_str() {
+            "CREATE_ALL" => Ok(Self::CreateAll),
+            "CREATE_ACTIONABLE_ONLY" | "ACTIONABLE_ONLY" => Ok(Self::CreateActionableOnly),
+            "CREATE_PROMISING_ONLY" | "PROMISING_ONLY" => Ok(Self::CreatePromisingOnly),
+            "PROPOSAL_ONLY" => Ok(Self::ProposalOnly),
+            "DISABLED" => Ok(Self::Disabled),
+            other => Err(CoreError::UnsupportedResearchCandidateCreationMode(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+pub fn default_research_candidate_creation_min_trades() -> i32 {
+    3
+}
+
+pub fn default_research_candidate_creation_min_score() -> Decimal {
+    Decimal::ZERO
+}
+
+pub fn default_campaign_candidate_creation_mode() -> ResearchCandidateCreationMode {
+    ResearchCandidateCreationMode::CreateActionableOnly
+}
+
+pub fn default_batch_candidate_creation_mode() -> ResearchCandidateCreationMode {
+    ResearchCandidateCreationMode::CreateAll
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateCreationPolicy {
+    pub mode: ResearchCandidateCreationMode,
+    #[serde(default = "default_research_candidate_creation_min_trades")]
+    pub min_trade_count: i32,
+    #[serde(default = "default_research_candidate_creation_min_score")]
+    pub min_score: Decimal,
+}
+
+impl ResearchCandidateCreationPolicy {
+    pub fn for_mode(mode: ResearchCandidateCreationMode) -> Self {
+        Self {
+            mode,
+            min_trade_count: default_research_candidate_creation_min_trades(),
+            min_score: default_research_candidate_creation_min_score(),
+        }
+    }
+}
+
+impl Default for ResearchCandidateCreationPolicy {
+    fn default() -> Self {
+        Self::for_mode(default_campaign_candidate_creation_mode())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateCreationDecision {
+    pub should_create_candidate: bool,
+    #[serde(default)]
+    pub should_create_proposal: bool,
+    pub reason: String,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub source_batch_id: Option<Uuid>,
+    pub experiment_run_id: Uuid,
+    pub walk_forward_status: Option<String>,
+    pub batch_triage_status: ResearchBatchTriageStatus,
+    pub robustness_status: Option<String>,
+    pub pnl_pct: Decimal,
+    pub score: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateCreationGateResult {
+    pub policy: ResearchCandidateCreationPolicy,
+    pub decisions: Vec<ResearchCandidateCreationDecision>,
+    pub candidates_created: i32,
+    pub candidates_blocked_by_gate: i32,
+    pub proposals_created: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateCreationInput {
+    pub source_batch_id: Option<Uuid>,
+    pub experiment_run_id: Uuid,
+    pub walk_forward_status: Option<StrategyWalkForwardRobustnessStatus>,
+    pub batch_triage_status: ResearchBatchTriageStatus,
+    pub robustness_status: Option<StrategyRobustnessMatrixStatus>,
+    pub data_quality_status: Option<MarketDataQualityStatus>,
+    pub trade_count: i32,
+    pub pnl_pct: Decimal,
+    pub score: Decimal,
+}
+
+pub fn evaluate_research_candidate_creation(
+    policy: &ResearchCandidateCreationPolicy,
+    input: ResearchCandidateCreationInput,
+) -> ResearchCandidateCreationDecision {
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+
+    match policy.mode {
+        ResearchCandidateCreationMode::CreateAll => {
+            warnings.push("create_all_override_bypassed_candidate_creation_gate".to_string());
+            return ResearchCandidateCreationDecision {
+                should_create_candidate: true,
+                should_create_proposal: false,
+                reason: "CREATE_ALL override allowed candidate creation.".to_string(),
+                blockers,
+                warnings,
+                source_batch_id: input.source_batch_id,
+                experiment_run_id: input.experiment_run_id,
+                walk_forward_status: input
+                    .walk_forward_status
+                    .map(|status| status.as_str().to_string()),
+                batch_triage_status: input.batch_triage_status,
+                robustness_status: input
+                    .robustness_status
+                    .map(|status| status.as_str().to_string()),
+                pnl_pct: input.pnl_pct,
+                score: input.score,
+            };
+        }
+        ResearchCandidateCreationMode::Disabled => {
+            blockers.push("candidate_creation_disabled".to_string());
+        }
+        ResearchCandidateCreationMode::ProposalOnly => {
+            blockers.push("candidate_creation_proposal_only".to_string());
+        }
+        ResearchCandidateCreationMode::CreateActionableOnly
+        | ResearchCandidateCreationMode::CreatePromisingOnly => {}
+    }
+
+    match input.batch_triage_status {
+        ResearchBatchTriageStatus::Actionable => {}
+        ResearchBatchTriageStatus::OverfitOnly => {
+            blockers.push("batch_triage_overfit_only".to_string())
+        }
+        ResearchBatchTriageStatus::Weak => blockers.push("batch_triage_weak".to_string()),
+        ResearchBatchTriageStatus::DataQualityBlocked => {
+            blockers.push("batch_triage_data_quality_blocked".to_string())
+        }
+        ResearchBatchTriageStatus::NoCandidates => {
+            blockers.push("batch_triage_no_candidates".to_string())
+        }
+        ResearchBatchTriageStatus::Failed => blockers.push("batch_triage_failed".to_string()),
+        ResearchBatchTriageStatus::Unknown => blockers.push("batch_triage_unknown".to_string()),
+    }
+
+    match input.walk_forward_status {
+        Some(StrategyWalkForwardRobustnessStatus::Robust) => {}
+        Some(StrategyWalkForwardRobustnessStatus::Weak)
+            if policy.mode == ResearchCandidateCreationMode::CreatePromisingOnly =>
+        {
+            warnings.push("walk_forward_weak_promising_only".to_string());
+        }
+        Some(StrategyWalkForwardRobustnessStatus::Weak) => {
+            blockers.push("walk_forward_weak".to_string())
+        }
+        Some(StrategyWalkForwardRobustnessStatus::OverfitRisk) => {
+            blockers.push("walk_forward_overfit_risk".to_string())
+        }
+        Some(StrategyWalkForwardRobustnessStatus::InsufficientData) => {
+            blockers.push("walk_forward_insufficient_data".to_string())
+        }
+        Some(StrategyWalkForwardRobustnessStatus::Failed) => {
+            blockers.push("walk_forward_failed".to_string())
+        }
+        None => blockers.push("walk_forward_missing".to_string()),
+    }
+
+    if input.robustness_status == Some(StrategyRobustnessMatrixStatus::Negative) {
+        blockers.push("robustness_matrix_negative".to_string());
+    }
+
+    match input.data_quality_status {
+        Some(MarketDataQualityStatus::Good) => {}
+        Some(MarketDataQualityStatus::Degraded) => {
+            blockers.push("data_quality_degraded".to_string())
+        }
+        Some(MarketDataQualityStatus::Bad) => blockers.push("data_quality_bad".to_string()),
+        Some(MarketDataQualityStatus::InsufficientData) => {
+            blockers.push("data_quality_insufficient_data".to_string())
+        }
+        Some(MarketDataQualityStatus::Unknown) | None => {
+            blockers.push("data_quality_not_good".to_string())
+        }
+    }
+
+    if input.trade_count < policy.min_trade_count {
+        blockers.push(format!(
+            "trade_count_below_threshold:{}<{}",
+            input.trade_count, policy.min_trade_count
+        ));
+    }
+    if input.score < policy.min_score {
+        blockers.push(format!(
+            "score_below_threshold:{}<{}",
+            input.score, policy.min_score
+        ));
+    }
+    if input.pnl_pct < Decimal::ZERO
+        && input.walk_forward_status != Some(StrategyWalkForwardRobustnessStatus::Robust)
+    {
+        blockers.push("negative_pnl_without_strong_walk_forward".to_string());
+    }
+
+    blockers.sort();
+    blockers.dedup();
+    warnings.sort();
+    warnings.dedup();
+
+    let should_create_candidate = blockers.is_empty();
+    let should_create_proposal =
+        !should_create_candidate && policy.mode.should_create_proposal_for_blocked();
+    let reason = if should_create_candidate {
+        "Candidate creation allowed by gate.".to_string()
+    } else {
+        format!(
+            "Candidate creation blocked by gate: {}.",
+            blockers.join(", ")
+        )
+    };
+
+    ResearchCandidateCreationDecision {
+        should_create_candidate,
+        should_create_proposal,
+        reason,
+        blockers,
+        warnings,
+        source_batch_id: input.source_batch_id,
+        experiment_run_id: input.experiment_run_id,
+        walk_forward_status: input
+            .walk_forward_status
+            .map(|status| status.as_str().to_string()),
+        batch_triage_status: input.batch_triage_status,
+        robustness_status: input
+            .robustness_status
+            .map(|status| status.as_str().to_string()),
+        pnl_pct: input.pnl_pct,
+        score: input.score,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -757,6 +1042,8 @@ pub struct ResearchCampaignRequest {
     pub max_candidates_per_batch: u32,
     #[serde(default = "default_research_batch_create_candidates")]
     pub create_candidates: bool,
+    #[serde(default = "default_campaign_candidate_creation_mode")]
+    pub candidate_creation_mode: ResearchCandidateCreationMode,
     #[serde(default = "default_research_campaign_repair_degraded_data")]
     pub repair_degraded_data: bool,
     #[serde(default = "default_research_campaign_walk_forward_top_n")]
@@ -865,6 +1152,7 @@ impl ResearchCampaignBatchPlan {
             walk_forward_top_n: campaign.walk_forward_top_n,
             repair_degraded_data: campaign.repair_degraded_data,
             create_candidates: campaign.create_candidates,
+            candidate_creation_mode: campaign.candidate_creation_mode,
             max_candidates: campaign.max_candidates_per_batch,
             correlation_id: campaign.correlation_id,
         }
@@ -878,6 +1166,12 @@ pub struct ResearchCampaignBatchResult {
     pub batch_status: Option<ResearchBatchStatus>,
     pub triage_status: ResearchBatchTriageStatus,
     pub candidates_created: i32,
+    #[serde(default)]
+    pub candidates_blocked_by_gate: i32,
+    #[serde(default)]
+    pub proposals_created: i32,
+    #[serde(default)]
+    pub gate_decisions: Vec<ResearchCandidateCreationDecision>,
     pub top_candidates: Vec<ResearchBatchCandidateSummary>,
     pub error: Option<String>,
     pub started_at: DateTime<Utc>,
@@ -909,6 +1203,10 @@ pub struct ResearchCampaignSummary {
     pub data_quality_blocked_batches: i32,
     pub no_candidate_batches: i32,
     pub candidates_created: i32,
+    #[serde(default)]
+    pub candidates_blocked_by_gate: i32,
+    #[serde(default)]
+    pub proposals_created: i32,
     pub top_candidates: Vec<ResearchBatchCandidateSummary>,
     pub best_strategy_symbol_timeframe: Option<String>,
     #[serde(default)]
@@ -926,6 +1224,10 @@ pub struct ResearchCampaignRegimePerformance {
     pub actionable_batches: i32,
     pub weak_batches: i32,
     pub candidates_created: i32,
+    #[serde(default)]
+    pub candidates_blocked_by_gate: i32,
+    #[serde(default)]
+    pub proposals_created: i32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -5646,6 +5948,11 @@ pub fn summarize_research_campaign(
         .filter(|batch| batch.triage_status == ResearchBatchTriageStatus::NoCandidates)
         .count() as i32;
     let candidates_created = batches.iter().map(|batch| batch.candidates_created).sum();
+    let candidates_blocked_by_gate = batches
+        .iter()
+        .map(|batch| batch.candidates_blocked_by_gate)
+        .sum();
+    let proposals_created = batches.iter().map(|batch| batch.proposals_created).sum();
     let top_candidates = ranked_research_batch_candidates(
         batches
             .iter()
@@ -5689,6 +5996,30 @@ pub fn summarize_research_campaign(
             "Expand windows or refine deterministic strategy parameters before review.",
         ));
     }
+    if candidates_blocked_by_gate > 0 {
+        findings.push(campaign_finding(
+            "LOW",
+            "candidate_creation_gate_prevented_weak_candidates",
+            "Candidate creation gate prevented weak candidates from being registered.",
+        ));
+        recommendations.push(campaign_recommendation(
+            "LOW",
+            "review_gate_reasons",
+            "Review gate decisions and proposals before explicitly registering any candidate.",
+        ));
+    }
+    if proposals_created >= 100 {
+        findings.push(campaign_finding(
+            "MEDIUM",
+            "campaign_many_blocked_candidate_proposals",
+            "Campaign produced many blocked candidate proposals.",
+        ));
+        recommendations.push(campaign_recommendation(
+            "MEDIUM",
+            "tighten_research_sweep",
+            "Tighten sweep ranges or evidence thresholds before rerunning broad campaigns.",
+        ));
+    }
     if overfit_only_batches > 0 && actionable_batches == 0 {
         findings.push(campaign_finding(
             "MEDIUM",
@@ -5724,6 +6055,8 @@ pub fn summarize_research_campaign(
         data_quality_blocked_batches,
         no_candidate_batches,
         candidates_created,
+        candidates_blocked_by_gate,
+        proposals_created,
         top_candidates,
         best_strategy_symbol_timeframe,
         per_regime_performance,
@@ -5751,6 +6084,8 @@ fn summarize_research_campaign_regimes(
                     actionable_batches: 0,
                     weak_batches: 0,
                     candidates_created: 0,
+                    candidates_blocked_by_gate: 0,
+                    proposals_created: 0,
                 });
         entry.planned_batches += 1;
         if batch.error.is_none() && batch.batch_status != Some(ResearchBatchStatus::Failed) {
@@ -5769,6 +6104,8 @@ fn summarize_research_campaign_regimes(
             entry.weak_batches += 1;
         }
         entry.candidates_created += batch.candidates_created;
+        entry.candidates_blocked_by_gate += batch.candidates_blocked_by_gate;
+        entry.proposals_created += batch.proposals_created;
     }
     by_regime.into_values().collect()
 }
@@ -6972,6 +7309,26 @@ pub struct ResearchCandidate {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateProposal {
+    pub id: Uuid,
+    pub source_batch_id: Option<Uuid>,
+    pub experiment_run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub config: Value,
+    pub score: Decimal,
+    pub pnl_pct: Decimal,
+    pub triage_status: ResearchBatchTriageStatus,
+    pub walk_forward_status: Option<String>,
+    pub gate_decision: ResearchCandidateCreationDecision,
+    pub reason: String,
+    pub promoted_candidate_id: Option<Uuid>,
+    pub promoted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -13134,6 +13491,152 @@ mod tests {
         );
     }
 
+    fn sample_candidate_creation_input(
+        triage_status: ResearchBatchTriageStatus,
+        walk_forward_status: Option<StrategyWalkForwardRobustnessStatus>,
+    ) -> ResearchCandidateCreationInput {
+        ResearchCandidateCreationInput {
+            source_batch_id: Some(Uuid::new_v4()),
+            experiment_run_id: Uuid::new_v4(),
+            walk_forward_status,
+            batch_triage_status: triage_status,
+            robustness_status: None,
+            data_quality_status: Some(MarketDataQualityStatus::Good),
+            trade_count: 8,
+            pnl_pct: Decimal::new(25, 1),
+            score: Decimal::new(50, 0),
+        }
+    }
+
+    #[test]
+    fn candidate_creation_gate_blocks_overfit_only_by_default() {
+        let policy = ResearchCandidateCreationPolicy::for_mode(
+            ResearchCandidateCreationMode::CreateActionableOnly,
+        );
+        let decision = evaluate_research_candidate_creation(
+            &policy,
+            sample_candidate_creation_input(
+                ResearchBatchTriageStatus::OverfitOnly,
+                Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+            ),
+        );
+
+        assert!(!decision.should_create_candidate);
+        assert!(decision.should_create_proposal);
+        assert_eq!(
+            decision.blockers,
+            vec!["batch_triage_overfit_only", "walk_forward_overfit_risk"]
+        );
+    }
+
+    #[test]
+    fn candidate_creation_gate_blocks_weak_by_default() {
+        let policy = ResearchCandidateCreationPolicy::for_mode(
+            ResearchCandidateCreationMode::CreateActionableOnly,
+        );
+        let decision = evaluate_research_candidate_creation(
+            &policy,
+            sample_candidate_creation_input(
+                ResearchBatchTriageStatus::Weak,
+                Some(StrategyWalkForwardRobustnessStatus::Weak),
+            ),
+        );
+
+        assert!(!decision.should_create_candidate);
+        assert!(decision.blockers.contains(&"batch_triage_weak".to_string()));
+        assert!(decision.blockers.contains(&"walk_forward_weak".to_string()));
+    }
+
+    #[test]
+    fn candidate_creation_gate_allows_actionable() {
+        let policy = ResearchCandidateCreationPolicy::for_mode(
+            ResearchCandidateCreationMode::CreateActionableOnly,
+        );
+        let decision = evaluate_research_candidate_creation(
+            &policy,
+            sample_candidate_creation_input(
+                ResearchBatchTriageStatus::Actionable,
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        );
+
+        assert!(decision.should_create_candidate);
+        assert!(!decision.should_create_proposal);
+        assert!(decision.blockers.is_empty());
+    }
+
+    #[test]
+    fn candidate_creation_gate_create_all_override_creates_candidates() {
+        let policy =
+            ResearchCandidateCreationPolicy::for_mode(ResearchCandidateCreationMode::CreateAll);
+        let mut input = sample_candidate_creation_input(
+            ResearchBatchTriageStatus::OverfitOnly,
+            Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+        );
+        input.data_quality_status = Some(MarketDataQualityStatus::Bad);
+        input.trade_count = 0;
+        input.pnl_pct = Decimal::new(-1, 0);
+        let decision = evaluate_research_candidate_creation(&policy, input);
+
+        assert!(decision.should_create_candidate);
+        assert!(decision
+            .warnings
+            .contains(&"create_all_override_bypassed_candidate_creation_gate".to_string()));
+    }
+
+    #[test]
+    fn candidate_creation_gate_disabled_creates_none() {
+        let policy =
+            ResearchCandidateCreationPolicy::for_mode(ResearchCandidateCreationMode::Disabled);
+        let decision = evaluate_research_candidate_creation(
+            &policy,
+            sample_candidate_creation_input(
+                ResearchBatchTriageStatus::Actionable,
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        );
+
+        assert!(!decision.should_create_candidate);
+        assert!(!decision.should_create_proposal);
+        assert_eq!(decision.blockers, vec!["candidate_creation_disabled"]);
+    }
+
+    #[test]
+    fn candidate_creation_gate_proposal_only_creates_proposals_not_candidates() {
+        let policy =
+            ResearchCandidateCreationPolicy::for_mode(ResearchCandidateCreationMode::ProposalOnly);
+        let decision = evaluate_research_candidate_creation(
+            &policy,
+            sample_candidate_creation_input(
+                ResearchBatchTriageStatus::Actionable,
+                Some(StrategyWalkForwardRobustnessStatus::Robust),
+            ),
+        );
+
+        assert!(!decision.should_create_candidate);
+        assert!(decision.should_create_proposal);
+        assert_eq!(decision.blockers, vec!["candidate_creation_proposal_only"]);
+    }
+
+    #[test]
+    fn candidate_creation_gate_reason_order_is_deterministic() {
+        let policy = ResearchCandidateCreationPolicy::for_mode(
+            ResearchCandidateCreationMode::CreateActionableOnly,
+        );
+        let mut input = sample_candidate_creation_input(
+            ResearchBatchTriageStatus::Weak,
+            Some(StrategyWalkForwardRobustnessStatus::OverfitRisk),
+        );
+        input.data_quality_status = Some(MarketDataQualityStatus::Degraded);
+        input.trade_count = 0;
+        input.pnl_pct = Decimal::new(-1, 0);
+        let first = evaluate_research_candidate_creation(&policy, input.clone());
+        let second = evaluate_research_candidate_creation(&policy, input);
+
+        assert_eq!(first.blockers, second.blockers);
+        assert_eq!(first.reason, second.reason);
+    }
+
     #[test]
     fn testnet_review_dossier_rejected_candidate_is_blocked() {
         let mut request = sample_testnet_review_request();
@@ -13334,6 +13837,9 @@ mod tests {
             experiment_ids: Vec::new(),
             walk_forward_run_ids: Vec::new(),
             created_candidate_ids: Vec::new(),
+            candidates_blocked_by_gate: 0,
+            proposals_created: 0,
+            gate_decisions: Vec::new(),
             top_candidates: Vec::new(),
             recommendations: Vec::new(),
             created_at: ts(0, 0, 0),
@@ -13349,7 +13855,7 @@ mod tests {
         walk_forward_recommendation: Option<&str>,
     ) -> ResearchBatchCandidateTriage {
         ResearchBatchCandidateTriage {
-            candidate_id: Uuid::from_u128(index),
+            candidate_id: Some(Uuid::from_u128(index)),
             experiment_run_id: Uuid::from_u128(100 + index),
             walk_forward_run_id: Some(Uuid::from_u128(200 + index)),
             strategy_id: "trend_filter_momentum_v1".to_string(),
@@ -13440,7 +13946,7 @@ mod tests {
 
         assert_eq!(triage.status, ResearchBatchTriageStatus::Actionable);
         assert_eq!(triage.actionable_count, 1);
-        assert_eq!(triage.candidates[0].candidate_id, Uuid::from_u128(2));
+        assert_eq!(triage.candidates[0].candidate_id, Some(Uuid::from_u128(2)));
     }
 
     #[test]
@@ -13513,9 +14019,9 @@ mod tests {
                 .map(|candidate| (candidate.rank, candidate.candidate_id))
                 .collect::<Vec<_>>(),
             vec![
-                (1, Uuid::from_u128(2)),
-                (2, Uuid::from_u128(1)),
-                (3, Uuid::from_u128(3)),
+                (1, Some(Uuid::from_u128(2))),
+                (2, Some(Uuid::from_u128(1))),
+                (3, Some(Uuid::from_u128(3))),
             ]
         );
     }
@@ -13542,6 +14048,7 @@ mod tests {
             max_windows_per_regime: None,
             max_candidates_per_batch: 2,
             create_candidates: true,
+            candidate_creation_mode: ResearchCandidateCreationMode::CreateActionableOnly,
             repair_degraded_data: true,
             walk_forward_top_n: 3,
             base_interval: "1m".to_string(),
@@ -13585,6 +14092,9 @@ mod tests {
             }),
             triage_status: status,
             candidates_created: 1,
+            candidates_blocked_by_gate: 0,
+            proposals_created: 0,
+            gate_decisions: Vec::new(),
             top_candidates: vec![ResearchBatchCandidateSummary {
                 experiment_id: Uuid::from_u128(100 + plan_index as u128),
                 experiment_run_id: Uuid::from_u128(200 + plan_index as u128),

@@ -82,6 +82,8 @@ struct ResearchBatchReportSnapshot {
     overfit_only_batch_count: i64,
     data_quality_blocked_batch_count: i64,
     candidates_created_count: i64,
+    candidates_blocked_by_gate_count: i64,
+    proposals_created_count: i64,
     overfit_candidate_count: i64,
     robust_candidate_count: i64,
 }
@@ -1448,6 +1450,8 @@ async fn load_research_batch_snapshot(
                 WHERE summary->'quality_after'->>'status' IN ('BAD', 'INSUFFICIENT_DATA')
             ) AS data_quality_blocked_batch_count,
             COALESCE(SUM(jsonb_array_length(COALESCE(summary->'created_candidate_ids', '[]'::jsonb))), 0)::BIGINT AS candidates_created_count,
+            COALESCE(SUM((summary->>'candidates_blocked_by_gate')::BIGINT), 0)::BIGINT AS candidates_blocked_by_gate_count,
+            COALESCE(SUM((summary->>'proposals_created')::BIGINT), 0)::BIGINT AS proposals_created_count,
             COALESCE(SUM((
                 SELECT COUNT(*)
                 FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
@@ -1475,6 +1479,8 @@ async fn load_research_batch_snapshot(
         overfit_only_batch_count: row.get("overfit_only_batch_count"),
         data_quality_blocked_batch_count: row.get("data_quality_blocked_batch_count"),
         candidates_created_count: row.get("candidates_created_count"),
+        candidates_blocked_by_gate_count: row.get("candidates_blocked_by_gate_count"),
+        proposals_created_count: row.get("proposals_created_count"),
         overfit_candidate_count: row.get("overfit_candidate_count"),
         robust_candidate_count: row.get("robust_candidate_count"),
     })
@@ -2309,6 +2315,24 @@ fn build_findings(
             OperatorReportSeverity::Low,
             "Research batch produced candidates for review",
             "Research batch candidate creation is research-only and requires explicit review before any promotion path.",
+            "research_batches",
+        ));
+    }
+    if research_batches.candidates_blocked_by_gate_count > 0 {
+        findings.push(finding(
+            "candidate_creation_gate_prevented_weak_candidates",
+            OperatorReportSeverity::Low,
+            "Candidate creation gate prevented weak candidates from being registered",
+            "Research candidate creation gate blocked weak, overfit, negative, or insufficient evidence before registration.",
+            "research_batches",
+        ));
+    }
+    if research_batches.proposals_created_count >= 100 {
+        findings.push(finding(
+            "campaign_many_blocked_candidate_proposals",
+            OperatorReportSeverity::Medium,
+            "Campaign produced many blocked candidate proposals",
+            "Review proposal volume and gate reasons before widening research sweeps.",
             "research_batches",
         ));
     }
@@ -3357,6 +3381,14 @@ fn build_sections(
                 highlight(
                     "Candidates Created",
                     research_batches.candidates_created_count.to_string(),
+                ),
+                highlight(
+                    "Candidates Blocked",
+                    research_batches.candidates_blocked_by_gate_count.to_string(),
+                ),
+                highlight(
+                    "Proposals Created",
+                    research_batches.proposals_created_count.to_string(),
                 ),
                 highlight(
                     "Overfit Candidates",

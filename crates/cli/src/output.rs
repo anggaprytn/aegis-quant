@@ -135,7 +135,10 @@ pub fn print_research_batch_triage(triage: &ResearchBatchTriage) {
                 candidate.rank,
                 candidate.symbol,
                 candidate.timeframe,
-                candidate.candidate_id,
+                candidate
+                    .candidate_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
                 candidate.experiment_run_id,
                 candidate.experiment_score,
                 candidate.experiment_pnl_pct,

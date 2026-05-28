@@ -1200,6 +1200,8 @@ pub struct ResearchBatchRunArgs {
     pub no_repair_degraded_data: bool,
     #[arg(long = "no-create-candidates", default_value_t = false)]
     pub no_create_candidates: bool,
+    #[arg(long = "candidate-creation-mode")]
+    pub candidate_creation_mode: Option<String>,
     #[arg(long = "correlation-id")]
     pub correlation_id: Option<Uuid>,
 }
@@ -1286,6 +1288,8 @@ pub struct ResearchCampaignRunArgs {
     pub holding_candles: Option<Vec<u32>>,
     #[arg(long = "no-repair-degraded-data", default_value_t = false)]
     pub no_repair_degraded_data: bool,
+    #[arg(long = "candidate-creation-mode")]
+    pub candidate_creation_mode: Option<String>,
     #[arg(long = "correlation-id")]
     pub correlation_id: Option<Uuid>,
 }

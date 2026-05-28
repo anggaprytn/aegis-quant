@@ -11,10 +11,11 @@ use aegis_core::{
     Candle, CandleInterval, ExecutionReadinessStatus, MarketDataSource, ResearchBatchResult,
     ResearchBatchStatus, ResearchBatchStep, ResearchBatchStepStatus, ResearchCampaignBatchPlan,
     ResearchCampaignBatchResult, ResearchCampaignResult, ResearchCampaignStatus, ResearchCandidate,
-    ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationRecommendation,
-    ResearchCandidateQualificationStatus, ResearchCandidateQualificationThresholds,
-    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
+    ResearchCandidateCreationDecision, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
+    ResearchCandidateProposal, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationRecommendation, ResearchCandidateQualificationStatus,
+    ResearchCandidateQualificationThresholds, ResearchCandidateReview,
+    ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
     ResearchCandidateShadowPerformance, ResearchCandidateShadowRunLink, ResearchCandidateStatus,
     ResearchCandidateWalkForwardEvidence, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
     ResearchDatasetBuildResult, ResearchDatasetBuildStatus, ResearchDatasetBuildStep,
@@ -121,10 +122,32 @@ pub struct ResearchCampaignBatchRecord {
     pub status: String,
     pub triage_status: String,
     pub candidates_created: i32,
+    pub candidates_blocked_by_gate: i32,
+    pub proposals_created: i32,
     pub summary: Value,
     pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateProposalRecord {
+    pub id: Uuid,
+    pub source_batch_id: Option<Uuid>,
+    pub experiment_run_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub config: Value,
+    pub score: Decimal,
+    pub pnl_pct: Decimal,
+    pub triage_status: String,
+    pub walk_forward_status: Option<String>,
+    pub gate_decision: Value,
+    pub reason: String,
+    pub promoted_candidate_id: Option<Uuid>,
+    pub promoted_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1178,10 +1201,35 @@ fn map_research_campaign_batch(row: sqlx::postgres::PgRow) -> ResearchCampaignBa
         status: row.get("status"),
         triage_status: row.get("triage_status"),
         candidates_created: row.get("candidates_created"),
+        candidates_blocked_by_gate: row
+            .try_get("candidates_blocked_by_gate")
+            .unwrap_or_default(),
+        proposals_created: row.try_get("proposals_created").unwrap_or_default(),
         summary: row.get("summary"),
         error: row.get("error"),
         created_at: row.get("created_at"),
         completed_at: row.get("completed_at"),
+    }
+}
+
+fn map_research_candidate_proposal(row: sqlx::postgres::PgRow) -> ResearchCandidateProposalRecord {
+    ResearchCandidateProposalRecord {
+        id: row.get("id"),
+        source_batch_id: row.get("source_batch_id"),
+        experiment_run_id: row.get("experiment_run_id"),
+        strategy_id: row.get("strategy_id"),
+        symbol: row.get("symbol"),
+        timeframe: row.get("timeframe"),
+        config: row.get("config"),
+        score: row.get("score"),
+        pnl_pct: row.get("pnl_pct"),
+        triage_status: row.get("triage_status"),
+        walk_forward_status: row.get("walk_forward_status"),
+        gate_decision: row.get("gate_decision"),
+        reason: row.get("reason"),
+        promoted_candidate_id: row.get("promoted_candidate_id"),
+        promoted_at: row.get("promoted_at"),
+        created_at: row.get("created_at"),
     }
 }
 
@@ -1299,10 +1347,37 @@ pub fn research_campaign_batch_result_from_record(
         .parse()
         .unwrap_or(aegis_core::ResearchBatchTriageStatus::Unknown);
     result.candidates_created = record.candidates_created;
+    result.candidates_blocked_by_gate = record.candidates_blocked_by_gate;
+    result.proposals_created = record.proposals_created;
     result.error = record.error.clone();
     result.started_at = record.created_at;
     result.completed_at = record.completed_at;
     Ok(result)
+}
+
+pub fn research_candidate_proposal_from_record(
+    record: &ResearchCandidateProposalRecord,
+) -> Result<ResearchCandidateProposal> {
+    Ok(ResearchCandidateProposal {
+        id: record.id,
+        source_batch_id: record.source_batch_id,
+        experiment_run_id: record.experiment_run_id,
+        strategy_id: record.strategy_id.clone(),
+        symbol: record.symbol.clone(),
+        timeframe: record.timeframe.clone(),
+        config: record.config.clone(),
+        score: record.score,
+        pnl_pct: record.pnl_pct,
+        triage_status: record.triage_status.parse()?,
+        walk_forward_status: record.walk_forward_status.clone(),
+        gate_decision: serde_json::from_value::<ResearchCandidateCreationDecision>(
+            record.gate_decision.clone(),
+        )?,
+        reason: record.reason.clone(),
+        promoted_candidate_id: record.promoted_candidate_id,
+        promoted_at: record.promoted_at,
+        created_at: record.created_at,
+    })
 }
 
 pub fn research_campaign_result_from_records(
@@ -2492,11 +2567,13 @@ pub async fn insert_research_campaign_batch(
             status,
             triage_status,
             candidates_created,
+            candidates_blocked_by_gate,
+            proposals_created,
             summary,
             error,
             completed_at
         )
-        VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11, $12, $13)
+        VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, 0, $11, $12, $13)
         RETURNING
             id,
             campaign_id,
@@ -2510,6 +2587,8 @@ pub async fn insert_research_campaign_batch(
             status,
             triage_status,
             candidates_created,
+            candidates_blocked_by_gate,
+            proposals_created,
             summary,
             error,
             created_at,
@@ -2542,6 +2621,8 @@ pub async fn update_research_campaign_batch(
     status: ResearchBatchStatus,
     triage_status: aegis_core::ResearchBatchTriageStatus,
     candidates_created: i32,
+    candidates_blocked_by_gate: i32,
+    proposals_created: i32,
     summary: &Value,
     error: Option<&str>,
 ) -> Result<Option<ResearchCampaignBatchRecord>> {
@@ -2557,9 +2638,11 @@ pub async fn update_research_campaign_batch(
             status = $3,
             triage_status = $4,
             candidates_created = $5,
-            summary = $6,
-            error = $7,
-            completed_at = $8
+            candidates_blocked_by_gate = $6,
+            proposals_created = $7,
+            summary = $8,
+            error = $9,
+            completed_at = $10
         WHERE id = $1
         RETURNING
             id,
@@ -2574,6 +2657,8 @@ pub async fn update_research_campaign_batch(
             status,
             triage_status,
             candidates_created,
+            candidates_blocked_by_gate,
+            proposals_created,
             summary,
             error,
             created_at,
@@ -2585,6 +2670,8 @@ pub async fn update_research_campaign_batch(
     .bind(status.as_str())
     .bind(triage_status.as_str())
     .bind(candidates_created)
+    .bind(candidates_blocked_by_gate)
+    .bind(proposals_created)
     .bind(summary)
     .bind(error)
     .bind(completed_at)
@@ -2613,6 +2700,8 @@ pub async fn list_research_campaign_batches(
             status,
             triage_status,
             candidates_created,
+            candidates_blocked_by_gate,
+            proposals_created,
             summary,
             error,
             created_at,
@@ -2627,6 +2716,184 @@ pub async fn list_research_campaign_batches(
     .await?;
 
     Ok(rows.into_iter().map(map_research_campaign_batch).collect())
+}
+
+pub async fn insert_research_candidate_proposal(
+    pool: &PgPool,
+    proposal: &ResearchCandidateProposal,
+) -> Result<ResearchCandidateProposalRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_proposals (
+            id,
+            source_batch_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            triage_status,
+            walk_forward_status,
+            gate_decision,
+            reason,
+            promoted_candidate_id,
+            promoted_at,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        RETURNING
+            id,
+            source_batch_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            triage_status,
+            walk_forward_status,
+            gate_decision,
+            reason,
+            promoted_candidate_id,
+            promoted_at,
+            created_at
+        "#,
+    )
+    .bind(proposal.id)
+    .bind(proposal.source_batch_id)
+    .bind(proposal.experiment_run_id)
+    .bind(&proposal.strategy_id)
+    .bind(proposal.symbol.trim().to_ascii_uppercase())
+    .bind(&proposal.timeframe)
+    .bind(proposal.config.clone())
+    .bind(proposal.score)
+    .bind(proposal.pnl_pct)
+    .bind(proposal.triage_status.as_str())
+    .bind(&proposal.walk_forward_status)
+    .bind(serde_json::to_value(&proposal.gate_decision)?)
+    .bind(&proposal.reason)
+    .bind(proposal.promoted_candidate_id)
+    .bind(proposal.promoted_at)
+    .bind(proposal.created_at)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_research_candidate_proposal(row))
+}
+
+pub async fn list_research_candidate_proposals(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ResearchCandidateProposalRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            source_batch_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            triage_status,
+            walk_forward_status,
+            gate_decision,
+            reason,
+            promoted_candidate_id,
+            promoted_at,
+            created_at
+        FROM research_candidate_proposals
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_research_candidate_proposal)
+        .collect())
+}
+
+pub async fn get_research_candidate_proposal(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ResearchCandidateProposalRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            source_batch_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            triage_status,
+            walk_forward_status,
+            gate_decision,
+            reason,
+            promoted_candidate_id,
+            promoted_at,
+            created_at
+        FROM research_candidate_proposals
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_proposal))
+}
+
+pub async fn mark_research_candidate_proposal_promoted(
+    pool: &PgPool,
+    id: Uuid,
+    candidate_id: Uuid,
+    promoted_at: DateTime<Utc>,
+) -> Result<Option<ResearchCandidateProposalRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE research_candidate_proposals
+        SET promoted_candidate_id = $2,
+            promoted_at = $3
+        WHERE id = $1
+        RETURNING
+            id,
+            source_batch_id,
+            experiment_run_id,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            triage_status,
+            walk_forward_status,
+            gate_decision,
+            reason,
+            promoted_candidate_id,
+            promoted_at,
+            created_at
+        "#,
+    )
+    .bind(id)
+    .bind(candidate_id)
+    .bind(promoted_at)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_proposal))
 }
 
 pub async fn insert_research_regime_dataset(

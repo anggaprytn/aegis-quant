@@ -71,6 +71,7 @@ import type {
   ResearchCandidateShadowPerformance,
   ResearchCandidate as StrategyResearchCandidate,
   ResearchCandidateLifecycleEvent,
+  ResearchCandidateProposal,
   ResearchCandidateQualificationHistory,
   ResearchCandidateQualificationTrend,
   ResearchCandidateQualificationChange,
@@ -402,6 +403,7 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
   walk_forward_top_n: 3,
   repair_degraded_data: true,
   create_candidates: true,
+  candidate_creation_mode: "CREATE_ALL",
   max_candidates: 3,
 };
 
@@ -418,6 +420,7 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   slippage_bps: "5",
   max_candidates_per_batch: 2,
   create_candidates: true,
+  candidate_creation_mode: "CREATE_ACTIONABLE_ONLY",
   repair_degraded_data: true,
   walk_forward_top_n: 3,
   base_interval: "1m",
@@ -1551,6 +1554,12 @@ function AuthenticatedDashboard({
     queryKey: ["research-campaign-regime-leaderboard", selectedResearchCampaignId],
     queryFn: () => api.getResearchCampaignRegimeLeaderboard(selectedResearchCampaignId ?? ""),
     enabled: Boolean(selectedResearchCampaignId),
+  });
+  const researchCandidateProposalsQuery = useQuery({
+    queryKey: ["research-candidate-proposals"],
+    queryFn: () => api.listResearchCandidateProposals(50),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
   });
   const researchHypothesesQuery = useQuery({
     queryKey: ["research-hypotheses"],
@@ -2975,6 +2984,7 @@ function AuthenticatedDashboard({
   const selectedResearchBatch: ResearchBatchResult | null =
     selectedResearchBatchQuery.data?.batch ?? lastResearchBatch;
   const researchCampaigns = researchCampaignsQuery.data?.campaigns ?? [];
+  const researchCandidateProposals = researchCandidateProposalsQuery.data?.proposals ?? [];
   const selectedResearchCampaign: ResearchCampaignResult | null =
     selectedResearchCampaignQuery.data?.campaign ?? lastResearchCampaign;
   const selectedResearchCampaignFailureAttribution =
@@ -6444,6 +6454,34 @@ function AuthenticatedDashboard({
                       }))
                     }
                   />
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">
+                      Candidate Mode
+                    </span>
+                    <select
+                      className="w-full rounded-md border border-border bg-panel px-2 py-2"
+                      value={researchCampaignForm.candidate_creation_mode ?? "CREATE_ACTIONABLE_ONLY"}
+                      onChange={(event) =>
+                        setResearchCampaignForm((current) => ({
+                          ...current,
+                          candidate_creation_mode:
+                            event.target.value as ResearchCampaignRequest["candidate_creation_mode"],
+                        }))
+                      }
+                    >
+                      {[
+                        "CREATE_ACTIONABLE_ONLY",
+                        "CREATE_PROMISING_ONLY",
+                        "PROPOSAL_ONLY",
+                        "CREATE_ALL",
+                        "DISABLED",
+                      ].map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <label className="flex items-center gap-2 text-sm text-slate-300">
@@ -6512,6 +6550,18 @@ function AuthenticatedDashboard({
                           String(selectedResearchCampaign?.summary.overfit_only_batches ?? 0),
                         ],
                         ["Weak", String(selectedResearchCampaign?.summary.weak_batches ?? 0)],
+                        [
+                          "Candidates Created",
+                          String(selectedResearchCampaign?.summary.candidates_created ?? 0),
+                        ],
+                        [
+                          "Blocked",
+                          String(selectedResearchCampaign?.summary.candidates_blocked_by_gate ?? 0),
+                        ],
+                        [
+                          "Proposals",
+                          String(selectedResearchCampaign?.summary.proposals_created ?? 0),
+                        ],
                         [
                           "Best",
                           selectedResearchCampaign?.summary.best_strategy_symbol_timeframe ?? "-",
@@ -6619,6 +6669,7 @@ function AuthenticatedDashboard({
                   <ResearchCampaignBatchTable
                     batches={selectedResearchCampaign?.batches ?? []}
                   />
+                  <ResearchCandidateProposalsTable proposals={researchCandidateProposals} />
                   <ResearchCampaignTopCandidatesTable
                     candidates={selectedResearchCampaign?.summary.top_candidates ?? []}
                     onSelectCandidate={setSelectedResearchCandidateId}
@@ -6728,6 +6779,34 @@ function AuthenticatedDashboard({
                       }))
                     }
                   />
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-xs uppercase tracking-[0.16em] text-muted">
+                      Candidate Mode
+                    </span>
+                    <select
+                      className="w-full rounded-md border border-border bg-panel px-2 py-2"
+                      value={researchBatchForm.candidate_creation_mode ?? "CREATE_ALL"}
+                      onChange={(event) =>
+                        setResearchBatchForm((current) => ({
+                          ...current,
+                          candidate_creation_mode:
+                            event.target.value as ResearchBatchRequest["candidate_creation_mode"],
+                        }))
+                      }
+                    >
+                      {[
+                        "CREATE_ALL",
+                        "CREATE_ACTIONABLE_ONLY",
+                        "CREATE_PROMISING_ONLY",
+                        "PROPOSAL_ONLY",
+                        "DISABLED",
+                      ].map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <label className="flex items-center gap-2 text-sm text-slate-300">
@@ -10668,7 +10747,7 @@ function ResearchBatchesTable({
             <span className="text-xs uppercase text-muted">{batch.status}</span>
           </div>
           <div className="mt-1 text-xs text-slate-300">
-            experiments={batch.experiment_ids.length} wf={batch.walk_forward_run_ids.length} candidates={batch.created_candidate_ids.length}
+            experiments={batch.experiment_ids.length} wf={batch.walk_forward_run_ids.length} candidates={batch.created_candidate_ids.length} blocked={batch.candidates_blocked_by_gate} proposals={batch.proposals_created}
           </div>
           <div className="mt-1 text-xs text-muted">{formatDateTime(batch.created_at)}</div>
         </button>
@@ -11205,7 +11284,7 @@ function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatc
 
   return (
     <Table
-      headers={["Plan", "Strategy", "Symbol", "TF", "Regime", "Window", "Triage", "Candidates", "Error"]}
+      headers={["Plan", "Strategy", "Symbol", "TF", "Regime", "Window", "Triage", "Candidates", "Blocked", "Proposals", "Error"]}
       rows={batches.map((batch) => [
         String(batch.plan.plan_index),
         batch.plan.strategy_id,
@@ -11215,9 +11294,43 @@ function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatc
         `${formatDateTime(batch.plan.start_time)} -> ${formatDateTime(batch.plan.end_time)}`,
         batch.triage_status,
         String(batch.candidates_created),
+        String(batch.candidates_blocked_by_gate),
+        String(batch.proposals_created),
         batch.error ?? "-",
       ])}
     />
+  );
+}
+
+function ResearchCandidateProposalsTable({
+  proposals,
+}: {
+  proposals: ResearchCandidateProposal[];
+}) {
+  if (!proposals.length) {
+    return <EmptyState label="No candidate proposals." />;
+  }
+
+  return (
+    <div>
+      <div className="mb-2 text-xs uppercase tracking-[0.18em] text-muted">
+        Candidate Proposals
+      </div>
+      <Table
+        headers={["Proposal", "Strategy", "Symbol", "TF", "Score", "PnL %", "Triage", "WF", "Reason"]}
+        rows={proposals.slice(0, 20).map((proposal) => [
+          shortenId(proposal.id),
+          proposal.strategy_id,
+          proposal.symbol,
+          proposal.timeframe,
+          proposal.score,
+          proposal.pnl_pct,
+          proposal.triage_status,
+          proposal.walk_forward_status ?? "-",
+          proposal.gate_decision.blockers.join(", ") || proposal.reason,
+        ])}
+      />
+    </div>
   );
 }
 
@@ -11609,7 +11722,7 @@ function ResearchCampaignTopCandidatesTable({
             {shortenId(candidate.candidate_id)}
           </button>
         ) : (
-          "-"
+          "blocked/proposal"
         ),
       ])}
     />
@@ -11798,6 +11911,8 @@ function ResearchBatchDetail({
           ["Experiments", String(batch.experiment_ids.length)],
           ["Walk-forward", String(batch.walk_forward_run_ids.length)],
           ["Candidates", String(batch.created_candidate_ids.length)],
+          ["Blocked By Gate", String(batch.candidates_blocked_by_gate)],
+          ["Proposals", String(batch.proposals_created)],
         ]}
       />
       {triage ? (
@@ -11836,7 +11951,7 @@ function ResearchBatchDetail({
         ])}
       />
       <Table
-        headers={["Timeframe", "Run", "WF", "Candidate", "Score", "PnL %", "Robustness"]}
+        headers={["Timeframe", "Run", "WF", "Candidate", "Score", "PnL %", "Robustness", "Gate"]}
         rows={batch.top_candidates.map((candidate) => [
           candidate.timeframe,
           shortenId(candidate.experiment_run_id),
@@ -11845,6 +11960,9 @@ function ResearchBatchDetail({
           candidate.score,
           candidate.pnl_pct,
           candidate.robustness_status ?? "-",
+          batch.gate_decisions
+            ?.find((decision) => decision.experiment_run_id === candidate.experiment_run_id)
+            ?.blockers.join(", ") || "-",
         ])}
       />
       {triage?.candidates.length ? (
@@ -11853,13 +11971,17 @@ function ResearchBatchDetail({
           rows={triage.candidates.map((candidate) => [
             mono(String(candidate.rank)),
             candidate.triage_status,
-            <button
-              key={candidate.candidate_id}
-              className="font-mono text-accent underline-offset-2 hover:underline"
-              onClick={() => onSelectCandidate(candidate.candidate_id)}
-            >
-              {shortenId(candidate.candidate_id)}
-            </button>,
+            candidate.candidate_id ? (
+              <button
+                key={candidate.candidate_id}
+                className="font-mono text-accent underline-offset-2 hover:underline"
+                onClick={() => candidate.candidate_id && onSelectCandidate(candidate.candidate_id)}
+              >
+                {shortenId(candidate.candidate_id)}
+              </button>
+            ) : (
+              "-"
+            ),
             shortenId(candidate.experiment_run_id),
             candidate.experiment_score,
             candidate.experiment_pnl_pct,

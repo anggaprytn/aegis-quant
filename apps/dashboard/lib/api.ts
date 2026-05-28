@@ -122,6 +122,9 @@ import type {
   ResearchCandidateShadowPromotionRequest,
   ResearchCandidateShadowPromotionResultResponse,
   ResearchCandidateShadowRunsResponse,
+  ResearchCandidateProposalPromotionResponse,
+  ResearchCandidateProposalResponse,
+  ResearchCandidateProposalsResponse,
   ScheduledResearchJobRequest,
   ScheduledResearchJobResponse,
   ScheduledResearchJobRunResponse,
@@ -585,6 +588,20 @@ export const api = {
   getResearchCampaignRegimeLeaderboard: (id: string) =>
     request<ResearchRegimeStrategyLeaderboardResponse>(
       `/research/campaigns/${id}/regime-leaderboard`,
+    ),
+  listResearchCandidateProposals: (limit = 50) =>
+    request<ResearchCandidateProposalsResponse>("/research/candidate-proposals", undefined, {
+      limit,
+    }),
+  getResearchCandidateProposal: (id: string) =>
+    request<ResearchCandidateProposalResponse>(`/research/candidate-proposals/${id}`),
+  promoteResearchCandidateProposal: (id: string) =>
+    request<ResearchCandidateProposalPromotionResponse>(
+      `/research/candidate-proposals/${id}/promote-to-candidate`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
     ),
   generateResearchHypotheses: (payload: ResearchHypothesisGenerationRequest) =>
     request<ResearchHypothesisGenerationResponse>("/research/hypotheses/generate", {

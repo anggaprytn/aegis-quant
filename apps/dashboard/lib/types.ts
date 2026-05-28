@@ -1134,8 +1134,31 @@ export type ResearchBatchRequest = {
   walk_forward_top_n?: number;
   repair_degraded_data?: boolean;
   create_candidates?: boolean;
+  candidate_creation_mode?: ResearchCandidateCreationMode;
   max_candidates?: number;
   correlation_id?: string | null;
+};
+
+export type ResearchCandidateCreationMode =
+  | "CREATE_ALL"
+  | "CREATE_ACTIONABLE_ONLY"
+  | "CREATE_PROMISING_ONLY"
+  | "PROPOSAL_ONLY"
+  | "DISABLED";
+
+export type ResearchCandidateCreationDecision = {
+  should_create_candidate: boolean;
+  should_create_proposal?: boolean;
+  reason: string;
+  blockers: string[];
+  warnings: string[];
+  source_batch_id: string | null;
+  experiment_run_id: string;
+  walk_forward_status: string | null;
+  batch_triage_status: ResearchBatchTriageStatus;
+  robustness_status: string | null;
+  pnl_pct: string;
+  score: string;
 };
 
 export type ResearchBatchStep = {
@@ -1184,6 +1207,9 @@ export type ResearchBatchResult = {
   experiment_ids: string[];
   walk_forward_run_ids: string[];
   created_candidate_ids: string[];
+  candidates_blocked_by_gate: number;
+  proposals_created: number;
+  gate_decisions: ResearchCandidateCreationDecision[];
   top_candidates: ResearchBatchCandidateSummary[];
   recommendations: ResearchBatchRecommendation[];
   created_at: string;
@@ -1210,7 +1236,7 @@ export type ResearchBatchTriageRecommendation = {
 };
 
 export type ResearchBatchCandidateTriage = {
-  candidate_id: string;
+  candidate_id: string | null;
   experiment_run_id: string;
   walk_forward_run_id: string | null;
   strategy_id: string;
@@ -1292,6 +1318,7 @@ export type ResearchCampaignRequest = {
   max_windows_per_regime?: number | null;
   max_candidates_per_batch?: number;
   create_candidates?: boolean;
+  candidate_creation_mode?: ResearchCandidateCreationMode;
   repair_degraded_data?: boolean;
   walk_forward_top_n?: number;
   base_interval?: string;
@@ -1326,6 +1353,9 @@ export type ResearchCampaignBatchResult = {
   batch_status: ResearchBatchStatus | null;
   triage_status: ResearchBatchTriageStatus;
   candidates_created: number;
+  candidates_blocked_by_gate: number;
+  proposals_created: number;
+  gate_decisions?: ResearchCandidateCreationDecision[];
   top_candidates: ResearchBatchCandidateSummary[];
   error: string | null;
   started_at: string;
@@ -1354,6 +1384,8 @@ export type ResearchCampaignSummary = {
   data_quality_blocked_batches: number;
   no_candidate_batches: number;
   candidates_created: number;
+  candidates_blocked_by_gate: number;
+  proposals_created: number;
   top_candidates: ResearchBatchCandidateSummary[];
   best_strategy_symbol_timeframe: string | null;
   per_regime_performance?: ResearchCampaignRegimePerformance[];
@@ -1369,6 +1401,8 @@ export type ResearchCampaignRegimePerformance = {
   actionable_batches: number;
   weak_batches: number;
   candidates_created: number;
+  candidates_blocked_by_gate: number;
+  proposals_created: number;
 };
 
 export type ResearchRegimeLabel =
@@ -2077,6 +2111,47 @@ export type ResearchCandidate = {
   created_at: string;
   updated_at: string;
   correlation_id: string | null;
+};
+
+export type ResearchCandidateProposal = {
+  id: string;
+  source_batch_id: string | null;
+  experiment_run_id: string;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  config: Record<string, unknown>;
+  score: string;
+  pnl_pct: string;
+  triage_status: ResearchBatchTriageStatus;
+  walk_forward_status: string | null;
+  gate_decision: ResearchCandidateCreationDecision;
+  reason: string;
+  promoted_candidate_id: string | null;
+  promoted_at: string | null;
+  created_at: string;
+};
+
+export type ResearchCandidateProposalsResponse = {
+  proposals: ResearchCandidateProposal[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateProposalResponse = {
+  proposal: ResearchCandidateProposal;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ResearchCandidateProposalPromotionResponse = {
+  proposal: ResearchCandidateProposal;
+  candidate: ResearchCandidate;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
 };
 
 export type CreateResearchCandidateRequest = {

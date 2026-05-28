@@ -7888,6 +7888,8 @@ pub enum CoreError {
     UnsupportedResearchBatchStepStatus(String),
     #[error("unsupported research campaign status: {0}")]
     UnsupportedResearchCampaignStatus(String),
+    #[error("unsupported research candidate creation mode: {0}")]
+    UnsupportedResearchCandidateCreationMode(String),
     #[error("unsupported research regime dataset status: {0}")]
     UnsupportedResearchRegimeDatasetStatus(String),
     #[error("unsupported research regime discovery status: {0}")]
