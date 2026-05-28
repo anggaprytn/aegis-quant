@@ -6838,6 +6838,10 @@ function AuthenticatedDashboard({
                           String(selectedResearchCampaign?.summary.candidates_created ?? 0),
                         ],
                         [
+                          "Skipped Invalid",
+                          String(selectedResearchCampaign?.summary.skipped_invalid_config_count ?? 0),
+                        ],
+                        [
                           "Blocked",
                           String(selectedResearchCampaign?.summary.candidates_blocked_by_gate ?? 0),
                         ],
@@ -7331,6 +7335,16 @@ function AuthenticatedDashboard({
                       String(
                         selectedExperimentComparison?.timeframe_comparisons.filter((item) => item.skipped_reason).length ?? 0,
                       ),
+                    ],
+                    [
+                      "Config Grid",
+                      selectedExperimentComparison
+                        ? `${selectedExperimentComparison.executed_config_count ?? 0}/${selectedExperimentComparison.total_candidate_configs ?? 0} executed`
+                        : "N/A",
+                    ],
+                    [
+                      "Skipped Invalid",
+                      String(selectedExperimentComparison?.skipped_invalid_config_count ?? 0),
                     ],
                     ["Ranking Metric", selectedExperimentComparison?.global_ranking.ranking_metric ?? "N/A"],
                   ]}
@@ -11567,7 +11581,7 @@ function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatc
 
   return (
     <Table
-      headers={["Plan", "Strategy", "Symbol", "TF", "Regime", "Window", "Triage", "Candidates", "Blocked", "Proposals", "Error"]}
+      headers={["Plan", "Strategy", "Symbol", "TF", "Regime", "Window", "Triage", "Candidates", "Skipped Invalid", "Blocked", "Proposals", "Error"]}
       rows={batches.map((batch) => [
         String(batch.plan.plan_index),
         batch.plan.strategy_id,
@@ -11577,6 +11591,7 @@ function ResearchCampaignBatchTable({ batches }: { batches: ResearchCampaignBatc
         `${formatDateTime(batch.plan.start_time)} -> ${formatDateTime(batch.plan.end_time)}`,
         batch.triage_status,
         String(batch.candidates_created),
+        String(batch.skipped_invalid_config_count ?? 0),
         String(batch.candidates_blocked_by_gate),
         String(batch.proposals_created),
         batch.error ?? "-",
@@ -12192,6 +12207,7 @@ function ResearchBatchDetail({
           ["Quality Before", batch.quality_before?.status ?? "-"],
           ["Quality After", batch.quality_after?.status ?? "-"],
           ["Experiments", String(batch.experiment_ids.length)],
+          ["Skipped Invalid", String(batch.skipped_invalid_config_count ?? 0)],
           ["Walk-forward", String(batch.walk_forward_run_ids.length)],
           ["Candidates", String(batch.created_candidate_ids.length)],
           ["Blocked By Gate", String(batch.candidates_blocked_by_gate)],
@@ -12584,10 +12600,11 @@ function StrategyExperimentsTable({
           )}
           onClick={() => onSelect(experiment.experiment_id)}
         >
-          <div className="grid gap-2 md:grid-cols-4">
+          <div className="grid gap-2 md:grid-cols-5">
             <div className="font-mono text-xs">{shortenId(experiment.experiment_id)}</div>
             <div>{experiment.strategy_id}</div>
             <div>{experiment.symbol}</div>
+            <div>skip {experiment.skipped_invalid_config_count ?? 0}</div>
             <div>best {formatNumber(experiment.best_run?.score ?? "0")}</div>
           </div>
         </button>

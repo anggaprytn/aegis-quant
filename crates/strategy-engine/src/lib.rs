@@ -371,6 +371,21 @@ pub fn validate_strategy_config(
                 "max_range_width_pct must be greater than min_range_width_pct",
             ));
         }
+        if request.max_signal_age_ms > recommended_max {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                &format!(
+                    "max_signal_age_ms_unreasonable_for_{}",
+                    timeframe.as_str()
+                ),
+                "max_signal_age_ms",
+                &format!(
+                    "max_signal_age_ms must be at most {}ms for {} compression breakout experiments",
+                    recommended_max,
+                    timeframe.as_str()
+                ),
+            ));
+        }
     }
 
     let lower_band_pct = request.lower_band_pct.unwrap_or(Decimal::new(20, 0));
@@ -3062,6 +3077,13 @@ fn validate_compression_breakout_config(config: &StrategyConfig) -> Option<Strin
     if min_width <= Decimal::ZERO || max_width <= min_width {
         return Some(
             "Invalid volatility compression breakout config: range width bounds are invalid."
+                .to_string(),
+        );
+    }
+    let (_, recommended_max_signal_age_ms) = config.timeframe.recommended_max_signal_age_ms();
+    if config.max_signal_age_ms > recommended_max_signal_age_ms {
+        return Some(
+            "Invalid volatility compression breakout config: max_signal_age_ms is unreasonable for timeframe."
                 .to_string(),
         );
     }

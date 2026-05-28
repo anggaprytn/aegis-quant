@@ -467,6 +467,10 @@ fn sample_strategy_experiment_result(
         max_runs: Some(runs.len() as u32),
         status: StrategyExperimentStatus::Completed,
         run_count: runs.len() as i32,
+        total_candidate_configs: runs.len() as i32,
+        skipped_invalid_config_count: 0,
+        executed_config_count: runs.len() as i32,
+        invalid_config_examples: Vec::new(),
         comparison: StrategyExperimentComparison {
             ranking_metric: StrategyExperimentMetric::RiskAdjustedScore,
             best_run_id: runs.first().map(|run| run.id),

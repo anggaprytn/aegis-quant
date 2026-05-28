@@ -530,6 +530,23 @@ impl ReplayEngine {
             max_signal_age_ms: request.max_signal_age_ms,
             max_runs: request.max_runs,
             status,
+            total_candidate_configs: experiments
+                .iter()
+                .map(|execution| execution.result.total_candidate_configs)
+                .sum(),
+            skipped_invalid_config_count: experiments
+                .iter()
+                .map(|execution| execution.result.skipped_invalid_config_count)
+                .sum(),
+            executed_config_count: experiments
+                .iter()
+                .map(|execution| execution.result.executed_config_count)
+                .sum(),
+            invalid_config_examples: experiments
+                .iter()
+                .flat_map(|execution| execution.result.invalid_config_examples.clone())
+                .take(10)
+                .collect(),
             timeframe_comparisons,
             global_ranking,
             warnings,
@@ -2966,8 +2983,11 @@ fn build_strategy_experiment_execution(
         ));
     }
 
+    let total_candidate_configs = i32::try_from(candidates.len()).unwrap_or(i32::MAX);
     let candle_count = candles.len() as i32;
     let mut runs = Vec::with_capacity(candidates.len());
+    let mut skipped_invalid_config_count = 0_i32;
+    let mut invalid_config_examples = Vec::new();
     for candidate in candidates {
         let override_request = experiment_strategy_override(base_config, &request, &candidate);
         let validation = validate_strategy_config(
@@ -2979,9 +2999,22 @@ fn build_strategy_experiment_execution(
                 ),
             },
         );
-        let strategy_config = validation
-            .normalized_config
-            .ok_or_else(|| anyhow!("invalid strategy experiment candidate override"))?;
+        let Some(strategy_config) = validation.normalized_config else {
+            skipped_invalid_config_count += 1;
+            if invalid_config_examples.len() < 10 {
+                invalid_config_examples.push(aegis_core::InvalidStrategyConfigExample {
+                    candidate,
+                    issues: validation
+                        .issues
+                        .into_iter()
+                        .filter(|issue| {
+                            issue.severity == aegis_core::StrategyConfigValidationSeverity::Error
+                        })
+                        .collect(),
+                });
+            }
+            continue;
+        };
         let run_request = BacktestRequest {
             strategy_id: request.strategy_id.clone(),
             symbol: request.symbol.clone(),
@@ -3025,10 +3058,14 @@ fn build_strategy_experiment_execution(
     let worst_run = comparison
         .worst_run_id
         .and_then(|id| runs.iter().find(|run| run.id == id).cloned());
-    let warnings = aggregate_experiment_warnings(&runs);
-    let status = if runs
-        .iter()
-        .all(|run| run.status == StrategyExperimentStatus::Completed)
+    let mut warnings = aggregate_experiment_warnings(&runs);
+    if skipped_invalid_config_count > 0 {
+        warnings.push("Invalid strategy configurations were skipped before replay.".to_string());
+    }
+    let status = if !runs.is_empty()
+        && runs
+            .iter()
+            .all(|run| run.status == StrategyExperimentStatus::Completed)
     {
         StrategyExperimentStatus::Completed
     } else {
@@ -3050,6 +3087,10 @@ fn build_strategy_experiment_execution(
         max_runs: request.max_runs,
         status,
         run_count: runs.len() as i32,
+        total_candidate_configs,
+        skipped_invalid_config_count,
+        executed_config_count: runs.len() as i32,
+        invalid_config_examples,
         comparison,
         best_run,
         worst_run,
@@ -3086,6 +3127,10 @@ fn skipped_strategy_experiment_result(
         max_runs: request.max_runs,
         status: StrategyExperimentStatus::Failed,
         run_count: 0,
+        total_candidate_configs: 0,
+        skipped_invalid_config_count: 0,
+        executed_config_count: 0,
+        invalid_config_examples: Vec::new(),
         comparison: strategy_experiment_comparison(&[]),
         best_run: None,
         worst_run: None,
@@ -5238,6 +5283,54 @@ mod tests {
         }
     }
 
+    fn compression_breakout_strategy_config() -> StrategyConfig {
+        StrategyConfig {
+            strategy_id: StrategyId::VolatilityCompressionBreakoutV1,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols: vec![Symbol::new("BTCUSDT").unwrap()],
+            timeframe: CandleInterval::OneHour,
+            suggested_notional: Decimal::new(100_000, 0),
+            max_signal_age_ms: 7_200_000,
+            cooldown_seconds: 3_600,
+            lookback_candles: 20,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            compression_lookback_candles: Some(20),
+            breakout_lookback_candles: Some(20),
+            compression_percentile_threshold: Some(Decimal::new(25, 0)),
+            min_breakout_pct: Some(Decimal::new(5, 2)),
+            max_breakout_extension_pct: Some(Decimal::new(15, 1)),
+            min_volume_expansion_ratio: Some(Decimal::new(11, 1)),
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: Some(Decimal::new(15, 2)),
+            max_range_width_pct: Some(Decimal::new(3, 0)),
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(3),
+            notes: None,
+        }
+    }
+
+    fn compression_breakout_experiment_request() -> StrategyExperimentRequest {
+        StrategyExperimentRequest {
+            strategy_id: "volatility_compression_breakout_v1".to_string(),
+            timeframe: "1h".to_string(),
+            lookback_candidates: vec![20],
+            compression_lookback_candidates: Some(vec![10, 20, 40]),
+            breakout_lookback_candidates: Some(vec![10, 20]),
+            holding_candles_candidates: Some(vec![3]),
+            max_signal_age_ms: Some(7_200_000),
+            max_runs: None,
+            ..sample_experiment_request()
+        }
+    }
+
     fn range_reversion_experiment_request() -> StrategyExperimentRequest {
         StrategyExperimentRequest {
             strategy_id: "range_reversion_v1".to_string(),
@@ -5698,6 +5791,53 @@ mod tests {
             Some(Decimal::new(90, 0))
         );
         assert_eq!(execution.runs[0].trade_count > 0, true);
+    }
+
+    #[test]
+    fn compression_breakout_experiment_skips_invalid_grid_before_replay() {
+        let execution = build_strategy_experiment_execution(
+            &compression_breakout_strategy_config(),
+            Symbol::new("BTCUSDT").unwrap(),
+            compression_breakout_experiment_request(),
+            long_trending_candles(120),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x514),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(execution.result.total_candidate_configs, 6);
+        assert_eq!(execution.result.skipped_invalid_config_count, 3);
+        assert_eq!(execution.result.executed_config_count, 3);
+        assert_eq!(execution.runs.len(), 3);
+        assert!(execution.runs.iter().all(|run| {
+            run.candidate.compression_lookback_candles <= run.candidate.breakout_lookback_candles
+        }));
+        assert!(execution.result.warnings.iter().any(|warning| {
+            warning == "Invalid strategy configurations were skipped before replay."
+        }));
+    }
+
+    #[test]
+    fn invalid_config_examples_are_bounded() {
+        let mut request = compression_breakout_experiment_request();
+        request.compression_lookback_candidates = Some((20..=80).step_by(5).collect());
+        request.breakout_lookback_candidates = Some(vec![10]);
+
+        let execution = build_strategy_experiment_execution(
+            &compression_breakout_strategy_config(),
+            Symbol::new("BTCUSDT").unwrap(),
+            request,
+            long_trending_candles(120),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            Uuid::from_u128(0x515),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(execution.result.executed_config_count, 0);
+        assert_eq!(execution.result.skipped_invalid_config_count, 13);
+        assert_eq!(execution.result.invalid_config_examples.len(), 10);
     }
 
     #[test]

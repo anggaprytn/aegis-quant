@@ -784,6 +784,10 @@ pub struct StrategyExperimentRecord {
     pub max_signal_age_ms: Option<i64>,
     pub max_runs: Option<i32>,
     pub status: String,
+    pub total_candidate_configs: i32,
+    pub skipped_invalid_config_count: i32,
+    pub executed_config_count: i32,
+    pub invalid_config_examples: Value,
     pub comparison: Value,
     pub candle_count: Option<i32>,
     pub warnings: Value,
@@ -6388,6 +6392,10 @@ pub async fn insert_strategy_experiment(
             max_signal_age_ms,
             max_runs,
             status,
+            total_candidate_configs,
+            skipped_invalid_config_count,
+            executed_config_count,
+            invalid_config_examples,
             comparison,
             candle_count,
             warnings,
@@ -6396,7 +6404,7 @@ pub async fn insert_strategy_experiment(
             created_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
         )
         RETURNING
             id,
@@ -6412,6 +6420,10 @@ pub async fn insert_strategy_experiment(
             max_signal_age_ms,
             max_runs,
             status,
+            total_candidate_configs,
+            skipped_invalid_config_count,
+            executed_config_count,
+            invalid_config_examples,
             comparison,
             candle_count,
             warnings,
@@ -6433,6 +6445,10 @@ pub async fn insert_strategy_experiment(
     .bind(result.max_signal_age_ms)
     .bind(result.max_runs.map(|value| value as i32))
     .bind(result.status.as_str())
+    .bind(result.total_candidate_configs)
+    .bind(result.skipped_invalid_config_count)
+    .bind(result.executed_config_count)
+    .bind(serde_json::to_value(&result.invalid_config_examples)?)
     .bind(serde_json::to_value(&result.comparison)?)
     .bind(result.candle_count)
     .bind(serde_json::to_value(&result.warnings)?)
@@ -6803,6 +6819,10 @@ pub async fn get_strategy_experiment(
             max_signal_age_ms,
             max_runs,
             status,
+            total_candidate_configs,
+            skipped_invalid_config_count,
+            executed_config_count,
+            invalid_config_examples,
             comparison,
             candle_count,
             warnings,
@@ -6840,6 +6860,10 @@ pub async fn list_strategy_experiments(
             max_signal_age_ms,
             max_runs,
             status,
+            total_candidate_configs,
+            skipped_invalid_config_count,
+            executed_config_count,
+            invalid_config_examples,
             comparison,
             candle_count,
             warnings,
@@ -6878,6 +6902,10 @@ pub async fn list_strategy_experiments_by_group(
             max_signal_age_ms,
             max_runs,
             status,
+            total_candidate_configs,
+            skipped_invalid_config_count,
+            executed_config_count,
+            invalid_config_examples,
             comparison,
             candle_count,
             warnings,
@@ -10821,6 +10849,10 @@ fn map_strategy_experiment(row: &sqlx::postgres::PgRow) -> StrategyExperimentRec
         max_signal_age_ms: row.get("max_signal_age_ms"),
         max_runs: row.get("max_runs"),
         status: row.get("status"),
+        total_candidate_configs: row.get("total_candidate_configs"),
+        skipped_invalid_config_count: row.get("skipped_invalid_config_count"),
+        executed_config_count: row.get("executed_config_count"),
+        invalid_config_examples: row.get("invalid_config_examples"),
         comparison: row.get("comparison"),
         candle_count: row.get("candle_count"),
         warnings: row.get("warnings"),
@@ -11217,6 +11249,10 @@ pub fn strategy_experiment_result_from_records(
         max_runs: record.max_runs.map(|value| value as u32),
         status: record.status.parse()?,
         run_count: runs.len() as i32,
+        total_candidate_configs: record.total_candidate_configs,
+        skipped_invalid_config_count: record.skipped_invalid_config_count,
+        executed_config_count: record.executed_config_count,
+        invalid_config_examples: serde_json::from_value(record.invalid_config_examples.clone())?,
         comparison,
         best_run,
         worst_run,

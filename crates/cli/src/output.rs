@@ -62,6 +62,12 @@ pub fn print_research_batch(batch: &ResearchBatchResult) {
     println!("Created: {}", batch.created_at);
     println!("Completed: {}", display_option(batch.completed_at));
     println!("Experiments: {}", batch.experiment_ids.len());
+    println!(
+        "Config grid: total={} executed={} skipped_invalid={}",
+        batch.total_candidate_configs,
+        batch.executed_config_count,
+        batch.skipped_invalid_config_count
+    );
     println!("Walk-forward runs: {}", batch.walk_forward_run_ids.len());
     println!("Candidates created: {}", batch.created_candidate_ids.len());
     println!("Steps:");
@@ -96,10 +102,11 @@ pub fn print_research_batches(batches: &[ResearchBatchResult]) {
     println!("Research batches:");
     for batch in batches {
         println!(
-            "  {} status={} experiments={} wf={} candidates={} created={}",
+            "  {} status={} experiments={} skipped_invalid={} wf={} candidates={} created={}",
             batch.batch_id,
             batch.status.as_str(),
             batch.experiment_ids.len(),
+            batch.skipped_invalid_config_count,
             batch.walk_forward_run_ids.len(),
             batch.created_candidate_ids.len(),
             batch.created_at
@@ -507,7 +514,7 @@ pub fn print_research_campaign_batches(batches: &[ResearchCampaignBatchResult]) 
     println!("Campaign batches:");
     for batch in batches {
         println!(
-            "  #{} {} {} {} {} -> {} batch={} status={} triage={} candidates={} error={}",
+            "  #{} {} {} {} {} -> {} batch={} status={} triage={} candidates={} skipped_invalid={} error={}",
             batch.plan.plan_index,
             batch.plan.strategy_id,
             batch.plan.symbol,
@@ -521,6 +528,7 @@ pub fn print_research_campaign_batches(batches: &[ResearchCampaignBatchResult]) 
                 .unwrap_or("-"),
             batch.triage_status.as_str(),
             batch.candidates_created,
+            batch.skipped_invalid_config_count,
             batch.error.as_deref().unwrap_or("-")
         );
     }
@@ -542,6 +550,12 @@ pub fn print_research_campaign_summary(summary: &ResearchCampaignSummary) {
         summary.no_candidate_batches
     );
     println!("Candidates created: {}", summary.candidates_created);
+    println!(
+        "Config grid: total={} executed={} skipped_invalid={}",
+        summary.total_candidate_configs,
+        summary.executed_config_count,
+        summary.skipped_invalid_config_count
+    );
     println!(
         "Best strategy/symbol/timeframe: {}",
         summary
@@ -2292,13 +2306,14 @@ pub fn print_backtest_run(run: &BacktestResult) {
 pub fn print_strategy_experiments(experiments: &[aegis_core::StrategyExperimentResult]) {
     for experiment in experiments {
         println!(
-            "{}  {} {} {} status={} runs={} best={} worst={}",
+            "{}  {} {} {} status={} runs={} skipped_invalid={} best={} worst={}",
             experiment.experiment_id,
             experiment.strategy_id,
             experiment.symbol,
             experiment.timeframe,
             experiment.status.as_str(),
             experiment.run_count,
+            experiment.skipped_invalid_config_count,
             experiment
                 .best_run
                 .as_ref()
@@ -2328,6 +2343,12 @@ pub fn print_strategy_experiment(experiment: &aegis_core::StrategyExperimentResu
     println!("Fee bps: {}", experiment.fee_bps);
     println!("Slippage bps: {}", experiment.slippage_bps);
     println!("Run count: {}", experiment.run_count);
+    println!(
+        "Config grid: total={} executed={} skipped_invalid={}",
+        experiment.total_candidate_configs,
+        experiment.executed_config_count,
+        experiment.skipped_invalid_config_count
+    );
     println!(
         "Best run: {}",
         experiment
@@ -2383,6 +2404,12 @@ pub fn print_multi_timeframe_strategy_experiment(
     println!("Strategy: {}", comparison.strategy_id);
     println!("Symbol: {}", comparison.symbol);
     println!("Timeframes: {}", comparison.requested_timeframes.join(", "));
+    println!(
+        "Config grid: total={} executed={} skipped_invalid={}",
+        comparison.total_candidate_configs,
+        comparison.executed_config_count,
+        comparison.skipped_invalid_config_count
+    );
     if let Some(best) = comparison.global_ranking.ranked_runs.first() {
         println!(
             "Best Global Candidate: timeframe={} run={} pnl_pct={} drawdown={} trades={} win_rate={} drag={} score={}",

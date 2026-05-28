@@ -8,9 +8,9 @@ use uuid::Uuid;
 
 use crate::{
     calculate_strategy_rejection_rate, summarize_candle_continuity, Candle, CandleInterval,
-    CoreError, ExecutionReadinessStatus, MarketDataQualityReport, MarketDataQualityRequest,
-    MarketDataQualityStatus, MarketDataSource, MarketProviderHealth, StrategyExitAttributionResult,
-    StrategyOpportunityAnalysisResult, StrategyOpportunityStatus,
+    CoreError, ExecutionReadinessStatus, InvalidStrategyConfigExample, MarketDataQualityReport,
+    MarketDataQualityRequest, MarketDataQualityStatus, MarketDataSource, MarketProviderHealth,
+    StrategyExitAttributionResult, StrategyOpportunityAnalysisResult, StrategyOpportunityStatus,
     StrategySignalFeatureAttributionResult, StrategyWalkForwardRobustnessStatus, Symbol,
     TestnetShadowRunnerConfig,
 };
@@ -596,6 +596,14 @@ pub struct ResearchBatchResult {
     pub quality_after: Option<MarketDataQualityReport>,
     pub aggregation_summary: Option<Value>,
     pub experiment_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub total_candidate_configs: i32,
+    #[serde(default)]
+    pub skipped_invalid_config_count: i32,
+    #[serde(default)]
+    pub executed_config_count: i32,
+    #[serde(default)]
+    pub invalid_config_examples: Vec<InvalidStrategyConfigExample>,
     pub walk_forward_run_ids: Vec<Uuid>,
     pub created_candidate_ids: Vec<Uuid>,
     #[serde(default)]
@@ -1188,6 +1196,14 @@ pub struct ResearchCampaignBatchResult {
     pub triage_status: ResearchBatchTriageStatus,
     pub candidates_created: i32,
     #[serde(default)]
+    pub total_candidate_configs: i32,
+    #[serde(default)]
+    pub skipped_invalid_config_count: i32,
+    #[serde(default)]
+    pub executed_config_count: i32,
+    #[serde(default)]
+    pub invalid_config_examples: Vec<InvalidStrategyConfigExample>,
+    #[serde(default)]
     pub candidates_blocked_by_gate: i32,
     #[serde(default)]
     pub proposals_created: i32,
@@ -1225,6 +1241,14 @@ pub struct ResearchCampaignSummary {
     pub no_candidate_batches: i32,
     pub candidates_created: i32,
     #[serde(default)]
+    pub total_candidate_configs: i32,
+    #[serde(default)]
+    pub skipped_invalid_config_count: i32,
+    #[serde(default)]
+    pub executed_config_count: i32,
+    #[serde(default)]
+    pub invalid_config_examples: Vec<InvalidStrategyConfigExample>,
+    #[serde(default)]
     pub candidates_blocked_by_gate: i32,
     #[serde(default)]
     pub proposals_created: i32,
@@ -1245,6 +1269,12 @@ pub struct ResearchCampaignRegimePerformance {
     pub actionable_batches: i32,
     pub weak_batches: i32,
     pub candidates_created: i32,
+    #[serde(default)]
+    pub total_candidate_configs: i32,
+    #[serde(default)]
+    pub skipped_invalid_config_count: i32,
+    #[serde(default)]
+    pub executed_config_count: i32,
     #[serde(default)]
     pub candidates_blocked_by_gate: i32,
     #[serde(default)]
@@ -5994,6 +6024,23 @@ pub fn summarize_research_campaign(
         .filter(|batch| batch.triage_status == ResearchBatchTriageStatus::NoCandidates)
         .count() as i32;
     let candidates_created = batches.iter().map(|batch| batch.candidates_created).sum();
+    let total_candidate_configs = batches
+        .iter()
+        .map(|batch| batch.total_candidate_configs)
+        .sum();
+    let skipped_invalid_config_count = batches
+        .iter()
+        .map(|batch| batch.skipped_invalid_config_count)
+        .sum();
+    let executed_config_count = batches
+        .iter()
+        .map(|batch| batch.executed_config_count)
+        .sum();
+    let invalid_config_examples = batches
+        .iter()
+        .flat_map(|batch| batch.invalid_config_examples.clone())
+        .take(10)
+        .collect::<Vec<_>>();
     let candidates_blocked_by_gate = batches
         .iter()
         .map(|batch| batch.candidates_blocked_by_gate)
@@ -6054,6 +6101,18 @@ pub fn summarize_research_campaign(
             "Review gate decisions and proposals before explicitly registering any candidate.",
         ));
     }
+    if skipped_invalid_config_count > 0 {
+        findings.push(campaign_finding(
+            "LOW",
+            "invalid_strategy_configs_skipped",
+            "Invalid strategy configurations were skipped before replay.",
+        ));
+        recommendations.push(campaign_recommendation(
+            "LOW",
+            "review_invalid_strategy_grid",
+            "Review invalid_config_examples and tighten the strategy grid before rerunning.",
+        ));
+    }
     if proposals_created >= 100 {
         findings.push(campaign_finding(
             "MEDIUM",
@@ -6101,6 +6160,10 @@ pub fn summarize_research_campaign(
         data_quality_blocked_batches,
         no_candidate_batches,
         candidates_created,
+        total_candidate_configs,
+        skipped_invalid_config_count,
+        executed_config_count,
+        invalid_config_examples,
         candidates_blocked_by_gate,
         proposals_created,
         top_candidates,
@@ -6130,6 +6193,9 @@ fn summarize_research_campaign_regimes(
                     actionable_batches: 0,
                     weak_batches: 0,
                     candidates_created: 0,
+                    total_candidate_configs: 0,
+                    skipped_invalid_config_count: 0,
+                    executed_config_count: 0,
                     candidates_blocked_by_gate: 0,
                     proposals_created: 0,
                 });
@@ -6150,6 +6216,9 @@ fn summarize_research_campaign_regimes(
             entry.weak_batches += 1;
         }
         entry.candidates_created += batch.candidates_created;
+        entry.total_candidate_configs += batch.total_candidate_configs;
+        entry.skipped_invalid_config_count += batch.skipped_invalid_config_count;
+        entry.executed_config_count += batch.executed_config_count;
         entry.candidates_blocked_by_gate += batch.candidates_blocked_by_gate;
         entry.proposals_created += batch.proposals_created;
     }
@@ -13881,6 +13950,10 @@ mod tests {
             quality_after: None,
             aggregation_summary: None,
             experiment_ids: Vec::new(),
+            total_candidate_configs: 0,
+            skipped_invalid_config_count: 0,
+            executed_config_count: 0,
+            invalid_config_examples: Vec::new(),
             walk_forward_run_ids: Vec::new(),
             created_candidate_ids: Vec::new(),
             candidates_blocked_by_gate: 0,
@@ -14143,6 +14216,10 @@ mod tests {
             }),
             triage_status: status,
             candidates_created: 1,
+            total_candidate_configs: 0,
+            skipped_invalid_config_count: 0,
+            executed_config_count: 0,
+            invalid_config_examples: Vec::new(),
             candidates_blocked_by_gate: 0,
             proposals_created: 0,
             gate_decisions: Vec::new(),
@@ -14464,6 +14541,29 @@ mod tests {
         assert_eq!(summary.overfit_only_batches, 1);
         assert_eq!(summary.weak_batches, 1);
         assert_eq!(summary.candidates_created, 3);
+    }
+
+    #[test]
+    fn research_campaign_summary_includes_skipped_invalid_config_count() {
+        let mut batch = campaign_batch(
+            1,
+            ResearchBatchTriageStatus::Weak,
+            Decimal::new(1, 0),
+            Decimal::ZERO,
+        );
+        batch.total_candidate_configs = 6;
+        batch.executed_config_count = 3;
+        batch.skipped_invalid_config_count = 3;
+
+        let summary = summarize_research_campaign(1, &[batch]);
+
+        assert_eq!(summary.total_candidate_configs, 6);
+        assert_eq!(summary.executed_config_count, 3);
+        assert_eq!(summary.skipped_invalid_config_count, 3);
+        assert!(summary
+            .findings
+            .iter()
+            .any(|finding| { finding.code == "invalid_strategy_configs_skipped" }));
     }
 
     #[test]

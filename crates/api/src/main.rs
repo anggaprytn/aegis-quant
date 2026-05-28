@@ -13347,6 +13347,23 @@ fn build_multi_timeframe_result_from_experiments(
         } else {
             aegis_core::StrategyExperimentStatus::Completed
         },
+        total_candidate_configs: experiments
+            .iter()
+            .map(|(experiment, _)| experiment.total_candidate_configs)
+            .sum(),
+        skipped_invalid_config_count: experiments
+            .iter()
+            .map(|(experiment, _)| experiment.skipped_invalid_config_count)
+            .sum(),
+        executed_config_count: experiments
+            .iter()
+            .map(|(experiment, _)| experiment.executed_config_count)
+            .sum(),
+        invalid_config_examples: experiments
+            .iter()
+            .flat_map(|(experiment, _)| experiment.invalid_config_examples.clone())
+            .take(10)
+            .collect(),
         timeframe_comparisons,
         global_ranking,
         warnings,
@@ -16672,6 +16689,10 @@ async fn execute_research_batch(
         quality_after: None,
         aggregation_summary: None,
         experiment_ids: Vec::new(),
+        total_candidate_configs: 0,
+        skipped_invalid_config_count: 0,
+        executed_config_count: 0,
+        invalid_config_examples: Vec::new(),
         walk_forward_run_ids: Vec::new(),
         created_candidate_ids: Vec::new(),
         candidates_blocked_by_gate: 0,
@@ -16913,6 +16934,17 @@ async fn execute_research_batch(
             })
             .await?;
         result.experiment_ids.push(execution.result.experiment_id);
+        result.total_candidate_configs += execution.result.total_candidate_configs;
+        result.skipped_invalid_config_count += execution.result.skipped_invalid_config_count;
+        result.executed_config_count += execution.result.executed_config_count;
+        result.invalid_config_examples.extend(
+            execution
+                .result
+                .invalid_config_examples
+                .iter()
+                .take(10usize.saturating_sub(result.invalid_config_examples.len()))
+                .cloned(),
+        );
         for run in execution.runs {
             ranked.push(ResearchBatchCandidateSummary {
                 experiment_id: execution.result.experiment_id,
@@ -16934,6 +16966,10 @@ async fn execute_research_batch(
     ranked = ranked_research_batch_candidates(ranked);
     let experiment_step_summary = json!({
         "experiment_ids": result.experiment_ids.clone(),
+        "total_candidate_configs": result.total_candidate_configs,
+        "skipped_invalid_config_count": result.skipped_invalid_config_count,
+        "executed_config_count": result.executed_config_count,
+        "invalid_config_examples": result.invalid_config_examples.clone(),
         "ranked_run_count": ranked.len()
     });
     finish_research_batch_step(
@@ -18915,6 +18951,10 @@ async fn execute_research_campaign(
             batch_status: Some(ResearchBatchStatus::Started),
             triage_status: ResearchBatchTriageStatus::Unknown,
             candidates_created: 0,
+            total_candidate_configs: 0,
+            skipped_invalid_config_count: 0,
+            executed_config_count: 0,
+            invalid_config_examples: Vec::new(),
             candidates_blocked_by_gate: 0,
             proposals_created: 0,
             gate_decisions: Vec::new(),
@@ -18947,6 +18987,10 @@ async fn execute_research_campaign(
                         triage_status: triage.status,
                         candidates_created: i32::try_from(batch.created_candidate_ids.len())
                             .unwrap_or(i32::MAX),
+                        total_candidate_configs: batch.total_candidate_configs,
+                        skipped_invalid_config_count: batch.skipped_invalid_config_count,
+                        executed_config_count: batch.executed_config_count,
+                        invalid_config_examples: batch.invalid_config_examples.clone(),
                         candidates_blocked_by_gate: batch.candidates_blocked_by_gate,
                         proposals_created: batch.proposals_created,
                         gate_decisions: batch.gate_decisions.clone(),
@@ -18962,6 +19006,10 @@ async fn execute_research_campaign(
                     batch_status: Some(ResearchBatchStatus::Failed),
                     triage_status: ResearchBatchTriageStatus::Failed,
                     candidates_created: 0,
+                    total_candidate_configs: 0,
+                    skipped_invalid_config_count: 0,
+                    executed_config_count: 0,
+                    invalid_config_examples: Vec::new(),
                     candidates_blocked_by_gate: 0,
                     proposals_created: 0,
                     gate_decisions: Vec::new(),
@@ -30001,6 +30049,10 @@ mod tests {
             max_runs: Some(1),
             status: StrategyExperimentStatus::Completed,
             run_count: 1,
+            total_candidate_configs: 1,
+            skipped_invalid_config_count: 0,
+            executed_config_count: 1,
+            invalid_config_examples: Vec::new(),
             comparison: StrategyExperimentComparison {
                 ranking_metric: StrategyExperimentMetric::RiskAdjustedScore,
                 best_run_id: Some(run.id),
@@ -30625,6 +30677,97 @@ mod tests {
         assert_eq!(
             count_testnet_shadow_promotions(&test_db.pool).await,
             before.7
+        );
+    }
+
+    #[tokio::test]
+    async fn strategy_experiment_mixed_compression_grid_skips_invalid_configs() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = experiments_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let closes = (0..90)
+            .map(|index| 100_000 + index * 25)
+            .collect::<Vec<_>>();
+        seed_shadow_candles(&test_db.pool, "BTCUSDT", &closes).await;
+
+        let before = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+        let start = (Utc::now() - chrono::Duration::minutes(100))
+            .to_rfc3339()
+            .replace("+00:00", "Z");
+        let end = Utc::now().to_rfc3339().replace("+00:00", "Z");
+        let response = app
+            .oneshot(cli_request(
+                "POST",
+                "/experiments/strategy/run",
+                json!({
+                    "strategy_id": "volatility_compression_breakout_v1",
+                    "symbol": "BTCUSDT",
+                    "timeframe": "1m",
+                    "start_time": start,
+                    "end_time": end,
+                    "initial_capital": "1000000",
+                    "fee_bps": "10",
+                    "slippage_bps": "5",
+                    "lookback_candidates": [20],
+                    "compression_lookback_candidates": [10, 20, 40],
+                    "breakout_lookback_candidates": [10, 20],
+                    "holding_candles_candidates": [3],
+                    "max_signal_age_ms": 180000
+                }),
+            ))
+            .await
+            .expect("response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        let experiment = &payload["experiment"];
+        assert_eq!(experiment["total_candidate_configs"].as_i64(), Some(6));
+        assert_eq!(experiment["skipped_invalid_config_count"].as_i64(), Some(3));
+        assert_eq!(experiment["executed_config_count"].as_i64(), Some(3));
+        assert_eq!(payload["runs"].as_array().expect("runs").len(), 3);
+        assert_eq!(
+            experiment["invalid_config_examples"]
+                .as_array()
+                .expect("invalid examples")
+                .len(),
+            3
+        );
+        for run in payload["runs"].as_array().expect("runs") {
+            let candidate = &run["candidate"];
+            assert!(
+                candidate["compression_lookback_candles"]
+                    .as_u64()
+                    .expect("compression")
+                    <= candidate["breakout_lookback_candles"]
+                        .as_u64()
+                        .expect("breakout")
+            );
+        }
+        let persisted_runs =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM strategy_experiment_runs")
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("experiment run count");
+        assert_eq!(persisted_runs, 3);
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.3);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.5
         );
     }
 

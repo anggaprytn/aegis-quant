@@ -1210,6 +1210,10 @@ export type ResearchBatchResult = {
   quality_after: MarketDataQualityReport | null;
   aggregation_summary: unknown | null;
   experiment_ids: string[];
+  total_candidate_configs?: number;
+  skipped_invalid_config_count?: number;
+  executed_config_count?: number;
+  invalid_config_examples?: InvalidStrategyConfigExample[];
   walk_forward_run_ids: string[];
   created_candidate_ids: string[];
   candidates_blocked_by_gate: number;
@@ -1363,6 +1367,10 @@ export type ResearchCampaignBatchResult = {
   batch_status: ResearchBatchStatus | null;
   triage_status: ResearchBatchTriageStatus;
   candidates_created: number;
+  total_candidate_configs?: number;
+  skipped_invalid_config_count?: number;
+  executed_config_count?: number;
+  invalid_config_examples?: InvalidStrategyConfigExample[];
   candidates_blocked_by_gate: number;
   proposals_created: number;
   gate_decisions?: ResearchCandidateCreationDecision[];
@@ -1394,6 +1402,10 @@ export type ResearchCampaignSummary = {
   data_quality_blocked_batches: number;
   no_candidate_batches: number;
   candidates_created: number;
+  total_candidate_configs?: number;
+  skipped_invalid_config_count?: number;
+  executed_config_count?: number;
+  invalid_config_examples?: InvalidStrategyConfigExample[];
   candidates_blocked_by_gate: number;
   proposals_created: number;
   top_candidates: ResearchBatchCandidateSummary[];
@@ -1411,6 +1423,9 @@ export type ResearchCampaignRegimePerformance = {
   actionable_batches: number;
   weak_batches: number;
   candidates_created: number;
+  total_candidate_configs?: number;
+  skipped_invalid_config_count?: number;
+  executed_config_count?: number;
   candidates_blocked_by_gate: number;
   proposals_created: number;
 };
@@ -4499,6 +4514,11 @@ export type StrategyExperimentComparison = {
   ranked_run_ids: string[];
 };
 
+export type InvalidStrategyConfigExample = {
+  candidate: StrategyExperimentCandidate;
+  issues: StrategyConfigValidationIssue[];
+};
+
 export type StrategyExperimentResult = {
   experiment_id: string;
   experiment_group_id: string | null;
@@ -4514,6 +4534,10 @@ export type StrategyExperimentResult = {
   max_runs: number | null;
   status: StrategyExperimentStatus;
   run_count: number;
+  total_candidate_configs?: number;
+  skipped_invalid_config_count?: number;
+  executed_config_count?: number;
+  invalid_config_examples?: InvalidStrategyConfigExample[];
   comparison: StrategyExperimentComparison;
   best_run: StrategyExperimentRun | null;
   worst_run: StrategyExperimentRun | null;
@@ -4641,6 +4665,10 @@ export type StrategyMultiTimeframeExperimentResult = {
   max_signal_age_ms: number | null;
   max_runs: number | null;
   status: StrategyExperimentStatus;
+  total_candidate_configs?: number;
+  skipped_invalid_config_count?: number;
+  executed_config_count?: number;
+  invalid_config_examples?: InvalidStrategyConfigExample[];
   timeframe_comparisons: StrategyTimeframeComparison[];
   global_ranking: StrategyExperimentGlobalRanking;
   warnings: string[];

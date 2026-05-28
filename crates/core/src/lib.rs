@@ -3238,6 +3238,12 @@ pub struct StrategyExperimentCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InvalidStrategyConfigExample {
+    pub candidate: StrategyExperimentCandidate,
+    pub issues: Vec<StrategyConfigValidationIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyExperimentRequest {
     pub strategy_id: String,
     pub symbol: String,
@@ -3807,8 +3813,8 @@ impl StrategyExperimentRequest {
                                                                                         min_volume_expansion_ratio: (is_compression && *volume_ratio != Decimal::ZERO).then_some(*volume_ratio),
                                                                                         lower_band_pct: is_range.then_some(*lower_band_pct),
                                                                                         upper_band_pct: is_range.then_some(*upper_band_pct),
-                                                                                        min_range_width_pct: (is_range && *min_range_width_pct != Decimal::ZERO).then_some(*min_range_width_pct),
-                                                                                        max_range_width_pct: (is_range && *max_range_width_pct != Decimal::ZERO).then_some(*max_range_width_pct),
+                                                                                        min_range_width_pct: ((is_range || is_compression) && *min_range_width_pct != Decimal::ZERO).then_some(*min_range_width_pct),
+                                                                                        max_range_width_pct: ((is_range || is_compression) && *max_range_width_pct != Decimal::ZERO).then_some(*max_range_width_pct),
                                                                                         min_close_above_sma_pct: is_trend_v2.then_some(*min_close_above_sma_pct),
                                                                                         max_close_above_sma_pct: (is_trend_v2 && *max_close_above_sma_pct != Decimal::ZERO).then_some(*max_close_above_sma_pct),
                                                                                         min_momentum_return_pct: is_trend_v2.then_some(*min_momentum_return_pct),
@@ -4003,6 +4009,14 @@ pub struct StrategyExperimentResult {
     pub max_runs: Option<u32>,
     pub status: StrategyExperimentStatus,
     pub run_count: i32,
+    #[serde(default)]
+    pub total_candidate_configs: i32,
+    #[serde(default)]
+    pub skipped_invalid_config_count: i32,
+    #[serde(default)]
+    pub executed_config_count: i32,
+    #[serde(default)]
+    pub invalid_config_examples: Vec<InvalidStrategyConfigExample>,
     pub comparison: StrategyExperimentComparison,
     pub best_run: Option<StrategyExperimentRun>,
     pub worst_run: Option<StrategyExperimentRun>,
@@ -4064,6 +4078,14 @@ pub struct StrategyMultiTimeframeExperimentResult {
     pub max_signal_age_ms: Option<i64>,
     pub max_runs: Option<u32>,
     pub status: StrategyExperimentStatus,
+    #[serde(default)]
+    pub total_candidate_configs: i32,
+    #[serde(default)]
+    pub skipped_invalid_config_count: i32,
+    #[serde(default)]
+    pub executed_config_count: i32,
+    #[serde(default)]
+    pub invalid_config_examples: Vec<InvalidStrategyConfigExample>,
     pub timeframe_comparisons: Vec<StrategyTimeframeComparison>,
     pub global_ranking: StrategyExperimentGlobalRanking,
     pub warnings: Vec<String>,
