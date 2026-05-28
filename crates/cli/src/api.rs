@@ -1,16 +1,17 @@
 use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-    BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest,
-    CandleBackfillResult, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
-    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
-    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
+    CandleBackfillRequest, CandleBackfillResult, ExchangeTestnetPipelinePreview,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
+    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
+    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
@@ -627,6 +628,12 @@ impl ApiClient {
             &[("symbol", symbol.to_string())],
         )
         .await
+    }
+
+    pub async fn candle_aggregation_status(
+        &self,
+    ) -> Result<CandleAggregationStatusResponse, ApiClientError> {
+        self.get("/market/candles/aggregation-status", &[]).await
     }
 
     pub async fn candle_quality(
@@ -2676,6 +2683,14 @@ pub struct CandleBackfillRunResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CandleCoverageResponse {
     pub coverage: MarketCandleCoverageSummary,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CandleAggregationStatusResponse {
+    pub rows: Vec<CandleAggregationStatusRow>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

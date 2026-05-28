@@ -167,6 +167,8 @@ Experiment plan runner semantics:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
 9. Optional shadow runner:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
+10. Optional derived candle aggregation worker:
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator`
 10. Optional Prometheus:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
 
@@ -195,6 +197,9 @@ If you run the dashboard outside Compose on `http://localhost:3001`, keep `AEGIS
 Market ingest:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
 
+Derived candle aggregation:
+`docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator`
+
 Shadow runner:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
 
@@ -212,6 +217,7 @@ docker compose -f infra/docker-compose.yml --env-file .env up -d api
 docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
 docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
 docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
 ```
 
 If your VPS bootstrap script is `/usr/local/bin/syncaegis`, it should run the exact migration command below after Postgres is healthy and before starting `api`, `dashboard`, or any workers:

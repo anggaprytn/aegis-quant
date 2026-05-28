@@ -17,7 +17,8 @@ use accounting::{
     compute_daily_pnl, compute_drawdown, mark_positions_to_market, PaperMarkPriceInput,
 };
 use aegis_core::{
-    aggregate_closed_1m_candles, expected_research_candidate_shadow_promotion_confirmation,
+    aggregate_closed_1m_candles, candle_aggregation_status,
+    expected_research_candidate_shadow_promotion_confirmation,
     expected_strategy_research_promotion_confirmation, expected_testnet_pipeline_confirmation,
     expected_testnet_shadow_promotion_confirmation,
     is_valid_research_candidate_shadow_promotion_confirmation,
@@ -26,14 +27,14 @@ use aegis_core::{
     research_candidate_next_status, score_strategy_research_candidate,
     validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
     AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
-    CandleAggregationRequest, CandleAggregationResult, CandleBackfillRequest, CandleBackfillResult,
-    CandleInterval, EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest,
-    ExchangeEnvironment, ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
-    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
-    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
-    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
-    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo,
-    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
+    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
+    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
+    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
+    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
+    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
+    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
     MarketDataQualityReport, MarketDataQualityRequest, MarketDataRepairPlan,
@@ -142,7 +143,8 @@ use db::{
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
     get_closed_1m_candles_range, get_closed_candles_range, get_default_paper_account,
     get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
-    get_latest_market_tick, get_latest_research_candidate_qualification_evaluation,
+    get_latest_candle_aggregation_run, get_latest_closed_candle_time, get_latest_market_tick,
+    get_latest_research_candidate_qualification_evaluation,
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
@@ -1872,6 +1874,14 @@ struct CandleCoverageResponse {
 }
 
 #[derive(Serialize)]
+struct CandleAggregationStatusApiResponse {
+    rows: Vec<CandleAggregationStatusRow>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct CandleQualityResponse {
     report: MarketDataQualityReport,
     request_id: String,
@@ -2972,6 +2982,10 @@ async fn main() {
         .route("/market/candles", get(get_market_candles))
         .route("/market/provider-health", get(get_market_provider_health))
         .route("/market/candles/coverage", get(get_market_candle_coverage))
+        .route(
+            "/market/candles/aggregation-status",
+            get(get_market_candle_aggregation_status),
+        )
         .route("/market/candles/quality", get(get_market_candle_quality))
         .route(
             "/market/candles/repair/plan",
@@ -15202,6 +15216,133 @@ async fn get_market_candle_coverage(
                 .into_response()
         }
     }
+}
+
+async fn get_market_candle_aggregation_status(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let source_interval = CandleInterval::OneMinute;
+    let target_intervals = [
+        CandleInterval::FiveMinutes,
+        CandleInterval::FifteenMinutes,
+        CandleInterval::OneHour,
+    ];
+    let mut rows = Vec::new();
+
+    for symbol in &state.market_config.symbols {
+        let latest_source = match get_latest_closed_candle_time(
+            &state.db_pool,
+            state.market_config.exchange,
+            symbol,
+            source_interval,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                error!(
+                    request_id = %request.request_id,
+                    correlation_id = %request.correlation_id,
+                    error = %err,
+                    symbol = %symbol,
+                    "failed to query latest source candle"
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_query_aggregation_status",
+                        message: "Failed to query candle aggregation status.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        for target_interval in target_intervals {
+            let latest_target = match get_latest_closed_candle_time(
+                &state.db_pool,
+                state.market_config.exchange,
+                symbol,
+                target_interval,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    error!(
+                        request_id = %request.request_id,
+                        correlation_id = %request.correlation_id,
+                        error = %err,
+                        symbol = %symbol,
+                        target_interval = %target_interval.as_str(),
+                        "failed to query latest target candle"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_query_aggregation_status",
+                            message: "Failed to query candle aggregation status.".to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            let latest_run = match get_latest_candle_aggregation_run(
+                &state.db_pool,
+                symbol,
+                source_interval,
+                target_interval,
+            )
+            .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    error!(
+                        request_id = %request.request_id,
+                        correlation_id = %request.correlation_id,
+                        error = %err,
+                        symbol = %symbol,
+                        target_interval = %target_interval.as_str(),
+                        "failed to query latest aggregation run"
+                    );
+                    None
+                }
+            };
+            let (status, lag_seconds, recommendation) =
+                candle_aggregation_status(latest_source, latest_target, target_interval);
+            rows.push(CandleAggregationStatusRow {
+                symbol: symbol.as_str().to_string(),
+                source_interval: source_interval.as_str().to_string(),
+                target_interval: target_interval.as_str().to_string(),
+                latest_source_closed_candle: latest_source,
+                latest_target_closed_candle: latest_target,
+                lag_seconds,
+                status,
+                inserted_last_tick: latest_run.as_ref().map(|run| run.inserted),
+                updated_last_tick: latest_run.as_ref().map(|run| run.updated),
+                recommendation,
+            });
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(CandleAggregationStatusApiResponse {
+            rows,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
 }
 
 async fn get_market_candle_quality(

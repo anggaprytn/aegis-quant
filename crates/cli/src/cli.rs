@@ -802,6 +802,7 @@ pub enum MarketCommands {
     RepairGet { run_id: Uuid },
     ProviderHealth(MarketProviderHealthArgs),
     AggregateCandles(MarketAggregateCandlesArgs),
+    AggregationStatus,
     CandleCoverage(MarketCandleCoverageArgs),
     CandleQuality(MarketCandleQualityArgs),
 }

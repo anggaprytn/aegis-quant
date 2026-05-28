@@ -1,20 +1,21 @@
 use std::cmp::Reverse;
 
 use aegis_core::{
-    AuthenticatedActor, MarketDataQualityRequest, MarketDataQualityStatus, OperatorReport,
-    OperatorReportFinding, OperatorReportFormat, OperatorReportHighlight,
-    OperatorReportMarketFeedSnapshot, OperatorReportMarketSnapshot, OperatorReportPaperSnapshot,
-    OperatorReportPromotionSnapshot, OperatorReportReasonCount, OperatorReportRecommendation,
-    OperatorReportRequest, OperatorReportResearchQualificationSnapshot,
-    OperatorReportResearchQualificationTopCandidate, OperatorReportRiskSnapshot,
-    OperatorReportSection, OperatorReportSeverity, OperatorReportShadowSnapshot,
-    OperatorReportStatus, OperatorReportStrategySnapshot, OperatorReportSummary,
-    OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot, OperatorReportTopPairCount,
-    ResearchCandidateQualificationStatus, ResearchCandidateQualificationThresholds,
-    ResearchCandidateStatus, ResearchCandidateTestnetReviewStatus,
-    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
-    ResearchShadowPnlRecommendation, StrategyPerformanceMode, StrategyPerformanceRequest,
-    StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus, TestnetPromotionFunnelRequest,
+    candle_aggregation_status, AuthenticatedActor, CandleAggregationStatusRow, CandleInterval,
+    MarketDataQualityRequest, MarketDataQualityStatus, OperatorReport, OperatorReportFinding,
+    OperatorReportFormat, OperatorReportHighlight, OperatorReportMarketFeedSnapshot,
+    OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
+    OperatorReportReasonCount, OperatorReportRecommendation, OperatorReportRequest,
+    OperatorReportResearchQualificationSnapshot, OperatorReportResearchQualificationTopCandidate,
+    OperatorReportRiskSnapshot, OperatorReportSection, OperatorReportSeverity,
+    OperatorReportShadowSnapshot, OperatorReportStatus, OperatorReportStrategySnapshot,
+    OperatorReportSummary, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
+    OperatorReportTopPairCount, ResearchCandidateQualificationStatus,
+    ResearchCandidateQualificationThresholds, ResearchCandidateStatus,
+    ResearchCandidateTestnetReviewStatus, ResearchShadowPnlAttributionRequest,
+    ResearchShadowPnlAttributionResult, ResearchShadowPnlRecommendation, StrategyPerformanceMode,
+    StrategyPerformanceRequest, StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus,
+    TestnetPromotionFunnelRequest,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -549,6 +550,74 @@ async fn load_system_and_market_data(
         _ => None,
     };
 
+    let mut aggregation = Vec::new();
+    let source_interval = CandleInterval::OneMinute;
+    for symbol in &state.market_config.symbols {
+        if request
+            .symbol
+            .as_deref()
+            .map(|requested| !symbol.as_str().eq_ignore_ascii_case(requested))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let latest_source = db::get_latest_closed_candle_time(
+            &state.db_pool,
+            state.market_config.exchange,
+            symbol,
+            source_interval,
+        )
+        .await
+        .ok()
+        .flatten();
+        for target_interval in [
+            CandleInterval::FiveMinutes,
+            CandleInterval::FifteenMinutes,
+            CandleInterval::OneHour,
+        ] {
+            if request
+                .interval
+                .as_deref()
+                .map(|requested| requested != target_interval.as_str())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let latest_target = db::get_latest_closed_candle_time(
+                &state.db_pool,
+                state.market_config.exchange,
+                symbol,
+                target_interval,
+            )
+            .await
+            .ok()
+            .flatten();
+            let latest_run = db::get_latest_candle_aggregation_run(
+                &state.db_pool,
+                symbol,
+                source_interval,
+                target_interval,
+            )
+            .await
+            .ok()
+            .flatten();
+            let (status, lag_seconds, recommendation) =
+                candle_aggregation_status(latest_source, latest_target, target_interval);
+            aggregation.push(CandleAggregationStatusRow {
+                symbol: symbol.as_str().to_string(),
+                source_interval: source_interval.as_str().to_string(),
+                target_interval: target_interval.as_str().to_string(),
+                latest_source_closed_candle: latest_source,
+                latest_target_closed_candle: latest_target,
+                lag_seconds,
+                status,
+                inserted_last_tick: latest_run.as_ref().map(|run| run.inserted),
+                updated_last_tick: latest_run.as_ref().map(|run| run.updated),
+                recommendation,
+            });
+        }
+    }
+
     Ok(SystemAndMarketData {
         system: OperatorReportSystemSnapshot {
             api_healthy: true,
@@ -574,6 +643,7 @@ async fn load_system_and_market_data(
             repair_failed_count: repair_row.get::<i64, _>("failed_count"),
             repair_partial_count: repair_row.get::<i64, _>("partial_count"),
             repair_degraded_after_count: repair_row.get::<i64, _>("degraded_after_count"),
+            aggregation,
         },
         stale_threshold_seconds,
     })
@@ -1965,6 +2035,80 @@ fn build_findings(
                 "market_data_quality",
             )),
             _ => {}
+        }
+    }
+    if !system_market.market.aggregation.is_empty() {
+        let stale_count = system_market
+            .market
+            .aggregation
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    aegis_core::CandleAggregationFreshnessStatus::Stale
+                )
+            })
+            .count();
+        let missing_count = system_market
+            .market
+            .aggregation
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    aegis_core::CandleAggregationFreshnessStatus::Missing
+                )
+            })
+            .count();
+        let degraded_count = system_market
+            .market
+            .aggregation
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    aegis_core::CandleAggregationFreshnessStatus::Degraded
+                )
+            })
+            .count();
+        let max_lag = system_market
+            .market
+            .aggregation
+            .iter()
+            .filter_map(|row| row.lag_seconds)
+            .max()
+            .unwrap_or(0);
+        if stale_count > 0 || missing_count > 0 {
+            findings.push(finding(
+                "derived_candle_aggregation_stale",
+                OperatorReportSeverity::High,
+                "Derived candle aggregation stale",
+                &format!(
+                    "stale={}, missing={}, max_lag_seconds={}",
+                    stale_count, missing_count, max_lag
+                ),
+                "market_data_aggregation",
+            ));
+        } else if degraded_count > 0 {
+            findings.push(finding(
+                "derived_candle_aggregation_degraded",
+                OperatorReportSeverity::Medium,
+                "Derived candle aggregation degraded",
+                &format!("degraded={}, max_lag_seconds={}", degraded_count, max_lag),
+                "market_data_aggregation",
+            ));
+        } else {
+            findings.push(finding(
+                "derived_candle_aggregation_fresh",
+                OperatorReportSeverity::Low,
+                "Derived candle aggregation fresh",
+                &format!(
+                    "checked={}, max_lag_seconds={}",
+                    system_market.market.aggregation.len(),
+                    max_lag
+                ),
+                "market_data_aggregation",
+            ));
         }
     }
     if system_market.market.repair_failed_count > 0 {
@@ -3615,6 +3759,52 @@ fn build_sections(
         )?);
     }
 
+    if !market.aggregation.is_empty() {
+        let stale_count = market
+            .aggregation
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    aegis_core::CandleAggregationFreshnessStatus::Stale
+                )
+            })
+            .count();
+        let missing_count = market
+            .aggregation
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    aegis_core::CandleAggregationFreshnessStatus::Missing
+                )
+            })
+            .count();
+        let max_lag = market
+            .aggregation
+            .iter()
+            .filter_map(|row| row.lag_seconds)
+            .max()
+            .unwrap_or(0);
+        sections.push(section(
+            "market_data_aggregation",
+            "Market Data Aggregation",
+            if stale_count > 0 || missing_count > 0 {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            "Freshness of derived 5m, 15m, and 1h candles built from closed 1m candles.",
+            vec![
+                highlight("Rows Checked", market.aggregation.len().to_string()),
+                highlight("Stale Intervals", stale_count.to_string()),
+                highlight("Missing Intervals", missing_count.to_string()),
+                highlight("Max Lag Seconds", max_lag.to_string()),
+            ],
+            &market.aggregation,
+        )?);
+    }
+
     if let Some(shadow_pnl) = shadow_pnl {
         sections.push(section(
             "candidate_shadow_pnl_attribution",
@@ -3982,6 +4172,7 @@ mod tests {
                 repair_failed_count: 0,
                 repair_partial_count: 0,
                 repair_degraded_after_count: 0,
+                aggregation: Vec::new(),
             },
             stale_threshold_seconds: 10,
         }

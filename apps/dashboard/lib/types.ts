@@ -797,6 +797,28 @@ export type CandleAggregationResult = {
   correlation_id: string | null;
 };
 
+export type CandleAggregationStatus = "FRESH" | "DEGRADED" | "STALE" | "MISSING";
+
+export type CandleAggregationStatusRow = {
+  symbol: string;
+  source_interval: string;
+  target_interval: string;
+  latest_source_closed_candle: string | null;
+  latest_target_closed_candle: string | null;
+  lag_seconds: number | null;
+  status: CandleAggregationStatus;
+  inserted_last_tick: number | null;
+  updated_last_tick: number | null;
+  recommendation: string;
+};
+
+export type CandleAggregationStatusResponse = {
+  rows: CandleAggregationStatusRow[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type CandleIntervalCoverage = {
   interval: string;
   candle_count: number;

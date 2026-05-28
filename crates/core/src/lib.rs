@@ -468,6 +468,119 @@ pub struct CandleAggregationResult {
     pub correlation_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CandleAggregationFreshnessStatus {
+    Fresh,
+    Degraded,
+    Stale,
+    Missing,
+}
+
+impl CandleAggregationFreshnessStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "FRESH",
+            Self::Degraded => "DEGRADED",
+            Self::Stale => "STALE",
+            Self::Missing => "MISSING",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleAggregationStatusRow {
+    pub symbol: String,
+    pub source_interval: String,
+    pub target_interval: String,
+    pub latest_source_closed_candle: Option<DateTime<Utc>>,
+    pub latest_target_closed_candle: Option<DateTime<Utc>>,
+    pub lag_seconds: Option<i64>,
+    pub status: CandleAggregationFreshnessStatus,
+    pub inserted_last_tick: Option<i32>,
+    pub updated_last_tick: Option<i32>,
+    pub recommendation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleAggregationStatusResponse {
+    pub rows: Vec<CandleAggregationStatusRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandleAggregationRun {
+    pub id: Uuid,
+    pub symbol: String,
+    pub source_interval: String,
+    pub target_interval: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub status: String,
+    pub source_candles: i32,
+    pub inserted: i32,
+    pub updated: i32,
+    pub skipped_incomplete: i32,
+    pub latest_source_closed_time: Option<DateTime<Utc>>,
+    pub latest_target_closed_time: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+}
+
+pub fn candle_aggregation_status(
+    latest_source_closed_candle: Option<DateTime<Utc>>,
+    latest_target_closed_candle: Option<DateTime<Utc>>,
+    target_interval: CandleInterval,
+) -> (CandleAggregationFreshnessStatus, Option<i64>, String) {
+    let Some(source) = latest_source_closed_candle else {
+        return (
+            CandleAggregationFreshnessStatus::Missing,
+            None,
+            "Backfill closed 1m source candles before aggregation can run.".to_string(),
+        );
+    };
+    let Some(target) = latest_target_closed_candle else {
+        return (
+            CandleAggregationFreshnessStatus::Missing,
+            None,
+            "Run the candle aggregator to create derived candles.".to_string(),
+        );
+    };
+
+    let lag_seconds = source.signed_duration_since(target).num_seconds().max(0);
+    let target_seconds = target_interval.duration().num_seconds();
+    let status = if lag_seconds <= target_seconds {
+        CandleAggregationFreshnessStatus::Fresh
+    } else if lag_seconds <= target_seconds * 3 {
+        CandleAggregationFreshnessStatus::Degraded
+    } else {
+        CandleAggregationFreshnessStatus::Stale
+    };
+    let recommendation = match status {
+        CandleAggregationFreshnessStatus::Fresh => {
+            "No action needed; derived candles are current with closed 1m data.".to_string()
+        }
+        CandleAggregationFreshnessStatus::Degraded => {
+            "Check aggregator tick logs; derived candles are behind source data.".to_string()
+        }
+        CandleAggregationFreshnessStatus::Stale => {
+            "Restart or run the candle aggregator and inspect source candle gaps.".to_string()
+        }
+        CandleAggregationFreshnessStatus::Missing => unreachable!("handled before lag calculation"),
+    };
+
+    (status, Some(lag_seconds), recommendation)
+}
+
+pub fn candle_aggregation_start_time(
+    last_derived_close_time: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    bootstrap_lookback: Duration,
+    overlap: Duration,
+) -> DateTime<Utc> {
+    last_derived_close_time
+        .map(|time| time - overlap)
+        .unwrap_or(now - bootstrap_lookback)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketCandleIntervalCoverage {
     pub interval: String,
@@ -4395,6 +4508,8 @@ pub struct OperatorReportMarketSnapshot {
     pub repair_failed_count: i64,
     pub repair_partial_count: i64,
     pub repair_degraded_after_count: i64,
+    #[serde(default)]
+    pub aggregation: Vec<CandleAggregationStatusRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -8046,14 +8161,16 @@ mod tests {
         aggregate_closed_1m_candles, calculate_average_duration_seconds,
         calculate_strategy_average_pnl, calculate_strategy_rejection_rate,
         calculate_strategy_win_rate, calculate_testnet_promotion_rate,
+        candle_aggregation_start_time, candle_aggregation_status,
         combine_strategy_performance_summaries, execution_readiness_status_from_checks,
         plan_market_data_repair, score_execution_readiness, summarize_candle_continuity,
-        validate_password_length, validate_testnet_repair_transition, Candle, CandleInterval,
-        ExchangeEnvironment, ExchangeExecutionReport, ExchangeExecutionReportType,
-        ExchangeExecutionStatus, ExchangeName, ExchangeOrderRequest, ExchangeOrderSide,
-        ExchangeOrderState, ExchangeOrderType, ExchangePrivateStreamEvent,
-        ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
-        ExecutionReadinessCheck, ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
+        validate_password_length, validate_testnet_repair_transition, Candle,
+        CandleAggregationFreshnessStatus, CandleInterval, ExchangeEnvironment,
+        ExchangeExecutionReport, ExchangeExecutionReportType, ExchangeExecutionStatus,
+        ExchangeName, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderState,
+        ExchangeOrderType, ExchangePrivateStreamEvent, ExchangePrivateStreamSource,
+        ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExecutionReadinessCheck,
+        ExecutionReadinessCheckSeverity, ExecutionReadinessRecommendation,
         ExecutionReadinessStatus, ExecutionState, MarketDataQualityRequest,
         MarketDataQualityStatus, MarketDataRepairMode, MarketDataRepairPlanRequest,
         MarketDataRepairStatus, MarketDataSource, OperatorReport, OperatorReportFinding,
@@ -8848,6 +8965,62 @@ mod tests {
         let second = aggregate_closed_1m_candles(&candles, CandleInterval::FiveMinutes);
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn candle_aggregation_status_fresh_when_target_near_source() {
+        let source = Utc.with_ymd_and_hms(2025, 1, 1, 0, 15, 59).unwrap();
+        let target = Utc.with_ymd_and_hms(2025, 1, 1, 0, 10, 59).unwrap();
+        let (status, lag, _) =
+            candle_aggregation_status(Some(source), Some(target), CandleInterval::FiveMinutes);
+        assert_eq!(status, CandleAggregationFreshnessStatus::Fresh);
+        assert_eq!(lag, Some(300));
+    }
+
+    #[test]
+    fn candle_aggregation_status_thresholds_and_missing() {
+        let source = Utc.with_ymd_and_hms(2025, 1, 1, 1, 0, 59).unwrap();
+        assert_eq!(
+            candle_aggregation_status(
+                Some(source),
+                Some(source - Duration::minutes(10)),
+                CandleInterval::FiveMinutes,
+            )
+            .0,
+            CandleAggregationFreshnessStatus::Degraded
+        );
+        assert_eq!(
+            candle_aggregation_status(
+                Some(source),
+                Some(source - Duration::minutes(20)),
+                CandleInterval::FiveMinutes,
+            )
+            .0,
+            CandleAggregationFreshnessStatus::Stale
+        );
+        assert_eq!(
+            candle_aggregation_status(Some(source), None, CandleInterval::FiveMinutes).0,
+            CandleAggregationFreshnessStatus::Missing
+        );
+    }
+
+    #[test]
+    fn candle_aggregation_start_time_uses_bootstrap_or_overlap() {
+        let now = Utc.with_ymd_and_hms(2025, 1, 2, 0, 0, 0).unwrap();
+        let last = Utc.with_ymd_and_hms(2025, 1, 1, 23, 0, 0).unwrap();
+        assert_eq!(
+            candle_aggregation_start_time(None, now, Duration::hours(24), Duration::minutes(120),),
+            now - Duration::hours(24)
+        );
+        assert_eq!(
+            candle_aggregation_start_time(
+                Some(last),
+                now,
+                Duration::hours(24),
+                Duration::minutes(120),
+            ),
+            last - Duration::minutes(120)
+        );
     }
 
     fn quality_request(start: DateTime<Utc>, end: DateTime<Utc>) -> MarketDataQualityRequest {

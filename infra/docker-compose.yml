@@ -90,6 +90,22 @@ services:
       DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis_quant
     command: ["testnet-shadow-runner"]
 
+  candle-aggregator:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: aegis-quant-candle-aggregator
+    profiles: ["aggregation"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD}@postgres:5432/aegis_quant
+    command: ["candle-aggregator"]
+
   dashboard:
     build:
       context: ../apps/dashboard

@@ -1,17 +1,17 @@
 use aegis_core::{
-    CandleAggregationResult, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidateDecisionRejection,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchExperimentPlan, ResearchExperimentPlanRunResult,
-    ResearchHypothesis, ResearchHypothesisGenerationResult,
+    CandleAggregationResult, CandleAggregationStatusRow, MarketCandleCoverageSummary,
+    MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
+    ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
+    ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
+    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry, ResearchExperimentPlan,
+    ResearchExperimentPlanRunResult, ResearchHypothesis, ResearchHypothesisGenerationResult,
     ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
@@ -2690,6 +2690,39 @@ pub fn print_candle_coverage(coverage: &MarketCandleCoverageSummary) {
     println!("Symbol: {}", coverage.symbol);
     for interval in &coverage.intervals {
         println!("{}: {}", interval.interval, interval.candle_count);
+    }
+}
+
+pub fn print_candle_aggregation_status(rows: &[CandleAggregationStatusRow]) {
+    if rows.is_empty() {
+        println!("No candle aggregation status rows.");
+        return;
+    }
+    println!("Market candle aggregation status:");
+    for row in rows {
+        println!(
+            "{} {}<-{} status={} lag={} latest_source={} latest_target={} inserted={} updated={} recommendation={}",
+            row.symbol,
+            row.target_interval,
+            row.source_interval,
+            row.status.as_str(),
+            row.lag_seconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.latest_source_closed_candle
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "-".to_string()),
+            row.latest_target_closed_candle
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "-".to_string()),
+            row.inserted_last_tick
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.updated_last_tick
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            row.recommendation
+        );
     }
 }
 

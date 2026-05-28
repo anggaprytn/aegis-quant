@@ -3,8 +3,8 @@ use aegis_core::{
     calculate_strategy_win_rate, calculate_testnet_promotion_rate,
     combine_strategy_performance_summaries, count_expected_candles_for_window,
     summarize_candle_continuity, BacktestConfig, BacktestEquityPoint, BacktestResult,
-    BacktestTrade, Candle, CandleBackfillProgress, CandleBackfillRequest, CandleBackfillResult,
-    CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
+    BacktestTrade, Candle, CandleAggregationRun, CandleBackfillProgress, CandleBackfillRequest,
+    CandleBackfillResult, CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
     ExchangeReconciliationStatus, ExecutionReadinessBlockingReason, ExecutionReadinessCheck,
     ExecutionReadinessRecommendation, ExecutionReadinessSnapshot, ExecutionReadinessStatus,
     ExecutionReadinessTarget, ExecutionState, FeedStatus, MarketCandleCoverageSummary,
@@ -5267,6 +5267,131 @@ pub async fn upsert_aggregated_candles(
     upsert_candles_batch(pool, candles).await
 }
 
+pub async fn get_latest_closed_candle_time(
+    pool: &PgPool,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    interval: CandleInterval,
+) -> Result<Option<DateTime<Utc>>> {
+    let latest = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        r#"
+        SELECT MAX(close_time)
+        FROM candles
+        WHERE exchange = $1
+          AND symbol = $2
+          AND interval = $3
+          AND is_closed = TRUE
+        "#,
+    )
+    .bind(exchange.as_str())
+    .bind(symbol.as_str())
+    .bind(interval.as_str())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(latest)
+}
+
+pub async fn insert_candle_aggregation_run(
+    pool: &PgPool,
+    run: &CandleAggregationRun,
+) -> Result<CandleAggregationRun> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO candle_aggregation_runs (
+            id,
+            symbol,
+            source_interval,
+            target_interval,
+            started_at,
+            completed_at,
+            status,
+            source_candles,
+            inserted,
+            updated,
+            skipped_incomplete,
+            latest_source_closed_time,
+            latest_target_closed_time,
+            error
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        RETURNING
+            id,
+            symbol,
+            source_interval,
+            target_interval,
+            started_at,
+            completed_at,
+            status,
+            source_candles,
+            inserted,
+            updated,
+            skipped_incomplete,
+            latest_source_closed_time,
+            latest_target_closed_time,
+            error
+        "#,
+    )
+    .bind(run.id)
+    .bind(&run.symbol)
+    .bind(&run.source_interval)
+    .bind(&run.target_interval)
+    .bind(run.started_at)
+    .bind(run.completed_at)
+    .bind(&run.status)
+    .bind(run.source_candles)
+    .bind(run.inserted)
+    .bind(run.updated)
+    .bind(run.skipped_incomplete)
+    .bind(run.latest_source_closed_time)
+    .bind(run.latest_target_closed_time)
+    .bind(&run.error)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candle_aggregation_run(&row))
+}
+
+pub async fn get_latest_candle_aggregation_run(
+    pool: &PgPool,
+    symbol: &Symbol,
+    source_interval: CandleInterval,
+    target_interval: CandleInterval,
+) -> Result<Option<CandleAggregationRun>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            symbol,
+            source_interval,
+            target_interval,
+            started_at,
+            completed_at,
+            status,
+            source_candles,
+            inserted,
+            updated,
+            skipped_incomplete,
+            latest_source_closed_time,
+            latest_target_closed_time,
+            error
+        FROM candle_aggregation_runs
+        WHERE symbol = $1
+          AND source_interval = $2
+          AND target_interval = $3
+        ORDER BY started_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(symbol.as_str())
+    .bind(source_interval.as_str())
+    .bind(target_interval.as_str())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(map_candle_aggregation_run))
+}
+
 pub async fn count_candles_by_interval(
     pool: &PgPool,
     exchange: MarketDataSource,
@@ -10319,6 +10444,25 @@ fn map_candle_backfill_run(row: &sqlx::postgres::PgRow) -> CandleBackfillRunReco
         created_at: row.get("created_at"),
         completed_at: row.get("completed_at"),
         config: row.get("config"),
+    }
+}
+
+fn map_candle_aggregation_run(row: &sqlx::postgres::PgRow) -> CandleAggregationRun {
+    CandleAggregationRun {
+        id: row.get("id"),
+        symbol: row.get("symbol"),
+        source_interval: row.get("source_interval"),
+        target_interval: row.get("target_interval"),
+        started_at: row.get("started_at"),
+        completed_at: row.get("completed_at"),
+        status: row.get("status"),
+        source_candles: row.get("source_candles"),
+        inserted: row.get("inserted"),
+        updated: row.get("updated"),
+        skipped_incomplete: row.get("skipped_incomplete"),
+        latest_source_closed_time: row.get("latest_source_closed_time"),
+        latest_target_closed_time: row.get("latest_target_closed_time"),
+        error: row.get("error"),
     }
 }
 

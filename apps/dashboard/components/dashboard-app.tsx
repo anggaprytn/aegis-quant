@@ -16,6 +16,7 @@ import type {
   BacktestRunAcceptedResponse,
   CandleAggregationRequest,
   CandleAggregationResult,
+  CandleAggregationStatusRow,
   CandleBackfillRequest,
   CandleBackfillResult,
   CandleCoverageSummary,
@@ -1406,6 +1407,12 @@ function AuthenticatedDashboard({
     enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
   });
+  const candleAggregationStatusQuery = useQuery({
+    queryKey: ["candle-aggregation-status"],
+    queryFn: () => api.getMarketCandleAggregationStatus(),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
   const researchBuildsQuery = useQuery({
     queryKey: ["research-builds"],
     queryFn: () => api.listResearchDatasetBuilds(20),
@@ -2534,6 +2541,7 @@ function AuthenticatedDashboard({
       setLastAggregationResult(result);
       await queryClient.invalidateQueries({ queryKey: ["candles"] });
       await queryClient.invalidateQueries({ queryKey: ["candle-coverage"] });
+      await queryClient.invalidateQueries({ queryKey: ["candle-aggregation-status"] });
     },
   });
   const marketDataQualityMutation = useMutation({
@@ -3616,6 +3624,13 @@ function AuthenticatedDashboard({
                   coverage={candleCoverageQuery.data?.coverage ?? null}
                   loading={candleCoverageQuery.isLoading}
                   error={getErrorMessage(candleCoverageQuery.error)}
+                />
+              </Panel>
+              <Panel className="xl:col-span-7" title="Market Data Aggregation">
+                <CandleAggregationStatusTable
+                  rows={candleAggregationStatusQuery.data?.rows ?? []}
+                  loading={candleAggregationStatusQuery.isLoading}
+                  error={getErrorMessage(candleAggregationStatusQuery.error)}
                 />
               </Panel>
               <Panel className="xl:col-span-7" title="Market Data Quality">
@@ -9746,6 +9761,42 @@ function CandleCoverageTable({
     <Table
       headers={["Interval", "Closed Candles"]}
       rows={coverage.intervals.map((entry) => [entry.interval, formatNumber(entry.candle_count)])}
+    />
+  );
+}
+
+function CandleAggregationStatusTable({
+  rows,
+  loading,
+  error,
+}: {
+  rows: CandleAggregationStatusRow[];
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading aggregation status..." />;
+  }
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={error} tone="danger" />;
+  }
+  if (!rows.length) {
+    return <EmptyState label="No aggregation status rows." />;
+  }
+
+  return (
+    <Table
+      headers={["Symbol", "Target", "Status", "Lag", "Latest Source", "Latest Target", "Last Tick", "Recommendation"]}
+      rows={rows.map((row) => [
+        row.symbol,
+        row.target_interval,
+        badge(row.status),
+        row.lag_seconds === null ? "-" : `${Math.round(row.lag_seconds / 60)}m`,
+        formatDateTime(row.latest_source_closed_candle),
+        formatDateTime(row.latest_target_closed_candle),
+        `${row.inserted_last_tick ?? 0}/${row.updated_last_tick ?? 0}`,
+        row.recommendation,
+      ])}
     />
   );
 }

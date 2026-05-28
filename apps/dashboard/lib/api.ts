@@ -17,6 +17,7 @@ import type {
   CandleBackfillRunsResponse,
   CandleAggregationRequest,
   CandleAggregationResult,
+  CandleAggregationStatusResponse,
   CandleCoverageResponse,
   CandlesResponse,
   MarketDataQualityRequest,
@@ -423,6 +424,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  getMarketCandleAggregationStatus: () =>
+    request<CandleAggregationStatusResponse>("/market/candles/aggregation-status"),
   getMarketCandleCoverage: (symbol: string) =>
     request<CandleCoverageResponse>("/market/candles/coverage", undefined, { symbol }),
   getMarketCandleQuality: (query: MarketDataQualityRequest) =>

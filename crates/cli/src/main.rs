@@ -591,6 +591,14 @@ async fn main() -> anyhow::Result<()> {
                     output::print_candle_aggregation_result(&response);
                 }
             }
+            MarketCommands::AggregationStatus => {
+                let response = client.candle_aggregation_status().await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_candle_aggregation_status(&response.rows);
+                }
+            }
             MarketCommands::CandleCoverage(args) => {
                 let response = client.candle_coverage(&args.symbol).await?;
                 if cli.json {

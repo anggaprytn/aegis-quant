@@ -8,6 +8,7 @@ docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 docker compose -f infra/docker-compose.yml --env-file .env up -d api
 docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
+docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
 ```
 
 Local default URLs:
@@ -30,13 +31,14 @@ If `/usr/local/bin/syncaegis` is used, keep the order explicit:
 
 ```bash
 git pull --ff-only
-docker compose -f infra/docker-compose.yml --env-file .env build api dashboard market-ingest testnet-shadow-runner
+docker compose -f infra/docker-compose.yml --env-file .env build api dashboard market-ingest testnet-shadow-runner candle-aggregator
 docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 docker compose -f infra/docker-compose.yml --env-file .env up -d api
 docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
 docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
 docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
 ```
 
 Do not reset VPS volumes as part of routine sync. Take a database backup before migrations or destructive maintenance.
