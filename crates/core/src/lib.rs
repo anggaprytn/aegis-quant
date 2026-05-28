@@ -8489,6 +8489,8 @@ pub enum CoreError {
     UnsupportedResearchExperimentPlanRunStatus(String),
     #[error("unsupported research experiment plan run mode: {0}")]
     UnsupportedResearchExperimentPlanRunMode(String),
+    #[error("unsupported research stale run recovery target type: {0}")]
+    UnsupportedResearchStaleRunRecoveryTargetType(String),
     #[error("unsupported scheduled research job status: {0}")]
     UnsupportedScheduledResearchJobStatus(String),
     #[error("unsupported scheduled research job kind: {0}")]

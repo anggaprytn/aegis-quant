@@ -20,10 +20,11 @@ use aegis_core::{
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRecommendation,
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus,
     ResearchRegimeDiscoverySummary, ResearchRegimeLabel, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRuleDecision, RiskRuleResult, ScheduledResearchJobKind, ScheduledResearchJobRequest,
-    ScheduledResearchJobRun, ScheduledResearchJobRunStatus, ScheduledResearchJobStatus, Side,
-    SignalConfidence, SignalReason, SignalSide, StrategyCandidateObservationDecision,
+    ResearchShadowPnlStatus, ResearchStaleRunRecoveryRequest, ResearchStaleRunRecoveryTargetType,
+    RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult, RiskRuleDecision,
+    RiskRuleResult, ScheduledResearchJobKind, ScheduledResearchJobRequest, ScheduledResearchJobRun,
+    ScheduledResearchJobRunStatus, ScheduledResearchJobStatus, Side, SignalConfidence,
+    SignalReason, SignalSide, StrategyCandidateObservationDecision,
     StrategyCandidateObservationFinding, StrategyCandidateObservationRequirement,
     StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
     StrategyCandidateObservationSummary, StrategyCandidateRunnerAlignment, StrategyConfig,
@@ -83,9 +84,10 @@ use db::{
     list_strategy_walk_forward_windows, list_testnet_promotion_funnel_rows,
     list_testnet_shadow_runs, list_testnet_shadow_runs_in_window,
     mark_strategy_research_candidate_promoted, market_data_repair_result_from_record,
-    replace_research_dataset_build_steps, research_candidate_event_from_record,
-    research_candidate_from_record, research_dataset_build_result_from_records,
-    research_regime_calibration_result_from_records, research_regime_discovery_result_from_records,
+    recover_stale_research_runs_at, replace_research_dataset_build_steps,
+    research_candidate_event_from_record, research_candidate_from_record,
+    research_dataset_build_result_from_records, research_regime_calibration_result_from_records,
+    research_regime_discovery_result_from_records,
     resolve_promoted_research_candidate_for_shadow_run, scheduled_research_job_from_record,
     scheduled_research_job_run_from_record, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
@@ -3140,6 +3142,151 @@ async fn strategy_rankings_orders_strategies_correctly() {
     assert_eq!(
         rankings.first().map(|item| item.strategy_id.as_str()),
         Some("momentum_v1")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn stale_research_campaign_batch_recovery_is_research_only() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test db should initialize");
+    let now = fixed_time();
+    let campaign_id = Uuid::new_v4();
+    let stale_batch_id = Uuid::new_v4();
+    let completed_batch_id = Uuid::new_v4();
+
+    sqlx::query(
+        r#"
+        INSERT INTO research_campaigns (
+            id, request, status, summary, created_at, completed_at, correlation_id, error
+        )
+        VALUES ($1, '{}'::jsonb, 'COMPLETED', '{}'::jsonb, $2, $3, $4, NULL)
+        "#,
+    )
+    .bind(campaign_id)
+    .bind(now - chrono::Duration::hours(3))
+    .bind(now - chrono::Duration::hours(2))
+    .bind(Uuid::new_v4())
+    .execute(&test_db.pool)
+    .await
+    .expect("campaign should insert");
+
+    for (id, status, created_at, completed_at) in [
+        (
+            stale_batch_id,
+            "STARTED",
+            now - chrono::Duration::hours(2),
+            None,
+        ),
+        (
+            completed_batch_id,
+            "COMPLETED",
+            now - chrono::Duration::hours(2),
+            Some(now - chrono::Duration::hours(1)),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO research_campaign_batches (
+                id, campaign_id, research_batch_id, plan_index, strategy_id, symbol, timeframe,
+                window_start, window_end, status, triage_status, candidates_created,
+                candidates_blocked_by_gate, proposals_created, summary, error, created_at,
+                completed_at
+            )
+            VALUES (
+                $1, $2, NULL, 0, 'failed_breakdown_reclaim_v1', 'ETHUSDT', '15m',
+                $3, $4, $5, 'UNKNOWN', 0, 0, 0, '{}'::jsonb, NULL, $6, $7
+            )
+            "#,
+        )
+        .bind(id)
+        .bind(campaign_id)
+        .bind(now - chrono::Duration::days(2))
+        .bind(now - chrono::Duration::days(1))
+        .bind(status)
+        .bind(created_at)
+        .bind(completed_at)
+        .execute(&test_db.pool)
+        .await
+        .expect("campaign batch should insert");
+    }
+
+    let execution_counts_before = execution_table_counts(&test_db.pool).await;
+    let preview = recover_stale_research_runs_at(
+        &test_db.pool,
+        &ResearchStaleRunRecoveryRequest {
+            older_than_minutes: 60,
+            dry_run: true,
+            target_types: Some(vec![
+                ResearchStaleRunRecoveryTargetType::ResearchCampaignBatch,
+            ]),
+            limit: None,
+            correlation_id: Some(Uuid::new_v4()),
+            confirmation: None,
+        },
+        None,
+        now,
+    )
+    .await
+    .expect("preview should succeed");
+
+    assert_eq!(preview.scanned_count, 1);
+    assert_eq!(preview.stale_count, 1);
+    assert_eq!(preview.recovered_count, 0);
+    assert_eq!(preview.targets[0].target_id, stale_batch_id);
+    let stale_status_after_preview: String =
+        sqlx::query_scalar("SELECT status FROM research_campaign_batches WHERE id = $1")
+            .bind(stale_batch_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("status should query");
+    assert_eq!(stale_status_after_preview, "STARTED");
+
+    let recovered = recover_stale_research_runs_at(
+        &test_db.pool,
+        &ResearchStaleRunRecoveryRequest {
+            older_than_minutes: 60,
+            dry_run: false,
+            target_types: Some(vec![
+                ResearchStaleRunRecoveryTargetType::ResearchCampaignBatch,
+            ]),
+            limit: None,
+            correlation_id: Some(Uuid::new_v4()),
+            confirmation: Some("RECOVER STALE RESEARCH RUNS".to_string()),
+        },
+        None,
+        now,
+    )
+    .await
+    .expect("recovery should succeed");
+
+    assert_eq!(recovered.recovered_count, 1);
+    let stale_status_after_recovery: String =
+        sqlx::query_scalar("SELECT status FROM research_campaign_batches WHERE id = $1")
+            .bind(stale_batch_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("status should query");
+    assert_eq!(stale_status_after_recovery, "FAILED");
+    let completed_status: String =
+        sqlx::query_scalar("SELECT status FROM research_campaign_batches WHERE id = $1")
+            .bind(completed_batch_id)
+            .fetch_one(&test_db.pool)
+            .await
+            .expect("completed status should query");
+    assert_eq!(completed_status, "COMPLETED");
+    let recovery_records: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM research_stale_run_recoveries WHERE target_id = $1",
+    )
+    .bind(stale_batch_id)
+    .fetch_one(&test_db.pool)
+    .await
+    .expect("recovery records should query");
+    assert_eq!(recovery_records, 1);
+    assert_eq!(
+        execution_counts_before,
+        execution_table_counts(&test_db.pool).await
     );
 }
 

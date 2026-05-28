@@ -15,8 +15,8 @@ use aegis_core::{
     ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
-    ResearchShadowPnlAttributionResult, StrategyRobustnessMatrixCell,
-    StrategyRobustnessMatrixResult, User,
+    ResearchShadowPnlAttributionResult, ResearchStaleRunRecoveryResult,
+    StrategyRobustnessMatrixCell, StrategyRobustnessMatrixResult, User,
 };
 use aegis_core::{
     ExchangeTestnetPipelinePreview, PaperTradingPipelineResult, TestnetShadowPromotionPreview,
@@ -531,6 +531,50 @@ pub fn print_research_campaign_batches(batches: &[ResearchCampaignBatchResult]) 
             batch.skipped_invalid_config_count,
             batch.error.as_deref().unwrap_or("-")
         );
+    }
+}
+
+pub fn print_research_stale_run_recovery(result: &ResearchStaleRunRecoveryResult) {
+    println!(
+        "Stale research recovery: scanned={} stale={} recovered={} skipped={}",
+        result.scanned_count, result.stale_count, result.recovered_count, result.skipped_count
+    );
+    if result.targets.is_empty() {
+        println!("No stale research artifacts found.");
+    } else {
+        println!("Targets:");
+        for target in &result.targets {
+            println!(
+                "  {} {} current={} age_minutes={} proposed={} reason={}",
+                target.target_type.as_str(),
+                target.target_id,
+                target.current_status,
+                target.age_minutes,
+                target.proposed_status,
+                target.reason
+            );
+        }
+    }
+    if !result.actions.is_empty() {
+        println!("Actions:");
+        for action in &result.actions {
+            println!(
+                "  {} {} {} {}->{} status={} reason={}",
+                action.target_type.as_str(),
+                action.target_id,
+                action.action,
+                action.from_status,
+                action.to_status,
+                action.status.as_str(),
+                action.reason
+            );
+        }
+    }
+    if !result.warnings.is_empty() {
+        println!("Warnings:");
+        for warning in &result.warnings {
+            println!("  - {warning}");
+        }
     }
 }
 

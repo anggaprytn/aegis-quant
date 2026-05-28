@@ -77,7 +77,8 @@ use aegis_core::{
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult,
     ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
+    ResearchShadowPnlAttributionResult, ResearchStaleRunRecoveryRequest,
+    ResearchStaleRunRecoveryResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
     RiskRejectionReason, ScheduledResearchBootstrapSafeRequest,
     ScheduledResearchBootstrapSafeResult, ScheduledResearchJob, ScheduledResearchJobControlRequest,
@@ -109,7 +110,7 @@ use aegis_core::{
     TestnetShadowPromotionStatus, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
     TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
     TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest, TestnetShadowRunnerState,
-    TestnetShadowRunnerTickResult, UserRole, UserStatus,
+    TestnetShadowRunnerTickResult, UserRole, UserStatus, RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
 };
 use aegis_core::{CompressionBreakoutRefinementRequest, CompressionBreakoutRefinementResult};
 use api::{
@@ -208,10 +209,11 @@ use db::{
     mark_research_experiment_plan_completed, mark_strategy_research_candidate_promoted,
     market_data_repair_result_from_record, paper_account_from_record,
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, research_batch_result_from_records,
-    research_batch_step_from_record, research_campaign_batch_result_from_record,
-    research_campaign_result_from_records, research_candidate_event_from_record,
-    research_candidate_from_record, research_candidate_proposal_from_record,
+    persist_strategy_config_version, recover_stale_research_runs,
+    research_batch_result_from_records, research_batch_step_from_record,
+    research_campaign_batch_result_from_record, research_campaign_result_from_records,
+    research_candidate_event_from_record, research_candidate_from_record,
+    research_candidate_proposal_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row,
     research_regime_calibration_candidate_from_record,
@@ -1209,6 +1211,14 @@ struct ScheduledResearchJobRunResponse {
 #[derive(Serialize, Deserialize)]
 struct ScheduledResearchBootstrapSafeResponse {
     result: ScheduledResearchBootstrapSafeResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ResearchStaleRunRecoveryResponse {
+    result: ResearchStaleRunRecoveryResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3293,6 +3303,14 @@ async fn main() {
             "/research/scheduled-jobs/:id",
             get(get_scheduled_research_job_handler),
         )
+        .route(
+            "/research/stale-runs/recover-preview",
+            post(recover_stale_research_runs_preview_handler),
+        )
+        .route(
+            "/research/stale-runs/recover",
+            post(recover_stale_research_runs_handler),
+        )
         .route("/research/batches/run", post(run_research_batch_handler))
         .route("/research/batches", get(list_research_batches_handler))
         .route(
@@ -3825,6 +3843,12 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
     }
     if method == axum::http::Method::POST && path == "/market/candles/repair/plan" {
         return RouteAccess::Authenticated;
+    }
+    if method == axum::http::Method::POST && path == "/research/stale-runs/recover-preview" {
+        return RouteAccess::Authenticated;
+    }
+    if method == axum::http::Method::POST && path == "/research/stale-runs/recover" {
+        return RouteAccess::Operator;
     }
     if method == axum::http::Method::GET
         && (path == "/market/candles/repair/runs"
@@ -18984,6 +19008,122 @@ async fn run_once_scheduled_research_job_handler(
     }
 }
 
+async fn recover_stale_research_runs_preview_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<ResearchStaleRunRecoveryRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let Some(actor) = current_actor(actor) else {
+        return unauthorized_response(request, "unauthorized", "Authentication is required.");
+    };
+    if !matches!(
+        actor.role,
+        UserRole::Owner | UserRole::Operator | UserRole::Viewer
+    ) {
+        return research_forbidden_response(
+            &request,
+            "Only VIEWER, OPERATOR, or OWNER can preview stale research run recovery.",
+        );
+    }
+    payload.dry_run = true;
+    payload.correlation_id = payload
+        .correlation_id
+        .or_else(|| Uuid::parse_str(&request.correlation_id).ok());
+    match recover_stale_research_runs(&state.db_pool, &payload, Some(actor.user_id)).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(ResearchStaleRunRecoveryResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => research_internal_error_response(
+            "failed_to_preview_stale_research_runs_recovery",
+            &request,
+            err.to_string(),
+        ),
+    }
+}
+
+async fn recover_stale_research_runs_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(mut payload): Json<ResearchStaleRunRecoveryRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let Some(actor) = current_actor(actor) else {
+        return unauthorized_response(request, "unauthorized", "Authentication is required.");
+    };
+    if !matches!(actor.role, UserRole::Owner | UserRole::Operator) {
+        return research_forbidden_response(
+            &request,
+            "Only OPERATOR or OWNER can recover stale research runs.",
+        );
+    }
+    if payload.confirmation.as_deref() != Some(RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "stale_research_run_recovery_confirmation_required",
+                message: format!(
+                    "Recovery requires confirmation {:?}.",
+                    RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    payload.dry_run = false;
+    payload.correlation_id = payload
+        .correlation_id
+        .or_else(|| Uuid::parse_str(&request.correlation_id).ok());
+    let state_actor = state_actor_from_authenticated(&actor);
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let _ = insert_audit_log(
+        &state.db_pool,
+        correlation_id,
+        &state_actor,
+        "research.stale_runs.recover",
+        "research/stale-runs/recover",
+        &json!({
+            "actor_id": actor.user_id,
+            "older_than_minutes": payload.normalized_older_than_minutes(),
+            "target_types": payload.target_types.clone(),
+            "research_only": true
+        }),
+    )
+    .await;
+
+    match recover_stale_research_runs(&state.db_pool, &payload, Some(actor.user_id)).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(ResearchStaleRunRecoveryResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => research_internal_error_response(
+            "failed_to_recover_stale_research_runs",
+            &request,
+            err.to_string(),
+        ),
+    }
+}
+
 async fn execute_research_campaign(
     state: &AppState,
     mut payload: ResearchCampaignRequest,
@@ -29219,6 +29359,26 @@ mod tests {
                 false
             ),
             super::RouteAccess::Owner
+        ));
+    }
+
+    #[test]
+    fn stale_research_recovery_route_access_matches_role_expectations() {
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/research/stale-runs/recover-preview",
+                false
+            ),
+            super::RouteAccess::Authenticated
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/research/stale-runs/recover",
+                false
+            ),
+            super::RouteAccess::Operator
         ));
     }
 

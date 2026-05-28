@@ -7,9 +7,10 @@ use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
     ResearchCandidateQualificationThresholds, ResearchCandidateReviewAction,
     ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
-    ScheduledResearchBootstrapSafeRequest, ScheduledResearchJobKind, ScheduledResearchJobRequest,
-    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerStaleFeedPolicy,
+    ResearchStaleRunRecoveryTargetType, ScheduledResearchBootstrapSafeRequest,
+    ScheduledResearchJobKind, ScheduledResearchJobRequest, TestnetShadowPromotionRequest,
+    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
+    RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -66,6 +67,16 @@ impl Cli {
                     anyhow::bail!(
                         "research candidates review requires --reason for action {}",
                         args.action.as_str()
+                    );
+                }
+            }
+        }
+        if let Commands::Research(ResearchCommands::StaleRuns(command)) = &self.command {
+            if let ResearchStaleRunCommands::Recover(args) = command {
+                if args.confirm.as_deref() != Some(RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION) {
+                    anyhow::bail!(
+                        "research stale-runs recover requires --confirm {:?} exactly",
+                        RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION
                     );
                 }
             }
@@ -857,6 +868,41 @@ pub enum ResearchCommands {
     RobustnessMatrix(ResearchRobustnessMatrixCommands),
     #[command(name = "scheduled-jobs", subcommand)]
     ScheduledJobs(ResearchScheduledJobCommands),
+    #[command(name = "stale-runs", subcommand)]
+    StaleRuns(ResearchStaleRunCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchStaleRunCommands {
+    #[command(name = "recover-preview")]
+    RecoverPreview(ResearchStaleRunArgs),
+    Recover(ResearchStaleRunRecoverArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchStaleRunArgs {
+    #[arg(long = "older-than-minutes", default_value_t = 60)]
+    pub older_than_minutes: i64,
+    #[arg(long = "target-types", value_delimiter = ',')]
+    pub target_types: Vec<ResearchStaleRunRecoveryTargetType>,
+    #[arg(long)]
+    pub limit: Option<i64>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchStaleRunRecoverArgs {
+    #[arg(long = "older-than-minutes", default_value_t = 60)]
+    pub older_than_minutes: i64,
+    #[arg(long = "target-types", value_delimiter = ',')]
+    pub target_types: Vec<ResearchStaleRunRecoveryTargetType>,
+    #[arg(long)]
+    pub limit: Option<i64>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+    #[arg(long)]
+    pub confirm: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

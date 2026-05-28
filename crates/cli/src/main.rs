@@ -3,8 +3,8 @@ use aegis_core::{
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
     ResearchCandidateReviewRequest, ResearchExperimentPlanRunMode,
     ResearchExperimentPlanRunRequest, ResearchHypothesisGenerationRequest,
-    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, TestnetShadowRunnerControlAction,
-    TestnetShadowRunnerControlRequest,
+    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest,
+    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -32,9 +32,9 @@ use cli::cli::{
     ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
     ResearchExperimentPlanCommands, ResearchHypothesisCommands, ResearchRegimeCalibrationCommands,
     ResearchRegimeDatasetCommands, ResearchRegimeDiscoveryCommands,
-    ResearchRobustnessMatrixCommands, ResearchScheduledJobCommands, RiskCommands,
-    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
-    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchRobustnessMatrixCommands, ResearchScheduledJobCommands, ResearchStaleRunCommands,
+    RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
+    StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -945,6 +945,48 @@ async fn main() -> anyhow::Result<()> {
                         .bootstrap_safe_scheduled_research_jobs(&request)
                         .await?;
                     output::print_json(&response)?;
+                }
+            },
+            ResearchCommands::StaleRuns(command) => match command {
+                ResearchStaleRunCommands::RecoverPreview(args) => {
+                    let request = ResearchStaleRunRecoveryRequest {
+                        older_than_minutes: args.older_than_minutes,
+                        dry_run: true,
+                        target_types: if args.target_types.is_empty() {
+                            None
+                        } else {
+                            Some(args.target_types.clone())
+                        },
+                        limit: args.limit,
+                        correlation_id: args.correlation_id,
+                        confirmation: None,
+                    };
+                    let response = client.recover_stale_research_runs_preview(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_stale_run_recovery(&response.result);
+                    }
+                }
+                ResearchStaleRunCommands::Recover(args) => {
+                    let request = ResearchStaleRunRecoveryRequest {
+                        older_than_minutes: args.older_than_minutes,
+                        dry_run: false,
+                        target_types: if args.target_types.is_empty() {
+                            None
+                        } else {
+                            Some(args.target_types.clone())
+                        },
+                        limit: args.limit,
+                        correlation_id: args.correlation_id,
+                        confirmation: args.confirm.clone(),
+                    };
+                    let response = client.recover_stale_research_runs(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_stale_run_recovery(&response.result);
+                    }
                 }
             },
             ResearchCommands::Candidates(command) => match command {

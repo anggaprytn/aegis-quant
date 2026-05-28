@@ -1001,6 +1001,7 @@ pub fn evaluate_research_candidate_creation(
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCampaignStatus {
+    Started,
     Completed,
     PartialSuccess,
     Failed,
@@ -1010,6 +1011,7 @@ pub enum ResearchCampaignStatus {
 impl ResearchCampaignStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Started => "STARTED",
             Self::Completed => "COMPLETED",
             Self::PartialSuccess => "PARTIAL_SUCCESS",
             Self::Failed => "FAILED",
@@ -1023,6 +1025,7 @@ impl std::str::FromStr for ResearchCampaignStatus {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_uppercase().as_str() {
+            "STARTED" => Ok(Self::Started),
             "COMPLETED" => Ok(Self::Completed),
             "PARTIAL_SUCCESS" => Ok(Self::PartialSuccess),
             "FAILED" => Ok(Self::Failed),
@@ -1032,6 +1035,185 @@ impl std::str::FromStr for ResearchCampaignStatus {
             )),
         }
     }
+}
+
+pub const RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION: &str = "RECOVER STALE RESEARCH RUNS";
+pub const DEFAULT_RESEARCH_STALE_RUN_OLDER_THAN_MINUTES: i64 = 60;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchStaleRunRecoveryTargetType {
+    ResearchCampaign,
+    ResearchCampaignBatch,
+    ResearchBatch,
+    ResearchBatchStep,
+    StrategyExperiment,
+    StrategyWalkForwardRun,
+    StrategyRobustnessMatrixRun,
+    ResearchExperimentPlanRun,
+}
+
+impl ResearchStaleRunRecoveryTargetType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ResearchCampaign => "RESEARCH_CAMPAIGN",
+            Self::ResearchCampaignBatch => "RESEARCH_CAMPAIGN_BATCH",
+            Self::ResearchBatch => "RESEARCH_BATCH",
+            Self::ResearchBatchStep => "RESEARCH_BATCH_STEP",
+            Self::StrategyExperiment => "STRATEGY_EXPERIMENT",
+            Self::StrategyWalkForwardRun => "STRATEGY_WALK_FORWARD_RUN",
+            Self::StrategyRobustnessMatrixRun => "STRATEGY_ROBUSTNESS_MATRIX_RUN",
+            Self::ResearchExperimentPlanRun => "RESEARCH_EXPERIMENT_PLAN_RUN",
+        }
+    }
+}
+
+impl std::str::FromStr for ResearchStaleRunRecoveryTargetType {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "RESEARCH_CAMPAIGN" | "RESEARCH_CAMPAIGNS" => Ok(Self::ResearchCampaign),
+            "RESEARCH_CAMPAIGN_BATCH" | "RESEARCH_CAMPAIGN_BATCHES" => {
+                Ok(Self::ResearchCampaignBatch)
+            }
+            "RESEARCH_BATCH" | "RESEARCH_BATCHES" => Ok(Self::ResearchBatch),
+            "RESEARCH_BATCH_STEP" | "RESEARCH_BATCH_STEPS" => Ok(Self::ResearchBatchStep),
+            "STRATEGY_EXPERIMENT" | "STRATEGY_EXPERIMENTS" => Ok(Self::StrategyExperiment),
+            "STRATEGY_WALK_FORWARD_RUN" | "STRATEGY_WALK_FORWARD_RUNS" => {
+                Ok(Self::StrategyWalkForwardRun)
+            }
+            "STRATEGY_ROBUSTNESS_MATRIX_RUN" | "STRATEGY_ROBUSTNESS_MATRIX_RUNS" => {
+                Ok(Self::StrategyRobustnessMatrixRun)
+            }
+            "RESEARCH_EXPERIMENT_PLAN_RUN" | "RESEARCH_EXPERIMENT_PLAN_RUNS" => {
+                Ok(Self::ResearchExperimentPlanRun)
+            }
+            other => Err(CoreError::UnsupportedResearchStaleRunRecoveryTargetType(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchStaleRunRecoveryStatus {
+    Proposed,
+    Recovered,
+    Skipped,
+}
+
+impl ResearchStaleRunRecoveryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Proposed => "PROPOSED",
+            Self::Recovered => "RECOVERED",
+            Self::Skipped => "SKIPPED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchStaleRunRecoveryRequest {
+    #[serde(default = "default_research_stale_run_older_than_minutes")]
+    pub older_than_minutes: i64,
+    #[serde(default = "default_research_stale_run_dry_run")]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub target_types: Option<Vec<ResearchStaleRunRecoveryTargetType>>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub correlation_id: Option<Uuid>,
+    #[serde(default)]
+    pub confirmation: Option<String>,
+}
+
+impl Default for ResearchStaleRunRecoveryRequest {
+    fn default() -> Self {
+        Self {
+            older_than_minutes: DEFAULT_RESEARCH_STALE_RUN_OLDER_THAN_MINUTES,
+            dry_run: true,
+            target_types: None,
+            limit: None,
+            correlation_id: None,
+            confirmation: None,
+        }
+    }
+}
+
+impl ResearchStaleRunRecoveryRequest {
+    pub fn normalized_older_than_minutes(&self) -> i64 {
+        self.older_than_minutes.max(1)
+    }
+
+    pub fn normalized_limit(&self) -> Option<usize> {
+        self.limit
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+    }
+
+    pub fn confirmation_matches(&self) -> bool {
+        self.confirmation.as_deref() == Some(RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION)
+    }
+}
+
+fn default_research_stale_run_older_than_minutes() -> i64 {
+    DEFAULT_RESEARCH_STALE_RUN_OLDER_THAN_MINUTES
+}
+
+fn default_research_stale_run_dry_run() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchStaleRunRecoveryTarget {
+    pub target_type: ResearchStaleRunRecoveryTargetType,
+    pub target_id: Uuid,
+    pub current_status: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
+    pub age_minutes: i64,
+    pub proposed_status: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchStaleRunRecoveryAction {
+    pub target_type: ResearchStaleRunRecoveryTargetType,
+    pub target_id: Uuid,
+    pub action: String,
+    pub from_status: String,
+    pub to_status: String,
+    pub reason: String,
+    pub status: ResearchStaleRunRecoveryStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchStaleRunRecoveryResult {
+    pub scanned_count: i64,
+    pub stale_count: i64,
+    pub recovered_count: i64,
+    pub skipped_count: i64,
+    pub targets: Vec<ResearchStaleRunRecoveryTarget>,
+    #[serde(default)]
+    pub actions: Vec<ResearchStaleRunRecoveryAction>,
+    pub warnings: Vec<String>,
+}
+
+pub fn is_research_stale_candidate_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_uppercase().as_str(),
+        "STARTED" | "RUNNING" | "IN_PROGRESS" | "PENDING"
+    )
+}
+
+pub fn stale_research_run_reason(age_minutes: i64) -> String {
+    format!("Marked stale after no completion update for {age_minutes} minutes.")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -16321,6 +16503,28 @@ mod tests {
             ts(1, 5, 0)
         );
         assert!(scheduled_research_next_run_at(completed_at, 0).is_err());
+    }
+
+    #[test]
+    fn stale_research_status_detection_is_limited_to_active_states() {
+        assert!(is_research_stale_candidate_status("STARTED"));
+        assert!(is_research_stale_candidate_status("RUNNING"));
+        assert!(is_research_stale_candidate_status("IN_PROGRESS"));
+        assert!(is_research_stale_candidate_status("PENDING"));
+        assert!(!is_research_stale_candidate_status("COMPLETED"));
+        assert!(!is_research_stale_candidate_status("FAILED"));
+    }
+
+    #[test]
+    fn stale_research_recovery_request_defaults_are_safe() {
+        let request = ResearchStaleRunRecoveryRequest::default();
+        assert_eq!(
+            request.older_than_minutes,
+            DEFAULT_RESEARCH_STALE_RUN_OLDER_THAN_MINUTES
+        );
+        assert!(request.dry_run);
+        assert_eq!(request.normalized_older_than_minutes(), 60);
+        assert!(!request.confirmation_matches());
     }
 
     #[test]

@@ -31,7 +31,8 @@ use aegis_core::{
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
     ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
-    RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    ResearchStaleRunRecoveryRequest, ResearchStaleRunRecoveryResult, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
     ScheduledResearchBootstrapSafeRequest, ScheduledResearchBootstrapSafeResult,
     ScheduledResearchJob, ScheduledResearchJobControlRequest, ScheduledResearchJobRequest,
     ScheduledResearchJobRun, StrategyCandidateObservationResult, StrategyComparisonSummary,
@@ -926,6 +927,21 @@ impl ApiClient {
             &[],
         )
         .await
+    }
+
+    pub async fn recover_stale_research_runs_preview(
+        &self,
+        request: &ResearchStaleRunRecoveryRequest,
+    ) -> Result<ResearchStaleRunRecoveryResponse, ApiClientError> {
+        self.post("/research/stale-runs/recover-preview", request)
+            .await
+    }
+
+    pub async fn recover_stale_research_runs(
+        &self,
+        request: &ResearchStaleRunRecoveryRequest,
+    ) -> Result<ResearchStaleRunRecoveryResponse, ApiClientError> {
+        self.post("/research/stale-runs/recover", request).await
     }
 
     pub async fn get_research_campaign_regime_leaderboard(
@@ -2982,6 +2998,14 @@ pub struct ResearchCampaignsResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchCampaignBatchesResponse {
     pub batches: Vec<ResearchCampaignBatchResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ResearchStaleRunRecoveryResponse {
+    pub result: ResearchStaleRunRecoveryResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

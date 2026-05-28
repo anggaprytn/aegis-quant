@@ -86,6 +86,8 @@ struct ResearchBatchReportSnapshot {
     proposals_created_count: i64,
     overfit_candidate_count: i64,
     robust_candidate_count: i64,
+    stale_run_count: i64,
+    recovered_stale_run_count: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1461,7 +1463,49 @@ async fn load_research_batch_snapshot(
                 SELECT COUNT(*)
                 FROM jsonb_array_elements(COALESCE(summary->'top_candidates', '[]'::jsonb)) AS candidate
                 WHERE candidate->>'robustness_status' = 'ROBUST'
-            )), 0)::BIGINT AS robust_candidate_count
+            )), 0)::BIGINT AS robust_candidate_count,
+            (
+                SELECT COUNT(*)::BIGINT
+                FROM (
+                    SELECT id FROM research_campaigns
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND created_at <= NOW() - INTERVAL '60 minutes'
+                    UNION ALL
+                    SELECT id FROM research_campaign_batches
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND created_at <= NOW() - INTERVAL '60 minutes'
+                    UNION ALL
+                    SELECT id FROM research_batches
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND created_at <= NOW() - INTERVAL '60 minutes'
+                    UNION ALL
+                    SELECT id FROM research_batch_steps
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND started_at <= NOW() - INTERVAL '60 minutes'
+                    UNION ALL
+                    SELECT id FROM strategy_experiments
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND created_at <= NOW() - INTERVAL '60 minutes'
+                    UNION ALL
+                    SELECT id FROM strategy_walk_forward_runs
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND created_at <= NOW() - INTERVAL '60 minutes'
+                    UNION ALL
+                    SELECT id FROM strategy_robustness_matrix_runs
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND created_at <= NOW() - INTERVAL '60 minutes'
+                    UNION ALL
+                    SELECT id FROM research_experiment_plan_runs
+                    WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                      AND created_at <= NOW() - INTERVAL '60 minutes'
+                ) stale
+            ) AS stale_run_count,
+            (
+                SELECT COUNT(*)::BIGINT
+                FROM research_stale_run_recoveries
+                WHERE created_at >= $1
+                  AND created_at <= $2
+            ) AS recovered_stale_run_count
         FROM research_batches
         WHERE created_at >= $1
           AND created_at <= $2
@@ -1483,6 +1527,8 @@ async fn load_research_batch_snapshot(
         proposals_created_count: row.get("proposals_created_count"),
         overfit_candidate_count: row.get("overfit_candidate_count"),
         robust_candidate_count: row.get("robust_candidate_count"),
+        stale_run_count: row.get("stale_run_count"),
+        recovered_stale_run_count: row.get("recovered_stale_run_count"),
     })
 }
 
@@ -1569,7 +1615,10 @@ async fn load_research_campaign_snapshot(
             continue;
         };
         let batch_records = list_research_campaign_batches(pool, campaign_id).await?;
-        let campaign = research_campaign_result_from_records(&campaign_record, &batch_records)?;
+        let Ok(campaign) = research_campaign_result_from_records(&campaign_record, &batch_records)
+        else {
+            continue;
+        };
         let leaderboard =
             aegis_core::build_research_regime_strategy_leaderboard(&campaign, window.generated_at);
         for selection in leaderboard.best_strategy_by_regime {
@@ -1902,7 +1951,7 @@ async fn load_research_experiment_plan_snapshot(
     pool: &PgPool,
     window: &ReportWindow,
 ) -> Result<ResearchExperimentPlanReportSnapshot> {
-    let row = query(
+    let row = match query(
         r#"
         SELECT
             COUNT(*) FILTER (WHERE p.created_at >= $1 AND p.created_at <= $2) AS created_count,
@@ -1932,8 +1981,13 @@ async fn load_research_experiment_plan_snapshot(
     )
     .bind(window.start)
     .bind(window.end)
-    .fetch_one(pool)
-    .await?;
+    .fetch_optional(pool)
+    .await?
+    {
+        Some(row) => row,
+        None => return Ok(ResearchExperimentPlanReportSnapshot::default()),
+    };
+
     Ok(ResearchExperimentPlanReportSnapshot {
         created_count: row.get("created_count"),
         ready_count: row.get("ready_count"),
@@ -2362,6 +2416,24 @@ fn build_findings(
             "No actionable candidates found",
             "Research batches in the selected window did not produce robust candidate evidence.",
             "research_batches",
+        ));
+    }
+    if research_batches.stale_run_count > 0 {
+        findings.push(finding(
+            "stale_research_runs_detected",
+            OperatorReportSeverity::Medium,
+            "Stale research runs detected",
+            "Research orchestration artifacts are stuck in STARTED, RUNNING, IN_PROGRESS, or PENDING state beyond the maintenance threshold.",
+            "research_maintenance",
+        ));
+    }
+    if research_batches.recovered_stale_run_count > 0 {
+        findings.push(finding(
+            "stale_research_runs_recovered",
+            OperatorReportSeverity::Low,
+            "Stale research runs recovered",
+            "Stale research artifacts were marked FAILED by the recovery workflow in the selected window.",
+            "research_maintenance",
         ));
     }
 
@@ -3355,6 +3427,7 @@ fn build_sections(
             if research_batches.failed_count > 0
                 || research_batches.data_quality_blocked_batch_count > 0
                 || research_batches.overfit_only_batch_count > 0
+                || research_batches.stale_run_count > 0
             {
                 OperatorReportStatus::Warning
             } else {
@@ -3397,6 +3470,11 @@ fn build_sections(
                 highlight(
                     "Robust Candidates",
                     research_batches.robust_candidate_count.to_string(),
+                ),
+                highlight("Stale Runs", research_batches.stale_run_count.to_string()),
+                highlight(
+                    "Recovered Stale Runs",
+                    research_batches.recovered_stale_run_count.to_string(),
                 ),
             ],
             research_batches,

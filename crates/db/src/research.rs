@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -30,16 +32,18 @@ use aegis_core::{
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
     ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus, ResearchRegimeDiscoverySummary,
     ResearchRegimeLabel, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput, ScheduledResearchJob,
-    ScheduledResearchJobKind, ScheduledResearchJobRequest, ScheduledResearchJobRun,
-    ScheduledResearchJobRunStatus, ScheduledResearchJobStatus,
-    StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
-    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
-    StrategyCandidateObservationSummary, StrategyResearchCandidate,
-    StrategyResearchCandidateEvidence, StrategyResearchCandidatePromotionResult,
-    StrategyResearchCandidateScore, StrategyResearchCandidateSource,
-    StrategyResearchCandidateStatus, StrategyWalkForwardRecommendation,
-    StrategyWalkForwardRobustnessStatus, Symbol,
+    ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput, ResearchStaleRunRecoveryAction,
+    ResearchStaleRunRecoveryRequest, ResearchStaleRunRecoveryResult,
+    ResearchStaleRunRecoveryStatus, ResearchStaleRunRecoveryTarget,
+    ResearchStaleRunRecoveryTargetType, ScheduledResearchJob, ScheduledResearchJobKind,
+    ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobRunStatus,
+    ScheduledResearchJobStatus, StrategyCandidateObservationDecision,
+    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
+    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
+    StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+    StrategyResearchCandidatePromotionResult, StrategyResearchCandidateScore,
+    StrategyResearchCandidateSource, StrategyResearchCandidateStatus,
+    StrategyWalkForwardRecommendation, StrategyWalkForwardRobustnessStatus, Symbol,
 };
 
 use crate::{PgPool, TestnetShadowRunRecord};
@@ -2716,6 +2720,519 @@ pub async fn list_research_campaign_batches(
     .await?;
 
     Ok(rows.into_iter().map(map_research_campaign_batch).collect())
+}
+
+#[derive(Debug, Clone)]
+struct StaleResearchRunCandidate {
+    target_type: ResearchStaleRunRecoveryTargetType,
+    target_id: Uuid,
+    current_status: String,
+    created_at: DateTime<Utc>,
+    updated_at: Option<DateTime<Utc>>,
+    started_at: Option<DateTime<Utc>>,
+    reference_at: DateTime<Utc>,
+}
+
+pub async fn recover_stale_research_runs(
+    pool: &PgPool,
+    request: &ResearchStaleRunRecoveryRequest,
+    actor_id: Option<Uuid>,
+) -> Result<ResearchStaleRunRecoveryResult> {
+    let now = Utc::now();
+    recover_stale_research_runs_at(pool, request, actor_id, now).await
+}
+
+pub async fn recover_stale_research_runs_at(
+    pool: &PgPool,
+    request: &ResearchStaleRunRecoveryRequest,
+    actor_id: Option<Uuid>,
+    now: DateTime<Utc>,
+) -> Result<ResearchStaleRunRecoveryResult> {
+    let older_than_minutes = request.normalized_older_than_minutes();
+    let threshold = now - chrono::Duration::minutes(older_than_minutes);
+    let allowed_targets = request
+        .target_types
+        .as_ref()
+        .map(|values| values.iter().copied().collect::<BTreeSet<_>>());
+
+    let mut candidates = Vec::new();
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::ResearchCampaign,
+        "research_campaigns",
+        "created_at",
+        "created_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::ResearchCampaignBatch,
+        "research_campaign_batches",
+        "created_at",
+        "created_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::ResearchBatch,
+        "research_batches",
+        "created_at",
+        "created_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::ResearchBatchStep,
+        "research_batch_steps",
+        "started_at",
+        "started_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::StrategyExperiment,
+        "strategy_experiments",
+        "created_at",
+        "created_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::StrategyWalkForwardRun,
+        "strategy_walk_forward_runs",
+        "created_at",
+        "created_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::StrategyRobustnessMatrixRun,
+        "strategy_robustness_matrix_runs",
+        "created_at",
+        "created_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+    scan_stale_research_target(
+        pool,
+        &mut candidates,
+        ResearchStaleRunRecoveryTargetType::ResearchExperimentPlanRun,
+        "research_experiment_plan_runs",
+        "created_at",
+        "created_at",
+        allowed_targets.as_ref(),
+    )
+    .await?;
+
+    let scanned_count = i64::try_from(candidates.len()).unwrap_or(i64::MAX);
+    candidates.retain(|candidate| candidate.reference_at <= threshold);
+    candidates.sort_by(|left, right| {
+        left.reference_at
+            .cmp(&right.reference_at)
+            .then_with(|| left.target_type.cmp(&right.target_type))
+            .then_with(|| left.target_id.cmp(&right.target_id))
+    });
+    let stale_count = i64::try_from(candidates.len()).unwrap_or(i64::MAX);
+    let limit = request.normalized_limit();
+    let limited = candidates
+        .into_iter()
+        .take(limit.unwrap_or(usize::MAX))
+        .collect::<Vec<_>>();
+
+    let mut warnings = Vec::new();
+    if let Some(limit) = limit {
+        if stale_count > i64::try_from(limit).unwrap_or(i64::MAX) {
+            warnings.push(format!(
+                "Recovery target list was limited to {limit}; more stale research artifacts remain."
+            ));
+        }
+    }
+    if request.dry_run {
+        warnings.push("dry_run=true; no research rows were mutated.".to_string());
+    }
+
+    let targets = limited
+        .iter()
+        .map(|candidate| stale_target_from_candidate(candidate, now))
+        .collect::<Vec<_>>();
+    let mut actions = targets
+        .iter()
+        .map(|target| ResearchStaleRunRecoveryAction {
+            target_type: target.target_type,
+            target_id: target.target_id,
+            action: "MARK_FAILED".to_string(),
+            from_status: target.current_status.clone(),
+            to_status: target.proposed_status.clone(),
+            reason: target.reason.clone(),
+            status: if request.dry_run {
+                ResearchStaleRunRecoveryStatus::Proposed
+            } else {
+                ResearchStaleRunRecoveryStatus::Skipped
+            },
+        })
+        .collect::<Vec<_>>();
+
+    let mut recovered_count = 0_i64;
+    if !request.dry_run && !targets.is_empty() {
+        let mut tx = pool.begin().await?;
+        for (target, action) in targets.iter().zip(actions.iter_mut()) {
+            let rows =
+                mark_stale_research_target_failed(&mut tx, target, request, actor_id).await?;
+            if rows > 0 {
+                recovered_count += rows;
+                action.status = ResearchStaleRunRecoveryStatus::Recovered;
+            } else {
+                action.status = ResearchStaleRunRecoveryStatus::Skipped;
+                warnings.push(format!(
+                    "{} {} was not recovered because it no longer matched a stale active status.",
+                    target.target_type.as_str(),
+                    target.target_id
+                ));
+            }
+        }
+        tx.commit().await?;
+    }
+
+    let skipped_count = if request.dry_run {
+        stale_count
+    } else {
+        stale_count.saturating_sub(recovered_count)
+    };
+
+    Ok(ResearchStaleRunRecoveryResult {
+        scanned_count,
+        stale_count,
+        recovered_count,
+        skipped_count,
+        targets,
+        actions,
+        warnings,
+    })
+}
+
+async fn scan_stale_research_target(
+    pool: &PgPool,
+    candidates: &mut Vec<StaleResearchRunCandidate>,
+    target_type: ResearchStaleRunRecoveryTargetType,
+    table: &str,
+    created_column: &str,
+    reference_column: &str,
+    allowed_targets: Option<&BTreeSet<ResearchStaleRunRecoveryTargetType>>,
+) -> Result<()> {
+    if allowed_targets.is_some_and(|allowed| !allowed.contains(&target_type)) {
+        return Ok(());
+    }
+    let sql = format!(
+        r#"
+        SELECT
+            id,
+            status,
+            {created_column} AS created_at,
+            NULL::timestamptz AS updated_at,
+            CASE WHEN '{reference_column}' = 'started_at' THEN {reference_column} ELSE NULL::timestamptz END AS started_at,
+            {reference_column} AS reference_at
+        FROM {table}
+        WHERE UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+        ORDER BY {reference_column} ASC, id ASC
+        "#
+    );
+    let rows = sqlx::query(sql.as_str()).fetch_all(pool).await?;
+    for row in rows {
+        candidates.push(StaleResearchRunCandidate {
+            target_type,
+            target_id: row.get("id"),
+            current_status: row.get("status"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            started_at: row.get("started_at"),
+            reference_at: row.get("reference_at"),
+        });
+    }
+    Ok(())
+}
+
+fn stale_target_from_candidate(
+    candidate: &StaleResearchRunCandidate,
+    now: DateTime<Utc>,
+) -> ResearchStaleRunRecoveryTarget {
+    let age_minutes = now
+        .signed_duration_since(candidate.reference_at)
+        .num_minutes()
+        .max(0);
+    ResearchStaleRunRecoveryTarget {
+        target_type: candidate.target_type,
+        target_id: candidate.target_id,
+        current_status: candidate.current_status.clone(),
+        created_at: candidate.created_at,
+        updated_at: candidate.updated_at,
+        started_at: candidate.started_at,
+        age_minutes,
+        proposed_status: "FAILED".to_string(),
+        reason: aegis_core::stale_research_run_reason(age_minutes),
+    }
+}
+
+async fn mark_stale_research_target_failed(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    target: &ResearchStaleRunRecoveryTarget,
+    request: &ResearchStaleRunRecoveryRequest,
+    actor_id: Option<Uuid>,
+) -> Result<i64> {
+    let rows = match target.target_type {
+        ResearchStaleRunRecoveryTargetType::ResearchCampaign => sqlx::query(
+            r#"
+                UPDATE research_campaigns
+                SET status = 'FAILED',
+                    completed_at = NOW(),
+                    error = COALESCE(error || E'\n', '') || $2,
+                    summary = summary || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+        ResearchStaleRunRecoveryTargetType::ResearchCampaignBatch => sqlx::query(
+            r#"
+                UPDATE research_campaign_batches
+                SET status = 'FAILED',
+                    triage_status = 'FAILED',
+                    completed_at = NOW(),
+                    error = COALESCE(error || E'\n', '') || $2,
+                    summary = summary || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+        ResearchStaleRunRecoveryTargetType::ResearchBatch => sqlx::query(
+            r#"
+                UPDATE research_batches
+                SET status = 'FAILED',
+                    completed_at = NOW(),
+                    summary = summary || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+        ResearchStaleRunRecoveryTargetType::ResearchBatchStep => sqlx::query(
+            r#"
+                UPDATE research_batch_steps
+                SET status = 'FAILED',
+                    completed_at = NOW(),
+                    error = COALESCE(error || E'\n', '') || $2,
+                    result = result || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+        ResearchStaleRunRecoveryTargetType::StrategyExperiment => sqlx::query(
+            r#"
+                UPDATE strategy_experiments
+                SET status = 'FAILED',
+                    skipped_reason = COALESCE(skipped_reason, $2),
+                    warnings = COALESCE(warnings, '[]'::jsonb) || jsonb_build_array($2),
+                    comparison = comparison || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+        ResearchStaleRunRecoveryTargetType::StrategyWalkForwardRun => sqlx::query(
+            r#"
+                UPDATE strategy_walk_forward_runs
+                SET status = 'FAILED',
+                    robustness_status = 'FAILED',
+                    robustness_summary = robustness_summary || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+        ResearchStaleRunRecoveryTargetType::StrategyRobustnessMatrixRun => sqlx::query(
+            r#"
+                UPDATE strategy_robustness_matrix_runs
+                SET status = 'FAILED',
+                    summary = summary || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+        ResearchStaleRunRecoveryTargetType::ResearchExperimentPlanRun => sqlx::query(
+            r#"
+                UPDATE research_experiment_plan_runs
+                SET status = 'FAILED',
+                    completed_at = NOW(),
+                    error = COALESCE(error || E'\n', '') || $2,
+                    result = result || jsonb_build_object(
+                        'stale_recovery',
+                        jsonb_build_object(
+                            'reason', $2,
+                            'previous_status', status,
+                            'recovered_status', 'FAILED',
+                            'recovered_at', NOW()
+                        )
+                    )
+                WHERE id = $1
+                  AND UPPER(status) IN ('STARTED', 'RUNNING', 'IN_PROGRESS', 'PENDING')
+                "#,
+        )
+        .bind(target.target_id)
+        .bind(&target.reason)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected(),
+    };
+
+    if rows > 0 {
+        sqlx::query(
+            r#"
+            INSERT INTO research_stale_run_recoveries (
+                id,
+                target_type,
+                target_id,
+                previous_status,
+                recovered_status,
+                reason,
+                age_minutes,
+                stale_threshold_minutes,
+                actor_id,
+                correlation_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(target.target_type.as_str())
+        .bind(target.target_id)
+        .bind(&target.current_status)
+        .bind(&target.proposed_status)
+        .bind(&target.reason)
+        .bind(target.age_minutes)
+        .bind(request.normalized_older_than_minutes())
+        .bind(actor_id)
+        .bind(request.correlation_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(i64::try_from(rows).unwrap_or(i64::MAX))
+}
+
+pub async fn count_research_stale_run_recoveries_since(
+    pool: &PgPool,
+    since: DateTime<Utc>,
+) -> Result<i64> {
+    let row = sqlx::query(
+        r#"
+        SELECT COUNT(*)::BIGINT AS recovered_count
+        FROM research_stale_run_recoveries
+        WHERE created_at >= $1
+        "#,
+    )
+    .bind(since)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("recovered_count"))
 }
 
 pub async fn insert_research_candidate_proposal(
