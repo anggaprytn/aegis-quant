@@ -86,6 +86,61 @@ curl -I http://127.0.0.1:3101
 
 Use `AEGIS_ACCESS_TOKEN` with the smoke script when authenticated research read endpoints should be checked.
 
+## VPS Read-Only Scheduled Research Validation
+
+Use the VPS read-only validator after deployment or during scheduler triage when you need evidence without mutating production state:
+
+```bash
+AEGIS_API_BASE_URL=http://127.0.0.1:3100 \
+AEGIS_DASHBOARD_URL=http://127.0.0.1:3101 \
+AEGIS_ACCESS_TOKEN="$AEGIS_ACCESS_TOKEN" \
+AEGIS_READONLY_DATABASE_URL="$AEGIS_READONLY_DATABASE_URL" \
+./scripts/validate-vps-readonly.sh
+```
+
+The script only uses `docker ps`, `docker logs --tail`, `curl` GET requests, and `psql` SELECT statements against `ai_read` views through `AEGIS_READONLY_DATABASE_URL`. It does not run sync, restart containers, apply migrations, create jobs, run jobs, call POST endpoints, or touch execution paths. If a token or read-only database URL is not available, those checks are reported as WARN/SKIP-style warnings instead of falling back to write-capable credentials.
+
+Expected healthy shape:
+
+```txt
+Aegis VPS read-only validation
+...
+== API Health ==
+OK   GET /system/health HTTP 200
+
+== Dashboard ==
+OK   dashboard HTTP 200
+
+== Containers ==
+OK   aegis-quant-api running; no error-like log lines in last 80 lines
+OK   aegis-quant-scheduled-research-runner running; no error-like log lines in last 80 lines
+
+== Market Feed ==
+OK   GET /market/feed-status HTTP 200; feeds=3 stale_or_degraded=0
+
+== Aggregation Status ==
+OK   GET /market/candles/aggregation-status HTTP 200; rows=9 stale_or_missing=0
+
+== Scheduled Jobs ==
+OK   GET /research/scheduled-jobs HTTP 200; jobs=14 enabled=14 auto_paused=0 backing_off=0
+
+== Execution Safety ==
+OK   ai_read.execution_safety_counts
+orders|0
+paper_positions|0
+paper_fills|0
+exchange_testnet_orders|0
+
+== Summary ==
+OK=... WARN=0 FAIL=0
+```
+
+If scheduler jobs are `AUTO_PAUSED` or `BACKING_OFF`, do not immediately reset failures. First inspect the listed job name, last failure reason, and scheduler logs. Fix the underlying input problem, usually provider reachability, missing candles, stale aggregation, or report-generation dependencies. Only after the cause is understood should an operator use the normal authenticated reset or resume flow.
+
+If aggregation is stale or missing, confirm the market ingest and candle aggregator containers are running and that 1m candle freshness is healthy. Prefer read-only inspection first: feed status, aggregation status, and `ai_read.candle_coverage` if available. Do not run repair, backfill, aggregation POSTs, migrations, or restarts as part of validation; handle those as a separate operator action with an explicit backup/maintenance plan when needed.
+
+If `ai_read.execution_safety_counts` reports non-zero counts on a VPS that should be research-only, stop treating the environment as clean. Do not clear rows or run destructive SQL. Capture the counts, review audit logs and operator history, identify which execution surface produced the rows, and keep scheduled research paused until the source is understood. Non-zero paper or testnet counts may be expected only if the VPS is intentionally running those isolated modes.
+
 ## Scheduled Research Runner
 
 The scheduled research runner is disabled by default. Keep it disabled during deploys, run migrations, then bootstrap low-risk monitoring jobs first:
