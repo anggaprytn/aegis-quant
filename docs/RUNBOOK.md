@@ -149,17 +149,29 @@ This means Postgres does not need to expose a host port for validation. If neith
 Run with VPS CLI auth token auto-load (no token required on command line):
 
 ```bash
-AEGIS_API_BASE_URL=http://127.0.0.1:3100 \
-AEGIS_DASHBOARD_URL=http://127.0.0.1:3101 \
-./scripts/validate-vps-readonly.sh
+export AEGIS_API_BASE_URL=http://127.0.0.1:3100
+export AEGIS_DASHBOARD_URL=http://127.0.0.1:3101
+
+# default behavior is read-only; no automatic login by default
+bash scripts/validate-vps-readonly.sh
 ```
 
 `validate-vps-readonly.sh` is read-only and does not print secrets.
 It uses `AEGIS_ACCESS_TOKEN` when set, otherwise loads `~/.config/aegis/token.json` as fallback.
+By default it is read-only and will not run any auth login flow automatically.
+Use `--auto-login` to enable a safe optional refresh flow:
+
+```bash
+export AEGIS_API_BASE_URL=http://127.0.0.1:3100
+export AEGIS_DASHBOARD_URL=http://127.0.0.1:3101
+
+# --auto-login may call aegislogin (POST /auth/login) when authenticated checks return 401
+bash scripts/validate-vps-readonly.sh --auto-login
+```
 
 ## Fix stale validator token
 
-If authenticated checks return `401`, refresh the CLI token cache and re-run the validator:
+If authenticated checks return `401`, use the manual token refresh flow:
 
 ```bash
 unset AEGIS_ACCESS_TOKEN
@@ -184,7 +196,7 @@ Useful modes:
 ./scripts/validate-vps-readonly.sh --json
 ```
 
-The script only uses `docker ps`, `docker logs --tail`, `curl` GET requests, `psql` SELECT statements against `ai_read` views, and Docker exec into `aegis-quant-postgres` as `aegis_readonly`. It does not run sync, restart containers, apply migrations, create jobs, run jobs, call POST endpoints, or touch execution paths. If a token is not available, authenticated scheduled research API checks are reported as `WARN` and skipped.
+The script only uses `docker ps`, `docker logs --tail`, `curl` GET requests, `psql` SELECT statements against `ai_read` views, and Docker exec into `aegis-quant-postgres` as `aegis_readonly`. It does not run sync, restart containers, apply migrations, create jobs, run jobs, call POST endpoints, or touch execution paths. If a token is not available and `--auto-login` is not set, authenticated scheduled research API checks are reported as `WARN` and skipped.
 
 DB validation queries are limited to these read-only views:
 

@@ -6,6 +6,8 @@ DASHBOARD_URL="${AEGIS_DASHBOARD_URL:-http://127.0.0.1:3101}"
 ACCESS_TOKEN="${AEGIS_ACCESS_TOKEN:-}"
 TOKEN_SOURCE="none"
 PREFER_CLI_TOKEN=0
+AUTO_LOGIN=0
+AUTO_LOGIN_ATTEMPTED=0
 READONLY_DATABASE_URL="${AEGIS_READONLY_DATABASE_URL:-}"
 TAIL_LINES="${AEGIS_VALIDATE_LOG_TAIL_LINES:-80}"
 JOB_LIMIT="${AEGIS_VALIDATE_JOB_LIMIT:-50}"
@@ -25,7 +27,7 @@ JSON_EVENTS=()
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/validate-vps-readonly.sh [--strict] [--json] [--skip-db] [--skip-api] [--prefer-cli-token]
+Usage: scripts/validate-vps-readonly.sh [--strict] [--json] [--skip-db] [--skip-api] [--prefer-cli-token] [--auto-login]
 
 Read-only VPS validation for Aegis API and Docker-based ai_read database views.
 
@@ -43,6 +45,8 @@ Flags:
   --skip-api Skip API and dashboard checks.
   --prefer-cli-token
             Ignore AEGIS_ACCESS_TOKEN and load token from ~/.config/aegis/token.json.
+  --auto-login
+            Retry one-time authenticated checks by running aegislogin when auth returns 401.
 
 Environment:
   AEGIS_API_BASE_URL              default http://127.0.0.1:3100
@@ -70,6 +74,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-api)
       SKIP_API=1
+      ;;
+    --auto-login)
+      AUTO_LOGIN=1
       ;;
     --prefer-cli-token)
       PREFER_CLI_TOKEN=1
@@ -143,15 +150,12 @@ need_command() {
   return 1
 }
 
-load_access_token() {
-  if [ "$PREFER_CLI_TOKEN" -eq 0 ] && [ -n "$ACCESS_TOKEN" ]; then
-    TOKEN_SOURCE="environment"
-    return 0
-  fi
-
+load_token_from_file() {
   local token_file="${HOME}/.config/aegis/token.json"
+
   if [ ! -f "$token_file" ]; then
     TOKEN_SOURCE="missing"
+    ACCESS_TOKEN=""
     return 1
   fi
 
@@ -171,8 +175,49 @@ load_access_token() {
   return 1
 }
 
+load_access_token() {
+  if [ "$PREFER_CLI_TOKEN" -eq 0 ] && [ -n "$ACCESS_TOKEN" ]; then
+    TOKEN_SOURCE="environment"
+    return 0
+  fi
+
+  load_token_from_file
+}
+
 token_stale_hint() {
-  warn 'Token may be missing or stale. Run: unset AEGIS_ACCESS_TOKEN && aegislogin, then export AEGIS_ACCESS_TOKEN from ~/.config/aegis/token.json'
+  warn 'Token may be missing or stale. Run with --auto-login or refresh manually with: unset AEGIS_ACCESS_TOKEN && aegislogin'
+}
+
+maybe_auto_login() {
+  if [ "$AUTO_LOGIN" -eq 0 ] || [ "$AUTO_LOGIN_ATTEMPTED" -eq 1 ]; then
+    return 1
+  fi
+
+  AUTO_LOGIN_ATTEMPTED=1
+
+  # Override only in-script token state; keep host environment untouched.
+  ACCESS_TOKEN=""
+  TOKEN_SOURCE="none"
+
+  info "Authenticated request returned 401; refreshing CLI token via aegislogin" >&2
+
+  if ! command -v aegislogin >/dev/null 2>&1; then
+    warn "aegislogin command not found; cannot auto-refresh token" >&2
+    return 1
+  fi
+
+  if ! aegislogin; then
+    warn "aegislogin failed; token refresh was not completed" >&2
+    return 1
+  fi
+
+  if ! load_token_from_file; then
+    warn "Unable to load token from ~/.config/aegis/token.json after aegislogin" >&2
+    return 1
+  fi
+
+  info "Token reloaded from CLI token file" >&2
+  return 0
 }
 
 curl_get() {
@@ -191,6 +236,18 @@ curl_status() {
   else
     curl -sS -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || true
   fi
+}
+
+curl_status_with_auto_login() {
+  local url="$1"
+  local status
+
+  status="$(curl_status "$url")"
+  if [ "$status" = "401" ] && maybe_auto_login; then
+    status="$(curl_status "$url")"
+  fi
+
+  printf '%s' "$status"
 }
 
 dashboard_status() {
@@ -438,7 +495,7 @@ run_api_checks() {
   esac
 
   section "Market Feed"
-  feed_status="$(curl_status "$API_BASE_URL/market/feed-status")"
+  feed_status="$(curl_status_with_auto_login "$API_BASE_URL/market/feed-status")"
   case "$feed_status" in
     200)
       feed_body="$(curl_get "$API_BASE_URL/market/feed-status" || true)"
@@ -471,7 +528,7 @@ run_api_checks() {
   esac
 
   section "Aggregation Status"
-  aggregation_status="$(curl_status "$API_BASE_URL/market/candles/aggregation-status")"
+  aggregation_status="$(curl_status_with_auto_login "$API_BASE_URL/market/candles/aggregation-status")"
   case "$aggregation_status" in
     200)
       aggregation_body="$(curl_get "$API_BASE_URL/market/candles/aggregation-status" || true)"
@@ -504,12 +561,7 @@ run_api_checks() {
   esac
 
   section "Scheduled Jobs"
-  if [ -z "$ACCESS_TOKEN" ]; then
-    warn "GET /research/scheduled-jobs skipped; set AEGIS_ACCESS_TOKEN for authenticated read-only endpoint"
-    return
-  fi
-
-  jobs_status="$(curl_status "$API_BASE_URL/research/scheduled-jobs?limit=$JOB_LIMIT")"
+  jobs_status="$(curl_status_with_auto_login "$API_BASE_URL/research/scheduled-jobs?limit=$JOB_LIMIT")"
   case "$jobs_status" in
     200)
       jobs_body="$(curl_get "$API_BASE_URL/research/scheduled-jobs?limit=$JOB_LIMIT" || true)"
@@ -544,7 +596,7 @@ run_api_checks() {
           while IFS= read -r job_id; do
             [ -n "$job_id" ] || continue
             job_name="$(jq -r --arg id "$job_id" '.jobs[]? | select(.id == $id) | .name' 2>/dev/null <<<"$jobs_body")"
-                runs_status="$(curl_status "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT")"
+                runs_status="$(curl_status_with_auto_login "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT")"
                 case "$runs_status" in
                   200)
                     runs_body="$(curl_get "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT" || true)"
@@ -683,6 +735,9 @@ echo "Dashboard: $DASHBOARD_URL"
 echo "Strict: $STRICT"
 echo "API checks: $([ "$SKIP_API" -eq 1 ] && printf 'skipped' || printf 'enabled')"
 echo "Database checks: $([ "$SKIP_DB" -eq 1 ] && printf 'skipped' || printf 'enabled')"
+if [ "$AUTO_LOGIN" -eq 1 ]; then
+  info "Auto-login enabled"
+fi
 load_access_token
 if [ -n "$ACCESS_TOKEN" ]; then
   case "$TOKEN_SOURCE" in
