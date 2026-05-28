@@ -172,6 +172,9 @@ struct ResearchExperimentPlanReportSnapshot {
 struct ScheduledResearchReportSnapshot {
     enabled_jobs: i64,
     failed_runs: i64,
+    backing_off_jobs: i64,
+    auto_paused_jobs: i64,
+    repeated_failure_jobs: i64,
     last_successful_run: Option<DateTime<Utc>>,
     stale_jobs: i64,
 }
@@ -1992,6 +1995,9 @@ async fn load_scheduled_research_snapshot(
         SELECT
             (SELECT COUNT(*)::BIGINT FROM scheduled_research_jobs WHERE enabled = TRUE) AS enabled_jobs,
             (SELECT COUNT(*)::BIGINT FROM scheduled_research_job_runs WHERE status = 'FAILED' AND started_at >= $1 AND started_at <= $2) AS failed_runs,
+            (SELECT COUNT(*)::BIGINT FROM scheduled_research_jobs WHERE status = 'BACKING_OFF') AS backing_off_jobs,
+            (SELECT COUNT(*)::BIGINT FROM scheduled_research_jobs WHERE status = 'AUTO_PAUSED') AS auto_paused_jobs,
+            (SELECT COUNT(*)::BIGINT FROM scheduled_research_jobs WHERE consecutive_failure_count >= 2) AS repeated_failure_jobs,
             (SELECT MAX(completed_at) FROM scheduled_research_job_runs WHERE status = 'COMPLETED') AS last_successful_run,
             (SELECT COUNT(*)::BIGINT FROM scheduled_research_jobs WHERE enabled = TRUE AND next_run_at < $3) AS stale_jobs
         "#,
@@ -2005,6 +2011,9 @@ async fn load_scheduled_research_snapshot(
     Ok(ScheduledResearchReportSnapshot {
         enabled_jobs: row.get("enabled_jobs"),
         failed_runs: row.get("failed_runs"),
+        backing_off_jobs: row.get("backing_off_jobs"),
+        auto_paused_jobs: row.get("auto_paused_jobs"),
+        repeated_failure_jobs: row.get("repeated_failure_jobs"),
         last_successful_run: row.get("last_successful_run"),
         stale_jobs: row.get("stale_jobs"),
     })
@@ -2933,7 +2942,29 @@ fn build_findings(
         ));
     }
 
-    if scheduled_research.failed_runs > 0 {
+    if scheduled_research.auto_paused_jobs > 0 {
+        findings.push(finding(
+            "scheduled_research_job_auto_paused",
+            OperatorReportSeverity::High,
+            "Scheduled research job auto-paused after repeated failures",
+            &format!(
+                "{} scheduled research jobs are auto-paused after repeated failures.",
+                scheduled_research.auto_paused_jobs
+            ),
+            "scheduled_research",
+        ));
+    } else if scheduled_research.backing_off_jobs > 0 {
+        findings.push(finding(
+            "scheduled_research_job_backing_off",
+            OperatorReportSeverity::Medium,
+            "Scheduled research job backing off",
+            &format!(
+                "{} scheduled research jobs are backing off after repeated failures.",
+                scheduled_research.backing_off_jobs
+            ),
+            "scheduled_research",
+        ));
+    } else if scheduled_research.failed_runs > 0 {
         findings.push(finding(
             "scheduled_research_job_failed",
             OperatorReportSeverity::Medium,
@@ -3804,12 +3835,21 @@ fn build_sections(
         section(
             "scheduled_research",
             "Scheduled Research",
-            if scheduled_research.failed_runs > 0 || scheduled_research.enabled_jobs == 0 {
+            if scheduled_research.auto_paused_jobs > 0 {
+                OperatorReportStatus::Critical
+            } else if scheduled_research.backing_off_jobs > 0
+                || scheduled_research.failed_runs > 0
+                || scheduled_research.enabled_jobs == 0
+            {
                 OperatorReportStatus::Warning
             } else {
                 OperatorReportStatus::Ok
             },
-            if scheduled_research.enabled_jobs == 0 {
+            if scheduled_research.auto_paused_jobs > 0 {
+                "At least one scheduled research job is auto-paused after repeated failures."
+            } else if scheduled_research.backing_off_jobs > 0 {
+                "At least one scheduled research job is backing off after repeated failures."
+            } else if scheduled_research.enabled_jobs == 0 {
                 "No scheduled research jobs are enabled."
             } else if scheduled_research.failed_runs > 0 {
                 "At least one scheduled research run failed in the report window."
@@ -3827,6 +3867,18 @@ fn build_sections(
                         .unwrap_or_else(|| "N/A".to_string()),
                 ),
                 highlight("Stale Jobs", scheduled_research.stale_jobs.to_string()),
+                highlight(
+                    "Backing Off Jobs",
+                    scheduled_research.backing_off_jobs.to_string(),
+                ),
+                highlight(
+                    "Auto-Paused Jobs",
+                    scheduled_research.auto_paused_jobs.to_string(),
+                ),
+                highlight(
+                    "Repeated Failures",
+                    scheduled_research.repeated_failure_jobs.to_string(),
+                ),
             ],
             scheduled_research,
         )?,

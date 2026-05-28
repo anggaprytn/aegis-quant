@@ -6,10 +6,11 @@ use aegis_core::{
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use db::{
-    get_latest_candle_aggregation_run, get_latest_closed_candle_time,
+    get_latest_candle_aggregation_run, get_latest_closed_candle_time, get_scheduled_research_job,
     insert_scheduled_research_job_run, list_due_scheduled_research_jobs, list_market_feed_statuses,
     mark_scheduled_research_job_after_run, scheduled_research_job_from_record,
     scheduled_research_job_run_from_record, summarize_candle_continuity_report,
+    try_claim_scheduled_research_job,
 };
 use serde_json::{json, Value};
 use tracing::{error, info, warn};
@@ -18,6 +19,9 @@ use uuid::Uuid;
 use crate::AppState;
 
 pub const DEFAULT_SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS: u64 = 60;
+pub const DEFAULT_SCHEDULED_RESEARCH_MAX_CONSECUTIVE_FAILURES: i32 = 5;
+pub const DEFAULT_SCHEDULED_RESEARCH_BACKOFF_BASE_SECONDS: i64 = 300;
+pub const DEFAULT_SCHEDULED_RESEARCH_BACKOFF_MAX_SECONDS: i64 = 3600;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledResearchTickResult {
@@ -46,6 +50,149 @@ struct ScheduledJobExecution {
     artifact_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScheduledJobCompletionUpdate {
+    status: ScheduledResearchJobStatus,
+    next_run_at: Option<chrono::DateTime<Utc>>,
+    backoff_until: Option<chrono::DateTime<Utc>>,
+    consecutive_failure_count: i32,
+    last_failure_at: Option<chrono::DateTime<Utc>>,
+    last_failure_reason: Option<String>,
+    last_success_at: Option<chrono::DateTime<Utc>>,
+    enabled: bool,
+    auto_paused_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScheduledResearchFailurePolicy {
+    max_consecutive_failures: i32,
+    backoff_base_seconds: i64,
+    backoff_max_seconds: i64,
+}
+
+impl Default for ScheduledResearchFailurePolicy {
+    fn default() -> Self {
+        Self {
+            max_consecutive_failures: DEFAULT_SCHEDULED_RESEARCH_MAX_CONSECUTIVE_FAILURES,
+            backoff_base_seconds: DEFAULT_SCHEDULED_RESEARCH_BACKOFF_BASE_SECONDS,
+            backoff_max_seconds: DEFAULT_SCHEDULED_RESEARCH_BACKOFF_MAX_SECONDS,
+        }
+    }
+}
+
+impl ScheduledResearchFailurePolicy {
+    fn from_env() -> Self {
+        Self {
+            max_consecutive_failures: env_i32(
+                "SCHEDULED_RESEARCH_MAX_CONSECUTIVE_FAILURES",
+                DEFAULT_SCHEDULED_RESEARCH_MAX_CONSECUTIVE_FAILURES,
+            )
+            .max(1),
+            backoff_base_seconds: env_i64(
+                "SCHEDULED_RESEARCH_BACKOFF_BASE_SECONDS",
+                DEFAULT_SCHEDULED_RESEARCH_BACKOFF_BASE_SECONDS,
+            )
+            .max(1),
+            backoff_max_seconds: env_i64(
+                "SCHEDULED_RESEARCH_BACKOFF_MAX_SECONDS",
+                DEFAULT_SCHEDULED_RESEARCH_BACKOFF_MAX_SECONDS,
+            )
+            .max(1),
+        }
+    }
+}
+
+fn job_completion_update(
+    job: &ScheduledResearchJob,
+    execution: &ScheduledJobExecution,
+    completed_at: chrono::DateTime<Utc>,
+    policy: &ScheduledResearchFailurePolicy,
+) -> ScheduledJobCompletionUpdate {
+    let normal_next_run_at =
+        scheduled_research_next_run_at(completed_at, job.interval_seconds).ok();
+    if matches!(execution.status, ScheduledResearchJobRunStatus::Failed) {
+        let consecutive_failure_count = job.consecutive_failure_count.saturating_add(1);
+        let last_failure_reason = execution
+            .error
+            .clone()
+            .or_else(|| Some("scheduled research job failed".to_string()));
+
+        if consecutive_failure_count >= policy.max_consecutive_failures {
+            let reason = format!(
+                "auto-paused after {consecutive_failure_count} consecutive scheduled research failures"
+            );
+            return ScheduledJobCompletionUpdate {
+                status: ScheduledResearchJobStatus::AutoPaused,
+                next_run_at: None,
+                backoff_until: None,
+                consecutive_failure_count,
+                last_failure_at: Some(completed_at),
+                last_failure_reason,
+                last_success_at: job.last_success_at,
+                enabled: false,
+                auto_paused_reason: Some(reason),
+            };
+        }
+
+        let backoff_until = scheduled_research_backoff_until(
+            completed_at,
+            consecutive_failure_count,
+            policy.backoff_base_seconds,
+            policy.backoff_max_seconds,
+        );
+        let status = if backoff_until.is_some() {
+            ScheduledResearchJobStatus::BackingOff
+        } else {
+            ScheduledResearchJobStatus::Error
+        };
+        return ScheduledJobCompletionUpdate {
+            status,
+            next_run_at: backoff_until.or(normal_next_run_at),
+            backoff_until,
+            consecutive_failure_count,
+            last_failure_at: Some(completed_at),
+            last_failure_reason,
+            last_success_at: job.last_success_at,
+            enabled: job.enabled,
+            auto_paused_reason: None,
+        };
+    }
+
+    ScheduledJobCompletionUpdate {
+        status: if job.enabled {
+            ScheduledResearchJobStatus::Enabled
+        } else {
+            ScheduledResearchJobStatus::Disabled
+        },
+        next_run_at: normal_next_run_at,
+        backoff_until: None,
+        consecutive_failure_count: 0,
+        last_failure_at: job.last_failure_at,
+        last_failure_reason: None,
+        last_success_at: Some(completed_at),
+        enabled: job.enabled,
+        auto_paused_reason: None,
+    }
+}
+
+fn scheduled_research_backoff_until(
+    completed_at: chrono::DateTime<Utc>,
+    consecutive_failure_count: i32,
+    base_seconds: i64,
+    max_seconds: i64,
+) -> Option<chrono::DateTime<Utc>> {
+    if consecutive_failure_count < 2 {
+        return None;
+    }
+    let multiplier = if consecutive_failure_count == 2 {
+        1
+    } else {
+        3_i64.saturating_mul(2_i64.saturating_pow((consecutive_failure_count - 3) as u32))
+    };
+    let seconds = base_seconds.saturating_mul(multiplier).min(max_seconds);
+    Some(completed_at + Duration::seconds(seconds))
+}
+
 pub async fn run_scheduled_research_tick(
     state: &AppState,
     max_jobs: i64,
@@ -66,7 +213,9 @@ pub async fn run_scheduled_research_tick(
                 Ok(run) => match run.status {
                     ScheduledResearchJobRunStatus::Completed => tick.completed_runs += 1,
                     ScheduledResearchJobRunStatus::Failed => tick.failed_runs += 1,
-                    ScheduledResearchJobRunStatus::Skipped => tick.skipped_runs += 1,
+                    ScheduledResearchJobRunStatus::Skipped
+                    | ScheduledResearchJobRunStatus::SkippedOverlap
+                    | ScheduledResearchJobRunStatus::SkippedBackoff => tick.skipped_runs += 1,
                     ScheduledResearchJobRunStatus::PartialSuccess => tick.completed_runs += 1,
                 },
                 Err(err) => {
@@ -94,6 +243,7 @@ async fn run_scheduled_research_job(
 ) -> Result<ScheduledResearchJobRun> {
     let started_at = Utc::now();
     let correlation_id = Uuid::new_v4();
+    let policy = ScheduledResearchFailurePolicy::from_env();
 
     if !manual && (!job.enabled || matches!(job.status, ScheduledResearchJobStatus::Paused)) {
         let completed_at = Utc::now();
@@ -113,8 +263,53 @@ async fn run_scheduled_research_job(
         return scheduled_research_job_run_from_record(&record);
     }
 
+    if !manual {
+        if let Some(backoff_until) = job.backoff_until {
+            if backoff_until > started_at {
+                return record_skip_without_run_history(
+                    state,
+                    job,
+                    started_at,
+                    correlation_id,
+                    ScheduledResearchJobRunStatus::SkippedBackoff,
+                    "job_backing_off",
+                )
+                .await;
+            }
+        }
+    }
+
+    let claimed_record =
+        try_claim_scheduled_research_job(&state.db_pool, job.id, started_at, manual).await?;
+    let claimed_job = match claimed_record {
+        Some(record) => scheduled_research_job_from_record(&record)?,
+        None => {
+            let latest = get_scheduled_research_job(&state.db_pool, job.id).await?;
+            let reason = latest
+                .as_ref()
+                .map(|record| record.status.as_str())
+                .unwrap_or("not_found");
+            let status = if reason == "RUNNING" {
+                ScheduledResearchJobRunStatus::SkippedOverlap
+            } else if reason == "BACKING_OFF" {
+                ScheduledResearchJobRunStatus::SkippedBackoff
+            } else {
+                ScheduledResearchJobRunStatus::Skipped
+            };
+            return record_skip_without_run_history(
+                state,
+                job,
+                started_at,
+                correlation_id,
+                status,
+                reason,
+            )
+            .await;
+        }
+    };
+
     let before_counts = execution_table_counts(&state.db_pool).await?;
-    let execution = execute_job_kind(state, job, correlation_id).await;
+    let execution = execute_job_kind(state, &claimed_job, correlation_id).await;
     let after_counts = execution_table_counts(&state.db_pool).await?;
     let isolation_ok = before_counts == after_counts;
 
@@ -137,7 +332,7 @@ async fn run_scheduled_research_job(
     }
 
     let result = json!({
-        "job_kind": job.kind.as_str(),
+        "job_kind": claimed_job.kind.as_str(),
         "manual": manual,
         "payload": execution.result,
         "execution_isolation": {
@@ -149,7 +344,7 @@ async fn run_scheduled_research_job(
 
     let run = ScheduledResearchJobRun {
         id: Uuid::new_v4(),
-        job_id: job.id,
+        job_id: claimed_job.id,
         status: execution.status,
         started_at,
         completed_at: Some(completed_at),
@@ -160,26 +355,26 @@ async fn run_scheduled_research_job(
         correlation_id: Some(correlation_id),
     };
     let record = insert_scheduled_research_job_run(&state.db_pool, &run).await?;
-    let next_run_at = scheduled_research_next_run_at(completed_at, job.interval_seconds).ok();
-    let next_status = if matches!(execution.status, ScheduledResearchJobRunStatus::Failed) {
-        ScheduledResearchJobStatus::Error
-    } else if job.enabled {
-        ScheduledResearchJobStatus::Enabled
-    } else {
-        ScheduledResearchJobStatus::Disabled
-    };
+    let completion = job_completion_update(&claimed_job, &execution, completed_at, &policy);
     let _ = mark_scheduled_research_job_after_run(
         &state.db_pool,
-        job.id,
+        claimed_job.id,
         completed_at,
-        next_run_at,
-        next_status,
+        completion.next_run_at,
+        completion.status,
+        completion.consecutive_failure_count,
+        completion.last_failure_at,
+        completion.last_failure_reason.as_deref(),
+        completion.last_success_at,
+        completion.backoff_until,
+        completion.enabled,
+        completion.auto_paused_reason.as_deref(),
     )
     .await;
 
     info!(
-        job_id = %job.id,
-        kind = job.kind.as_str(),
+        job_id = %claimed_job.id,
+        kind = claimed_job.kind.as_str(),
         status = run.status.as_str(),
         artifact_type = run.created_artifact_type.as_deref().unwrap_or(""),
         artifact_id = ?run.created_artifact_id,
@@ -187,6 +382,36 @@ async fn run_scheduled_research_job(
         "scheduled research job run recorded"
     );
 
+    scheduled_research_job_run_from_record(&record)
+}
+
+async fn record_skip_without_run_history(
+    state: &AppState,
+    job: &ScheduledResearchJob,
+    started_at: chrono::DateTime<Utc>,
+    correlation_id: Uuid,
+    status: ScheduledResearchJobRunStatus,
+    reason: &str,
+) -> Result<ScheduledResearchJobRun> {
+    let completed_at = Utc::now();
+    let run = ScheduledResearchJobRun {
+        id: Uuid::new_v4(),
+        job_id: job.id,
+        status,
+        started_at,
+        completed_at: Some(completed_at),
+        result: json!({"skipped": true, "reason": reason}),
+        error: None,
+        created_artifact_type: None,
+        created_artifact_id: None,
+        correlation_id: Some(correlation_id),
+    };
+
+    if matches!(status, ScheduledResearchJobRunStatus::SkippedBackoff) {
+        return Ok(run);
+    }
+
+    let record = insert_scheduled_research_job_run(&state.db_pool, &run).await?;
     scheduled_research_job_run_from_record(&record)
 }
 
@@ -386,6 +611,131 @@ pub fn runner_interval_from_env() -> Result<u64> {
         .context("invalid SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS")?)
 }
 
+fn env_i32(name: &str, default: i32) -> i32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(default)
+}
+
+fn env_i64(name: &str, default: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(default)
+}
+
 pub fn stale_scheduled_job_threshold() -> Duration {
     Duration::hours(24)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aegis_core::ScheduledResearchJobKind;
+
+    fn job(consecutive_failure_count: i32) -> ScheduledResearchJob {
+        ScheduledResearchJob {
+            id: Uuid::new_v4(),
+            name: "test".to_string(),
+            kind: ScheduledResearchJobKind::ProviderHealth,
+            enabled: true,
+            interval_seconds: 60,
+            request: json!({}),
+            max_runs_per_tick: 1,
+            last_run_at: None,
+            last_failure_at: None,
+            last_failure_reason: None,
+            last_success_at: None,
+            next_run_at: None,
+            backoff_until: None,
+            consecutive_failure_count,
+            auto_paused_reason: None,
+            status: ScheduledResearchJobStatus::Enabled,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn failed_execution() -> ScheduledJobExecution {
+        ScheduledJobExecution {
+            status: ScheduledResearchJobRunStatus::Failed,
+            result: json!({}),
+            error: Some("boom".to_string()),
+            artifact_type: None,
+            artifact_id: None,
+        }
+    }
+
+    fn completed_execution() -> ScheduledJobExecution {
+        ScheduledJobExecution {
+            status: ScheduledResearchJobRunStatus::Completed,
+            result: json!({}),
+            error: None,
+            artifact_type: None,
+            artifact_id: None,
+        }
+    }
+
+    #[test]
+    fn failure_increments_consecutive_count() {
+        let now = Utc::now();
+        let update = job_completion_update(
+            &job(0),
+            &failed_execution(),
+            now,
+            &ScheduledResearchFailurePolicy::default(),
+        );
+        assert_eq!(update.consecutive_failure_count, 1);
+        assert_eq!(update.status, ScheduledResearchJobStatus::Error);
+        assert_eq!(update.backoff_until, None);
+    }
+
+    #[test]
+    fn success_resets_failure_count() {
+        let now = Utc::now();
+        let update = job_completion_update(
+            &job(3),
+            &completed_execution(),
+            now,
+            &ScheduledResearchFailurePolicy::default(),
+        );
+        assert_eq!(update.consecutive_failure_count, 0);
+        assert_eq!(update.status, ScheduledResearchJobStatus::Enabled);
+        assert_eq!(update.last_success_at, Some(now));
+        assert_eq!(update.backoff_until, None);
+    }
+
+    #[test]
+    fn second_and_third_failure_compute_backoff() {
+        let now = Utc::now();
+        let policy = ScheduledResearchFailurePolicy::default();
+        let second = job_completion_update(&job(1), &failed_execution(), now, &policy);
+        let third = job_completion_update(&job(2), &failed_execution(), now, &policy);
+        assert_eq!(second.status, ScheduledResearchJobStatus::BackingOff);
+        assert_eq!(second.backoff_until, Some(now + Duration::minutes(5)));
+        assert_eq!(third.backoff_until, Some(now + Duration::minutes(15)));
+    }
+
+    #[test]
+    fn max_failures_auto_pauses_job() {
+        let now = Utc::now();
+        let update = job_completion_update(
+            &job(4),
+            &failed_execution(),
+            now,
+            &ScheduledResearchFailurePolicy::default(),
+        );
+        assert_eq!(update.consecutive_failure_count, 5);
+        assert_eq!(update.status, ScheduledResearchJobStatus::AutoPaused);
+        assert!(!update.enabled);
+        assert!(update.auto_paused_reason.is_some());
+    }
+
+    #[test]
+    fn backoff_is_capped() {
+        let now = Utc::now();
+        let backoff = scheduled_research_backoff_until(now, 6, 300, 900);
+        assert_eq!(backoff, Some(now + Duration::seconds(900)));
+    }
 }

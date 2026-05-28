@@ -855,6 +855,20 @@ impl ApiClient {
         .await
     }
 
+    pub async fn reset_scheduled_research_job_failures(
+        &self,
+        id: Uuid,
+    ) -> Result<ScheduledResearchJobResponse, ApiClientError> {
+        self.post(
+            &format!("/research/scheduled-jobs/{id}/reset-failures"),
+            &ScheduledResearchJobControlRequest {
+                reason: None,
+                correlation_id: None,
+            },
+        )
+        .await
+    }
+
     pub async fn run_research_campaign(
         &self,
         request: &ResearchCampaignRequest,

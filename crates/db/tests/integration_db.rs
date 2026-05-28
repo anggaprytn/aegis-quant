@@ -92,11 +92,11 @@ use db::{
     strategy_robustness_matrix_result_from_record, strategy_walk_forward_result_from_records,
     strategy_walk_forward_window_from_record, summarize_candle_continuity_report,
     test_support::TestDatabase, testnet_shadow_runner_config_from_record,
-    testnet_shadow_runner_state_from_record, update_backtest_run_completed,
-    update_exchange_testnet_order_status, upsert_aggregated_candles, upsert_candle,
-    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
-    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    testnet_shadow_runner_state_from_record, try_claim_scheduled_research_job,
+    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
+    upsert_candle, upsert_candles_batch, upsert_exchange_private_stream_state,
+    upsert_paper_position, upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state,
+    CreateOrderError, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
@@ -198,6 +198,39 @@ async fn scheduled_research_job_and_run_persist_without_execution_mutation() {
         .expect("runs should list");
     assert_eq!(jobs.len(), 1);
     assert_eq!(runs.len(), 1);
+    assert_eq!(before, execution_table_counts(&db.pool).await);
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres test database"]
+async fn scheduled_research_job_claim_prevents_double_run() {
+    let db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let request = ScheduledResearchJobRequest {
+        name: "Provider health".to_string(),
+        kind: ScheduledResearchJobKind::ProviderHealth,
+        enabled: true,
+        interval_seconds: 60,
+        request: json!({}),
+        max_runs_per_tick: 1,
+        next_run_at: Some(fixed_time()),
+    };
+    let job_record = insert_scheduled_research_job(&db.pool, &request)
+        .await
+        .expect("scheduled job should persist");
+    let job = scheduled_research_job_from_record(&job_record).expect("job should map");
+    let before = execution_table_counts(&db.pool).await;
+
+    let first = try_claim_scheduled_research_job(&db.pool, job.id, fixed_time(), false)
+        .await
+        .expect("first claim should query");
+    let second = try_claim_scheduled_research_job(&db.pool, job.id, fixed_time(), false)
+        .await
+        .expect("second claim should query");
+
+    assert!(first.is_some());
+    assert!(second.is_none());
     assert_eq!(before, execution_table_counts(&db.pool).await);
 }
 

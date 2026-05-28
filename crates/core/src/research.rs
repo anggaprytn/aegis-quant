@@ -112,7 +112,9 @@ pub enum ScheduledResearchJobStatus {
     Enabled,
     Paused,
     Running,
+    BackingOff,
     Error,
+    AutoPaused,
 }
 
 impl ScheduledResearchJobStatus {
@@ -122,7 +124,9 @@ impl ScheduledResearchJobStatus {
             Self::Enabled => "ENABLED",
             Self::Paused => "PAUSED",
             Self::Running => "RUNNING",
+            Self::BackingOff => "BACKING_OFF",
             Self::Error => "ERROR",
+            Self::AutoPaused => "AUTO_PAUSED",
         }
     }
 }
@@ -136,7 +140,9 @@ impl std::str::FromStr for ScheduledResearchJobStatus {
             "ENABLED" => Ok(Self::Enabled),
             "PAUSED" => Ok(Self::Paused),
             "RUNNING" => Ok(Self::Running),
+            "BACKING_OFF" => Ok(Self::BackingOff),
             "ERROR" => Ok(Self::Error),
+            "AUTO_PAUSED" => Ok(Self::AutoPaused),
             other => Err(CoreError::UnsupportedScheduledResearchJobStatus(
                 other.to_string(),
             )),
@@ -212,6 +218,8 @@ pub enum ScheduledResearchJobRunStatus {
     Completed,
     Failed,
     Skipped,
+    SkippedOverlap,
+    SkippedBackoff,
     PartialSuccess,
 }
 
@@ -221,6 +229,8 @@ impl ScheduledResearchJobRunStatus {
             Self::Completed => "COMPLETED",
             Self::Failed => "FAILED",
             Self::Skipped => "SKIPPED",
+            Self::SkippedOverlap => "SKIPPED_OVERLAP",
+            Self::SkippedBackoff => "SKIPPED_BACKOFF",
             Self::PartialSuccess => "PARTIAL_SUCCESS",
         }
     }
@@ -234,6 +244,8 @@ impl std::str::FromStr for ScheduledResearchJobRunStatus {
             "COMPLETED" => Ok(Self::Completed),
             "FAILED" => Ok(Self::Failed),
             "SKIPPED" => Ok(Self::Skipped),
+            "SKIPPED_OVERLAP" => Ok(Self::SkippedOverlap),
+            "SKIPPED_BACKOFF" => Ok(Self::SkippedBackoff),
             "PARTIAL_SUCCESS" => Ok(Self::PartialSuccess),
             other => Err(CoreError::UnsupportedScheduledResearchJobRunStatus(
                 other.to_string(),
@@ -252,7 +264,13 @@ pub struct ScheduledResearchJob {
     pub request: Value,
     pub max_runs_per_tick: i32,
     pub last_run_at: Option<DateTime<Utc>>,
+    pub last_failure_at: Option<DateTime<Utc>>,
+    pub last_failure_reason: Option<String>,
+    pub last_success_at: Option<DateTime<Utc>>,
     pub next_run_at: Option<DateTime<Utc>>,
+    pub backoff_until: Option<DateTime<Utc>>,
+    pub consecutive_failure_count: i32,
+    pub auto_paused_reason: Option<String>,
     pub status: ScheduledResearchJobStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

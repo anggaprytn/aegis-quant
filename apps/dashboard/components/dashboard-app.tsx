@@ -2688,6 +2688,12 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["scheduled-research-job-runs"] });
     },
   });
+  const resetScheduledResearchJobFailuresMutation = useMutation({
+    mutationFn: (id: string) => api.resetScheduledResearchJobFailures(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-research-jobs"] });
+    },
+  });
   const researchRegimeDatasetMutation = useMutation({
     mutationFn: () => api.buildResearchRegimeDataset(researchRegimeDatasetForm),
     onSuccess: async (response) => {
@@ -6868,7 +6874,8 @@ function AuthenticatedDashboard({
                       getErrorMessage(createScheduledResearchJobMutation.error) ||
                       getErrorMessage(pauseScheduledResearchJobMutation.error) ||
                       getErrorMessage(resumeScheduledResearchJobMutation.error) ||
-                      getErrorMessage(runOnceScheduledResearchJobMutation.error)
+                      getErrorMessage(runOnceScheduledResearchJobMutation.error) ||
+                      getErrorMessage(resetScheduledResearchJobFailuresMutation.error)
                     }
                   />
                 </div>
@@ -6881,6 +6888,7 @@ function AuthenticatedDashboard({
                     onPause={(id) => pauseScheduledResearchJobMutation.mutate(id)}
                     onResume={(id) => resumeScheduledResearchJobMutation.mutate(id)}
                     onRunOnce={(id) => runOnceScheduledResearchJobMutation.mutate(id)}
+                    onResetFailures={(id) => resetScheduledResearchJobFailuresMutation.mutate(id)}
                   />
                   <ScheduledResearchRunsTable
                     job={selectedScheduledResearchJob}
@@ -10677,6 +10685,7 @@ function ScheduledResearchJobsTable({
   onPause,
   onResume,
   onRunOnce,
+  onResetFailures,
 }: {
   jobs: ScheduledResearchJob[];
   selectedId: string | null;
@@ -10685,6 +10694,7 @@ function ScheduledResearchJobsTable({
   onPause: (jobId: string) => void;
   onResume: (jobId: string) => void;
   onRunOnce: (jobId: string) => void;
+  onResetFailures: (jobId: string) => void;
 }) {
   if (!jobs.length) {
     return <EmptyState label="No scheduled research jobs found." />;
@@ -10692,14 +10702,20 @@ function ScheduledResearchJobsTable({
 
   return (
     <div className="space-y-2">
-      {jobs.map((job) => (
-        <div
-          key={job.id}
-          className={cn(
-            "rounded-xl border p-3",
-            job.id === selectedId ? "border-accent bg-accent/5" : "border-border bg-surface/60",
-          )}
-        >
+      {jobs.map((job) => {
+        const needsAttention =
+          job.status === "BACKING_OFF" ||
+          job.status === "AUTO_PAUSED" ||
+          job.consecutive_failure_count > 0;
+        return (
+          <div
+            key={job.id}
+            className={cn(
+              "rounded-xl border p-3",
+              job.id === selectedId ? "border-accent bg-accent/5" : "border-border bg-surface/60",
+              needsAttention ? "border-amber-500/50" : "",
+            )}
+          >
           <button className="w-full text-left" onClick={() => onSelect(job.id)} type="button">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="font-mono text-xs">{shortenId(job.id)}</span>
@@ -10713,6 +10729,17 @@ function ScheduledResearchJobsTable({
               last={job.last_run_at ? formatDateTime(job.last_run_at) : "never"} next=
               {job.next_run_at ? formatDateTime(job.next_run_at) : "n/a"}
             </div>
+            <div className="mt-1 text-xs text-muted">
+              failures={job.consecutive_failure_count} last_success=
+              {job.last_success_at ? formatDateTime(job.last_success_at) : "never"}
+            </div>
+            {(job.backoff_until || job.auto_paused_reason || job.last_failure_reason) && (
+              <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">
+                {job.backoff_until && <div>Backoff until {formatDateTime(job.backoff_until)}</div>}
+                {job.auto_paused_reason && <div>{job.auto_paused_reason}</div>}
+                {job.last_failure_reason && <div>Last failure: {job.last_failure_reason}</div>}
+              </div>
+            )}
           </button>
           <div className="mt-3 flex flex-wrap gap-2">
             <ActionButton
@@ -10723,9 +10750,15 @@ function ScheduledResearchJobsTable({
               disabled={!canMutate}
             />
             <ActionButton label="Run Once" onClick={() => onRunOnce(job.id)} disabled={!canMutate} />
+            <ActionButton
+              label="Reset Failures"
+              onClick={() => onResetFailures(job.id)}
+              disabled={!canMutate || job.consecutive_failure_count === 0}
+            />
           </div>
-        </div>
-      ))}
+          </div>
+        );
+      })}
     </div>
   );
 }

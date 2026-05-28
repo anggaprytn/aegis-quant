@@ -210,13 +210,14 @@ use db::{
     research_regime_calibration_candidate_from_record,
     research_regime_calibration_result_from_records, research_regime_dataset_result_from_records,
     research_regime_discovery_result_from_records, research_regime_discovery_window_from_record,
-    research_regime_window_from_record, revoke_session, risk_config_audit_from_record,
-    risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
-    scheduled_research_job_from_record, scheduled_research_job_run_from_record,
-    set_kill_switch_state, strategy_candidate_observation_result_from_record,
-    strategy_config_audit_from_record, strategy_config_from_record,
-    strategy_config_version_from_record, strategy_experiment_result_from_records,
-    strategy_experiment_run_from_record, strategy_research_candidate_from_record,
+    research_regime_window_from_record, reset_scheduled_research_job_failures, revoke_session,
+    risk_config_audit_from_record, risk_config_from_record, risk_config_version_from_record,
+    rotate_session_refresh_token, scheduled_research_job_from_record,
+    scheduled_research_job_run_from_record, set_kill_switch_state,
+    strategy_candidate_observation_result_from_record, strategy_config_audit_from_record,
+    strategy_config_from_record, strategy_config_version_from_record,
+    strategy_experiment_result_from_records, strategy_experiment_run_from_record,
+    strategy_research_candidate_from_record,
     strategy_research_candidate_promotion_result_from_records,
     strategy_robustness_matrix_cell_from_record, strategy_robustness_matrix_result_from_record,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
@@ -3193,6 +3194,10 @@ async fn main() {
         .route(
             "/research/scheduled-jobs/:id/resume",
             post(resume_scheduled_research_job_handler),
+        )
+        .route(
+            "/research/scheduled-jobs/:id/reset-failures",
+            post(reset_scheduled_research_job_failures_handler),
         )
         .route(
             "/research/scheduled-jobs/:id/runs",
@@ -18187,6 +18192,62 @@ async fn resume_scheduled_research_job_handler(
         request,
     )
     .await
+}
+
+async fn reset_scheduled_research_job_failures_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    Json(_payload): Json<ScheduledResearchJobControlRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match reset_scheduled_research_job_failures(&state.db_pool, id).await {
+        Ok(Some(record)) => match scheduled_research_job_from_record(&record) {
+            Ok(job) => (
+                StatusCode::OK,
+                Json(ScheduledResearchJobResponse {
+                    job,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_scheduled_research_job",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "scheduled_research_job_not_found",
+                message: "Scheduled research job not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_reset_scheduled_research_job_failures",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn set_scheduled_research_job_status(

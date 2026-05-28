@@ -3714,6 +3714,8 @@ export type ScheduledResearchJobStatus =
   | "ENABLED"
   | "PAUSED"
   | "RUNNING"
+  | "BACKING_OFF"
+  | "AUTO_PAUSED"
   | "ERROR";
 
 export type ScheduledResearchJobKind =
@@ -3730,6 +3732,8 @@ export type ScheduledResearchJobRunStatus =
   | "COMPLETED"
   | "FAILED"
   | "SKIPPED"
+  | "SKIPPED_OVERLAP"
+  | "SKIPPED_BACKOFF"
   | "PARTIAL_SUCCESS";
 
 export type ScheduledResearchJob = {
@@ -3741,7 +3745,13 @@ export type ScheduledResearchJob = {
   request: Record<string, unknown>;
   max_runs_per_tick: number;
   last_run_at: string | null;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  last_success_at: string | null;
   next_run_at: string | null;
+  backoff_until: string | null;
+  consecutive_failure_count: number;
+  auto_paused_reason: string | null;
   status: ScheduledResearchJobStatus;
   created_at: string;
   updated_at: string;

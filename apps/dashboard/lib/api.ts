@@ -560,6 +560,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  resetScheduledResearchJobFailures: (id: string) =>
+    request<ScheduledResearchJobResponse>(`/research/scheduled-jobs/${id}/reset-failures`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   runResearchCampaign: (payload: ResearchCampaignRequest) =>
     request<ResearchCampaignResponse>("/research/campaigns/run", {
       method: "POST",

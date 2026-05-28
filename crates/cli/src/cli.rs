@@ -855,6 +855,10 @@ pub enum ResearchScheduledJobCommands {
     RunOnce {
         id: Uuid,
     },
+    #[command(name = "reset-failures")]
+    ResetFailures {
+        id: Uuid,
+    },
 }
 
 #[derive(Debug, Args)]

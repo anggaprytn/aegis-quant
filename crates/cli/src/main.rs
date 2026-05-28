@@ -916,6 +916,10 @@ async fn main() -> anyhow::Result<()> {
                     let response = client.run_once_scheduled_research_job(id).await?;
                     output::print_json(&response)?;
                 }
+                ResearchScheduledJobCommands::ResetFailures { id } => {
+                    let response = client.reset_scheduled_research_job_failures(id).await?;
+                    output::print_json(&response)?;
+                }
             },
             ResearchCommands::Candidates(command) => match command {
                 ResearchCandidateCommands::List(args) => {
