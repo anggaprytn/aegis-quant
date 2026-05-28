@@ -818,10 +818,26 @@ pub struct ResearchCandidateCreationDecision {
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
     pub source_batch_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_experiment_run_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_walk_forward_run_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_robustness_matrix_run_id: Option<Uuid>,
     pub experiment_run_id: Uuid,
     pub walk_forward_status: Option<String>,
     pub batch_triage_status: ResearchBatchTriageStatus,
     pub robustness_status: Option<String>,
+    #[serde(default)]
+    pub data_quality_status: Option<String>,
+    #[serde(default)]
+    pub normalized_strategy_config: Option<Value>,
+    #[serde(default)]
+    pub config_fingerprint: Option<String>,
+    #[serde(default)]
+    pub evidence_status_summary: Option<Value>,
+    #[serde(default)]
+    pub gate_evidence_mismatch: bool,
     pub pnl_pct: Decimal,
     pub score: Decimal,
 }
@@ -839,10 +855,16 @@ pub struct ResearchCandidateCreationGateResult {
 pub struct ResearchCandidateCreationInput {
     pub source_batch_id: Option<Uuid>,
     pub experiment_run_id: Uuid,
+    pub source_walk_forward_run_id: Option<Uuid>,
+    pub source_robustness_matrix_run_id: Option<Uuid>,
     pub walk_forward_status: Option<StrategyWalkForwardRobustnessStatus>,
     pub batch_triage_status: ResearchBatchTriageStatus,
     pub robustness_status: Option<StrategyRobustnessMatrixStatus>,
     pub data_quality_status: Option<MarketDataQualityStatus>,
+    pub normalized_strategy_config: Option<Value>,
+    pub config_fingerprint: Option<String>,
+    pub evidence_status_summary: Option<Value>,
+    pub gate_evidence_mismatch: bool,
     pub trade_count: i32,
     pub pnl_pct: Decimal,
     pub score: Decimal,
@@ -865,6 +887,9 @@ pub fn evaluate_research_candidate_creation(
                 blockers,
                 warnings,
                 source_batch_id: input.source_batch_id,
+                source_experiment_run_id: Some(input.experiment_run_id),
+                source_walk_forward_run_id: input.source_walk_forward_run_id,
+                source_robustness_matrix_run_id: input.source_robustness_matrix_run_id,
                 experiment_run_id: input.experiment_run_id,
                 walk_forward_status: input
                     .walk_forward_status
@@ -873,6 +898,13 @@ pub fn evaluate_research_candidate_creation(
                 robustness_status: input
                     .robustness_status
                     .map(|status| status.as_str().to_string()),
+                data_quality_status: input
+                    .data_quality_status
+                    .map(|status| status.as_str().to_string()),
+                normalized_strategy_config: input.normalized_strategy_config,
+                config_fingerprint: input.config_fingerprint,
+                evidence_status_summary: input.evidence_status_summary,
+                gate_evidence_mismatch: input.gate_evidence_mismatch,
                 pnl_pct: input.pnl_pct,
                 score: input.score,
             };
@@ -927,6 +959,9 @@ pub fn evaluate_research_candidate_creation(
 
     if input.robustness_status == Some(StrategyRobustnessMatrixStatus::Negative) {
         blockers.push("robustness_matrix_negative".to_string());
+    }
+    if input.gate_evidence_mismatch {
+        warnings.push("gate_evidence_mismatch".to_string());
     }
 
     match input.data_quality_status {
@@ -985,6 +1020,9 @@ pub fn evaluate_research_candidate_creation(
         blockers,
         warnings,
         source_batch_id: input.source_batch_id,
+        source_experiment_run_id: Some(input.experiment_run_id),
+        source_walk_forward_run_id: input.source_walk_forward_run_id,
+        source_robustness_matrix_run_id: input.source_robustness_matrix_run_id,
         experiment_run_id: input.experiment_run_id,
         walk_forward_status: input
             .walk_forward_status
@@ -993,6 +1031,13 @@ pub fn evaluate_research_candidate_creation(
         robustness_status: input
             .robustness_status
             .map(|status| status.as_str().to_string()),
+        data_quality_status: input
+            .data_quality_status
+            .map(|status| status.as_str().to_string()),
+        normalized_strategy_config: input.normalized_strategy_config,
+        config_fingerprint: input.config_fingerprint,
+        evidence_status_summary: input.evidence_status_summary,
+        gate_evidence_mismatch: input.gate_evidence_mismatch,
         pnl_pct: input.pnl_pct,
         score: input.score,
     }
@@ -7648,6 +7693,12 @@ pub struct ResearchCandidate {
 pub struct ResearchCandidateProposal {
     pub id: Uuid,
     pub source_batch_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_experiment_run_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_walk_forward_run_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_robustness_matrix_run_id: Option<Uuid>,
     pub experiment_run_id: Uuid,
     pub strategy_id: String,
     pub symbol: String,
@@ -7657,6 +7708,16 @@ pub struct ResearchCandidateProposal {
     pub pnl_pct: Decimal,
     pub triage_status: ResearchBatchTriageStatus,
     pub walk_forward_status: Option<String>,
+    #[serde(default)]
+    pub source_robustness_status: Option<String>,
+    #[serde(default)]
+    pub normalized_strategy_config: Option<Value>,
+    #[serde(default)]
+    pub config_fingerprint: Option<String>,
+    #[serde(default)]
+    pub evidence_status_summary: Option<Value>,
+    #[serde(default)]
+    pub gate_evidence_mismatch: bool,
     pub gate_decision: ResearchCandidateCreationDecision,
     pub reason: String,
     pub promoted_candidate_id: Option<Uuid>,
@@ -13831,10 +13892,16 @@ mod tests {
         ResearchCandidateCreationInput {
             source_batch_id: Some(Uuid::new_v4()),
             experiment_run_id: Uuid::new_v4(),
+            source_walk_forward_run_id: None,
+            source_robustness_matrix_run_id: None,
             walk_forward_status,
             batch_triage_status: triage_status,
             robustness_status: None,
             data_quality_status: Some(MarketDataQualityStatus::Good),
+            normalized_strategy_config: None,
+            config_fingerprint: None,
+            evidence_status_summary: None,
+            gate_evidence_mismatch: false,
             trade_count: 8,
             pnl_pct: Decimal::new(25, 1),
             score: Decimal::new(50, 0),

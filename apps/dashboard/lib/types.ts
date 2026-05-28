@@ -1170,10 +1170,18 @@ export type ResearchCandidateCreationDecision = {
   blockers: string[];
   warnings: string[];
   source_batch_id: string | null;
+  source_experiment_run_id?: string | null;
+  source_walk_forward_run_id?: string | null;
+  source_robustness_matrix_run_id?: string | null;
   experiment_run_id: string;
   walk_forward_status: string | null;
   batch_triage_status: ResearchBatchTriageStatus;
   robustness_status: string | null;
+  data_quality_status?: string | null;
+  normalized_strategy_config?: Record<string, unknown> | null;
+  config_fingerprint?: string | null;
+  evidence_status_summary?: Record<string, unknown> | null;
+  gate_evidence_mismatch?: boolean;
   pnl_pct: string;
   score: string;
 };
@@ -2165,6 +2173,9 @@ export type ResearchCandidate = {
 export type ResearchCandidateProposal = {
   id: string;
   source_batch_id: string | null;
+  source_experiment_run_id: string | null;
+  source_walk_forward_run_id: string | null;
+  source_robustness_matrix_run_id: string | null;
   experiment_run_id: string;
   strategy_id: string;
   symbol: string;
@@ -2174,6 +2185,11 @@ export type ResearchCandidateProposal = {
   pnl_pct: string;
   triage_status: ResearchBatchTriageStatus;
   walk_forward_status: string | null;
+  source_robustness_status: string | null;
+  normalized_strategy_config: Record<string, unknown> | null;
+  config_fingerprint: string | null;
+  evidence_status_summary: Record<string, unknown> | null;
+  gate_evidence_mismatch: boolean;
   gate_decision: ResearchCandidateCreationDecision;
   reason: string;
   promoted_candidate_id: string | null;

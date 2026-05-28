@@ -11875,7 +11875,7 @@ function ResearchCandidateProposalsTable({
         Candidate Proposals
       </div>
       <Table
-        headers={["Proposal", "Strategy", "Symbol", "TF", "Score", "PnL %", "Triage", "WF", "Reason"]}
+        headers={["Proposal", "Strategy", "Symbol", "TF", "Score", "PnL %", "Triage", "WF", "WF Run", "Matrix", "Config", "Reason"]}
         rows={proposals.slice(0, 20).map((proposal) => [
           shortenId(proposal.id),
           proposal.strategy_id,
@@ -11885,6 +11885,9 @@ function ResearchCandidateProposalsTable({
           proposal.pnl_pct,
           proposal.triage_status,
           proposal.walk_forward_status ?? "-",
+          proposal.source_walk_forward_run_id ? shortenId(proposal.source_walk_forward_run_id) : "-",
+          proposal.source_robustness_status ?? "-",
+          proposal.config_fingerprint ? shortenId(proposal.config_fingerprint) : "-",
           proposal.gate_decision.blockers.join(", ") || proposal.reason,
         ])}
       />

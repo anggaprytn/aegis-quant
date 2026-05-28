@@ -138,6 +138,9 @@ pub struct ResearchCampaignBatchRecord {
 pub struct ResearchCandidateProposalRecord {
     pub id: Uuid,
     pub source_batch_id: Option<Uuid>,
+    pub source_experiment_run_id: Option<Uuid>,
+    pub source_walk_forward_run_id: Option<Uuid>,
+    pub source_robustness_matrix_run_id: Option<Uuid>,
     pub experiment_run_id: Uuid,
     pub strategy_id: String,
     pub symbol: String,
@@ -147,6 +150,11 @@ pub struct ResearchCandidateProposalRecord {
     pub pnl_pct: Decimal,
     pub triage_status: String,
     pub walk_forward_status: Option<String>,
+    pub source_robustness_status: Option<String>,
+    pub normalized_strategy_config: Option<Value>,
+    pub config_fingerprint: Option<String>,
+    pub evidence_status_summary: Option<Value>,
+    pub gate_evidence_mismatch: bool,
     pub gate_decision: Value,
     pub reason: String,
     pub promoted_candidate_id: Option<Uuid>,
@@ -1220,6 +1228,11 @@ fn map_research_candidate_proposal(row: sqlx::postgres::PgRow) -> ResearchCandid
     ResearchCandidateProposalRecord {
         id: row.get("id"),
         source_batch_id: row.get("source_batch_id"),
+        source_experiment_run_id: row.try_get("source_experiment_run_id").unwrap_or(None),
+        source_walk_forward_run_id: row.try_get("source_walk_forward_run_id").unwrap_or(None),
+        source_robustness_matrix_run_id: row
+            .try_get("source_robustness_matrix_run_id")
+            .unwrap_or(None),
         experiment_run_id: row.get("experiment_run_id"),
         strategy_id: row.get("strategy_id"),
         symbol: row.get("symbol"),
@@ -1229,6 +1242,11 @@ fn map_research_candidate_proposal(row: sqlx::postgres::PgRow) -> ResearchCandid
         pnl_pct: row.get("pnl_pct"),
         triage_status: row.get("triage_status"),
         walk_forward_status: row.get("walk_forward_status"),
+        source_robustness_status: row.try_get("source_robustness_status").unwrap_or(None),
+        normalized_strategy_config: row.try_get("normalized_strategy_config").unwrap_or(None),
+        config_fingerprint: row.try_get("config_fingerprint").unwrap_or(None),
+        evidence_status_summary: row.try_get("evidence_status_summary").unwrap_or(None),
+        gate_evidence_mismatch: row.try_get("gate_evidence_mismatch").unwrap_or(false),
         gate_decision: row.get("gate_decision"),
         reason: row.get("reason"),
         promoted_candidate_id: row.get("promoted_candidate_id"),
@@ -1365,6 +1383,11 @@ pub fn research_candidate_proposal_from_record(
     Ok(ResearchCandidateProposal {
         id: record.id,
         source_batch_id: record.source_batch_id,
+        source_experiment_run_id: record
+            .source_experiment_run_id
+            .or(Some(record.experiment_run_id)),
+        source_walk_forward_run_id: record.source_walk_forward_run_id,
+        source_robustness_matrix_run_id: record.source_robustness_matrix_run_id,
         experiment_run_id: record.experiment_run_id,
         strategy_id: record.strategy_id.clone(),
         symbol: record.symbol.clone(),
@@ -1374,6 +1397,11 @@ pub fn research_candidate_proposal_from_record(
         pnl_pct: record.pnl_pct,
         triage_status: record.triage_status.parse()?,
         walk_forward_status: record.walk_forward_status.clone(),
+        source_robustness_status: record.source_robustness_status.clone(),
+        normalized_strategy_config: record.normalized_strategy_config.clone(),
+        config_fingerprint: record.config_fingerprint.clone(),
+        evidence_status_summary: record.evidence_status_summary.clone(),
+        gate_evidence_mismatch: record.gate_evidence_mismatch,
         gate_decision: serde_json::from_value::<ResearchCandidateCreationDecision>(
             record.gate_decision.clone(),
         )?,
@@ -3244,6 +3272,9 @@ pub async fn insert_research_candidate_proposal(
         INSERT INTO research_candidate_proposals (
             id,
             source_batch_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
             experiment_run_id,
             strategy_id,
             symbol,
@@ -3253,16 +3284,28 @@ pub async fn insert_research_candidate_proposal(
             pnl_pct,
             triage_status,
             walk_forward_status,
+            source_robustness_status,
+            normalized_strategy_config,
+            config_fingerprint,
+            evidence_status_summary,
+            gate_evidence_mismatch,
             gate_decision,
             reason,
             promoted_candidate_id,
             promoted_at,
             created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24
+        )
         RETURNING
             id,
             source_batch_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
             experiment_run_id,
             strategy_id,
             symbol,
@@ -3272,6 +3315,11 @@ pub async fn insert_research_candidate_proposal(
             pnl_pct,
             triage_status,
             walk_forward_status,
+            source_robustness_status,
+            normalized_strategy_config,
+            config_fingerprint,
+            evidence_status_summary,
+            gate_evidence_mismatch,
             gate_decision,
             reason,
             promoted_candidate_id,
@@ -3281,6 +3329,13 @@ pub async fn insert_research_candidate_proposal(
     )
     .bind(proposal.id)
     .bind(proposal.source_batch_id)
+    .bind(
+        proposal
+            .source_experiment_run_id
+            .or(Some(proposal.experiment_run_id)),
+    )
+    .bind(proposal.source_walk_forward_run_id)
+    .bind(proposal.source_robustness_matrix_run_id)
     .bind(proposal.experiment_run_id)
     .bind(&proposal.strategy_id)
     .bind(proposal.symbol.trim().to_ascii_uppercase())
@@ -3290,6 +3345,11 @@ pub async fn insert_research_candidate_proposal(
     .bind(proposal.pnl_pct)
     .bind(proposal.triage_status.as_str())
     .bind(&proposal.walk_forward_status)
+    .bind(&proposal.source_robustness_status)
+    .bind(&proposal.normalized_strategy_config)
+    .bind(&proposal.config_fingerprint)
+    .bind(&proposal.evidence_status_summary)
+    .bind(proposal.gate_evidence_mismatch)
     .bind(serde_json::to_value(&proposal.gate_decision)?)
     .bind(&proposal.reason)
     .bind(proposal.promoted_candidate_id)
@@ -3310,6 +3370,9 @@ pub async fn list_research_candidate_proposals(
         SELECT
             id,
             source_batch_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
             experiment_run_id,
             strategy_id,
             symbol,
@@ -3319,6 +3382,11 @@ pub async fn list_research_candidate_proposals(
             pnl_pct,
             triage_status,
             walk_forward_status,
+            source_robustness_status,
+            normalized_strategy_config,
+            config_fingerprint,
+            evidence_status_summary,
+            gate_evidence_mismatch,
             gate_decision,
             reason,
             promoted_candidate_id,
@@ -3348,6 +3416,9 @@ pub async fn get_research_candidate_proposal(
         SELECT
             id,
             source_batch_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
             experiment_run_id,
             strategy_id,
             symbol,
@@ -3357,6 +3428,11 @@ pub async fn get_research_candidate_proposal(
             pnl_pct,
             triage_status,
             walk_forward_status,
+            source_robustness_status,
+            normalized_strategy_config,
+            config_fingerprint,
+            evidence_status_summary,
+            gate_evidence_mismatch,
             gate_decision,
             reason,
             promoted_candidate_id,
@@ -3388,6 +3464,9 @@ pub async fn mark_research_candidate_proposal_promoted(
         RETURNING
             id,
             source_batch_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
             experiment_run_id,
             strategy_id,
             symbol,
@@ -3397,6 +3476,11 @@ pub async fn mark_research_candidate_proposal_promoted(
             pnl_pct,
             triage_status,
             walk_forward_status,
+            source_robustness_status,
+            normalized_strategy_config,
+            config_fingerprint,
+            evidence_status_summary,
+            gate_evidence_mismatch,
             gate_decision,
             reason,
             promoted_candidate_id,

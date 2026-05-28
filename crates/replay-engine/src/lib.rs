@@ -701,40 +701,7 @@ impl ReplayEngine {
                 run.candidate_config,
             )
             .context("failed to decode strategy experiment run candidate config")?;
-            request.candidate_config = StrategyWalkForwardCandidate {
-                lookback_candles: candidate.lookback_candles,
-                trend_lookback_candles: candidate.trend_lookback_candles,
-                momentum_lookback_candles: candidate.momentum_lookback_candles,
-                compression_lookback_candles: candidate.compression_lookback_candles,
-                breakout_lookback_candles: candidate.breakout_lookback_candles,
-                pullback_lookback_candles: candidate.pullback_lookback_candles,
-                pullback_sma_lookback_candles: candidate.pullback_sma_lookback_candles,
-                compression_percentile_threshold: candidate.compression_percentile_threshold,
-                min_breakout_pct: candidate.min_breakout_pct,
-                max_breakout_extension_pct: candidate.max_breakout_extension_pct,
-                min_volume_expansion_ratio: candidate.min_volume_expansion_ratio,
-                lower_band_pct: candidate.lower_band_pct,
-                upper_band_pct: candidate.upper_band_pct,
-                min_range_width_pct: candidate.min_range_width_pct,
-                max_range_width_pct: candidate.max_range_width_pct,
-                min_close_above_sma_pct: candidate.min_close_above_sma_pct,
-                max_close_above_sma_pct: candidate.max_close_above_sma_pct,
-                min_momentum_return_pct: candidate.min_momentum_return_pct,
-                min_trend_return_pct: candidate.min_trend_return_pct,
-                min_trend_slope_pct: candidate.min_trend_slope_pct,
-                min_pullback_depth_pct: candidate.min_pullback_depth_pct,
-                max_pullback_depth_pct: candidate.max_pullback_depth_pct,
-                min_reclaim_pct: candidate.min_reclaim_pct,
-                min_breakdown_pct: None,
-                min_reclaim_close_pct: None,
-                min_lower_wick_pct: None,
-                min_volume_ratio: candidate.min_volume_ratio,
-                max_choppiness: candidate.max_choppiness,
-                holding_candles: candidate.holding_candles,
-                stop_loss_pct: candidate.stop_loss_pct,
-                take_profit_pct: candidate.take_profit_pct,
-                max_signal_age_ms: candidate.max_signal_age_ms,
-            };
+            request.candidate_config = strategy_walk_forward_candidate_from_experiment(&candidate);
         } else if let Some(config) = request.config.clone() {
             request.candidate_config = strategy_walk_forward_candidate_from_config(&config)?;
         }
@@ -840,6 +807,45 @@ impl ReplayEngine {
             .context("invalid persisted strategy config")?;
 
         Ok((base_config, symbol))
+    }
+}
+
+fn strategy_walk_forward_candidate_from_experiment(
+    candidate: &aegis_core::StrategyExperimentCandidate,
+) -> StrategyWalkForwardCandidate {
+    StrategyWalkForwardCandidate {
+        lookback_candles: candidate.lookback_candles,
+        trend_lookback_candles: candidate.trend_lookback_candles,
+        momentum_lookback_candles: candidate.momentum_lookback_candles,
+        compression_lookback_candles: candidate.compression_lookback_candles,
+        breakout_lookback_candles: candidate.breakout_lookback_candles,
+        pullback_lookback_candles: candidate.pullback_lookback_candles,
+        pullback_sma_lookback_candles: candidate.pullback_sma_lookback_candles,
+        compression_percentile_threshold: candidate.compression_percentile_threshold,
+        min_breakout_pct: candidate.min_breakout_pct,
+        max_breakout_extension_pct: candidate.max_breakout_extension_pct,
+        min_volume_expansion_ratio: candidate.min_volume_expansion_ratio,
+        lower_band_pct: candidate.lower_band_pct,
+        upper_band_pct: candidate.upper_band_pct,
+        min_range_width_pct: candidate.min_range_width_pct,
+        max_range_width_pct: candidate.max_range_width_pct,
+        min_close_above_sma_pct: candidate.min_close_above_sma_pct,
+        max_close_above_sma_pct: candidate.max_close_above_sma_pct,
+        min_momentum_return_pct: candidate.min_momentum_return_pct,
+        min_trend_return_pct: candidate.min_trend_return_pct,
+        min_trend_slope_pct: candidate.min_trend_slope_pct,
+        min_pullback_depth_pct: candidate.min_pullback_depth_pct,
+        max_pullback_depth_pct: candidate.max_pullback_depth_pct,
+        min_reclaim_pct: candidate.min_reclaim_pct,
+        min_breakdown_pct: candidate.min_breakdown_pct,
+        min_reclaim_close_pct: candidate.min_reclaim_close_pct,
+        min_lower_wick_pct: candidate.min_lower_wick_pct,
+        min_volume_ratio: candidate.min_volume_ratio,
+        max_choppiness: candidate.max_choppiness,
+        holding_candles: candidate.holding_candles,
+        stop_loss_pct: candidate.stop_loss_pct,
+        take_profit_pct: candidate.take_profit_pct,
+        max_signal_age_ms: candidate.max_signal_age_ms,
     }
 }
 
@@ -5153,14 +5159,15 @@ mod tests {
         calculate_strategy_experiment_score, calculate_walk_forward_robustness_score,
         experiment_strategy_override, experiment_warnings, generate_walk_forward_windows,
         global_ranking_entry, median_decimal, rank_strategy_experiment_runs, simulate_backtest,
-        skipped_strategy_experiment_result, timeframe_comparison_from_result,
+        skipped_strategy_experiment_result, strategy_walk_forward_candidate_from_experiment,
+        timeframe_comparison_from_result,
     };
     use aegis_core::{
         BacktestRequest, Candle, CandleInterval, CompressionBreakoutRefinementRequest,
         CompressionBreakoutRefinementStatus, MarketDataSource, ReplaySuppressionReason,
         StrategyConfig, StrategyExitAttributionRecommendation, StrategyExitAttributionRequest,
-        StrategyExitAttributionStatus, StrategyExperimentRequest, StrategyExperimentRun,
-        StrategyExperimentStatus, StrategyId, StrategyMode,
+        StrategyExitAttributionStatus, StrategyExperimentCandidate, StrategyExperimentRequest,
+        StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
         StrategySignalFeatureAttributionRequest, StrategySignalFeatureMetric,
         StrategySignalFeatureRecommendation, StrategySignalFeatureSample,
         StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
@@ -5232,6 +5239,58 @@ mod tests {
             holding_candles: Some(3),
             notes: None,
         }
+    }
+
+    #[test]
+    fn experiment_candidate_to_walk_forward_preserves_failed_breakdown_fields() {
+        let candidate = StrategyExperimentCandidate {
+            lookback_candles: 20,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            compression_lookback_candles: None,
+            breakout_lookback_candles: None,
+            pullback_lookback_candles: None,
+            pullback_sma_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
+            min_trend_return_pct: None,
+            min_trend_slope_pct: None,
+            min_pullback_depth_pct: None,
+            max_pullback_depth_pct: None,
+            min_reclaim_pct: None,
+            min_breakdown_pct: Some(Decimal::new(5, 2)),
+            min_reclaim_close_pct: Some(Decimal::ZERO),
+            min_lower_wick_pct: Some(Decimal::ONE),
+            min_volume_ratio: Some(Decimal::ZERO),
+            max_choppiness: None,
+            holding_candles: Some(20),
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            max_signal_age_ms: None,
+        };
+
+        let walk_forward = strategy_walk_forward_candidate_from_experiment(&candidate);
+
+        assert_eq!(walk_forward.min_breakdown_pct, candidate.min_breakdown_pct);
+        assert_eq!(
+            walk_forward.min_reclaim_close_pct,
+            candidate.min_reclaim_close_pct
+        );
+        assert_eq!(
+            walk_forward.min_lower_wick_pct,
+            candidate.min_lower_wick_pct
+        );
+        assert_eq!(walk_forward.min_volume_ratio, candidate.min_volume_ratio);
+        assert_eq!(walk_forward.holding_candles, candidate.holding_candles);
     }
 
     fn candle(index: i64, open: i64, high: i64, low: i64, close: i64) -> Candle {

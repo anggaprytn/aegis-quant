@@ -98,12 +98,12 @@ use aegis_core::{
     StrategyResearchCandidatePromotionRequest, StrategyResearchCandidatePromotionResult,
     StrategyResearchCandidateRejectionReason, StrategyResearchCandidateSource,
     StrategyResearchCandidateStatus, StrategyRobustnessMatrixCell, StrategyRobustnessMatrixRequest,
-    StrategyRobustnessMatrixResult, StrategySignalFeatureAttributionRequest,
-    StrategySignalFeatureAttributionResult, StrategyStatus, StrategyWalkForwardRequest,
-    StrategyWalkForwardResult, StrategyWalkForwardRobustnessStatus,
-    StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
-    TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest, TestnetPromotionFunnelRow,
-    TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
+    StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus,
+    StrategySignalFeatureAttributionRequest, StrategySignalFeatureAttributionResult,
+    StrategyStatus, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardRobustnessStatus, StrategyWalkForwardWindowResult, Symbol,
+    TestnetExecutionState, TestnetExecutionTransitionSource, TestnetPromotionFunnelRequest,
+    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
     TestnetPromotionOutcomeBreakdown, TestnetRepairAction, TestnetRepairActionStatus,
     TestnetRepairRequest, TestnetRepairResult, TestnetRepairValidationIssue,
     TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
@@ -16711,8 +16711,13 @@ async fn run_batch_aggregation(
 }
 
 fn batch_walk_forward_window_hours(start: DateTime<Utc>, end: DateTime<Utc>) -> (i64, i64, i64) {
+    const ROLLING_RESEARCH_WINDOW_HOURS: i64 = 24 * 91;
     let total_hours = end.signed_duration_since(start).num_hours().max(1);
-    let test_hours = (total_hours / 3).max(1);
+    let test_hours = if total_hours >= ROLLING_RESEARCH_WINDOW_HOURS * 2 {
+        ROLLING_RESEARCH_WINDOW_HOURS
+    } else {
+        (total_hours / 3).max(1)
+    };
     (0, test_hours, test_hours)
 }
 
@@ -17201,18 +17206,66 @@ async fn execute_research_batch(
                 .find(|item| item.experiment_run_id == candidate.experiment_run_id)
                 .map(|item| item.triage_status)
                 .unwrap_or(triage.status);
+            let lifecycle = lifecycle_candidate_from_experiment_run(
+                state,
+                candidate.experiment_run_id,
+                Some(format!(
+                    "candidate proposal from research batch {}",
+                    result.batch_id
+                )),
+                correlation_id,
+            )
+            .await?;
+            let normalized_strategy_config = Some(lifecycle.config.clone());
+            let config_fingerprint = strategy_evidence_config_fingerprint(&lifecycle.config)?;
+            let (source_robustness_matrix_run_id, robustness_status, matrix_mismatch_seen) =
+                find_matching_robustness_matrix_evidence(
+                    state,
+                    &candidate.strategy_id,
+                    &candidate.symbol,
+                    &candidate.timeframe,
+                    &lifecycle.config,
+                )
+                .await?;
+            let walk_forward_status_text = candidate
+                .robustness_status
+                .map(|status| status.as_str().to_string());
+            let data_quality_status = result.quality_after.as_ref().map(|quality| quality.status);
+            let source_robustness_status =
+                robustness_status.map(|status| status.as_str().to_string());
+            let gate_evidence_mismatch =
+                matrix_mismatch_seen && source_robustness_matrix_run_id.is_none();
+            let evidence_status_summary = json!({
+                "source_experiment_run_id": candidate.experiment_run_id,
+                "source_walk_forward_run_id": candidate.walk_forward_run_id,
+                "source_walk_forward_status": walk_forward_status_text.clone(),
+                "source_robustness_matrix_run_id": source_robustness_matrix_run_id,
+                "source_robustness_status": source_robustness_status.clone(),
+                "batch_id": result.batch_id,
+                "candidate_creation_mode": payload.candidate_creation_mode.as_str(),
+                "batch_triage_status": candidate_triage_status.as_str(),
+                "data_quality_status": data_quality_status.map(|status| status.as_str()),
+                "strategy_id": candidate.strategy_id.clone(),
+                "symbol": candidate.symbol.clone(),
+                "timeframe": candidate.timeframe.clone(),
+                "config_fingerprint": config_fingerprint.clone(),
+                "gate_evidence_mismatch": gate_evidence_mismatch,
+            });
             let decision = aegis_core::evaluate_research_candidate_creation(
                 &policy,
                 ResearchCandidateCreationInput {
                     source_batch_id: Some(result.batch_id),
                     experiment_run_id: candidate.experiment_run_id,
+                    source_walk_forward_run_id: candidate.walk_forward_run_id,
+                    source_robustness_matrix_run_id,
                     walk_forward_status: candidate.robustness_status,
                     batch_triage_status: candidate_triage_status,
-                    robustness_status: None,
-                    data_quality_status: result
-                        .quality_after
-                        .as_ref()
-                        .map(|quality| quality.status),
+                    robustness_status,
+                    data_quality_status,
+                    normalized_strategy_config: normalized_strategy_config.clone(),
+                    config_fingerprint: Some(config_fingerprint.clone()),
+                    evidence_status_summary: Some(evidence_status_summary.clone()),
+                    gate_evidence_mismatch,
                     trade_count: candidate.trade_count,
                     pnl_pct: candidate.pnl_pct,
                     score: candidate.score,
@@ -17222,19 +17275,12 @@ async fn execute_research_batch(
             if !decision.should_create_candidate {
                 result.candidates_blocked_by_gate += 1;
                 if decision.should_create_proposal {
-                    let lifecycle = lifecycle_candidate_from_experiment_run(
-                        state,
-                        candidate.experiment_run_id,
-                        Some(format!(
-                            "candidate proposal from research batch {}",
-                            result.batch_id
-                        )),
-                        correlation_id,
-                    )
-                    .await?;
                     let proposal = ResearchCandidateProposal {
                         id: Uuid::new_v4(),
                         source_batch_id: Some(result.batch_id),
+                        source_experiment_run_id: Some(candidate.experiment_run_id),
+                        source_walk_forward_run_id: candidate.walk_forward_run_id,
+                        source_robustness_matrix_run_id,
                         experiment_run_id: candidate.experiment_run_id,
                         strategy_id: candidate.strategy_id.clone(),
                         symbol: candidate.symbol.clone(),
@@ -17246,6 +17292,11 @@ async fn execute_research_batch(
                         walk_forward_status: candidate
                             .robustness_status
                             .map(|status| status.as_str().to_string()),
+                        source_robustness_status,
+                        normalized_strategy_config,
+                        config_fingerprint: Some(config_fingerprint),
+                        evidence_status_summary: Some(evidence_status_summary),
+                        gate_evidence_mismatch,
                         gate_decision: decision,
                         reason: "candidate_creation_gate_blocked".to_string(),
                         promoted_candidate_id: None,
@@ -17257,13 +17308,8 @@ async fn execute_research_batch(
                 }
                 continue;
             }
-            let lifecycle = lifecycle_candidate_from_experiment_run(
-                state,
-                candidate.experiment_run_id,
-                Some(format!("created by research batch {}", result.batch_id)),
-                correlation_id,
-            )
-            .await?;
+            let mut lifecycle = lifecycle;
+            lifecycle.notes = Some(format!("created by research batch {}", result.batch_id));
             let (record, _) = create_research_candidate(
                 &state.db_pool,
                 &lifecycle,
@@ -21765,6 +21811,117 @@ fn hash_json_value(value: &Value) -> anyhow::Result<String> {
     let bytes = serde_json::to_vec(value)?;
     let digest = Sha256::digest(bytes);
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn strategy_evidence_config_fingerprint_value(config: &Value) -> Value {
+    let params = config.get("params").unwrap_or(config);
+    let integer_keys = [
+        "lookback_candles",
+        "trend_lookback_candles",
+        "momentum_lookback_candles",
+        "compression_lookback_candles",
+        "breakout_lookback_candles",
+        "pullback_lookback_candles",
+        "pullback_sma_lookback_candles",
+        "holding_candles",
+    ];
+    let decimal_keys = [
+        "compression_percentile_threshold",
+        "min_breakout_pct",
+        "max_breakout_extension_pct",
+        "min_volume_expansion_ratio",
+        "lower_band_pct",
+        "upper_band_pct",
+        "min_range_width_pct",
+        "max_range_width_pct",
+        "min_close_above_sma_pct",
+        "max_close_above_sma_pct",
+        "min_momentum_return_pct",
+        "min_trend_return_pct",
+        "min_trend_slope_pct",
+        "min_pullback_depth_pct",
+        "max_pullback_depth_pct",
+        "min_reclaim_pct",
+        "min_breakdown_pct",
+        "min_reclaim_close_pct",
+        "min_lower_wick_pct",
+        "min_volume_ratio",
+        "max_choppiness",
+        "stop_loss_pct",
+        "take_profit_pct",
+    ];
+    let mut normalized = serde_json::Map::new();
+    for key in integer_keys {
+        let value = params
+            .get(key)
+            .and_then(|value| value.as_u64())
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null);
+        normalized.insert(key.to_string(), value);
+    }
+    for key in decimal_keys {
+        let value = params
+            .get(key)
+            .and_then(|value| match value {
+                Value::String(raw) => raw.parse::<rust_decimal::Decimal>().ok(),
+                Value::Number(number) => number.to_string().parse::<rust_decimal::Decimal>().ok(),
+                _ => None,
+            })
+            .map(|value| json!(value.normalize().to_string()))
+            .unwrap_or(Value::Null);
+        normalized.insert(key.to_string(), value);
+    }
+    Value::Object(normalized)
+}
+
+fn strategy_evidence_config_fingerprint(config: &Value) -> anyhow::Result<String> {
+    hash_json_value(&strategy_evidence_config_fingerprint_value(config))
+}
+
+async fn find_matching_robustness_matrix_evidence(
+    state: &AppState,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+    normalized_strategy_config: &Value,
+) -> anyhow::Result<(Option<Uuid>, Option<StrategyRobustnessMatrixStatus>, bool)> {
+    let target_fingerprint = strategy_evidence_config_fingerprint_value(normalized_strategy_config);
+    let mut related_mismatch_seen = false;
+    for record in list_strategy_robustness_matrix_runs(&state.db_pool, 50).await? {
+        let result = strategy_robustness_matrix_result_from_record(&record)?;
+        let request = &result.request;
+        let strategy_matches = request
+            .strategy_ids
+            .iter()
+            .any(|value| value == strategy_id);
+        let symbol_matches = request
+            .symbols
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(symbol));
+        let timeframe_matches = request.timeframes.iter().any(|value| value == timeframe);
+        if !strategy_matches || !symbol_matches || !timeframe_matches {
+            continue;
+        }
+        let Some(config_by_strategy) = request.config_json_by_strategy.as_ref() else {
+            related_mismatch_seen = true;
+            continue;
+        };
+        let Some(matrix_config) = config_by_strategy.get(strategy_id) else {
+            related_mismatch_seen = true;
+            continue;
+        };
+        if strategy_evidence_config_fingerprint_value(matrix_config) == target_fingerprint {
+            let strategy_status = result
+                .strategy_rankings
+                .iter()
+                .find(|summary| summary.strategy_id == strategy_id)
+                .map(|summary| summary.status)
+                .unwrap_or(result.status);
+            return Ok((Some(result.run_id), Some(strategy_status), false));
+        }
+        related_mismatch_seen = true;
+    }
+    Ok((None, None, related_mismatch_seen))
 }
 
 fn observation_age_seconds(
@@ -28947,13 +29104,14 @@ async fn evaluate_strategy_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
-        build_cors_layer, build_shadow_promotion_proposed_runner_config,
-        cancel_exchange_testnet_order, candidate_promotion_readiness,
-        check_execution_readiness_handler, compression_breakout_refinement_handler,
-        evaluate_strategy_candidate_observation_handler, generate_operator_report_handler,
-        generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
-        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
+        batch_walk_forward_window_hours, bootstrap_owner, bounded_recent_events_limit,
+        bounded_risk_decisions_limit, build_cors_layer,
+        build_shadow_promotion_proposed_runner_config, cancel_exchange_testnet_order,
+        candidate_promotion_readiness, check_execution_readiness_handler,
+        compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
+        generate_operator_report_handler, generate_testnet_client_order_id,
+        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
+        get_execution_readiness_snapshot_handler,
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
         get_research_candidate_shadow_performance_handler,
@@ -29100,6 +29258,14 @@ mod tests {
         assert_eq!(ranked[0].experiment_run_id, Uuid::from_u128(1));
         assert_eq!(ranked[1].experiment_run_id, Uuid::from_u128(2));
         assert_eq!(ranked[2].experiment_run_id, Uuid::from_u128(3));
+    }
+
+    #[test]
+    fn research_batch_walk_forward_uses_rolling_windows_for_long_ranges() {
+        let start = Utc.with_ymd_and_hms(2023, 3, 25, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+
+        assert_eq!(batch_walk_forward_window_hours(start, end), (0, 2184, 2184));
     }
 
     #[test]
