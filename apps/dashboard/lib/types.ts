@@ -3413,6 +3413,88 @@ export type StrategySignalFeatureAttributionResponse = {
   timestamp: string;
 };
 
+export type CompressionBreakoutRefinementStatus =
+  | "PROMISING_REFINEMENT"
+  | "TOO_SPARSE"
+  | "OVERFIT_RISK"
+  | "NEGATIVE"
+  | "INSUFFICIENT_DATA";
+
+export type CompressionBreakoutConditionBreakdown = {
+  condition: string;
+  reached_count: number;
+  passed_count: number;
+  failed_count: number;
+  pass_rate_pct: string;
+  drop_off_pct: string;
+};
+
+export type CompressionBreakoutParameterSensitivity = {
+  compression_lookback: number;
+  breakout_lookback: number;
+  min_breakout_pct: string;
+  max_breakout_extension_pct: string;
+  min_volume_expansion_ratio: string;
+  holding_candles: number;
+  signal_count: number;
+  executable_count: number;
+  avg_forward_net_pnl_pct: string;
+  median_forward_net_pnl_pct: string;
+  win_rate: string;
+  overextension_fail_rate: string;
+  volume_fail_rate: string;
+  compression_fail_rate: string;
+  status: CompressionBreakoutRefinementStatus;
+};
+
+export type CompressionBreakoutOpportunityBucket = {
+  feature_name: string;
+  bucket_label: string;
+  sample_count: number;
+  win_rate: string;
+  avg_forward_net_pnl_pct: string;
+  median_forward_net_pnl_pct: string;
+  best_forward_net_pnl_pct: string;
+  worst_forward_net_pnl_pct: string;
+  status: CompressionBreakoutRefinementStatus;
+};
+
+export type CompressionBreakoutRefinementRecommendation = {
+  code: string;
+  message: string;
+  status: CompressionBreakoutRefinementStatus;
+};
+
+export type CompressionBreakoutRefinementResult = {
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  start_time: string;
+  end_time: string;
+  total_closed_candles: number;
+  total_windows: number;
+  status: CompressionBreakoutRefinementStatus;
+  funnel: CompressionBreakoutConditionBreakdown[];
+  top_bottleneck_condition: string | null;
+  sensitivity: CompressionBreakoutParameterSensitivity[];
+  best_sensitivity_configs: CompressionBreakoutParameterSensitivity[];
+  worst_sensitivity_configs: CompressionBreakoutParameterSensitivity[];
+  opportunity_buckets: CompressionBreakoutOpportunityBucket[];
+  promising_buckets: CompressionBreakoutOpportunityBucket[];
+  avoid_buckets: CompressionBreakoutOpportunityBucket[];
+  too_low_sample_buckets: CompressionBreakoutOpportunityBucket[];
+  recommendations: CompressionBreakoutRefinementRecommendation[];
+  no_promotion_warning: string;
+  computed_at: string;
+};
+
+export type CompressionBreakoutRefinementResponse = {
+  result: CompressionBreakoutRefinementResult;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type EvaluateStrategyResponse = {
   strategy_id: string;
   symbol: string;

@@ -2,16 +2,16 @@ use crate::config::{save_token_file, StoredAuthSession, StoredUserSummary};
 use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
-    CandleBackfillRequest, CandleBackfillResult, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
-    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
-    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
-    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
-    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
-    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
-    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
-    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    CandleBackfillRequest, CandleBackfillResult, CompressionBreakoutRefinementResult,
+    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
+    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
+    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
+    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
+    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
+    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
+    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
@@ -1664,6 +1664,43 @@ impl ApiClient {
         }
         self.get(
             &format!("/strategy/{strategy_id}/signal-feature-attribution"),
+            &query,
+        )
+        .await
+    }
+
+    pub async fn compression_breakout_refinement(
+        &self,
+        symbol: String,
+        timeframe: String,
+        start_time: DateTime<Utc>,
+        end_time: DateTime<Utc>,
+        fee_bps: Decimal,
+        slippage_bps: Decimal,
+        max_configs: Option<usize>,
+        holding_windows: Vec<u32>,
+    ) -> Result<CompressionBreakoutRefinementResponse, ApiClientError> {
+        let mut query = vec![
+            ("symbol", symbol),
+            ("timeframe", timeframe),
+            ("start_time", start_time.to_rfc3339()),
+            ("end_time", end_time.to_rfc3339()),
+            ("fee_bps", fee_bps.to_string()),
+            ("slippage_bps", slippage_bps.to_string()),
+            (
+                "holding_windows",
+                holding_windows
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ];
+        if let Some(max_configs) = max_configs {
+            query.push(("max_configs", max_configs.to_string()));
+        }
+        self.get(
+            "/strategy/volatility_compression_breakout_v1/refinement-analysis",
             &query,
         )
         .await
@@ -3350,6 +3387,14 @@ pub struct StrategyExitAttributionResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StrategySignalFeatureAttributionResponse {
     pub result: StrategySignalFeatureAttributionResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CompressionBreakoutRefinementResponse {
+    pub result: CompressionBreakoutRefinementResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

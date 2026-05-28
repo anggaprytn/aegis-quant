@@ -2261,6 +2261,164 @@ pub struct StrategySignalFeatureAttributionResult {
     pub computed_at: DateTime<Utc>,
 }
 
+fn default_compression_breakout_refinement_holding_windows() -> Vec<u32> {
+    vec![5, 10, 20]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompressionBreakoutRefinementRequest {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub config_json: Option<Value>,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub max_configs: Option<usize>,
+    #[serde(default = "default_compression_breakout_refinement_holding_windows")]
+    pub holding_windows: Vec<u32>,
+}
+
+impl CompressionBreakoutRefinementRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.strategy_id.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestStrategyId);
+        }
+        if self.symbol.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestSymbol);
+        }
+        if self.timeframe.trim().is_empty() {
+            return Err(CoreError::EmptyBacktestTimeframe);
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidBacktestTimeRange);
+        }
+        self.timeframe.parse::<CandleInterval>()?;
+        if self.fee_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("fee_bps".to_string()));
+        }
+        if self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidBacktestBps("slippage_bps".to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn normalized_holding_windows(&self) -> Vec<u32> {
+        let mut windows = self
+            .holding_windows
+            .iter()
+            .copied()
+            .filter(|window| *window > 0)
+            .collect::<Vec<_>>();
+        if windows.is_empty() {
+            windows = default_compression_breakout_refinement_holding_windows();
+        }
+        windows.sort_unstable();
+        windows.dedup();
+        windows
+    }
+
+    pub fn normalized_max_configs(&self) -> usize {
+        self.max_configs.unwrap_or(512).clamp(1, 3072)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CompressionBreakoutRefinementStatus {
+    PromisingRefinement,
+    TooSparse,
+    OverfitRisk,
+    Negative,
+    InsufficientData,
+}
+
+impl CompressionBreakoutRefinementStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PromisingRefinement => "PROMISING_REFINEMENT",
+            Self::TooSparse => "TOO_SPARSE",
+            Self::OverfitRisk => "OVERFIT_RISK",
+            Self::Negative => "NEGATIVE",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompressionBreakoutConditionBreakdown {
+    pub condition: String,
+    pub reached_count: i64,
+    pub passed_count: i64,
+    pub failed_count: i64,
+    pub pass_rate_pct: Decimal,
+    pub drop_off_pct: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompressionBreakoutParameterSensitivity {
+    pub compression_lookback: u32,
+    pub breakout_lookback: u32,
+    pub min_breakout_pct: Decimal,
+    pub max_breakout_extension_pct: Decimal,
+    pub min_volume_expansion_ratio: Decimal,
+    pub holding_candles: u32,
+    pub signal_count: i64,
+    pub executable_count: i64,
+    pub avg_forward_net_pnl_pct: Decimal,
+    pub median_forward_net_pnl_pct: Decimal,
+    pub win_rate: Decimal,
+    pub overextension_fail_rate: Decimal,
+    pub volume_fail_rate: Decimal,
+    pub compression_fail_rate: Decimal,
+    pub status: CompressionBreakoutRefinementStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompressionBreakoutOpportunityBucket {
+    pub feature_name: String,
+    pub bucket_label: String,
+    pub sample_count: i64,
+    pub win_rate: Decimal,
+    pub avg_forward_net_pnl_pct: Decimal,
+    pub median_forward_net_pnl_pct: Decimal,
+    pub best_forward_net_pnl_pct: Decimal,
+    pub worst_forward_net_pnl_pct: Decimal,
+    pub status: CompressionBreakoutRefinementStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompressionBreakoutRefinementRecommendation {
+    pub code: String,
+    pub message: String,
+    pub status: CompressionBreakoutRefinementStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompressionBreakoutRefinementResult {
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub total_closed_candles: i64,
+    pub total_windows: i64,
+    pub status: CompressionBreakoutRefinementStatus,
+    pub funnel: Vec<CompressionBreakoutConditionBreakdown>,
+    pub top_bottleneck_condition: Option<String>,
+    pub sensitivity: Vec<CompressionBreakoutParameterSensitivity>,
+    pub best_sensitivity_configs: Vec<CompressionBreakoutParameterSensitivity>,
+    pub worst_sensitivity_configs: Vec<CompressionBreakoutParameterSensitivity>,
+    pub opportunity_buckets: Vec<CompressionBreakoutOpportunityBucket>,
+    pub promising_buckets: Vec<CompressionBreakoutOpportunityBucket>,
+    pub avoid_buckets: Vec<CompressionBreakoutOpportunityBucket>,
+    pub too_low_sample_buckets: Vec<CompressionBreakoutOpportunityBucket>,
+    pub recommendations: Vec<CompressionBreakoutRefinementRecommendation>,
+    pub no_promotion_warning: String,
+    pub computed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StrategyDiagnosticSeverity {

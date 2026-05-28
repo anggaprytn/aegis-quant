@@ -27,20 +27,20 @@ use serde::Serialize;
 
 use crate::api::{
     BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
-    CandleBackfillRunsResponse, ExchangePrivateStreamEventRecord,
-    ExchangePrivateStreamListenKeyResponse, ExchangePrivateStreamStatusResponse,
-    ExchangeReconciliationMismatchRecord, ExchangeReconciliationResult,
-    ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
-    ExchangeTestnetPipelineSubmitResponse, ExchangeTestnetRepairActionRecord,
-    ExchangeTestnetRepairResponse, ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse,
-    ExecutionReadinessResponse, ExecutionReadinessSnapshotsResponse, FeedStatusResponse,
-    HealthResponse, MarketDataRepairRunsResponse, OperatorReportResponse,
-    OperatorReportsListResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
-    PaperEquityResponse, PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse,
-    PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse, RiskConfigAuditResponse,
-    RiskConfigResponse, RiskConfigValidationResponse, RiskConfigVersionsResponse,
-    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
-    StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
+    CandleBackfillRunsResponse, CompressionBreakoutRefinementResponse,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamListenKeyResponse,
+    ExchangePrivateStreamStatusResponse, ExchangeReconciliationMismatchRecord,
+    ExchangeReconciliationResult, ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse,
+    ExchangeTestnetOrderResponse, ExchangeTestnetPipelineSubmitResponse,
+    ExchangeTestnetRepairActionRecord, ExchangeTestnetRepairResponse,
+    ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse, ExecutionReadinessResponse,
+    ExecutionReadinessSnapshotsResponse, FeedStatusResponse, HealthResponse,
+    MarketDataRepairRunsResponse, OperatorReportResponse, OperatorReportsListResponse, OrderRecord,
+    PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse,
+    PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse,
+    RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
+    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
+    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDiagnosticsResponse, StrategyDryRunResponse,
     StrategyExitAttributionResponse, StrategyListResponse, StrategyOpportunityAnalysisResponse,
     StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
@@ -1965,6 +1965,81 @@ pub fn print_strategy_signal_feature_attribution(
             println!("  - {}", recommendation);
         }
     }
+}
+
+pub fn print_compression_breakout_refinement(response: &CompressionBreakoutRefinementResponse) {
+    let result = &response.result;
+    println!("Compression Breakout Refinement");
+    println!("Strategy ID: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Status: {}", result.status.as_str());
+    println!(
+        "Candles/windows: {}/{}",
+        result.total_closed_candles, result.total_windows
+    );
+    println!(
+        "Top bottleneck: {}",
+        result.top_bottleneck_condition.as_deref().unwrap_or("N/A")
+    );
+    println!("Funnel:");
+    for row in &result.funnel {
+        println!(
+            "  - {}: reached={} passed={} failed={} pass_rate={} drop_off={}",
+            row.condition,
+            row.reached_count,
+            row.passed_count,
+            row.failed_count,
+            row.pass_rate_pct.round_dp(2),
+            row.drop_off_pct.round_dp(2)
+        );
+    }
+    println!("Best sensitivity configs:");
+    for row in &result.best_sensitivity_configs {
+        println!(
+            "  - c={} b={} min={} max_ext={} vol={} hold={} signals={} exec={} avg={} median={} win={} status={}",
+            row.compression_lookback,
+            row.breakout_lookback,
+            row.min_breakout_pct,
+            row.max_breakout_extension_pct,
+            row.min_volume_expansion_ratio,
+            row.holding_candles,
+            row.signal_count,
+            row.executable_count,
+            row.avg_forward_net_pnl_pct.round_dp(4),
+            row.median_forward_net_pnl_pct.round_dp(4),
+            row.win_rate.round_dp(2),
+            row.status.as_str()
+        );
+    }
+    println!("Worst sensitivity configs:");
+    for row in &result.worst_sensitivity_configs {
+        println!(
+            "  - c={} b={} min={} max_ext={} vol={} hold={} signals={} exec={} avg={} median={} win={} status={}",
+            row.compression_lookback,
+            row.breakout_lookback,
+            row.min_breakout_pct,
+            row.max_breakout_extension_pct,
+            row.min_volume_expansion_ratio,
+            row.holding_candles,
+            row.signal_count,
+            row.executable_count,
+            row.avg_forward_net_pnl_pct.round_dp(4),
+            row.median_forward_net_pnl_pct.round_dp(4),
+            row.win_rate.round_dp(2),
+            row.status.as_str()
+        );
+    }
+    println!("Recommendations:");
+    for recommendation in &result.recommendations {
+        println!(
+            "  - {} [{}]: {}",
+            recommendation.code,
+            recommendation.status.as_str(),
+            recommendation.message
+        );
+    }
+    println!("Warning: {}", result.no_promotion_warning);
 }
 
 pub fn print_orders(orders: &[OrderRecord]) {

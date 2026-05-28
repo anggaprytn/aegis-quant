@@ -87,6 +87,7 @@ import type {
   ResearchCandidateStatus as StrategyResearchCandidateStatus,
   RiskConfig,
   RiskDecisionRecord,
+  CompressionBreakoutRefinementResult,
   StrategyComparisonSummary,
   StrategyCandidateObservation,
   StrategyDiagnosticsResult,
@@ -626,6 +627,21 @@ function strategySignalFeatureAttributionFormFromStatus(strategy?: StrategyStatu
   };
 }
 
+function compressionBreakoutRefinementFormFromStatus(strategy?: StrategyStatusView) {
+  const end = new Date();
+  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+  return {
+    symbol: strategy?.symbols[0] ?? "BTCUSDT",
+    timeframe: strategy?.timeframe ?? "1h",
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    fee_bps: "10",
+    slippage_bps: "5",
+    max_configs: "512",
+    holding_windows: "5,10,20",
+  };
+}
+
 function parseIntegerList(value: string) {
   return value
     .split(",")
@@ -1116,6 +1132,11 @@ function AuthenticatedDashboard({
   );
   const [strategySignalFeatureAttributionResult, setStrategySignalFeatureAttributionResult] =
     useState<StrategySignalFeatureAttributionResult | null>(null);
+  const [compressionBreakoutRefinementForm, setCompressionBreakoutRefinementForm] = useState(
+    compressionBreakoutRefinementFormFromStatus(),
+  );
+  const [compressionBreakoutRefinementResult, setCompressionBreakoutRefinementResult] =
+    useState<CompressionBreakoutRefinementResult | null>(null);
   const [riskConfigForm, setRiskConfigForm] = useState<RiskConfig>(riskConfigFormFromView());
 
   useEffect(() => {
@@ -1975,10 +1996,14 @@ function AuthenticatedDashboard({
       setStrategySignalFeatureAttributionForm(
         strategySignalFeatureAttributionFormFromStatus(selectedStrategyStatusQuery.data.strategy),
       );
+      setCompressionBreakoutRefinementForm(
+        compressionBreakoutRefinementFormFromStatus(selectedStrategyStatusQuery.data.strategy),
+      );
       setStrategyDiagnosticsResult(null);
       setStrategyOpportunityResult(null);
       setStrategySignalFeatureAttributionResult(null);
       setStrategyExitAttributionResult(null);
+      setCompressionBreakoutRefinementResult(null);
     }
   }, [selectedStrategyStatusQuery.data?.strategy]);
 
@@ -2303,6 +2328,23 @@ function AuthenticatedDashboard({
       }),
     onSuccess: (response) => {
       setStrategySignalFeatureAttributionResult(response.result);
+    },
+  });
+
+  const compressionBreakoutRefinementMutation = useMutation({
+    mutationFn: () =>
+      api.getCompressionBreakoutRefinement({
+        symbol: compressionBreakoutRefinementForm.symbol,
+        timeframe: compressionBreakoutRefinementForm.timeframe,
+        start_time: compressionBreakoutRefinementForm.start_time,
+        end_time: compressionBreakoutRefinementForm.end_time,
+        fee_bps: compressionBreakoutRefinementForm.fee_bps,
+        slippage_bps: compressionBreakoutRefinementForm.slippage_bps,
+        max_configs: compressionBreakoutRefinementForm.max_configs || undefined,
+        holding_windows: compressionBreakoutRefinementForm.holding_windows,
+      }),
+    onSuccess: (response) => {
+      setCompressionBreakoutRefinementResult(response.result);
     },
   });
 
@@ -4603,6 +4645,204 @@ function AuthenticatedDashboard({
                         {close}
                       </div>
                     ))}
+                  </div>
+                </div>
+              </Panel>
+              <Panel className="xl:col-span-12" title="Compression Breakout Refinement">
+                <div className="space-y-3">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <Field
+                      label="Symbol"
+                      value={compressionBreakoutRefinementForm.symbol}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          symbol: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Timeframe"
+                      value={compressionBreakoutRefinementForm.timeframe}
+                      as="select"
+                      options={TIMEFRAME_OPTIONS}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          timeframe: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Start"
+                      value={compressionBreakoutRefinementForm.start_time}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          start_time: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="End"
+                      value={compressionBreakoutRefinementForm.end_time}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          end_time: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Fee Bps"
+                      value={compressionBreakoutRefinementForm.fee_bps}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          fee_bps: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Slippage Bps"
+                      value={compressionBreakoutRefinementForm.slippage_bps}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          slippage_bps: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Max Configs"
+                      value={compressionBreakoutRefinementForm.max_configs}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          max_configs: value,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Holding Windows"
+                      value={compressionBreakoutRefinementForm.holding_windows}
+                      onChange={(value) =>
+                        setCompressionBreakoutRefinementForm((current) => ({
+                          ...current,
+                          holding_windows: value,
+                        }))
+                      }
+                    />
+                  </div>
+                  <ActionButton
+                    label="Run Refinement"
+                    onClick={() => compressionBreakoutRefinementMutation.mutate()}
+                    busy={compressionBreakoutRefinementMutation.isPending}
+                  />
+                  <InlineStatus
+                    error={getErrorMessage(compressionBreakoutRefinementMutation.error)}
+                    success={
+                      compressionBreakoutRefinementResult
+                        ? `refinement: ${compressionBreakoutRefinementResult.status}`
+                        : undefined
+                    }
+                  />
+                  <KeyValue
+                    items={[
+                      ["Status", compressionBreakoutRefinementResult?.status ?? "N/A"],
+                      [
+                        "Bottleneck",
+                        compressionBreakoutRefinementResult?.top_bottleneck_condition ?? "N/A",
+                      ],
+                      [
+                        "Closed Candles",
+                        compressionBreakoutRefinementResult
+                          ? String(compressionBreakoutRefinementResult.total_closed_candles)
+                          : "N/A",
+                      ],
+                      [
+                        "Configs",
+                        compressionBreakoutRefinementResult
+                          ? String(compressionBreakoutRefinementResult.sensitivity.length)
+                          : "N/A",
+                      ],
+                    ]}
+                    loading={compressionBreakoutRefinementMutation.isPending}
+                    error={undefined}
+                  />
+                  <div className="overflow-x-auto rounded-xl border border-border bg-surface/40">
+                    <table className="min-w-full text-left text-xs text-slate-300">
+                      <thead className="text-slate-100">
+                        <tr>
+                          <th className="px-3 py-2">Condition</th>
+                          <th className="px-3 py-2">Reached</th>
+                          <th className="px-3 py-2">Passed</th>
+                          <th className="px-3 py-2">Drop-off</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(compressionBreakoutRefinementResult?.funnel ?? []).map((row) => (
+                          <tr key={row.condition} className="border-t border-border">
+                            <td className="px-3 py-2">{row.condition}</td>
+                            <td className="px-3 py-2">{row.reached_count}</td>
+                            <td className="px-3 py-2">{row.passed_count}</td>
+                            <td className="px-3 py-2">{formatNumber(row.drop_off_pct)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-border bg-surface/40">
+                    <table className="min-w-full text-left text-xs text-slate-300">
+                      <thead className="text-slate-100">
+                        <tr>
+                          <th className="px-3 py-2">Config</th>
+                          <th className="px-3 py-2">Signals</th>
+                          <th className="px-3 py-2">Exec</th>
+                          <th className="px-3 py-2">Avg</th>
+                          <th className="px-3 py-2">Median</th>
+                          <th className="px-3 py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(compressionBreakoutRefinementResult?.best_sensitivity_configs ?? [])
+                          .slice(0, 5)
+                          .map((row) => (
+                            <tr
+                              key={`${row.compression_lookback}-${row.breakout_lookback}-${row.min_breakout_pct}-${row.max_breakout_extension_pct}-${row.min_volume_expansion_ratio}-${row.holding_candles}`}
+                              className="border-t border-border"
+                            >
+                              <td className="px-3 py-2">
+                                c{row.compression_lookback}/b{row.breakout_lookback}/m
+                                {row.min_breakout_pct}/x{row.max_breakout_extension_pct}/v
+                                {row.min_volume_expansion_ratio}/h{row.holding_candles}
+                              </td>
+                              <td className="px-3 py-2">{row.signal_count}</td>
+                              <td className="px-3 py-2">{row.executable_count}</td>
+                              <td className="px-3 py-2">
+                                {formatNumber(row.avg_forward_net_pnl_pct)}%
+                              </td>
+                              <td className="px-3 py-2">
+                                {formatNumber(row.median_forward_net_pnl_pct)}%
+                              </td>
+                              <td className="px-3 py-2">{row.status}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="rounded-xl border border-border bg-surface/40 p-3 text-xs text-slate-300">
+                    <div className="font-medium text-slate-100">Recommendations</div>
+                    {(compressionBreakoutRefinementResult?.recommendations ?? []).map((item) => (
+                      <div key={item.code} className="mt-2">
+                        {item.status} {item.message}
+                      </div>
+                    ))}
+                    {compressionBreakoutRefinementResult ? (
+                      <div className="mt-2 text-amber-200">
+                        {compressionBreakoutRefinementResult.no_promotion_warning}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </Panel>

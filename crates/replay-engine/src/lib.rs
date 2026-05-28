@@ -1,15 +1,18 @@
 use aegis_core::{
     build_strategy_robustness_matrix_result, classify_research_regime, summarize_candle_continuity,
     BacktestEquityPoint, BacktestPosition, BacktestRequest, BacktestResult, BacktestTrade, Candle,
-    CandleInterval, EventEnvelope, MarketDataQualityRequest, MarketDataQualityStatus,
-    MarketDataSource, ReplayRunStatus, ReplaySuppressionCount, ReplaySuppressionReason, Side,
-    StrategyConfig, StrategyConfigUpdateRequest, StrategyEvaluationContext,
-    StrategyExitAttributionHoldingWindow, StrategyExitAttributionRecommendation,
-    StrategyExitAttributionRequest, StrategyExitAttributionResult, StrategyExitAttributionStatus,
-    StrategyExitAttributionTrade, StrategyExperimentCandidate, StrategyExperimentComparison,
-    StrategyExperimentGlobalRanking, StrategyExperimentGlobalRankingEntry,
-    StrategyExperimentMetric, StrategyExperimentRequest, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+    CandleInterval, CompressionBreakoutConditionBreakdown, CompressionBreakoutOpportunityBucket,
+    CompressionBreakoutParameterSensitivity, CompressionBreakoutRefinementRecommendation,
+    CompressionBreakoutRefinementRequest, CompressionBreakoutRefinementResult,
+    CompressionBreakoutRefinementStatus, EventEnvelope, MarketDataQualityRequest,
+    MarketDataQualityStatus, MarketDataSource, ReplayRunStatus, ReplaySuppressionCount,
+    ReplaySuppressionReason, Side, StrategyConfig, StrategyConfigUpdateRequest,
+    StrategyEvaluationContext, StrategyExitAttributionHoldingWindow,
+    StrategyExitAttributionRecommendation, StrategyExitAttributionRequest,
+    StrategyExitAttributionResult, StrategyExitAttributionStatus, StrategyExitAttributionTrade,
+    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentGlobalRanking,
+    StrategyExperimentGlobalRankingEntry, StrategyExperimentMetric, StrategyExperimentRequest,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
     StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
     StrategyRobustnessMatrixCell, StrategyRobustnessMatrixFinding, StrategyRobustnessMatrixRequest,
     StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus,
@@ -32,6 +35,7 @@ use db::{
     insert_strategy_walk_forward_windows, insert_system_event, strategy_config_from_record,
     update_backtest_run_completed, PgPool,
 };
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -362,6 +366,54 @@ impl ReplayEngine {
         .await
         .context("failed to load closed candles range")?;
         calculate_signal_feature_attribution(
+            &request,
+            &strategy_config,
+            &symbol,
+            candles,
+            Utc::now(),
+        )
+    }
+
+    pub async fn run_compression_breakout_refinement(
+        &self,
+        request: CompressionBreakoutRefinementRequest,
+    ) -> Result<CompressionBreakoutRefinementResult> {
+        request.validate()?;
+        let strategy_id: StrategyId = request.strategy_id.parse()?;
+        if strategy_id != StrategyId::VolatilityCompressionBreakoutV1 {
+            return Err(anyhow!(
+                "compression breakout refinement only supports volatility_compression_breakout_v1"
+            ));
+        }
+        let (base_config, symbol) = self
+            .load_strategy_experiment_context(&request.strategy_id, &request.symbol)
+            .await?;
+        let timeframe = parse_strategy_timeframe(&request.timeframe)?;
+        let mut strategy_config = match request.config_json.clone() {
+            Some(value) => {
+                let mut update = serde_json::from_value::<StrategyConfigUpdateRequest>(value)
+                    .context("failed to decode compression refinement config_json")?;
+                update.strategy_id = request.strategy_id.clone();
+                validate_strategy_config(&update, &StrategyValidationContext::default())
+                    .normalized_config
+                    .ok_or_else(|| anyhow!("invalid compression refinement config_json"))?
+            }
+            None => base_config,
+        };
+        strategy_config.strategy_id = StrategyId::VolatilityCompressionBreakoutV1;
+        strategy_config.timeframe = timeframe;
+        strategy_config.symbols = vec![symbol.clone()];
+        let candles = get_closed_candles_range(
+            &self.pool,
+            &symbol,
+            timeframe,
+            request.start_time,
+            request.end_time,
+        )
+        .await
+        .context("failed to load closed candles range")?;
+
+        calculate_compression_breakout_refinement(
             &request,
             &strategy_config,
             &symbol,
@@ -1368,6 +1420,951 @@ pub fn calculate_signal_feature_attribution(
         status,
         computed_at,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompressionRefinementConfig {
+    compression_lookback: u32,
+    breakout_lookback: u32,
+    compression_percentile_threshold: Decimal,
+    min_breakout_pct: Decimal,
+    max_breakout_extension_pct: Decimal,
+    min_volume_expansion_ratio: Decimal,
+    min_range_width_pct: Decimal,
+    max_range_width_pct: Decimal,
+}
+
+#[derive(Debug, Clone)]
+struct CompressionRefinementMetrics {
+    recent_avg_range_pct: Decimal,
+    compression_ratio: Decimal,
+    compression_passed: bool,
+    breakout_level: Decimal,
+    breakout_pct: Decimal,
+    volume_ratio: Decimal,
+    range_width_valid: bool,
+    bullish_candle: bool,
+    candle_body_pct: Decimal,
+}
+
+#[derive(Debug, Clone)]
+struct CompressionSignalSample {
+    index: usize,
+    metrics: CompressionRefinementMetrics,
+    forward_net_pnl_pct: Decimal,
+}
+
+#[derive(Debug, Default, Clone)]
+struct FunnelConditionStats {
+    reached_count: i64,
+    passed_count: i64,
+}
+
+const COMPRESSION_FUNNEL_CONDITIONS: [&str; 11] = [
+    "enough_data",
+    "compression_passed",
+    "range_width_valid",
+    "breakout_passed",
+    "breakout_min_passed",
+    "breakout_not_overextended",
+    "volume_confirmed",
+    "bullish_candle_confirmed",
+    "final_would_signal",
+    "executable_signal",
+    "forward_pnl_available",
+];
+
+pub fn calculate_compression_breakout_refinement(
+    request: &CompressionBreakoutRefinementRequest,
+    strategy_config: &StrategyConfig,
+    symbol: &Symbol,
+    mut candles: Vec<Candle>,
+    computed_at: DateTime<Utc>,
+) -> Result<CompressionBreakoutRefinementResult> {
+    request.validate()?;
+    candles.sort_by_key(|candle| candle.open_time);
+    candles.retain(|candle| candle.is_closed);
+    let holding_windows = request.normalized_holding_windows();
+    let base_config = compression_refinement_config_from_strategy(strategy_config);
+    let total_closed_candles = candles.len() as i64;
+    let total_windows = total_closed_candles;
+    let fee_drag_pct = (request.fee_bps + request.slippage_bps) / Decimal::new(100, 0);
+
+    let (funnel, top_bottleneck_condition, baseline_samples) =
+        build_compression_refinement_funnel(&candles, base_config, &holding_windows, fee_drag_pct);
+    let sensitivity = build_compression_parameter_sensitivity(
+        &candles,
+        base_config,
+        &holding_windows,
+        fee_drag_pct,
+        request.normalized_max_configs(),
+    );
+    let best_sensitivity_configs = ranked_compression_sensitivity(&sensitivity, true);
+    let worst_sensitivity_configs = ranked_compression_sensitivity(&sensitivity, false);
+    let opportunity_buckets = build_compression_opportunity_buckets(&candles, &baseline_samples, 3);
+    let promising_buckets = ranked_compression_buckets(
+        &opportunity_buckets,
+        CompressionBreakoutRefinementStatus::PromisingRefinement,
+        true,
+    );
+    let avoid_buckets = ranked_compression_buckets(
+        &opportunity_buckets,
+        CompressionBreakoutRefinementStatus::Negative,
+        false,
+    );
+    let too_low_sample_buckets = opportunity_buckets
+        .iter()
+        .filter(|bucket| bucket.status == CompressionBreakoutRefinementStatus::InsufficientData)
+        .take(10)
+        .cloned()
+        .collect::<Vec<_>>();
+    let status = compression_refinement_status(
+        total_closed_candles,
+        &funnel,
+        best_sensitivity_configs.first(),
+    );
+    let recommendations = compression_refinement_recommendations(
+        status,
+        &funnel,
+        &sensitivity,
+        &promising_buckets,
+        &avoid_buckets,
+    );
+
+    Ok(CompressionBreakoutRefinementResult {
+        strategy_id: request.strategy_id.clone(),
+        symbol: symbol.as_str().to_string(),
+        timeframe: request.timeframe.clone(),
+        start_time: request.start_time,
+        end_time: request.end_time,
+        total_closed_candles,
+        total_windows,
+        status,
+        funnel,
+        top_bottleneck_condition,
+        sensitivity,
+        best_sensitivity_configs,
+        worst_sensitivity_configs,
+        opportunity_buckets,
+        promising_buckets,
+        avoid_buckets,
+        too_low_sample_buckets,
+        recommendations,
+        no_promotion_warning:
+            "Research-only refinement analysis; do not promote or create candidates from this result alone."
+                .to_string(),
+        computed_at,
+    })
+}
+
+fn compression_refinement_config_from_strategy(
+    config: &StrategyConfig,
+) -> CompressionRefinementConfig {
+    CompressionRefinementConfig {
+        compression_lookback: config
+            .compression_lookback_candles
+            .unwrap_or(config.lookback_candles),
+        breakout_lookback: config
+            .breakout_lookback_candles
+            .unwrap_or(config.lookback_candles),
+        compression_percentile_threshold: config
+            .compression_percentile_threshold
+            .unwrap_or(Decimal::new(25, 0)),
+        min_breakout_pct: config.min_breakout_pct.unwrap_or(Decimal::new(5, 2)),
+        max_breakout_extension_pct: config
+            .max_breakout_extension_pct
+            .unwrap_or(Decimal::new(15, 1)),
+        min_volume_expansion_ratio: config
+            .min_volume_expansion_ratio
+            .unwrap_or(Decimal::new(11, 1)),
+        min_range_width_pct: config.min_range_width_pct.unwrap_or(Decimal::new(2, 1)),
+        max_range_width_pct: config.max_range_width_pct.unwrap_or(Decimal::new(5, 0)),
+    }
+}
+
+fn build_compression_refinement_funnel(
+    candles: &[Candle],
+    config: CompressionRefinementConfig,
+    holding_windows: &[u32],
+    fee_drag_pct: Decimal,
+) -> (
+    Vec<CompressionBreakoutConditionBreakdown>,
+    Option<String>,
+    Vec<CompressionSignalSample>,
+) {
+    let mut stats = COMPRESSION_FUNNEL_CONDITIONS
+        .iter()
+        .map(|condition| (condition.to_string(), FunnelConditionStats::default()))
+        .collect::<BTreeMap<_, _>>();
+    let required = compression_required_candles(config);
+    let max_holding = holding_windows.iter().copied().max().unwrap_or(20) as usize;
+    let mut last_executed_entry_time = None;
+    let mut open_until_index: Option<usize> = None;
+    let mut samples = Vec::new();
+
+    for index in 0..candles.len() {
+        if open_until_index.is_some_and(|close_index| index >= close_index) {
+            open_until_index = None;
+        }
+        let enough_data = index + 1 >= required;
+        record_funnel_condition(&mut stats, "enough_data", true, enough_data);
+        if !enough_data {
+            continue;
+        }
+        let window = &candles[index + 1 - required..=index];
+        let metrics = calculate_compression_refinement_metrics(config, window);
+        let breakout_passed = candles[index].close > metrics.breakout_level;
+        let breakout_min_passed = metrics.breakout_pct >= config.min_breakout_pct;
+        let breakout_not_overextended = metrics.breakout_pct <= config.max_breakout_extension_pct;
+        let volume_confirmed = metrics.volume_ratio >= config.min_volume_expansion_ratio;
+        let final_would_signal = metrics.compression_passed
+            && metrics.range_width_valid
+            && breakout_passed
+            && breakout_min_passed
+            && breakout_not_overextended
+            && volume_confirmed
+            && metrics.bullish_candle;
+        let entry_index = index + 1;
+        let executable_signal = final_would_signal
+            && candles.get(entry_index).is_some()
+            && !cooldown_active(last_executed_entry_time, candles[index].close_time, 0)
+            && open_until_index.is_none();
+        let forward_pnl_available =
+            executable_signal && candles.get(entry_index + max_holding).is_some();
+
+        let sequence = [
+            ("compression_passed", metrics.compression_passed),
+            ("range_width_valid", metrics.range_width_valid),
+            ("breakout_passed", breakout_passed),
+            ("breakout_min_passed", breakout_min_passed),
+            ("breakout_not_overextended", breakout_not_overextended),
+            ("volume_confirmed", volume_confirmed),
+            ("bullish_candle_confirmed", metrics.bullish_candle),
+            ("final_would_signal", final_would_signal),
+            ("executable_signal", executable_signal),
+            ("forward_pnl_available", forward_pnl_available),
+        ];
+        let mut reached = true;
+        for (condition, passed) in sequence {
+            record_funnel_condition(&mut stats, condition, reached, passed);
+            reached &= passed;
+        }
+        if executable_signal {
+            last_executed_entry_time = Some(candles[entry_index].open_time);
+            open_until_index = Some(index.saturating_add(max_holding));
+        }
+        if forward_pnl_available {
+            let exit = &candles[entry_index + max_holding];
+            let entry = &candles[entry_index];
+            samples.push(CompressionSignalSample {
+                index,
+                metrics,
+                forward_net_pnl_pct: forward_net_pnl_pct(entry.open, exit.close, fee_drag_pct),
+            });
+        }
+    }
+
+    let breakdown = COMPRESSION_FUNNEL_CONDITIONS
+        .iter()
+        .map(|condition| {
+            let stat = stats.get(*condition).cloned().unwrap_or_default();
+            let failed_count = stat.reached_count.saturating_sub(stat.passed_count);
+            CompressionBreakoutConditionBreakdown {
+                condition: (*condition).to_string(),
+                reached_count: stat.reached_count,
+                passed_count: stat.passed_count,
+                failed_count,
+                pass_rate_pct: pct_i64_replay(stat.passed_count, stat.reached_count),
+                drop_off_pct: pct_i64_replay(failed_count, stat.reached_count),
+            }
+        })
+        .collect::<Vec<_>>();
+    let top_bottleneck = breakdown
+        .iter()
+        .filter(|row| row.condition != "enough_data" && row.reached_count > 0)
+        .max_by(|left, right| {
+            left.drop_off_pct
+                .cmp(&right.drop_off_pct)
+                .then_with(|| left.failed_count.cmp(&right.failed_count))
+        })
+        .map(|row| row.condition.clone());
+
+    (breakdown, top_bottleneck, samples)
+}
+
+fn record_funnel_condition(
+    stats: &mut BTreeMap<String, FunnelConditionStats>,
+    condition: &str,
+    reached: bool,
+    passed: bool,
+) {
+    if !reached {
+        return;
+    }
+    let stat = stats.entry(condition.to_string()).or_default();
+    stat.reached_count += 1;
+    if passed {
+        stat.passed_count += 1;
+    }
+}
+
+fn build_compression_parameter_sensitivity(
+    candles: &[Candle],
+    base_config: CompressionRefinementConfig,
+    holding_windows: &[u32],
+    fee_drag_pct: Decimal,
+    max_configs: usize,
+) -> Vec<CompressionBreakoutParameterSensitivity> {
+    let compression_lookbacks = [10_u32, 20, 40, 80];
+    let breakout_lookbacks = [10_u32, 20, 40, 80];
+    let min_breakouts = [
+        Decimal::ZERO,
+        Decimal::new(5, 2),
+        Decimal::new(1, 1),
+        Decimal::new(2, 1),
+    ];
+    let max_extensions = [
+        Decimal::new(5, 1),
+        Decimal::ONE,
+        Decimal::new(15, 1),
+        Decimal::new(2, 0),
+    ];
+    let volume_ratios = [
+        Decimal::ONE,
+        Decimal::new(11, 1),
+        Decimal::new(13, 1),
+        Decimal::new(15, 1),
+    ];
+    let mut rows = Vec::new();
+
+    'configs: for compression_lookback in compression_lookbacks {
+        for breakout_lookback in breakout_lookbacks {
+            if compression_lookback > breakout_lookback {
+                continue;
+            }
+            for min_breakout_pct in min_breakouts {
+                for max_breakout_extension_pct in max_extensions {
+                    if max_breakout_extension_pct <= min_breakout_pct {
+                        continue;
+                    }
+                    for min_volume_expansion_ratio in volume_ratios {
+                        for holding_candles in holding_windows {
+                            if rows.len() >= max_configs {
+                                break 'configs;
+                            }
+                            let config = CompressionRefinementConfig {
+                                compression_lookback,
+                                breakout_lookback,
+                                min_breakout_pct,
+                                max_breakout_extension_pct,
+                                min_volume_expansion_ratio,
+                                ..base_config
+                            };
+                            rows.push(evaluate_compression_sensitivity_config(
+                                candles,
+                                config,
+                                *holding_candles,
+                                fee_drag_pct,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    rows.sort_by(|left, right| {
+        right
+            .avg_forward_net_pnl_pct
+            .cmp(&left.avg_forward_net_pnl_pct)
+            .then_with(|| right.executable_count.cmp(&left.executable_count))
+            .then_with(|| left.compression_lookback.cmp(&right.compression_lookback))
+            .then_with(|| left.breakout_lookback.cmp(&right.breakout_lookback))
+            .then_with(|| left.holding_candles.cmp(&right.holding_candles))
+    });
+    rows
+}
+
+fn evaluate_compression_sensitivity_config(
+    candles: &[Candle],
+    config: CompressionRefinementConfig,
+    holding_candles: u32,
+    fee_drag_pct: Decimal,
+) -> CompressionBreakoutParameterSensitivity {
+    let required = compression_required_candles(config);
+    let holding = holding_candles as usize;
+    let mut signal_count = 0_i64;
+    let mut executable_count = 0_i64;
+    let mut compression_fail_count = 0_i64;
+    let mut overextension_fail_count = 0_i64;
+    let mut volume_fail_count = 0_i64;
+    let mut evaluable_count = 0_i64;
+    let mut pnl_values = Vec::new();
+    let mut open_until_index: Option<usize> = None;
+
+    for index in 0..candles.len() {
+        if open_until_index.is_some_and(|close_index| index >= close_index) {
+            open_until_index = None;
+        }
+        if index + 1 < required {
+            continue;
+        }
+        evaluable_count += 1;
+        let window = &candles[index + 1 - required..=index];
+        let metrics = calculate_compression_refinement_metrics(config, window);
+        if !metrics.compression_passed {
+            compression_fail_count += 1;
+        }
+        let breakout_passed = candles[index].close > metrics.breakout_level;
+        let breakout_min_passed = metrics.breakout_pct >= config.min_breakout_pct;
+        let breakout_not_overextended = metrics.breakout_pct <= config.max_breakout_extension_pct;
+        if metrics.compression_passed
+            && metrics.range_width_valid
+            && breakout_passed
+            && breakout_min_passed
+            && !breakout_not_overextended
+        {
+            overextension_fail_count += 1;
+        }
+        let volume_confirmed = metrics.volume_ratio >= config.min_volume_expansion_ratio;
+        if metrics.compression_passed
+            && metrics.range_width_valid
+            && breakout_passed
+            && breakout_min_passed
+            && breakout_not_overextended
+            && !volume_confirmed
+        {
+            volume_fail_count += 1;
+        }
+        let final_would_signal = metrics.compression_passed
+            && metrics.range_width_valid
+            && breakout_passed
+            && breakout_min_passed
+            && breakout_not_overextended
+            && volume_confirmed
+            && metrics.bullish_candle;
+        if !final_would_signal {
+            continue;
+        }
+        signal_count += 1;
+        let entry_index = index + 1;
+        if open_until_index.is_some() || candles.get(entry_index).is_none() {
+            continue;
+        }
+        executable_count += 1;
+        open_until_index = Some(index.saturating_add(holding));
+        let Some(exit) = candles.get(entry_index + holding) else {
+            continue;
+        };
+        let entry = &candles[entry_index];
+        pnl_values.push(forward_net_pnl_pct(entry.open, exit.close, fee_drag_pct));
+    }
+
+    pnl_values.sort();
+    let win_count = pnl_values
+        .iter()
+        .filter(|value| **value > Decimal::ZERO)
+        .count() as i64;
+    let avg_forward_net_pnl_pct = average_decimal_replay(pnl_values.iter().copied());
+    let median_forward_net_pnl_pct = replay_median_decimal(&pnl_values);
+    let win_rate = pct_i64_replay(win_count, pnl_values.len() as i64);
+    let status = sensitivity_status(
+        signal_count,
+        executable_count,
+        avg_forward_net_pnl_pct,
+        median_forward_net_pnl_pct,
+        win_rate,
+        pnl_values.len() as i64,
+    );
+
+    CompressionBreakoutParameterSensitivity {
+        compression_lookback: config.compression_lookback,
+        breakout_lookback: config.breakout_lookback,
+        min_breakout_pct: config.min_breakout_pct,
+        max_breakout_extension_pct: config.max_breakout_extension_pct,
+        min_volume_expansion_ratio: config.min_volume_expansion_ratio,
+        holding_candles,
+        signal_count,
+        executable_count,
+        avg_forward_net_pnl_pct,
+        median_forward_net_pnl_pct,
+        win_rate,
+        overextension_fail_rate: pct_i64_replay(overextension_fail_count, evaluable_count),
+        volume_fail_rate: pct_i64_replay(volume_fail_count, evaluable_count),
+        compression_fail_rate: pct_i64_replay(compression_fail_count, evaluable_count),
+        status,
+    }
+}
+
+fn build_compression_opportunity_buckets(
+    candles: &[Candle],
+    samples: &[CompressionSignalSample],
+    min_samples_per_bucket: i64,
+) -> Vec<CompressionBreakoutOpportunityBucket> {
+    let mut grouped = BTreeMap::<(String, String), Vec<Decimal>>::new();
+    for sample in samples {
+        let candle = &candles[sample.index];
+        let metrics = &sample.metrics;
+        let feature_values = [
+            (
+                "compression_ratio",
+                compression_bucket("compression_ratio", metrics.compression_ratio),
+            ),
+            (
+                "recent_avg_range_pct",
+                compression_bucket("recent_avg_range_pct", metrics.recent_avg_range_pct),
+            ),
+            (
+                "breakout_pct",
+                compression_bucket("breakout_pct", metrics.breakout_pct),
+            ),
+            (
+                "volume_ratio",
+                compression_bucket("volume_ratio", metrics.volume_ratio),
+            ),
+            (
+                "hour_of_day_utc",
+                format!("{:02}", candle.close_time.hour()),
+            ),
+            ("day_of_week", format!("{:?}", candle.close_time.weekday())),
+            (
+                "candle_body_pct",
+                compression_bucket("candle_body_pct", metrics.candle_body_pct),
+            ),
+        ];
+        for (feature, bucket) in feature_values {
+            grouped
+                .entry((feature.to_string(), bucket))
+                .or_default()
+                .push(sample.forward_net_pnl_pct);
+        }
+    }
+
+    let mut buckets = grouped
+        .into_iter()
+        .map(|((feature_name, bucket_label), mut values)| {
+            values.sort();
+            let sample_count = values.len() as i64;
+            let win_count = values
+                .iter()
+                .filter(|value| **value > Decimal::ZERO)
+                .count() as i64;
+            let avg_forward_net_pnl_pct = average_decimal_replay(values.iter().copied());
+            let median_forward_net_pnl_pct = replay_median_decimal(&values);
+            let win_rate = pct_i64_replay(win_count, sample_count);
+            let status = if sample_count < min_samples_per_bucket {
+                CompressionBreakoutRefinementStatus::InsufficientData
+            } else if avg_forward_net_pnl_pct > Decimal::ZERO
+                && median_forward_net_pnl_pct >= Decimal::ZERO
+                && win_rate >= Decimal::new(50, 0)
+            {
+                CompressionBreakoutRefinementStatus::PromisingRefinement
+            } else if avg_forward_net_pnl_pct < Decimal::ZERO
+                && median_forward_net_pnl_pct <= Decimal::ZERO
+            {
+                CompressionBreakoutRefinementStatus::Negative
+            } else {
+                CompressionBreakoutRefinementStatus::OverfitRisk
+            };
+            CompressionBreakoutOpportunityBucket {
+                feature_name,
+                bucket_label,
+                sample_count,
+                win_rate,
+                avg_forward_net_pnl_pct,
+                median_forward_net_pnl_pct,
+                best_forward_net_pnl_pct: values.last().copied().unwrap_or(Decimal::ZERO),
+                worst_forward_net_pnl_pct: values.first().copied().unwrap_or(Decimal::ZERO),
+                status,
+            }
+        })
+        .collect::<Vec<_>>();
+    buckets.sort_by(|left, right| {
+        left.feature_name
+            .cmp(&right.feature_name)
+            .then_with(|| left.bucket_label.cmp(&right.bucket_label))
+    });
+    buckets
+}
+
+fn ranked_compression_sensitivity(
+    sensitivity: &[CompressionBreakoutParameterSensitivity],
+    best: bool,
+) -> Vec<CompressionBreakoutParameterSensitivity> {
+    let mut rows = sensitivity.to_vec();
+    rows.sort_by(|left, right| {
+        let pnl_order = left
+            .avg_forward_net_pnl_pct
+            .cmp(&right.avg_forward_net_pnl_pct);
+        let pnl_order = if best { pnl_order.reverse() } else { pnl_order };
+        pnl_order
+            .then_with(|| right.executable_count.cmp(&left.executable_count))
+            .then_with(|| left.compression_lookback.cmp(&right.compression_lookback))
+            .then_with(|| left.breakout_lookback.cmp(&right.breakout_lookback))
+            .then_with(|| left.holding_candles.cmp(&right.holding_candles))
+    });
+    rows.into_iter().take(8).collect()
+}
+
+fn ranked_compression_buckets(
+    buckets: &[CompressionBreakoutOpportunityBucket],
+    status: CompressionBreakoutRefinementStatus,
+    best: bool,
+) -> Vec<CompressionBreakoutOpportunityBucket> {
+    let mut rows = buckets
+        .iter()
+        .filter(|bucket| bucket.status == status)
+        .cloned()
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        let pnl_order = left
+            .avg_forward_net_pnl_pct
+            .cmp(&right.avg_forward_net_pnl_pct);
+        let pnl_order = if best { pnl_order.reverse() } else { pnl_order };
+        pnl_order
+            .then_with(|| right.sample_count.cmp(&left.sample_count))
+            .then_with(|| left.feature_name.cmp(&right.feature_name))
+            .then_with(|| left.bucket_label.cmp(&right.bucket_label))
+    });
+    rows.into_iter().take(8).collect()
+}
+
+fn sensitivity_status(
+    signal_count: i64,
+    executable_count: i64,
+    avg_forward_net_pnl_pct: Decimal,
+    median_forward_net_pnl_pct: Decimal,
+    win_rate: Decimal,
+    pnl_sample_count: i64,
+) -> CompressionBreakoutRefinementStatus {
+    if pnl_sample_count == 0 {
+        CompressionBreakoutRefinementStatus::InsufficientData
+    } else if avg_forward_net_pnl_pct <= Decimal::ZERO
+        && median_forward_net_pnl_pct <= Decimal::ZERO
+    {
+        CompressionBreakoutRefinementStatus::Negative
+    } else if signal_count < 3 || executable_count < 3 {
+        CompressionBreakoutRefinementStatus::TooSparse
+    } else if executable_count < 10 {
+        CompressionBreakoutRefinementStatus::OverfitRisk
+    } else if avg_forward_net_pnl_pct > Decimal::ZERO
+        && median_forward_net_pnl_pct >= Decimal::ZERO
+        && win_rate >= Decimal::new(45, 0)
+    {
+        CompressionBreakoutRefinementStatus::PromisingRefinement
+    } else {
+        CompressionBreakoutRefinementStatus::OverfitRisk
+    }
+}
+
+fn compression_refinement_status(
+    total_closed_candles: i64,
+    funnel: &[CompressionBreakoutConditionBreakdown],
+    best: Option<&CompressionBreakoutParameterSensitivity>,
+) -> CompressionBreakoutRefinementStatus {
+    if total_closed_candles < 100 {
+        return CompressionBreakoutRefinementStatus::InsufficientData;
+    }
+    let final_signals = funnel_count(funnel, "final_would_signal");
+    if final_signals < 3 {
+        return CompressionBreakoutRefinementStatus::TooSparse;
+    }
+    match best.map(|row| row.status) {
+        Some(CompressionBreakoutRefinementStatus::PromisingRefinement) => {
+            CompressionBreakoutRefinementStatus::PromisingRefinement
+        }
+        Some(CompressionBreakoutRefinementStatus::Negative) => {
+            CompressionBreakoutRefinementStatus::Negative
+        }
+        Some(CompressionBreakoutRefinementStatus::InsufficientData) | None => {
+            CompressionBreakoutRefinementStatus::InsufficientData
+        }
+        Some(CompressionBreakoutRefinementStatus::TooSparse) => {
+            CompressionBreakoutRefinementStatus::TooSparse
+        }
+        Some(CompressionBreakoutRefinementStatus::OverfitRisk) => {
+            CompressionBreakoutRefinementStatus::OverfitRisk
+        }
+    }
+}
+
+fn compression_refinement_recommendations(
+    status: CompressionBreakoutRefinementStatus,
+    funnel: &[CompressionBreakoutConditionBreakdown],
+    sensitivity: &[CompressionBreakoutParameterSensitivity],
+    promising_buckets: &[CompressionBreakoutOpportunityBucket],
+    avoid_buckets: &[CompressionBreakoutOpportunityBucket],
+) -> Vec<CompressionBreakoutRefinementRecommendation> {
+    let mut recommendations = Vec::new();
+    let compression_drop = funnel_drop(funnel, "compression_passed");
+    let volume_drop = funnel_drop(funnel, "volume_confirmed");
+    let overextension_drop = funnel_drop(funnel, "breakout_not_overextended");
+    let best = sensitivity.first();
+    let low_volume_best = sensitivity
+        .iter()
+        .filter(|row| row.min_volume_expansion_ratio == Decimal::ONE)
+        .max_by(|left, right| {
+            left.avg_forward_net_pnl_pct
+                .cmp(&right.avg_forward_net_pnl_pct)
+        });
+    let tight_extension_best = sensitivity
+        .iter()
+        .filter(|row| row.max_breakout_extension_pct <= Decimal::ONE)
+        .max_by(|left, right| {
+            left.avg_forward_net_pnl_pct
+                .cmp(&right.avg_forward_net_pnl_pct)
+        });
+
+    if status != CompressionBreakoutRefinementStatus::PromisingRefinement {
+        recommendations.push(recommendation(
+            "do_not_promote",
+            "Do not promote; broaden and validate the opportunity set before candidate creation.",
+            status,
+        ));
+    }
+    if compression_drop >= Decimal::new(70, 0) {
+        recommendations.push(recommendation(
+            "loosen_compression",
+            "Compression is the main bottleneck; test shorter compression lookbacks or a looser compression threshold before v2.",
+            CompressionBreakoutRefinementStatus::OverfitRisk,
+        ));
+    }
+    if let (Some(best), Some(low_volume_best)) = (best, low_volume_best) {
+        if volume_drop >= Decimal::new(30, 0)
+            && low_volume_best.avg_forward_net_pnl_pct >= best.avg_forward_net_pnl_pct
+        {
+            recommendations.push(recommendation(
+                "relax_volume_confirmation",
+                "Volume confirmation blocks many opportunities without clear PnL improvement; lower min_volume_expansion_ratio or test it as optional.",
+                CompressionBreakoutRefinementStatus::OverfitRisk,
+            ));
+        }
+    }
+    if overextension_drop > Decimal::ZERO {
+        if let (Some(best), Some(tight)) = (best, tight_extension_best) {
+            if tight.avg_forward_net_pnl_pct >= best.avg_forward_net_pnl_pct {
+                recommendations.push(recommendation(
+                    "keep_extension_tight",
+                    "Overextended breakouts are not improving the best samples; keep max_breakout_extension_pct tight.",
+                    CompressionBreakoutRefinementStatus::OverfitRisk,
+                ));
+            }
+        }
+    }
+    if let Some(bucket) = promising_buckets.iter().find(|bucket| {
+        matches!(
+            bucket.feature_name.as_str(),
+            "hour_of_day_utc" | "day_of_week"
+        )
+    }) {
+        recommendations.push(recommendation(
+            "time_filter_exploratory",
+            &format!(
+                "{}={} looks promising, but treat time filters as exploratory and require broader validation.",
+                bucket.feature_name, bucket.bucket_label
+            ),
+            CompressionBreakoutRefinementStatus::OverfitRisk,
+        ));
+    }
+    if let Some(bucket) = avoid_buckets.first() {
+        recommendations.push(recommendation(
+            "avoid_bucket",
+            &format!(
+                "Avoid or separately investigate {}={} because its average forward net PnL is {}%.",
+                bucket.feature_name,
+                bucket.bucket_label,
+                bucket.avg_forward_net_pnl_pct.round_dp(4)
+            ),
+            CompressionBreakoutRefinementStatus::Negative,
+        ));
+    }
+    if recommendations.is_empty() {
+        recommendations.push(recommendation(
+            "collect_more_evidence",
+            "No deterministic refinement is strong enough yet; collect more closed-candle evidence before v2.",
+            CompressionBreakoutRefinementStatus::InsufficientData,
+        ));
+    }
+    recommendations
+}
+
+fn recommendation(
+    code: &str,
+    message: &str,
+    status: CompressionBreakoutRefinementStatus,
+) -> CompressionBreakoutRefinementRecommendation {
+    CompressionBreakoutRefinementRecommendation {
+        code: code.to_string(),
+        message: message.to_string(),
+        status,
+    }
+}
+
+fn calculate_compression_refinement_metrics(
+    config: CompressionRefinementConfig,
+    window: &[Candle],
+) -> CompressionRefinementMetrics {
+    let latest_index = window.len().saturating_sub(1);
+    let latest = &window[latest_index];
+    let compression = config.compression_lookback as usize;
+    let breakout = config.breakout_lookback as usize;
+    let recent_start = latest_index.saturating_sub(compression);
+    let recent_window = &window[recent_start..latest_index];
+    let baseline_end = recent_start;
+    let baseline_start = baseline_end.saturating_sub(breakout);
+    let baseline_window = if baseline_end > baseline_start {
+        &window[baseline_start..baseline_end]
+    } else {
+        recent_window
+    };
+    let breakout_start = latest_index.saturating_sub(breakout);
+    let breakout_window = &window[breakout_start..latest_index];
+    let recent_avg_range_pct = average_decimal_replay(recent_window.iter().map(candle_range_pct));
+    let mut baseline_range_pcts = baseline_window
+        .iter()
+        .map(candle_range_pct)
+        .collect::<Vec<_>>();
+    baseline_range_pcts.sort();
+    let baseline_avg_range_pct = average_decimal_replay(baseline_range_pcts.iter().copied());
+    let compression_threshold_range_pct = decimal_percentile(
+        &baseline_range_pcts,
+        config.compression_percentile_threshold,
+    );
+    let compression_ratio = if baseline_avg_range_pct > Decimal::ZERO {
+        (recent_avg_range_pct / baseline_avg_range_pct) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let breakout_level = breakout_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+    let breakout_pct = pct_change(latest.close, breakout_level);
+    let average_volume = average_decimal_replay(breakout_window.iter().map(|candle| candle.volume));
+    let volume_ratio = if average_volume > Decimal::ZERO {
+        latest.volume / average_volume
+    } else {
+        Decimal::ZERO
+    };
+    let range_high = breakout_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+    let range_low = breakout_window
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(latest.low);
+    let range_width_pct = pct_change(range_high, range_low);
+
+    CompressionRefinementMetrics {
+        recent_avg_range_pct,
+        compression_ratio,
+        compression_passed: compression_threshold_range_pct > Decimal::ZERO
+            && recent_avg_range_pct <= compression_threshold_range_pct,
+        breakout_level,
+        breakout_pct,
+        volume_ratio,
+        range_width_valid: range_width_pct >= config.min_range_width_pct
+            && range_width_pct <= config.max_range_width_pct,
+        bullish_candle: latest.close > latest.open,
+        candle_body_pct: candle_body_pct(latest),
+    }
+}
+
+fn compression_required_candles(config: CompressionRefinementConfig) -> usize {
+    (config.compression_lookback + config.breakout_lookback + 1).max(2) as usize
+}
+
+fn forward_net_pnl_pct(
+    entry_price: Decimal,
+    exit_price: Decimal,
+    fee_drag_pct: Decimal,
+) -> Decimal {
+    if entry_price > Decimal::ZERO {
+        ((exit_price - entry_price) / entry_price) * Decimal::new(100, 0) - fee_drag_pct
+    } else {
+        Decimal::ZERO
+    }
+}
+
+fn pct_i64_replay(numerator: i64, denominator: i64) -> Decimal {
+    if denominator > 0 {
+        (Decimal::from(numerator) / Decimal::from(denominator)) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    }
+}
+
+fn decimal_percentile(sorted: &[Decimal], percentile: Decimal) -> Decimal {
+    if sorted.is_empty() {
+        return Decimal::ZERO;
+    }
+    let bounded = percentile.clamp(Decimal::ZERO, Decimal::new(100, 0));
+    let numerator = Decimal::from(sorted.len().saturating_sub(1)) * bounded;
+    let index = (numerator / Decimal::new(100, 0))
+        .floor()
+        .to_usize()
+        .unwrap_or(0)
+        .min(sorted.len().saturating_sub(1));
+    sorted[index]
+}
+
+fn compression_bucket(feature_name: &str, value: Decimal) -> String {
+    match feature_name {
+        "compression_ratio" => {
+            if value < Decimal::new(50, 0) {
+                "below 50".to_string()
+            } else if value < Decimal::new(75, 0) {
+                "50-75".to_string()
+            } else if value < Decimal::new(100, 0) {
+                "75-100".to_string()
+            } else {
+                "100+".to_string()
+            }
+        }
+        "volume_ratio" => {
+            if value < Decimal::ONE {
+                "below 1.0".to_string()
+            } else if value < Decimal::new(12, 1) {
+                "1.0-1.2".to_string()
+            } else if value < Decimal::new(15, 1) {
+                "1.2-1.5".to_string()
+            } else {
+                "1.5+".to_string()
+            }
+        }
+        _ => {
+            if value < Decimal::ZERO {
+                "negative".to_string()
+            } else if value < Decimal::new(1, 1) {
+                "0-0.1".to_string()
+            } else if value < Decimal::new(5, 1) {
+                "0.1-0.5".to_string()
+            } else if value < Decimal::ONE {
+                "0.5-1.0".to_string()
+            } else {
+                "1.0+".to_string()
+            }
+        }
+    }
+}
+
+fn funnel_count(funnel: &[CompressionBreakoutConditionBreakdown], condition: &str) -> i64 {
+    funnel
+        .iter()
+        .find(|row| row.condition == condition)
+        .map(|row| row.passed_count)
+        .unwrap_or_default()
+}
+
+fn funnel_drop(funnel: &[CompressionBreakoutConditionBreakdown], condition: &str) -> Decimal {
+    funnel
+        .iter()
+        .find(|row| row.condition == condition)
+        .map(|row| row.drop_off_pct)
+        .unwrap_or_default()
 }
 
 fn extract_signal_feature_metrics(
@@ -3842,15 +4839,16 @@ mod tests {
     use super::{
         bucket_label_for_feature, build_global_ranking, build_signal_feature_buckets,
         build_strategy_experiment_execution, build_strategy_walk_forward_execution,
-        calculate_exit_attribution, calculate_fee_slippage_drag_pct,
-        calculate_signal_feature_attribution, calculate_strategy_experiment_score,
-        calculate_walk_forward_robustness_score, experiment_strategy_override, experiment_warnings,
-        generate_walk_forward_windows, global_ranking_entry, median_decimal,
-        rank_strategy_experiment_runs, simulate_backtest, skipped_strategy_experiment_result,
-        timeframe_comparison_from_result,
+        calculate_compression_breakout_refinement, calculate_exit_attribution,
+        calculate_fee_slippage_drag_pct, calculate_signal_feature_attribution,
+        calculate_strategy_experiment_score, calculate_walk_forward_robustness_score,
+        experiment_strategy_override, experiment_warnings, generate_walk_forward_windows,
+        global_ranking_entry, median_decimal, rank_strategy_experiment_runs, simulate_backtest,
+        skipped_strategy_experiment_result, timeframe_comparison_from_result,
     };
     use aegis_core::{
-        BacktestRequest, Candle, CandleInterval, MarketDataSource, ReplaySuppressionReason,
+        BacktestRequest, Candle, CandleInterval, CompressionBreakoutRefinementRequest,
+        CompressionBreakoutRefinementStatus, MarketDataSource, ReplaySuppressionReason,
         StrategyConfig, StrategyExitAttributionRecommendation, StrategyExitAttributionRequest,
         StrategyExitAttributionStatus, StrategyExperimentRequest, StrategyExperimentRun,
         StrategyExperimentStatus, StrategyId, StrategyMode,
@@ -4065,6 +5063,27 @@ mod tests {
         candles.push(candle(41, 101, 103, 100, 102));
         candles.push(candle(42, 102, 104, 101, 103));
         candles
+    }
+
+    fn compression_refinement_request() -> CompressionBreakoutRefinementRequest {
+        CompressionBreakoutRefinementRequest {
+            strategy_id: "volatility_compression_breakout_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1m".to_string(),
+            start_time: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+            config_json: None,
+            fee_bps: Decimal::ZERO,
+            slippage_bps: Decimal::ZERO,
+            max_configs: Some(12),
+            holding_windows: vec![1],
+        }
+    }
+
+    fn sparse_compression_candles(count: i64) -> Vec<Candle> {
+        (0..count)
+            .map(|index| candle(index, 100, 110, 90, 100))
+            .collect()
     }
 
     fn feature_sample(
@@ -5328,6 +6347,173 @@ mod tests {
                 "missing feature {feature_name}"
             );
         }
+    }
+
+    #[test]
+    fn compression_refinement_funnel_counts_conditions() {
+        let result = calculate_compression_breakout_refinement(
+            &compression_refinement_request(),
+            &compression_breakout_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            compression_breakout_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        let enough_data = result
+            .funnel
+            .iter()
+            .find(|row| row.condition == "enough_data")
+            .expect("enough data row");
+        let final_signal = result
+            .funnel
+            .iter()
+            .find(|row| row.condition == "final_would_signal")
+            .expect("final signal row");
+        let forward_pnl = result
+            .funnel
+            .iter()
+            .find(|row| row.condition == "forward_pnl_available")
+            .expect("forward pnl row");
+
+        assert_eq!(enough_data.reached_count, result.total_closed_candles);
+        assert!(enough_data.passed_count > 0);
+        assert_eq!(final_signal.passed_count, 1);
+        assert_eq!(forward_pnl.passed_count, 1);
+    }
+
+    #[test]
+    fn compression_refinement_identifies_top_bottleneck() {
+        let mut config = compression_breakout_feature_strategy_config();
+        config.lookback_candles = 2;
+        config.compression_lookback_candles = Some(2);
+        config.breakout_lookback_candles = Some(2);
+        config.compression_percentile_threshold = Some(Decimal::new(25, 0));
+        let candles = vec![
+            candle(0, 100, 101, 99, 100),
+            candle(1, 100, 101, 99, 100),
+            candle(2, 100, 104, 98, 100),
+            candle(3, 100, 104, 98, 100),
+            candle(4, 100, 102, 99, 101),
+        ];
+        let result = calculate_compression_breakout_refinement(
+            &compression_refinement_request(),
+            &config,
+            &Symbol::new("BTCUSDT").unwrap(),
+            candles,
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.top_bottleneck_condition.as_deref(),
+            Some("compression_passed")
+        );
+    }
+
+    #[test]
+    fn compression_refinement_sensitivity_ranking_is_deterministic() {
+        let request = CompressionBreakoutRefinementRequest {
+            max_configs: Some(64),
+            ..compression_refinement_request()
+        };
+        let first = calculate_compression_breakout_refinement(
+            &request,
+            &compression_breakout_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            compression_breakout_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+        let second = calculate_compression_breakout_refinement(
+            &request,
+            &compression_breakout_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            compression_breakout_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            first.best_sensitivity_configs,
+            second.best_sensitivity_configs
+        );
+        assert_eq!(first.recommendations, second.recommendations);
+    }
+
+    #[test]
+    fn compression_refinement_marks_sparse_signal_status() {
+        let result = calculate_compression_breakout_refinement(
+            &compression_refinement_request(),
+            &compression_breakout_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            sparse_compression_candles(120),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.status,
+            CompressionBreakoutRefinementStatus::TooSparse
+        );
+        assert!(result
+            .recommendations
+            .iter()
+            .any(|recommendation| recommendation.code == "do_not_promote"));
+    }
+
+    #[test]
+    fn compression_refinement_status_warns_when_few_signals_dominate() {
+        let status = super::sensitivity_status(
+            4,
+            4,
+            Decimal::new(25, 2),
+            Decimal::new(10, 2),
+            Decimal::new(75, 0),
+            4,
+        );
+
+        assert_eq!(status, CompressionBreakoutRefinementStatus::OverfitRisk);
+    }
+
+    #[test]
+    fn compression_refinement_forward_pnl_includes_fee_and_slippage() {
+        let no_cost = calculate_compression_breakout_refinement(
+            &compression_refinement_request(),
+            &compression_breakout_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            compression_breakout_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+        let cost_request = CompressionBreakoutRefinementRequest {
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            ..compression_refinement_request()
+        };
+        let with_cost = calculate_compression_breakout_refinement(
+            &cost_request,
+            &compression_breakout_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            compression_breakout_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        let no_cost_avg = no_cost
+            .best_sensitivity_configs
+            .first()
+            .expect("best no cost")
+            .avg_forward_net_pnl_pct;
+        let with_cost_avg = with_cost
+            .best_sensitivity_configs
+            .first()
+            .expect("best with cost")
+            .avg_forward_net_pnl_pct;
+        assert_eq!(
+            (no_cost_avg - with_cost_avg).round_dp(4),
+            Decimal::new(15, 2)
+        );
     }
 
     #[test]

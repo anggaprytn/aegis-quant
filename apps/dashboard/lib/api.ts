@@ -171,6 +171,7 @@ import type {
   StrategyPerformanceRankingsResponse,
   StrategyPerformanceSummaryResponse,
   StrategyPnlBreakdownResponse,
+  CompressionBreakoutRefinementResponse,
   StrategySignalFeatureAttributionResponse,
   StrategyConfigAuditResponse,
   StrategyConfigUpdateRequest,
@@ -1024,6 +1025,21 @@ export const api = {
   ) =>
     request<StrategySignalFeatureAttributionResponse>(
       `/strategy/${id}/signal-feature-attribution`,
+      undefined,
+      params,
+    ),
+  getCompressionBreakoutRefinement: (params: {
+    symbol: string;
+    timeframe: string;
+    start_time: string;
+    end_time: string;
+    fee_bps: string;
+    slippage_bps: string;
+    max_configs?: string;
+    holding_windows?: string;
+  }) =>
+    request<CompressionBreakoutRefinementResponse>(
+      "/strategy/volatility_compression_breakout_v1/refinement-analysis",
       undefined,
       params,
     ),

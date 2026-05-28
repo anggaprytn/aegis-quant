@@ -385,6 +385,25 @@ async fn main() -> anyhow::Result<()> {
                     output::print_strategy_signal_feature_attribution(&response);
                 }
             }
+            StrategyCommands::CompressionRefinement(args) => {
+                let response = client
+                    .compression_breakout_refinement(
+                        args.symbol,
+                        args.timeframe,
+                        args.start_time,
+                        args.end_time,
+                        args.fee_bps,
+                        args.slippage_bps,
+                        args.max_configs,
+                        args.holding_windows,
+                    )
+                    .await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_compression_breakout_refinement(&response);
+                }
+            }
             StrategyCommands::Enable { strategy_id } => {
                 let response = client.enable_strategy(&strategy_id).await?;
                 if cli.json {

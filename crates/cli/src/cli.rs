@@ -580,6 +580,7 @@ pub enum StrategyCommands {
     OpportunityAnalysis(StrategyOpportunityAnalysisArgs),
     ExitAttribution(StrategyExitAttributionArgs),
     SignalFeatureAttribution(StrategySignalFeatureAttributionArgs),
+    CompressionRefinement(CompressionBreakoutRefinementArgs),
     Enable {
         strategy_id: String,
     },
@@ -723,6 +724,30 @@ pub struct StrategySignalFeatureAttributionArgs {
     pub slippage_bps: rust_decimal::Decimal,
     #[arg(long = "min-samples-per-bucket", default_value_t = 5)]
     pub min_samples_per_bucket: u32,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct CompressionBreakoutRefinementArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "end")]
+    pub end_time: chrono::DateTime<chrono::Utc>,
+    #[arg(long = "fee-bps")]
+    pub fee_bps: rust_decimal::Decimal,
+    #[arg(long = "slippage-bps")]
+    pub slippage_bps: rust_decimal::Decimal,
+    #[arg(long = "max-configs")]
+    pub max_configs: Option<usize>,
+    #[arg(
+        long = "holding-windows",
+        value_delimiter = ',',
+        default_value = "5,10,20"
+    )]
+    pub holding_windows: Vec<u32>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -111,6 +111,7 @@ use aegis_core::{
     TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest, TestnetShadowRunnerState,
     TestnetShadowRunnerTickResult, UserRole, UserStatus,
 };
+use aegis_core::{CompressionBreakoutRefinementRequest, CompressionBreakoutRefinementResult};
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
     scheduled_research::{
@@ -2370,6 +2371,19 @@ struct StrategySignalFeatureAttributionQuery {
     min_samples_per_bucket: Option<u32>,
 }
 
+#[derive(Deserialize)]
+struct CompressionBreakoutRefinementQuery {
+    symbol: String,
+    timeframe: String,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    config_json: Option<String>,
+    fee_bps: Decimal,
+    slippage_bps: Decimal,
+    max_configs: Option<usize>,
+    holding_windows: Option<String>,
+}
+
 #[derive(Serialize)]
 struct RecentSignalsResponse {
     signals: Vec<SignalRecord>,
@@ -2461,6 +2475,14 @@ struct StrategyExitAttributionResponse {
 #[derive(Serialize)]
 struct StrategySignalFeatureAttributionResponse {
     result: StrategySignalFeatureAttributionResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CompressionBreakoutRefinementResponse {
+    result: CompressionBreakoutRefinementResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3421,6 +3443,10 @@ async fn main() {
         .route(
             "/strategy/:id/signal-feature-attribution",
             get(strategy_signal_feature_attribution_handler),
+        )
+        .route(
+            "/strategy/:id/refinement-analysis",
+            get(compression_breakout_refinement_handler),
         )
         .route(
             "/strategy/:id/opportunity-replay-consistency",
@@ -27524,6 +27550,143 @@ async fn strategy_signal_feature_attribution_handler(
         .into_response()
 }
 
+async fn compression_breakout_refinement_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<CompressionBreakoutRefinementQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let parsed_strategy_id = match parse_strategy_id(&id) {
+        Ok(strategy_id) => strategy_id,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_strategy_id",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if parsed_strategy_id != StrategyId::VolatilityCompressionBreakoutV1 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "unsupported_strategy_id",
+                message: "refinement analysis only supports volatility_compression_breakout_v1"
+                    .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    let config_json = match query.config_json.as_deref() {
+        Some(raw) => match serde_json::from_str::<Value>(raw) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "invalid_config_json",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let holding_windows = query
+        .holding_windows
+        .as_deref()
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|part| part.trim().parse::<u32>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec![5, 10, 20]);
+    let refinement_request = CompressionBreakoutRefinementRequest {
+        strategy_id: id,
+        symbol: query.symbol,
+        timeframe: query.timeframe,
+        start_time: query.start_time,
+        end_time: query.end_time,
+        config_json,
+        fee_bps: query.fee_bps,
+        slippage_bps: query.slippage_bps,
+        max_configs: query.max_configs,
+        holding_windows,
+    };
+    if let Err(err) = refinement_request.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_compression_refinement_request",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    if let Err(err) = ensure_strategy_config(&state, parsed_strategy_id).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_load_strategy_config",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let engine = ReplayEngine::new(state.db_pool.clone(), state.config.app_name.clone());
+    let result = match engine
+        .run_compression_breakout_refinement(refinement_request)
+        .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_run_compression_refinement",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(CompressionBreakoutRefinementResponse {
+            result,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
 async fn strategy_opportunity_replay_consistency_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -28398,10 +28561,10 @@ mod tests {
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
         build_cors_layer, build_shadow_promotion_proposed_runner_config,
         cancel_exchange_testnet_order, candidate_promotion_readiness,
-        check_execution_readiness_handler, evaluate_strategy_candidate_observation_handler,
-        generate_operator_report_handler, generate_testnet_client_order_id,
-        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
-        get_execution_readiness_snapshot_handler,
+        check_execution_readiness_handler, compression_breakout_refinement_handler,
+        evaluate_strategy_candidate_observation_handler, generate_operator_report_handler,
+        generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
+        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
         get_research_candidate_shadow_performance_handler,
@@ -29526,6 +29689,10 @@ mod tests {
                 get(strategy_signal_feature_attribution_handler),
             )
             .route(
+                "/strategy/:id/refinement-analysis",
+                get(compression_breakout_refinement_handler),
+            )
+            .route(
                 "/strategy/:id/opportunity-replay-consistency",
                 get(strategy_opportunity_replay_consistency_handler),
             )
@@ -30578,6 +30745,61 @@ mod tests {
             .any(|bucket| bucket["feature_name"].as_str() == Some("close_vs_sma_pct")));
         assert!(payload["result"]["best_buckets"].as_array().is_some());
         assert!(payload["result"]["worst_buckets"].as_array().is_some());
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.3);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.5
+        );
+    }
+
+    #[tokio::test]
+    async fn compression_refinement_endpoint_reads_candles_without_execution_mutation() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = strategy_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let closes = (0..140)
+            .map(|index| 100_000 + (index % 5) * 10)
+            .collect::<Vec<_>>();
+        seed_shadow_candles(&test_db.pool, "BTCUSDT", &closes).await;
+
+        let before = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+        let start = (Utc::now() - chrono::Duration::hours(3))
+            .to_rfc3339()
+            .replace("+00:00", "Z");
+        let end = Utc::now().to_rfc3339().replace("+00:00", "Z");
+        let path = format!(
+            "/strategy/volatility_compression_breakout_v1/refinement-analysis?symbol=BTCUSDT&timeframe=1m&start_time={start}&end_time={end}&fee_bps=10&slippage_bps=5&max_configs=12&holding_windows=5,10,20"
+        );
+
+        let response = app.oneshot(get_request(&path)).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+
+        assert!(payload["result"]["funnel"]
+            .as_array()
+            .expect("funnel")
+            .iter()
+            .any(|row| row["condition"].as_str() == Some("compression_passed")));
+        assert!(!payload["result"]["best_sensitivity_configs"]
+            .as_array()
+            .expect("best configs")
+            .is_empty());
+        assert!(payload["result"]["recommendations"].as_array().is_some());
         assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
         assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
         assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
