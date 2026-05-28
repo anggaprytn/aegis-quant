@@ -467,6 +467,80 @@ pub async fn get_scheduled_research_job(
     Ok(row.as_ref().map(scheduled_research_job_record_from_row))
 }
 
+pub async fn get_scheduled_research_job_by_name(
+    pool: &PgPool,
+    name: &str,
+) -> Result<Option<ScheduledResearchJobRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, last_failure_at, last_failure_reason, last_success_at, next_run_at,
+            backoff_until, consecutive_failure_count, auto_paused_reason, status, created_at, updated_at
+        FROM scheduled_research_jobs
+        WHERE name = $1
+        ORDER BY created_at ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(name.trim())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(scheduled_research_job_record_from_row))
+}
+
+pub async fn update_scheduled_research_job_definition(
+    pool: &PgPool,
+    id: Uuid,
+    request: &ScheduledResearchJobRequest,
+) -> Result<Option<ScheduledResearchJobRecord>> {
+    request.validate()?;
+    let status = if request.enabled {
+        ScheduledResearchJobStatus::Enabled
+    } else {
+        ScheduledResearchJobStatus::Disabled
+    };
+    let next_run_at = request
+        .next_run_at
+        .or_else(|| request.enabled.then(Utc::now));
+    let row = sqlx::query(
+        r#"
+        UPDATE scheduled_research_jobs
+        SET name = $2,
+            kind = $3,
+            enabled = $4,
+            interval_seconds = $5,
+            request = $6,
+            max_runs_per_tick = $7,
+            next_run_at = $8,
+            status = $9,
+            backoff_until = NULL,
+            consecutive_failure_count = 0,
+            last_failure_at = NULL,
+            last_failure_reason = NULL,
+            auto_paused_reason = NULL,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, last_failure_at, last_failure_reason, last_success_at, next_run_at,
+            backoff_until, consecutive_failure_count, auto_paused_reason, status, created_at, updated_at
+        "#,
+    )
+    .bind(id)
+    .bind(request.name.trim())
+    .bind(request.kind.as_str())
+    .bind(request.enabled)
+    .bind(request.interval_seconds)
+    .bind(&request.request)
+    .bind(request.max_runs_per_tick)
+    .bind(next_run_at)
+    .bind(status.as_str())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(scheduled_research_job_record_from_row))
+}
+
 pub async fn list_due_scheduled_research_jobs(
     pool: &PgPool,
     now: DateTime<Utc>,

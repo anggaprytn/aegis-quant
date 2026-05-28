@@ -86,6 +86,50 @@ curl -I http://127.0.0.1:3101
 
 Use `AEGIS_ACCESS_TOKEN` with the smoke script when authenticated research read endpoints should be checked.
 
+## Scheduled Research Runner
+
+The scheduled research runner is disabled by default. Keep it disabled during deploys, run migrations, then bootstrap low-risk monitoring jobs first:
+
+```bash
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
+cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
+cargo run -p cli -- research scheduled-jobs bootstrap-safe
+cargo run -p cli -- research scheduled-jobs list
+```
+
+The safe bootstrap creates only:
+
+- `provider-health-binance` every 15 minutes
+- `aggregation-status` every 5 minutes
+- `market-data-quality-<SYMBOL>-<INTERVAL>` every 30 minutes for configured symbols and `1m,5m,15m,1h`
+- `operator-report-daily` every 24 hours
+
+Jobs are created disabled unless `--enable` is passed. The normal VPS path is:
+
+```bash
+cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
+cargo run -p cli -- research scheduled-jobs bootstrap-safe
+cargo run -p cli -- research scheduled-jobs bootstrap-safe --enable
+# set SCHEDULED_RESEARCH_RUNNER_ENABLED=true in .env first
+docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d scheduled-research-runner
+```
+
+Use explicit symbols or intervals when needed:
+
+```bash
+cargo run -p cli -- research scheduled-jobs bootstrap-safe --symbols BTCUSDT,ETHUSDT --intervals 1m,5m,15m,1h --dry-run
+```
+
+Running the bootstrap repeatedly is idempotent by job name and does not create campaign, batch, regime discovery, or robustness matrix jobs. `--replace-existing` updates definitions for existing bootstrap jobs; without it, `--enable` only changes enabled state for existing jobs.
+
+Monitor auto-paused or failing jobs:
+
+```bash
+cargo run -p cli -- research scheduled-jobs list
+cargo run -p cli -- research scheduled-jobs runs <job-id> --limit 20
+cargo run -p cli -- research scheduled-jobs reset-failures <job-id>
+```
+
 ## Common Failures
 
 Missing migrations:

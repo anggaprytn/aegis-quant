@@ -78,7 +78,8 @@ use aegis_core::{
     ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
     ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, ScheduledResearchJob, ScheduledResearchJobControlRequest,
+    RiskRejectionReason, ScheduledResearchBootstrapSafeRequest,
+    ScheduledResearchBootstrapSafeResult, ScheduledResearchJob, ScheduledResearchJobControlRequest,
     ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobStatus, Side,
     SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
     StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
@@ -111,7 +112,10 @@ use aegis_core::{
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
-    scheduled_research::run_scheduled_research_job_once,
+    scheduled_research::{
+        build_safe_bootstrap_scheduled_research_jobs, run_scheduled_research_job_once,
+        safe_bootstrap_plan_item,
+    },
     testnet_shadow::{run_testnet_shadow_once, TestnetShadowRunApiError},
     testnet_shadow_runner::{
         apply_testnet_shadow_runner_control_action, load_testnet_shadow_runner_snapshot,
@@ -154,9 +158,9 @@ use db::{
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
     get_research_experiment_plan, get_research_hypothesis, get_research_regime_calibration,
     get_research_regime_dataset, get_research_regime_discovery, get_risk_config,
-    get_risk_decision_by_id, get_scheduled_research_job, get_session_by_id,
-    get_session_by_id_and_hash, get_strategy_backtest_breakdown, get_strategy_experiment,
-    get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
+    get_risk_decision_by_id, get_scheduled_research_job, get_scheduled_research_job_by_name,
+    get_session_by_id, get_session_by_id_and_hash, get_strategy_backtest_breakdown,
+    get_strategy_experiment, get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
     get_strategy_performance_summary, get_strategy_research_candidate,
     get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown,
     get_strategy_status, get_strategy_walk_forward_run, get_system_event, get_system_state,
@@ -224,11 +228,11 @@ use db::{
     summarize_candle_continuity_report, update_research_batch_summary,
     update_research_campaign_batch, update_research_campaign_summary,
     update_research_candidate_status, update_research_experiment_plan_validation,
-    update_scheduled_research_job_status, update_strategy_state,
-    update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
-    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
-    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
-    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    update_scheduled_research_job_definition, update_scheduled_research_job_status,
+    update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
+    upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
+    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
@@ -1194,6 +1198,14 @@ struct ScheduledResearchJobRunsResponse {
 #[derive(Serialize, Deserialize)]
 struct ScheduledResearchJobRunResponse {
     run: ScheduledResearchJobRun,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ScheduledResearchBootstrapSafeResponse {
+    result: ScheduledResearchBootstrapSafeResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3186,6 +3198,10 @@ async fn main() {
         .route(
             "/research/scheduled-jobs",
             get(list_scheduled_research_jobs_handler).post(create_scheduled_research_job_handler),
+        )
+        .route(
+            "/research/scheduled-jobs/bootstrap-safe",
+            post(bootstrap_safe_scheduled_research_jobs_handler),
         )
         .route(
             "/research/scheduled-jobs/:id/pause",
@@ -18158,6 +18174,185 @@ async fn create_scheduled_research_job_handler(
         )
             .into_response(),
     }
+}
+
+async fn bootstrap_safe_scheduled_research_jobs_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<ScheduledResearchBootstrapSafeRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match bootstrap_safe_scheduled_research_jobs(&state, payload).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(ScheduledResearchBootstrapSafeResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "failed_to_bootstrap_safe_scheduled_research_jobs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn bootstrap_safe_scheduled_research_jobs(
+    state: &AppState,
+    payload: ScheduledResearchBootstrapSafeRequest,
+) -> anyhow::Result<ScheduledResearchBootstrapSafeResult> {
+    let planned = build_safe_bootstrap_scheduled_research_jobs(
+        &payload,
+        state.market_config.exchange,
+        &state.market_config.symbols,
+    )?;
+    let mut result = ScheduledResearchBootstrapSafeResult {
+        dry_run: payload.dry_run,
+        replace_existing: payload.replace_existing,
+        requested_enabled: payload.enable,
+        created: 0,
+        existing: 0,
+        updated: 0,
+        skipped: 0,
+        jobs: Vec::new(),
+    };
+
+    for job_request in planned {
+        let plan = safe_bootstrap_plan_item(&job_request);
+        let existing =
+            get_scheduled_research_job_by_name(&state.db_pool, &job_request.name).await?;
+        if payload.dry_run {
+            let action = match existing.as_ref() {
+                None => "would_create",
+                Some(_) if payload.replace_existing => "would_replace",
+                Some(record) if record.enabled != payload.enable => {
+                    if payload.enable {
+                        "would_enable"
+                    } else {
+                        "would_disable"
+                    }
+                }
+                Some(_) => "would_keep_existing",
+            };
+            if existing.is_some() {
+                result.existing += 1;
+            } else {
+                result.skipped += 1;
+            }
+            result
+                .jobs
+                .push(aegis_core::ScheduledResearchBootstrapSafeJobResult {
+                    name: job_request.name,
+                    kind: job_request.kind,
+                    action: action.to_string(),
+                    job: existing
+                        .as_ref()
+                        .map(scheduled_research_job_from_record)
+                        .transpose()?,
+                    planned: plan,
+                });
+            continue;
+        }
+
+        match existing {
+            None => {
+                let record = insert_scheduled_research_job(&state.db_pool, &job_request).await?;
+                let job = scheduled_research_job_from_record(&record)?;
+                result.created += 1;
+                result
+                    .jobs
+                    .push(aegis_core::ScheduledResearchBootstrapSafeJobResult {
+                        name: job.name.clone(),
+                        kind: job.kind,
+                        action: "created".to_string(),
+                        job: Some(job),
+                        planned: plan,
+                    });
+            }
+            Some(record) if payload.replace_existing => {
+                let record = update_scheduled_research_job_definition(
+                    &state.db_pool,
+                    record.id,
+                    &job_request,
+                )
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("scheduled research job disappeared during replace")
+                })?;
+                let job = scheduled_research_job_from_record(&record)?;
+                result.updated += 1;
+                result
+                    .jobs
+                    .push(aegis_core::ScheduledResearchBootstrapSafeJobResult {
+                        name: job.name.clone(),
+                        kind: job.kind,
+                        action: "replaced".to_string(),
+                        job: Some(job),
+                        planned: plan,
+                    });
+            }
+            Some(record) if record.enabled != payload.enable => {
+                let status = if payload.enable {
+                    ScheduledResearchJobStatus::Enabled
+                } else {
+                    ScheduledResearchJobStatus::Disabled
+                };
+                let next_run_at = payload.enable.then(Utc::now);
+                let record = update_scheduled_research_job_status(
+                    &state.db_pool,
+                    record.id,
+                    payload.enable,
+                    status,
+                    next_run_at,
+                )
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("scheduled research job disappeared during enable update")
+                })?;
+                let job = scheduled_research_job_from_record(&record)?;
+                result.updated += 1;
+                result
+                    .jobs
+                    .push(aegis_core::ScheduledResearchBootstrapSafeJobResult {
+                        name: job.name.clone(),
+                        kind: job.kind,
+                        action: if payload.enable {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
+                        .to_string(),
+                        job: Some(job),
+                        planned: plan,
+                    });
+            }
+            Some(record) => {
+                let job = scheduled_research_job_from_record(&record)?;
+                result.existing += 1;
+                result
+                    .jobs
+                    .push(aegis_core::ScheduledResearchBootstrapSafeJobResult {
+                        name: job.name.clone(),
+                        kind: job.kind,
+                        action: "existing".to_string(),
+                        job: Some(job),
+                        planned: plan,
+                    });
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 async fn pause_scheduled_research_job_handler(

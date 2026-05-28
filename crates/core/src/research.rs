@@ -304,6 +304,50 @@ pub struct ScheduledResearchJobRequest {
     pub next_run_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledResearchBootstrapSafeRequest {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub symbols: Vec<String>,
+    #[serde(default)]
+    pub intervals: Vec<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub replace_existing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduledResearchBootstrapSafePlanItem {
+    pub name: String,
+    pub kind: ScheduledResearchJobKind,
+    pub interval_seconds: i64,
+    pub enabled: bool,
+    pub request: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduledResearchBootstrapSafeJobResult {
+    pub name: String,
+    pub kind: ScheduledResearchJobKind,
+    pub action: String,
+    pub job: Option<ScheduledResearchJob>,
+    pub planned: ScheduledResearchBootstrapSafePlanItem,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduledResearchBootstrapSafeResult {
+    pub dry_run: bool,
+    pub replace_existing: bool,
+    pub requested_enabled: bool,
+    pub created: i64,
+    pub existing: i64,
+    pub updated: i64,
+    pub skipped: i64,
+    pub jobs: Vec<ScheduledResearchBootstrapSafeJobResult>,
+}
+
 fn default_scheduled_research_max_runs_per_tick() -> i32 {
     1
 }

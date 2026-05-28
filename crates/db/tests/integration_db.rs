@@ -22,14 +22,14 @@ use aegis_core::{
     ResearchRegimeDiscoverySummary, ResearchRegimeLabel, ResearchShadowPnlAttributionRequest,
     ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
     RiskRuleDecision, RiskRuleResult, ScheduledResearchJobKind, ScheduledResearchJobRequest,
-    ScheduledResearchJobRun, ScheduledResearchJobRunStatus, Side, SignalConfidence, SignalReason,
-    SignalSide, StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
-    StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-    StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-    StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
-    StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
-    StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
-    StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
+    ScheduledResearchJobRun, ScheduledResearchJobRunStatus, ScheduledResearchJobStatus, Side,
+    SignalConfidence, SignalReason, SignalSide, StrategyCandidateObservationDecision,
+    StrategyCandidateObservationFinding, StrategyCandidateObservationRequirement,
+    StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+    StrategyCandidateObservationSummary, StrategyCandidateRunnerAlignment, StrategyConfig,
+    StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
+    StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+    StrategyMode, StrategyPerformanceMode, StrategyPerformanceRequest, StrategyResearchCandidate,
     StrategyResearchCandidateEvidence, StrategyResearchCandidateScore,
     StrategyResearchCandidateSource, StrategyResearchCandidateStatus, StrategyRobustnessMatrixCell,
     StrategyRobustnessMatrixFinding, StrategyRobustnessMatrixRecommendation,
@@ -53,11 +53,12 @@ use db::{
     get_order_by_idempotency_key, get_research_candidate_shadow_performance,
     get_research_candidate_shadow_pnl_attribution, get_research_dataset_build,
     get_research_hypothesis, get_research_regime_calibration, get_research_regime_discovery,
-    get_risk_decision, get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown, get_system_state,
-    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
-    get_testnet_shadow_run_by_id, insert_backtest_equity_points, insert_backtest_run,
-    insert_backtest_trade, insert_candle_backfill_run, insert_exchange_private_stream_event,
+    get_risk_decision, get_scheduled_research_job_by_name, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_robustness_matrix_run,
+    get_strategy_shadow_decision_breakdown, get_system_state, get_testnet_promotion_funnel_summary,
+    get_testnet_promotion_lifecycle_breakdown, get_testnet_shadow_run_by_id,
+    insert_backtest_equity_points, insert_backtest_run, insert_backtest_trade,
+    insert_candle_backfill_run, insert_exchange_private_stream_event,
     insert_exchange_reconciliation_mismatch, insert_exchange_reconciliation_run,
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_market_data_repair_run, insert_paper_account, insert_research_candidate_shadow_run_link,
@@ -93,10 +94,11 @@ use db::{
     strategy_walk_forward_window_from_record, summarize_candle_continuity_report,
     test_support::TestDatabase, testnet_shadow_runner_config_from_record,
     testnet_shadow_runner_state_from_record, try_claim_scheduled_research_job,
-    update_backtest_run_completed, update_exchange_testnet_order_status, upsert_aggregated_candles,
-    upsert_candle, upsert_candles_batch, upsert_exchange_private_stream_state,
-    upsert_paper_position, upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state,
-    CreateOrderError, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    update_backtest_run_completed, update_exchange_testnet_order_status,
+    update_scheduled_research_job_status, upsert_aggregated_candles, upsert_candle,
+    upsert_candles_batch, upsert_exchange_private_stream_state, upsert_paper_position,
+    upsert_testnet_shadow_runner_config, upsert_testnet_shadow_runner_state, CreateOrderError,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeReconciliationMismatchRecord, ExchangeReconciliationRunRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
@@ -231,6 +233,55 @@ async fn scheduled_research_job_claim_prevents_double_run() {
 
     assert!(first.is_some());
     assert!(second.is_none());
+    assert_eq!(before, execution_table_counts(&db.pool).await);
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres test database"]
+async fn scheduled_research_bootstrap_name_lookup_prevents_duplicates_and_enables_existing() {
+    let db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let before = execution_table_counts(&db.pool).await;
+    let request = ScheduledResearchJobRequest {
+        name: "provider-health-binance".to_string(),
+        kind: ScheduledResearchJobKind::ProviderHealth,
+        enabled: false,
+        interval_seconds: 900,
+        request: json!({"exchange": "binance"}),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    };
+    let first = insert_scheduled_research_job(&db.pool, &request)
+        .await
+        .expect("scheduled job should persist");
+    let existing = get_scheduled_research_job_by_name(&db.pool, "provider-health-binance")
+        .await
+        .expect("name lookup should query")
+        .expect("job should exist");
+    assert_eq!(existing.id, first.id);
+
+    let enabled = update_scheduled_research_job_status(
+        &db.pool,
+        existing.id,
+        true,
+        ScheduledResearchJobStatus::Enabled,
+        Some(fixed_time()),
+    )
+    .await
+    .expect("enable update should query")
+    .expect("job should update");
+    assert!(enabled.enabled);
+
+    let jobs = list_scheduled_research_jobs(&db.pool, 20)
+        .await
+        .expect("jobs should list");
+    assert_eq!(
+        jobs.iter()
+            .filter(|job| job.name == "provider-health-binance")
+            .count(),
+        1
+    );
     assert_eq!(before, execution_table_counts(&db.pool).await);
 }
 

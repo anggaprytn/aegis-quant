@@ -920,6 +920,13 @@ async fn main() -> anyhow::Result<()> {
                     let response = client.reset_scheduled_research_job_failures(id).await?;
                     output::print_json(&response)?;
                 }
+                ResearchScheduledJobCommands::BootstrapSafe(args) => {
+                    let request = (&args).into();
+                    let response = client
+                        .bootstrap_safe_scheduled_research_jobs(&request)
+                        .await?;
+                    output::print_json(&response)?;
+                }
             },
             ResearchCommands::Candidates(command) => match command {
                 ResearchCandidateCommands::List(args) => {

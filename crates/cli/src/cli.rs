@@ -7,8 +7,9 @@ use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
     ResearchCandidateQualificationThresholds, ResearchCandidateReviewAction,
     ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
-    ScheduledResearchJobKind, ScheduledResearchJobRequest, TestnetShadowPromotionRequest,
-    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
+    ScheduledResearchBootstrapSafeRequest, ScheduledResearchJobKind, ScheduledResearchJobRequest,
+    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerStaleFeedPolicy,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -859,6 +860,8 @@ pub enum ResearchScheduledJobCommands {
     ResetFailures {
         id: Uuid,
     },
+    #[command(name = "bootstrap-safe")]
+    BootstrapSafe(ResearchScheduledJobBootstrapSafeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -891,6 +894,42 @@ impl From<&ResearchScheduledJobCreateArgs> for ScheduledResearchJobRequest {
             next_run_at: value.next_run_at,
         }
     }
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchScheduledJobBootstrapSafeArgs {
+    #[arg(long, default_value_t = false)]
+    pub enable: bool,
+    #[arg(long)]
+    pub symbols: Option<String>,
+    #[arg(long)]
+    pub intervals: Option<String>,
+    #[arg(long = "dry-run", default_value_t = false)]
+    pub dry_run: bool,
+    #[arg(long = "replace-existing", default_value_t = false)]
+    pub replace_existing: bool,
+}
+
+impl From<&ResearchScheduledJobBootstrapSafeArgs> for ScheduledResearchBootstrapSafeRequest {
+    fn from(value: &ResearchScheduledJobBootstrapSafeArgs) -> Self {
+        Self {
+            enable: value.enable,
+            symbols: comma_list(value.symbols.as_deref()),
+            intervals: comma_list(value.intervals.as_deref()),
+            dry_run: value.dry_run,
+            replace_existing: value.replace_existing,
+        }
+    }
+}
+
+fn comma_list(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Subcommand)]

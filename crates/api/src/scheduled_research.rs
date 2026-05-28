@@ -1,7 +1,9 @@
 use aegis_core::{
     candle_aggregation_status, scheduled_research_next_run_at, CandleInterval,
-    MarketDataQualityRequest, MarketDataSource, ScheduledResearchJob, ScheduledResearchJobKind,
-    ScheduledResearchJobRun, ScheduledResearchJobRunStatus, ScheduledResearchJobStatus, Symbol,
+    MarketDataQualityRequest, MarketDataSource, ScheduledResearchBootstrapSafePlanItem,
+    ScheduledResearchBootstrapSafeRequest, ScheduledResearchJob, ScheduledResearchJobKind,
+    ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobRunStatus,
+    ScheduledResearchJobStatus, Symbol,
 };
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
@@ -22,6 +24,11 @@ pub const DEFAULT_SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS: u64 = 60;
 pub const DEFAULT_SCHEDULED_RESEARCH_MAX_CONSECUTIVE_FAILURES: i32 = 5;
 pub const DEFAULT_SCHEDULED_RESEARCH_BACKOFF_BASE_SECONDS: i64 = 300;
 pub const DEFAULT_SCHEDULED_RESEARCH_BACKOFF_MAX_SECONDS: i64 = 3600;
+pub const SAFE_PROVIDER_HEALTH_INTERVAL_SECONDS: i64 = 15 * 60;
+pub const SAFE_AGGREGATION_STATUS_INTERVAL_SECONDS: i64 = 5 * 60;
+pub const SAFE_MARKET_DATA_QUALITY_INTERVAL_SECONDS: i64 = 30 * 60;
+pub const SAFE_OPERATOR_REPORT_INTERVAL_SECONDS: i64 = 24 * 60 * 60;
+pub const SAFE_MARKET_DATA_QUALITY_LOOKBACK_HOURS: i64 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledResearchTickResult {
@@ -48,6 +55,167 @@ struct ScheduledJobExecution {
     error: Option<String>,
     artifact_type: Option<String>,
     artifact_id: Option<Uuid>,
+}
+
+pub fn build_safe_bootstrap_scheduled_research_jobs(
+    payload: &ScheduledResearchBootstrapSafeRequest,
+    exchange: MarketDataSource,
+    configured_symbols: &[Symbol],
+) -> Result<Vec<ScheduledResearchJobRequest>> {
+    let symbols = normalize_bootstrap_symbols(&payload.symbols, configured_symbols)?;
+    let intervals = normalize_bootstrap_intervals(&payload.intervals)?;
+    let interval_names = intervals
+        .iter()
+        .map(|interval| interval.as_str().to_string())
+        .collect::<Vec<_>>();
+    let aggregation_targets = intervals
+        .iter()
+        .copied()
+        .filter(|interval| *interval != CandleInterval::OneMinute)
+        .map(|interval| interval.as_str().to_string())
+        .collect::<Vec<_>>();
+
+    let mut jobs = vec![
+        ScheduledResearchJobRequest {
+            name: format!("provider-health-{}", exchange.as_str()),
+            kind: ScheduledResearchJobKind::ProviderHealth,
+            enabled: payload.enable,
+            interval_seconds: SAFE_PROVIDER_HEALTH_INTERVAL_SECONDS,
+            request: json!({ "exchange": exchange.as_str() }),
+            max_runs_per_tick: 1,
+            next_run_at: None,
+        },
+        ScheduledResearchJobRequest {
+            name: "aggregation-status".to_string(),
+            kind: ScheduledResearchJobKind::AggregationStatus,
+            enabled: payload.enable,
+            interval_seconds: SAFE_AGGREGATION_STATUS_INTERVAL_SECONDS,
+            request: json!({
+                "exchange": exchange.as_str(),
+                "symbols": symbols.iter().map(|symbol| symbol.as_str()).collect::<Vec<_>>(),
+                "target_intervals": aggregation_targets
+            }),
+            max_runs_per_tick: 1,
+            next_run_at: None,
+        },
+    ];
+
+    for symbol in &symbols {
+        for interval in &intervals {
+            jobs.push(ScheduledResearchJobRequest {
+                name: format!(
+                    "market-data-quality-{}-{}",
+                    symbol.as_str(),
+                    interval.as_str()
+                ),
+                kind: ScheduledResearchJobKind::MarketDataQuality,
+                enabled: payload.enable,
+                interval_seconds: SAFE_MARKET_DATA_QUALITY_INTERVAL_SECONDS,
+                request: json!({
+                    "exchange": exchange.as_str(),
+                    "symbol": symbol.as_str(),
+                    "interval": interval.as_str(),
+                    "lookback_hours": SAFE_MARKET_DATA_QUALITY_LOOKBACK_HOURS,
+                    "expected_interval_seconds": interval.duration().num_seconds(),
+                    "max_allowed_gap_count": 0
+                }),
+                max_runs_per_tick: 1,
+                next_run_at: None,
+            });
+        }
+    }
+
+    jobs.push(ScheduledResearchJobRequest {
+        name: "operator-report-daily".to_string(),
+        kind: ScheduledResearchJobKind::OperatorReport,
+        enabled: payload.enable,
+        interval_seconds: SAFE_OPERATOR_REPORT_INTERVAL_SECONDS,
+        request: json!({
+            "exchange": exchange.as_str(),
+            "symbols": symbols.iter().map(|symbol| symbol.as_str()).collect::<Vec<_>>(),
+            "intervals": interval_names,
+            "window_hours": 24
+        }),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    });
+
+    for job in &jobs {
+        if !is_safe_monitoring_job_kind(job.kind) {
+            anyhow::bail!(
+                "unsafe scheduled research bootstrap job kind: {}",
+                job.kind.as_str()
+            );
+        }
+        job.validate()?;
+    }
+
+    Ok(jobs)
+}
+
+pub fn safe_bootstrap_plan_item(
+    request: &ScheduledResearchJobRequest,
+) -> ScheduledResearchBootstrapSafePlanItem {
+    ScheduledResearchBootstrapSafePlanItem {
+        name: request.name.clone(),
+        kind: request.kind,
+        interval_seconds: request.interval_seconds,
+        enabled: request.enabled,
+        request: request.request.clone(),
+    }
+}
+
+fn is_safe_monitoring_job_kind(kind: ScheduledResearchJobKind) -> bool {
+    matches!(
+        kind,
+        ScheduledResearchJobKind::ProviderHealth
+            | ScheduledResearchJobKind::AggregationStatus
+            | ScheduledResearchJobKind::MarketDataQuality
+            | ScheduledResearchJobKind::OperatorReport
+    )
+}
+
+fn normalize_bootstrap_symbols(requested: &[String], configured: &[Symbol]) -> Result<Vec<Symbol>> {
+    let raw_symbols = if requested.is_empty() {
+        configured
+            .iter()
+            .map(|symbol| symbol.as_str().to_string())
+            .collect::<Vec<_>>()
+    } else {
+        requested.to_vec()
+    };
+    if raw_symbols.is_empty() {
+        anyhow::bail!("safe scheduled research bootstrap requires at least one symbol");
+    }
+    let mut symbols = Vec::new();
+    for raw in raw_symbols {
+        let symbol = Symbol::new(raw)?;
+        if !symbols.iter().any(|existing: &Symbol| existing == &symbol) {
+            symbols.push(symbol);
+        }
+    }
+    Ok(symbols)
+}
+
+fn normalize_bootstrap_intervals(requested: &[String]) -> Result<Vec<CandleInterval>> {
+    let raw_intervals = if requested.is_empty() {
+        vec![
+            "1m".to_string(),
+            "5m".to_string(),
+            "15m".to_string(),
+            "1h".to_string(),
+        ]
+    } else {
+        requested.to_vec()
+    };
+    let mut intervals = Vec::new();
+    for raw in raw_intervals {
+        let interval = raw.parse::<CandleInterval>()?;
+        if !intervals.contains(&interval) {
+            intervals.push(interval);
+        }
+    }
+    Ok(intervals)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,7 +600,7 @@ async fn execute_job_kind(
             })
         }
         ScheduledResearchJobKind::MarketDataQuality => {
-            let request: MarketDataQualityRequest = serde_json::from_value(job.request.clone())
+            let request = market_data_quality_request_from_scheduled_job(job)
                 .context("invalid MARKET_DATA_QUALITY request")?;
             request.validate()?;
             let report = summarize_candle_continuity_report(&state.db_pool, &request).await?;
@@ -565,6 +733,71 @@ async fn execute_job_kind(
             })
         }
     }
+}
+
+fn market_data_quality_request_from_scheduled_job(
+    job: &ScheduledResearchJob,
+) -> Result<MarketDataQualityRequest> {
+    if job.request.get("lookback_hours").is_none() && job.request.get("lookback_minutes").is_none()
+    {
+        return Ok(serde_json::from_value(job.request.clone())?);
+    }
+
+    let exchange = job
+        .request
+        .get("exchange")
+        .and_then(Value::as_str)
+        .unwrap_or(MarketDataSource::Binance.as_str())
+        .parse::<MarketDataSource>()?;
+    let symbol = job
+        .request
+        .get("symbol")
+        .and_then(Value::as_str)
+        .context("MARKET_DATA_QUALITY dynamic request requires symbol")?
+        .to_string();
+    let interval = job
+        .request
+        .get("interval")
+        .and_then(Value::as_str)
+        .context("MARKET_DATA_QUALITY dynamic request requires interval")?
+        .to_string();
+    let lookback_minutes = job
+        .request
+        .get("lookback_minutes")
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            job.request
+                .get("lookback_hours")
+                .and_then(Value::as_i64)
+                .map(|hours| hours.saturating_mul(60))
+        })
+        .context("MARKET_DATA_QUALITY dynamic request requires positive lookback")?;
+    if lookback_minutes <= 0 {
+        anyhow::bail!("MARKET_DATA_QUALITY dynamic request requires positive lookback");
+    }
+    let end_time = Utc::now();
+    let start_time = end_time - Duration::minutes(lookback_minutes);
+    Ok(MarketDataQualityRequest {
+        exchange,
+        symbol,
+        interval,
+        start_time,
+        end_time,
+        expected_interval_seconds: job
+            .request
+            .get("expected_interval_seconds")
+            .and_then(Value::as_i64),
+        max_allowed_gap_count: job
+            .request
+            .get("max_allowed_gap_count")
+            .and_then(Value::as_i64),
+        max_allowed_gap_pct: job
+            .request
+            .get("max_allowed_gap_pct")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?,
+    })
 }
 
 async fn execution_table_counts(pool: &db::PgPool) -> Result<ExecutionTableCounts> {
@@ -737,5 +970,105 @@ mod tests {
         let now = Utc::now();
         let backoff = scheduled_research_backoff_until(now, 6, 300, 900);
         assert_eq!(backoff, Some(now + Duration::seconds(900)));
+    }
+
+    #[test]
+    fn safe_bootstrap_defaults_create_only_monitoring_jobs_disabled() {
+        let request = ScheduledResearchBootstrapSafeRequest {
+            enable: false,
+            symbols: Vec::new(),
+            intervals: Vec::new(),
+            dry_run: false,
+            replace_existing: false,
+        };
+        let jobs = build_safe_bootstrap_scheduled_research_jobs(
+            &request,
+            MarketDataSource::Binance,
+            &[
+                Symbol::new("btcusdt").unwrap(),
+                Symbol::new("ethusdt").unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(jobs.len(), 11);
+        assert!(jobs.iter().all(|job| !job.enabled));
+        assert!(jobs.iter().all(|job| matches!(
+            job.kind,
+            ScheduledResearchJobKind::ProviderHealth
+                | ScheduledResearchJobKind::AggregationStatus
+                | ScheduledResearchJobKind::MarketDataQuality
+                | ScheduledResearchJobKind::OperatorReport
+        )));
+        assert!(!jobs.iter().any(|job| matches!(
+            job.kind,
+            ScheduledResearchJobKind::ResearchBatch
+                | ScheduledResearchJobKind::ResearchCampaign
+                | ScheduledResearchJobKind::RegimeDiscovery
+                | ScheduledResearchJobKind::RobustnessMatrix
+        )));
+    }
+
+    #[test]
+    fn safe_bootstrap_enable_controls_enabled_state() {
+        let request = ScheduledResearchBootstrapSafeRequest {
+            enable: true,
+            symbols: vec!["BTCUSDT".to_string()],
+            intervals: vec!["15m".to_string()],
+            dry_run: false,
+            replace_existing: false,
+        };
+        let jobs = build_safe_bootstrap_scheduled_research_jobs(
+            &request,
+            MarketDataSource::Binance,
+            &[Symbol::new("ETHUSDT").unwrap()],
+        )
+        .unwrap();
+        assert_eq!(
+            jobs.iter()
+                .filter(|job| job.kind == ScheduledResearchJobKind::MarketDataQuality)
+                .count(),
+            1
+        );
+        assert!(jobs.iter().all(|job| job.enabled));
+        assert!(jobs
+            .iter()
+            .any(|job| job.name == "market-data-quality-BTCUSDT-15m"));
+    }
+
+    #[test]
+    fn dynamic_market_data_quality_request_uses_lookback_window() {
+        let job = ScheduledResearchJob {
+            id: Uuid::new_v4(),
+            name: "market-data-quality-BTCUSDT-15m".to_string(),
+            kind: ScheduledResearchJobKind::MarketDataQuality,
+            enabled: true,
+            interval_seconds: 60,
+            request: json!({
+                "exchange": "binance",
+                "symbol": "BTCUSDT",
+                "interval": "15m",
+                "lookback_minutes": 90,
+                "expected_interval_seconds": 900,
+                "max_allowed_gap_count": 0
+            }),
+            max_runs_per_tick: 1,
+            last_run_at: None,
+            last_failure_at: None,
+            last_failure_reason: None,
+            last_success_at: None,
+            next_run_at: None,
+            backoff_until: None,
+            consecutive_failure_count: 0,
+            auto_paused_reason: None,
+            status: ScheduledResearchJobStatus::Enabled,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let request = market_data_quality_request_from_scheduled_job(&job).unwrap();
+        assert_eq!(request.symbol, "BTCUSDT");
+        assert_eq!(request.interval, "15m");
+        assert_eq!(request.expected_interval_seconds, Some(900));
+        assert_eq!(request.max_allowed_gap_count, Some(0));
+        assert_eq!((request.end_time - request.start_time).num_minutes(), 90);
     }
 }

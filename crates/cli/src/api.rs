@@ -32,6 +32,7 @@ use aegis_core::{
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
     ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
     RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    ScheduledResearchBootstrapSafeRequest, ScheduledResearchBootstrapSafeResult,
     ScheduledResearchJob, ScheduledResearchJobControlRequest, ScheduledResearchJobRequest,
     ScheduledResearchJobRun, StrategyCandidateObservationResult, StrategyComparisonSummary,
     StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
@@ -799,6 +800,14 @@ impl ApiClient {
         request: &ScheduledResearchJobRequest,
     ) -> Result<ScheduledResearchJobResponse, ApiClientError> {
         self.post("/research/scheduled-jobs", request).await
+    }
+
+    pub async fn bootstrap_safe_scheduled_research_jobs(
+        &self,
+        request: &ScheduledResearchBootstrapSafeRequest,
+    ) -> Result<ScheduledResearchBootstrapSafeResponse, ApiClientError> {
+        self.post("/research/scheduled-jobs/bootstrap-safe", request)
+            .await
     }
 
     pub async fn pause_scheduled_research_job(
@@ -2904,6 +2913,14 @@ pub struct ScheduledResearchJobRunsResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduledResearchJobRunResponse {
     pub run: ScheduledResearchJobRun,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScheduledResearchBootstrapSafeResponse {
+    pub result: ScheduledResearchBootstrapSafeResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
