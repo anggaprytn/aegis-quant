@@ -258,7 +258,12 @@ type StrategyExperimentFormState = {
   lookbacks: string;
   trend_lookbacks: string;
   momentum_lookbacks: string;
+  compression_lookbacks: string;
   breakout_lookbacks: string;
+  compression_percentile_threshold: string;
+  min_breakout_pct: string;
+  max_breakout_extension_pct: string;
+  min_volume_expansion_ratio: string;
   lower_band_pct: string;
   min_range_width_pct: string;
   max_range_width_pct: string;
@@ -289,6 +294,7 @@ type StrategyWalkForwardFormState = {
   lookback_candles: string;
   trend_lookback: string;
   momentum_lookback: string;
+  compression_lookback: string;
   breakout_lookback: string;
   holding_candles: string;
   stop_loss_pct: string;
@@ -309,7 +315,12 @@ const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   lookbacks: "10,20,50",
   trend_lookbacks: "10,20,50",
   momentum_lookbacks: "2,3,5",
-  breakout_lookbacks: "",
+  compression_lookbacks: "10,20,40",
+  breakout_lookbacks: "10,20,40",
+  compression_percentile_threshold: "25",
+  min_breakout_pct: "0.05,0.1,0.2",
+  max_breakout_extension_pct: "0.75,1.0,1.5",
+  min_volume_expansion_ratio: "1.0,1.1,1.3",
   lower_band_pct: "10,20,30",
   min_range_width_pct: "0.15",
   max_range_width_pct: "3.0",
@@ -340,6 +351,7 @@ const DEFAULT_STRATEGY_WALK_FORWARD_FORM: StrategyWalkForwardFormState = {
   lookback_candles: "50",
   trend_lookback: "50",
   momentum_lookback: "2",
+  compression_lookback: "",
   breakout_lookback: "",
   holding_candles: "3",
   stop_loss_pct: "",
@@ -396,6 +408,11 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
   experiment_timeframes: ["5m", "15m"],
   lookback_candidates: [10, 20, 50],
   momentum_lookback_candidates: [2, 3, 5],
+  compression_lookback_candidates: [10, 20, 40],
+  breakout_lookback_candidates: [10, 20, 40],
+  min_breakout_pct_candidates: ["0.05", "0.1", "0.2"],
+  max_breakout_extension_pct_candidates: ["0.75", "1.0", "1.5"],
+  min_volume_expansion_ratio_candidates: ["1.0", "1.1", "1.3"],
   min_close_above_sma_pct_candidates: ["0"],
   max_close_above_sma_pct_candidates: ["0.5", "1.0", "1.5"],
   min_momentum_return_pct_candidates: ["0", "0.1", "0.2"],
@@ -408,7 +425,13 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
 };
 
 const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
-  strategies: ["trend_filter_momentum_v1", "trend_filter_momentum_v2", "range_reversion_v1"],
+  strategies: [
+    "trend_filter_momentum_v1",
+    "trend_filter_momentum_v2",
+    "range_reversion_v1",
+    "volatility_breakout_v2",
+    "volatility_compression_breakout_v1",
+  ],
   symbols: ["BTCUSDT", "ETHUSDT"],
   experiment_timeframes: ["5m", "15m"],
   campaign_start: "2024-05-01T00:00:00Z",
@@ -426,6 +449,11 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   base_interval: "1m",
   lookback_candidates: [10, 20, 50],
   momentum_lookback_candidates: [2, 3, 5],
+  compression_lookback_candidates: [10, 20, 40],
+  breakout_lookback_candidates: [10, 20, 40],
+  min_breakout_pct_candidates: ["0.05", "0.1", "0.2"],
+  max_breakout_extension_pct_candidates: ["0.75", "1.0", "1.5"],
+  min_volume_expansion_ratio_candidates: ["1.0", "1.1", "1.3"],
   min_close_above_sma_pct_candidates: ["0"],
   max_close_above_sma_pct_candidates: ["0.5", "1.0", "1.5"],
   min_momentum_return_pct_candidates: ["0", "0.1", "0.2"],
@@ -526,7 +554,12 @@ function strategyConfigFormFromStatus(
     lookback_candles: strategy?.lookback_candles ?? 3,
     trend_lookback_candles: strategy?.trend_lookback_candles ?? null,
     momentum_lookback_candles: strategy?.momentum_lookback_candles ?? null,
+    compression_lookback_candles: strategy?.compression_lookback_candles ?? null,
     breakout_lookback_candles: strategy?.breakout_lookback_candles ?? null,
+    compression_percentile_threshold: strategy?.compression_percentile_threshold ?? null,
+    min_breakout_pct: strategy?.min_breakout_pct ?? null,
+    max_breakout_extension_pct: strategy?.max_breakout_extension_pct ?? null,
+    min_volume_expansion_ratio: strategy?.min_volume_expansion_ratio ?? null,
     lower_band_pct: strategy?.lower_band_pct ?? null,
     upper_band_pct: strategy?.upper_band_pct ?? null,
     min_range_width_pct: strategy?.min_range_width_pct ?? null,
@@ -636,7 +669,14 @@ function buildStrategyExperimentRequest(
     lookback_candidates: parseIntegerList(form.lookbacks),
     trend_lookback_candidates: parseIntegerList(form.trend_lookbacks),
     momentum_lookback_candidates: parseIntegerList(form.momentum_lookbacks),
+    compression_lookback_candidates: parseIntegerList(form.compression_lookbacks),
     breakout_lookback_candidates: parseIntegerList(form.breakout_lookbacks),
+    compression_percentile_threshold_candidates: parseDecimalList(
+      form.compression_percentile_threshold,
+    ),
+    min_breakout_pct_candidates: parseDecimalList(form.min_breakout_pct),
+    max_breakout_extension_pct_candidates: parseDecimalList(form.max_breakout_extension_pct),
+    min_volume_expansion_ratio_candidates: parseDecimalList(form.min_volume_expansion_ratio),
     lower_band_pct_candidates: parseDecimalList(form.lower_band_pct),
     min_range_width_pct_candidates: parseDecimalList(form.min_range_width_pct),
     max_range_width_pct_candidates: parseDecimalList(form.max_range_width_pct),
@@ -673,6 +713,9 @@ function buildStrategyWalkForwardRequest(
       lookback_candles: Number(form.lookback_candles),
       trend_lookback_candles: form.trend_lookback ? Number(form.trend_lookback) : null,
       momentum_lookback_candles: form.momentum_lookback ? Number(form.momentum_lookback) : null,
+      compression_lookback_candles: form.compression_lookback
+        ? Number(form.compression_lookback)
+        : null,
       breakout_lookback_candles: form.breakout_lookback ? Number(form.breakout_lookback) : null,
       holding_candles: form.holding_candles ? Number(form.holding_candles) : null,
       stop_loss_pct: form.stop_loss_pct || null,

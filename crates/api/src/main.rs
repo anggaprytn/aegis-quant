@@ -2676,7 +2676,12 @@ struct StrategyStatusView {
     lookback_candles: i32,
     trend_lookback_candles: Option<i32>,
     momentum_lookback_candles: Option<i32>,
+    compression_lookback_candles: Option<i32>,
     breakout_lookback_candles: Option<i32>,
+    compression_percentile_threshold: Option<String>,
+    min_breakout_pct: Option<String>,
+    max_breakout_extension_pct: Option<String>,
+    min_volume_expansion_ratio: Option<String>,
     lower_band_pct: Option<String>,
     upper_band_pct: Option<String>,
     min_range_width_pct: Option<String>,
@@ -4288,7 +4293,24 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
         lookback_candles: record.config.lookback_candles,
         trend_lookback_candles: record.config.trend_lookback_candles,
         momentum_lookback_candles: record.config.momentum_lookback_candles,
+        compression_lookback_candles: record.config.compression_lookback_candles,
         breakout_lookback_candles: record.config.breakout_lookback_candles,
+        compression_percentile_threshold: record
+            .config
+            .compression_percentile_threshold
+            .map(|value| value.to_string()),
+        min_breakout_pct: record
+            .config
+            .min_breakout_pct
+            .map(|value| value.to_string()),
+        max_breakout_extension_pct: record
+            .config
+            .max_breakout_extension_pct
+            .map(|value| value.to_string()),
+        min_volume_expansion_ratio: record
+            .config
+            .min_volume_expansion_ratio
+            .map(|value| value.to_string()),
         lower_band_pct: record.config.lower_band_pct.map(|value| value.to_string()),
         upper_band_pct: record.config.upper_band_pct.map(|value| value.to_string()),
         min_range_width_pct: record
@@ -4346,7 +4368,12 @@ fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfi
         lookback_candles: config.lookback_candles,
         trend_lookback_candles: config.trend_lookback_candles,
         momentum_lookback_candles: config.momentum_lookback_candles,
+        compression_lookback_candles: config.compression_lookback_candles,
         breakout_lookback_candles: config.breakout_lookback_candles,
+        compression_percentile_threshold: config.compression_percentile_threshold,
+        min_breakout_pct: config.min_breakout_pct,
+        max_breakout_extension_pct: config.max_breakout_extension_pct,
+        min_volume_expansion_ratio: config.min_volume_expansion_ratio,
         lower_band_pct: config.lower_band_pct,
         upper_band_pct: config.upper_band_pct,
         min_range_width_pct: config.min_range_width_pct,
@@ -16406,9 +16433,19 @@ fn strategy_config_request_with_candidate_overrides(
             })
             .or(base.trend_lookback_candles),
         momentum_lookback_candles: base.momentum_lookback_candles,
+        compression_lookback_candles: Some(lookback_candles)
+            .filter(|_| base.strategy_id == StrategyId::VolatilityCompressionBreakoutV1)
+            .or(base.compression_lookback_candles),
         breakout_lookback_candles: Some(lookback_candles)
-            .filter(|_| base.strategy_id == StrategyId::VolatilityBreakoutV2)
+            .filter(|_| {
+                base.strategy_id == StrategyId::VolatilityBreakoutV2
+                    || base.strategy_id == StrategyId::VolatilityCompressionBreakoutV1
+            })
             .or(base.breakout_lookback_candles),
+        compression_percentile_threshold: base.compression_percentile_threshold,
+        min_breakout_pct: base.min_breakout_pct,
+        max_breakout_extension_pct: base.max_breakout_extension_pct,
+        min_volume_expansion_ratio: base.min_volume_expansion_ratio,
         lower_band_pct: base.lower_band_pct,
         upper_band_pct: base.upper_band_pct,
         min_range_width_pct: base.min_range_width_pct,
@@ -16816,7 +16853,18 @@ async fn execute_research_batch(
                 lookback_candidates: payload.lookback_candidates.clone(),
                 trend_lookback_candidates: payload.trend_lookback_candidates.clone(),
                 momentum_lookback_candidates: payload.momentum_lookback_candidates.clone(),
+                compression_lookback_candidates: payload.compression_lookback_candidates.clone(),
                 breakout_lookback_candidates: payload.breakout_lookback_candidates.clone(),
+                compression_percentile_threshold_candidates: payload
+                    .compression_percentile_threshold_candidates
+                    .clone(),
+                min_breakout_pct_candidates: payload.min_breakout_pct_candidates.clone(),
+                max_breakout_extension_pct_candidates: payload
+                    .max_breakout_extension_pct_candidates
+                    .clone(),
+                min_volume_expansion_ratio_candidates: payload
+                    .min_volume_expansion_ratio_candidates
+                    .clone(),
                 lower_band_pct_candidates: payload.lower_band_pct_candidates.clone(),
                 upper_band_pct_candidates: payload.upper_band_pct_candidates.clone(),
                 min_range_width_pct_candidates: payload.min_range_width_pct_candidates.clone(),
@@ -16902,7 +16950,16 @@ async fn execute_research_batch(
                     lookback_candles: experiment_run.candidate.lookback_candles,
                     trend_lookback_candles: experiment_run.candidate.trend_lookback_candles,
                     momentum_lookback_candles: experiment_run.candidate.momentum_lookback_candles,
+                    compression_lookback_candles: experiment_run
+                        .candidate
+                        .compression_lookback_candles,
                     breakout_lookback_candles: experiment_run.candidate.breakout_lookback_candles,
+                    compression_percentile_threshold: experiment_run
+                        .candidate
+                        .compression_percentile_threshold,
+                    min_breakout_pct: experiment_run.candidate.min_breakout_pct,
+                    max_breakout_extension_pct: experiment_run.candidate.max_breakout_extension_pct,
+                    min_volume_expansion_ratio: experiment_run.candidate.min_volume_expansion_ratio,
                     lower_band_pct: experiment_run.candidate.lower_band_pct,
                     upper_band_pct: experiment_run.candidate.upper_band_pct,
                     min_range_width_pct: experiment_run.candidate.min_range_width_pct,
@@ -20357,9 +20414,24 @@ async fn research_batch_request_from_plan(
         momentum_lookback_candidates: source
             .as_ref()
             .and_then(|request| request.momentum_lookback_candidates.clone()),
+        compression_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.compression_lookback_candidates.clone()),
         breakout_lookback_candidates: source
             .as_ref()
             .and_then(|request| request.breakout_lookback_candidates.clone()),
+        compression_percentile_threshold_candidates: source
+            .as_ref()
+            .and_then(|request| request.compression_percentile_threshold_candidates.clone()),
+        min_breakout_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_breakout_pct_candidates.clone()),
+        max_breakout_extension_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.max_breakout_extension_pct_candidates.clone()),
+        min_volume_expansion_ratio_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_volume_expansion_ratio_candidates.clone()),
         lower_band_pct_candidates: source
             .as_ref()
             .and_then(|request| request.lower_band_pct_candidates.clone()),
@@ -20473,9 +20545,24 @@ async fn research_campaign_request_from_plan(
         momentum_lookback_candidates: source
             .as_ref()
             .and_then(|request| request.momentum_lookback_candidates.clone()),
+        compression_lookback_candidates: source
+            .as_ref()
+            .and_then(|request| request.compression_lookback_candidates.clone()),
         breakout_lookback_candidates: source
             .as_ref()
             .and_then(|request| request.breakout_lookback_candidates.clone()),
+        compression_percentile_threshold_candidates: source
+            .as_ref()
+            .and_then(|request| request.compression_percentile_threshold_candidates.clone()),
+        min_breakout_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_breakout_pct_candidates.clone()),
+        max_breakout_extension_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.max_breakout_extension_pct_candidates.clone()),
+        min_volume_expansion_ratio_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_volume_expansion_ratio_candidates.clone()),
         lower_band_pct_candidates: source
             .as_ref()
             .and_then(|request| request.lower_band_pct_candidates.clone()),
@@ -20589,7 +20676,13 @@ async fn strategy_experiment_request_from_plan(
         lookback_candidates: batch.lookback_candidates,
         trend_lookback_candidates: batch.trend_lookback_candidates,
         momentum_lookback_candidates: batch.momentum_lookback_candidates,
+        compression_lookback_candidates: batch.compression_lookback_candidates,
         breakout_lookback_candidates: batch.breakout_lookback_candidates,
+        compression_percentile_threshold_candidates: batch
+            .compression_percentile_threshold_candidates,
+        min_breakout_pct_candidates: batch.min_breakout_pct_candidates,
+        max_breakout_extension_pct_candidates: batch.max_breakout_extension_pct_candidates,
+        min_volume_expansion_ratio_candidates: batch.min_volume_expansion_ratio_candidates,
         lower_band_pct_candidates: batch.lower_band_pct_candidates,
         upper_band_pct_candidates: batch.upper_band_pct_candidates,
         min_range_width_pct_candidates: batch.min_range_width_pct_candidates,
@@ -20653,7 +20746,12 @@ async fn strategy_walk_forward_request_from_plan(
                 [0],
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -29571,7 +29669,12 @@ mod tests {
             lookback_candles: 3,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -29670,7 +29773,12 @@ mod tests {
                 lookback_candles,
                 trend_lookback_candles: None,
                 momentum_lookback_candles: None,
+                compression_lookback_candles: None,
                 breakout_lookback_candles: None,
+                compression_percentile_threshold: None,
+                min_breakout_pct: None,
+                max_breakout_extension_pct: None,
+                min_volume_expansion_ratio: None,
                 lower_band_pct: None,
                 upper_band_pct: None,
                 min_range_width_pct: None,
@@ -30760,7 +30868,12 @@ mod tests {
             lookback_candles: 3,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,

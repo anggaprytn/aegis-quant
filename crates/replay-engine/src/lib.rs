@@ -636,7 +636,12 @@ impl ReplayEngine {
                 lookback_candles: candidate.lookback_candles,
                 trend_lookback_candles: candidate.trend_lookback_candles,
                 momentum_lookback_candles: candidate.momentum_lookback_candles,
+                compression_lookback_candles: candidate.compression_lookback_candles,
                 breakout_lookback_candles: candidate.breakout_lookback_candles,
+                compression_percentile_threshold: candidate.compression_percentile_threshold,
+                min_breakout_pct: candidate.min_breakout_pct,
+                max_breakout_extension_pct: candidate.max_breakout_extension_pct,
+                min_volume_expansion_ratio: candidate.min_volume_expansion_ratio,
                 lower_band_pct: candidate.lower_band_pct,
                 upper_band_pct: candidate.upper_band_pct,
                 min_range_width_pct: candidate.min_range_width_pct,
@@ -1376,6 +1381,9 @@ fn extract_signal_feature_metrics(
             extract_trend_filter_momentum_features(config, candles, index)
         }
         StrategyId::RangeReversionV1 => extract_range_reversion_features(config, candles, index),
+        StrategyId::VolatilityCompressionBreakoutV1 => {
+            extract_volatility_compression_breakout_features(config, candles, index)
+        }
         _ => Vec::new(),
     };
     let candle = &candles[index];
@@ -1507,6 +1515,65 @@ fn extract_range_reversion_features(
         ),
         decimal_feature_metric("candle_body_pct", candle_body_pct(latest)),
         decimal_feature_metric("candle_range_pct", candle_range_pct(latest)),
+    ]
+}
+
+fn extract_volatility_compression_breakout_features(
+    config: &StrategyConfig,
+    candles: &[Candle],
+    index: usize,
+) -> Vec<StrategySignalFeatureMetric> {
+    let compression = config
+        .compression_lookback_candles
+        .unwrap_or(config.lookback_candles) as usize;
+    let breakout = config
+        .breakout_lookback_candles
+        .unwrap_or(config.lookback_candles) as usize;
+    if index < compression + breakout || index == 0 {
+        return Vec::new();
+    }
+    let latest = &candles[index];
+    let recent_window = &candles[index - compression..index];
+    let baseline_window = &candles[index - compression - breakout..index - compression];
+    let breakout_window = &candles[index - breakout..index];
+    let recent_avg_range_pct = average_decimal_replay(recent_window.iter().map(candle_range_pct));
+    let baseline_avg_range_pct =
+        average_decimal_replay(baseline_window.iter().map(candle_range_pct));
+    let compression_ratio = if baseline_avg_range_pct > Decimal::ZERO {
+        (recent_avg_range_pct / baseline_avg_range_pct) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let breakout_level = breakout_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+    let breakout_pct = pct_change(latest.close, breakout_level);
+    let average_volume = average_decimal_replay(breakout_window.iter().map(|candle| candle.volume));
+    let volume_ratio = if average_volume > Decimal::ZERO {
+        latest.volume / average_volume
+    } else {
+        Decimal::ZERO
+    };
+    let recent_high = breakout_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+
+    vec![
+        decimal_feature_metric("compression_ratio", compression_ratio),
+        decimal_feature_metric("recent_avg_range_pct", recent_avg_range_pct),
+        decimal_feature_metric("baseline_avg_range_pct", baseline_avg_range_pct),
+        decimal_feature_metric("breakout_pct", breakout_pct),
+        decimal_feature_metric("volume_ratio", volume_ratio),
+        decimal_feature_metric("candle_body_pct", candle_body_pct(latest)),
+        decimal_feature_metric("candle_range_pct", candle_range_pct(latest)),
+        decimal_feature_metric(
+            "distance_from_recent_high_pct",
+            pct_change(latest.close, recent_high),
+        ),
     ]
 }
 
@@ -1820,11 +1887,35 @@ fn strategy_config_update_from_candidate(
                     || strategy_id == StrategyId::TrendFilterMomentumV2.as_str()
             })
             .or(base_config.momentum_lookback_candles),
+        compression_lookback_candles: candidate
+            .compression_lookback_candles
+            .or(Some(candidate.lookback_candles))
+            .filter(|_| strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.compression_lookback_candles),
         breakout_lookback_candles: candidate
             .breakout_lookback_candles
             .or(Some(candidate.lookback_candles))
-            .filter(|_| strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
+            .filter(|_| {
+                strategy_id == StrategyId::VolatilityBreakoutV2.as_str()
+                    || strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str()
+            })
             .or(base_config.breakout_lookback_candles),
+        compression_percentile_threshold: candidate
+            .compression_percentile_threshold
+            .filter(|_| strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.compression_percentile_threshold),
+        min_breakout_pct: candidate
+            .min_breakout_pct
+            .filter(|_| strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.min_breakout_pct),
+        max_breakout_extension_pct: candidate
+            .max_breakout_extension_pct
+            .filter(|_| strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.max_breakout_extension_pct),
+        min_volume_expansion_ratio: candidate
+            .min_volume_expansion_ratio
+            .filter(|_| strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.min_volume_expansion_ratio),
         lower_band_pct: candidate
             .lower_band_pct
             .filter(|_| strategy_id == StrategyId::RangeReversionV1.as_str())
@@ -2287,12 +2378,41 @@ fn walk_forward_strategy_override(
                     || request.strategy_id == StrategyId::TrendFilterMomentumV2.as_str()
             })
             .or(base_config.momentum_lookback_candles),
+        compression_lookback_candles: request
+            .candidate_config
+            .compression_lookback_candles
+            .or(Some(request.candidate_config.lookback_candles))
+            .filter(|_| request.strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.compression_lookback_candles),
         breakout_lookback_candles: request
             .candidate_config
             .breakout_lookback_candles
             .or(Some(request.candidate_config.lookback_candles))
-            .filter(|_| request.strategy_id == StrategyId::VolatilityBreakoutV2.as_str())
+            .filter(|_| {
+                request.strategy_id == StrategyId::VolatilityBreakoutV2.as_str()
+                    || request.strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str()
+            })
             .or(base_config.breakout_lookback_candles),
+        compression_percentile_threshold: request
+            .candidate_config
+            .compression_percentile_threshold
+            .filter(|_| request.strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.compression_percentile_threshold),
+        min_breakout_pct: request
+            .candidate_config
+            .min_breakout_pct
+            .filter(|_| request.strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.min_breakout_pct),
+        max_breakout_extension_pct: request
+            .candidate_config
+            .max_breakout_extension_pct
+            .filter(|_| request.strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.max_breakout_extension_pct),
+        min_volume_expansion_ratio: request
+            .candidate_config
+            .min_volume_expansion_ratio
+            .filter(|_| request.strategy_id == StrategyId::VolatilityCompressionBreakoutV1.as_str())
+            .or(base_config.min_volume_expansion_ratio),
         lower_band_pct: request
             .candidate_config
             .lower_band_pct
@@ -2388,7 +2508,18 @@ fn strategy_walk_forward_candidate_from_config(
         }),
         trend_lookback_candles: read_u32(&["trend_lookback_candles", "trend_lookback"]),
         momentum_lookback_candles: read_u32(&["momentum_lookback_candles", "momentum_lookback"]),
+        compression_lookback_candles: read_u32(&[
+            "compression_lookback_candles",
+            "compression_lookback",
+        ]),
         breakout_lookback_candles: read_u32(&["breakout_lookback_candles", "breakout_lookback"]),
+        compression_percentile_threshold: read_decimal(&[
+            "compression_percentile_threshold",
+            "compression_threshold",
+        ])?,
+        min_breakout_pct: read_decimal(&["min_breakout_pct"])?,
+        max_breakout_extension_pct: read_decimal(&["max_breakout_extension_pct"])?,
+        min_volume_expansion_ratio: read_decimal(&["min_volume_expansion_ratio"])?,
         lower_band_pct: read_decimal(&["lower_band_pct", "lower_band"])?,
         upper_band_pct: read_decimal(&["upper_band_pct", "upper_band"])?,
         min_range_width_pct: read_decimal(&["min_range_width_pct", "min_range_width"])?,
@@ -3217,6 +3348,11 @@ fn required_candles_for_request(request: &StrategyExperimentRequest) -> usize {
             .and_then(|values| values.iter().copied().max())
             .map(|value| value as usize),
         request
+            .compression_lookback_candidates
+            .as_ref()
+            .and_then(|values| values.iter().copied().max())
+            .map(|value| value as usize),
+        request
             .breakout_lookback_candidates
             .as_ref()
             .and_then(|values| values.iter().copied().max())
@@ -3242,6 +3378,7 @@ fn required_candles_for_candidate(candidate: &StrategyExperimentCandidate) -> us
         candidate.lookback_candles,
         candidate.trend_lookback_candles.unwrap_or(0),
         candidate.momentum_lookback_candles.unwrap_or(0),
+        candidate.compression_lookback_candles.unwrap_or(0),
         candidate.breakout_lookback_candles.unwrap_or(0),
     ]
     .into_iter()
@@ -3757,7 +3894,12 @@ mod tests {
             lookback_candles: 3,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -3879,6 +4021,23 @@ mod tests {
         config
     }
 
+    fn compression_breakout_feature_strategy_config() -> StrategyConfig {
+        let mut config = sample_strategy_config();
+        config.strategy_id = StrategyId::VolatilityCompressionBreakoutV1;
+        config.cooldown_seconds = 0;
+        config.holding_candles = Some(1);
+        config.lookback_candles = 20;
+        config.compression_lookback_candles = Some(20);
+        config.breakout_lookback_candles = Some(20);
+        config.compression_percentile_threshold = Some(Decimal::new(25, 0));
+        config.min_breakout_pct = Some(Decimal::new(5, 2));
+        config.max_breakout_extension_pct = Some(Decimal::new(15, 1));
+        config.min_volume_expansion_ratio = Some(Decimal::new(11, 1));
+        config.min_range_width_pct = Some(Decimal::new(2, 1));
+        config.max_range_width_pct = Some(Decimal::new(5, 0));
+        config
+    }
+
     fn range_reversion_feature_candles() -> Vec<Candle> {
         vec![
             candle(0, 100, 102, 99, 100),
@@ -3889,6 +4048,23 @@ mod tests {
             candle(5, 101, 103, 101, 102),
             candle(6, 102, 104, 102, 103),
         ]
+    }
+
+    fn compression_breakout_feature_candles() -> Vec<Candle> {
+        let mut candles = Vec::new();
+        for index in 0..20 {
+            candles.push(candle(index, 100, 110, 90, 100));
+        }
+        for index in 20..40 {
+            candles.push(candle(index, 100, 101, 99, 100));
+        }
+        let mut signal = candle(40, 100, 102, 100, 101);
+        signal.close = Decimal::new(1012, 1);
+        signal.volume = Decimal::new(15, 0);
+        candles.push(signal);
+        candles.push(candle(41, 101, 103, 100, 102));
+        candles.push(candle(42, 102, 104, 101, 103));
+        candles
     }
 
     fn feature_sample(
@@ -3953,7 +4129,12 @@ mod tests {
             lookback_candidates: vec![3, 5, 10],
             trend_lookback_candidates: None,
             momentum_lookback_candidates: None,
+            compression_lookback_candidates: None,
             breakout_lookback_candidates: None,
+            compression_percentile_threshold_candidates: None,
+            min_breakout_pct_candidates: None,
+            max_breakout_extension_pct_candidates: None,
+            min_volume_expansion_ratio_candidates: None,
             lower_band_pct_candidates: None,
             upper_band_pct_candidates: None,
             min_range_width_pct_candidates: None,
@@ -3983,7 +4164,12 @@ mod tests {
             lookback_candles: 20,
             trend_lookback_candles: Some(20),
             momentum_lookback_candles: Some(3),
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -4012,7 +4198,12 @@ mod tests {
             lookback_candles: 20,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: Some(Decimal::new(20, 0)),
             upper_band_pct: Some(Decimal::new(80, 0)),
             min_range_width_pct: Some(Decimal::new(15, 2)),
@@ -4041,7 +4232,12 @@ mod tests {
             lookback_candidates: vec![20],
             trend_lookback_candidates: None,
             momentum_lookback_candidates: None,
+            compression_lookback_candidates: None,
             breakout_lookback_candidates: None,
+            compression_percentile_threshold_candidates: None,
+            min_breakout_pct_candidates: None,
+            max_breakout_extension_pct_candidates: None,
+            min_volume_expansion_ratio_candidates: None,
             lower_band_pct_candidates: Some(vec![Decimal::new(20, 0)]),
             upper_band_pct_candidates: Some(vec![Decimal::new(90, 0)]),
             min_range_width_pct_candidates: Some(vec![Decimal::new(15, 2)]),
@@ -4075,6 +4271,10 @@ mod tests {
             trend_lookback_candidates: Some(vec![10, 20]),
             momentum_lookback_candidates: Some(vec![2, 3]),
             breakout_lookback_candidates: None,
+            compression_percentile_threshold_candidates: None,
+            min_breakout_pct_candidates: None,
+            max_breakout_extension_pct_candidates: None,
+            min_volume_expansion_ratio_candidates: None,
             lower_band_pct_candidates: None,
             upper_band_pct_candidates: None,
             min_range_width_pct_candidates: None,
@@ -4118,7 +4318,12 @@ mod tests {
                 lookback_candles: 3,
                 trend_lookback_candles: None,
                 momentum_lookback_candles: None,
+                compression_lookback_candles: None,
                 breakout_lookback_candles: None,
+                compression_percentile_threshold: None,
+                min_breakout_pct: None,
+                max_breakout_extension_pct: None,
+                min_volume_expansion_ratio: None,
                 lower_band_pct: None,
                 upper_band_pct: None,
                 min_range_width_pct: None,
@@ -4175,7 +4380,12 @@ mod tests {
                 lookback_candles: 5,
                 trend_lookback_candles: None,
                 momentum_lookback_candles: None,
+                compression_lookback_candles: None,
                 breakout_lookback_candles: None,
+                compression_percentile_threshold: None,
+                min_breakout_pct: None,
+                max_breakout_extension_pct: None,
+                min_volume_expansion_ratio: None,
                 lower_band_pct: None,
                 upper_band_pct: None,
                 min_range_width_pct: None,
@@ -4701,7 +4911,12 @@ mod tests {
             lookback_candles: 10,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -5080,6 +5295,39 @@ mod tests {
             .metrics
             .iter()
             .any(|metric| metric.feature_name == "reversal_strength_pct"));
+    }
+
+    #[test]
+    fn signal_feature_extracts_compression_breakout_features() {
+        let result = calculate_signal_feature_attribution(
+            &signal_feature_attribution_request("volatility_compression_breakout_v1"),
+            &compression_breakout_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            compression_breakout_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert!(result.attributed_signals > 0);
+        let sample = result.samples.first().expect("sample");
+        for feature_name in [
+            "compression_ratio",
+            "recent_avg_range_pct",
+            "baseline_avg_range_pct",
+            "breakout_pct",
+            "volume_ratio",
+            "candle_body_pct",
+            "candle_range_pct",
+            "distance_from_recent_high_pct",
+        ] {
+            assert!(
+                sample
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.feature_name == feature_name),
+                "missing feature {feature_name}"
+            );
+        }
     }
 
     #[test]

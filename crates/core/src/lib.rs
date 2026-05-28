@@ -1502,6 +1502,7 @@ pub enum StrategyId {
     TrendFilterMomentumV1,
     TrendFilterMomentumV2,
     VolatilityBreakoutV2,
+    VolatilityCompressionBreakoutV1,
     RangeReversionV1,
 }
 
@@ -1513,6 +1514,7 @@ impl StrategyId {
             Self::TrendFilterMomentumV1 => "trend_filter_momentum_v1",
             Self::TrendFilterMomentumV2 => "trend_filter_momentum_v2",
             Self::VolatilityBreakoutV2 => "volatility_breakout_v2",
+            Self::VolatilityCompressionBreakoutV1 => "volatility_compression_breakout_v1",
             Self::RangeReversionV1 => "range_reversion_v1",
         }
     }
@@ -1528,6 +1530,7 @@ impl std::str::FromStr for StrategyId {
             "trend_filter_momentum_v1" => Ok(Self::TrendFilterMomentumV1),
             "trend_filter_momentum_v2" => Ok(Self::TrendFilterMomentumV2),
             "volatility_breakout_v2" => Ok(Self::VolatilityBreakoutV2),
+            "volatility_compression_breakout_v1" => Ok(Self::VolatilityCompressionBreakoutV1),
             "range_reversion_v1" => Ok(Self::RangeReversionV1),
             other => Err(CoreError::UnsupportedStrategyId(other.to_string())),
         }
@@ -1681,6 +1684,7 @@ pub enum SignalReason {
     TrendFilterMomentum,
     BreakoutAboveRecentHigh,
     VolumeConfirmedBreakout,
+    VolatilityCompressionBreakout,
     RangeReversion,
     ConditionsNotMet,
     InsufficientHistory,
@@ -1695,6 +1699,7 @@ impl SignalReason {
             Self::TrendFilterMomentum => "trend_filter_momentum",
             Self::BreakoutAboveRecentHigh => "breakout_above_recent_high",
             Self::VolumeConfirmedBreakout => "volume_confirmed_breakout",
+            Self::VolatilityCompressionBreakout => "volatility_compression_breakout",
             Self::RangeReversion => "range_reversion",
             Self::ConditionsNotMet => "conditions_not_met",
             Self::InsufficientHistory => "insufficient_history",
@@ -1713,6 +1718,7 @@ impl std::str::FromStr for SignalReason {
             "trend_filter_momentum" => Ok(Self::TrendFilterMomentum),
             "breakout_above_recent_high" => Ok(Self::BreakoutAboveRecentHigh),
             "volume_confirmed_breakout" => Ok(Self::VolumeConfirmedBreakout),
+            "volatility_compression_breakout" => Ok(Self::VolatilityCompressionBreakout),
             "range_reversion" => Ok(Self::RangeReversion),
             "conditions_not_met" => Ok(Self::ConditionsNotMet),
             "insufficient_history" => Ok(Self::InsufficientHistory),
@@ -1750,7 +1756,12 @@ pub struct StrategyConfig {
     pub lookback_candles: u32,
     pub trend_lookback_candles: Option<u32>,
     pub momentum_lookback_candles: Option<u32>,
+    pub compression_lookback_candles: Option<u32>,
     pub breakout_lookback_candles: Option<u32>,
+    pub compression_percentile_threshold: Option<Decimal>,
+    pub min_breakout_pct: Option<Decimal>,
+    pub max_breakout_extension_pct: Option<Decimal>,
+    pub min_volume_expansion_ratio: Option<Decimal>,
     pub lower_band_pct: Option<Decimal>,
     pub upper_band_pct: Option<Decimal>,
     pub min_range_width_pct: Option<Decimal>,
@@ -1798,7 +1809,12 @@ pub struct StrategyConfigUpdateRequest {
     pub lookback_candles: u32,
     pub trend_lookback_candles: Option<u32>,
     pub momentum_lookback_candles: Option<u32>,
+    pub compression_lookback_candles: Option<u32>,
     pub breakout_lookback_candles: Option<u32>,
+    pub compression_percentile_threshold: Option<Decimal>,
+    pub min_breakout_pct: Option<Decimal>,
+    pub max_breakout_extension_pct: Option<Decimal>,
+    pub min_volume_expansion_ratio: Option<Decimal>,
     pub lower_band_pct: Option<Decimal>,
     pub upper_band_pct: Option<Decimal>,
     pub min_range_width_pct: Option<Decimal>,
@@ -2287,7 +2303,11 @@ pub enum StrategyNoSignalReason {
     VolatilityBelowMinimum,
     BreakoutNotAboveRecentHigh,
     BreakoutVolumeBelowAverage,
+    NoCompression,
+    NoBreakout,
+    BreakoutTooSmall,
     BreakoutTooExtended,
+    VolumeNotConfirmed,
     InsufficientData,
     RangeTooNarrow,
     RangeTooWide,
@@ -2314,7 +2334,11 @@ impl StrategyNoSignalReason {
             Self::VolatilityBelowMinimum => "VOLATILITY_BELOW_MINIMUM",
             Self::BreakoutNotAboveRecentHigh => "BREAKOUT_NOT_ABOVE_RECENT_HIGH",
             Self::BreakoutVolumeBelowAverage => "BREAKOUT_VOLUME_BELOW_AVERAGE",
+            Self::NoCompression => "NO_COMPRESSION",
+            Self::NoBreakout => "NO_BREAKOUT",
+            Self::BreakoutTooSmall => "BREAKOUT_TOO_SMALL",
             Self::BreakoutTooExtended => "BREAKOUT_TOO_EXTENDED",
+            Self::VolumeNotConfirmed => "VOLUME_NOT_CONFIRMED",
             Self::InsufficientData => "INSUFFICIENT_DATA",
             Self::RangeTooNarrow => "RANGE_TOO_NARROW",
             Self::RangeTooWide => "RANGE_TOO_WIDE",
@@ -3036,7 +3060,12 @@ pub struct StrategyExperimentCandidate {
     pub lookback_candles: u32,
     pub trend_lookback_candles: Option<u32>,
     pub momentum_lookback_candles: Option<u32>,
+    pub compression_lookback_candles: Option<u32>,
     pub breakout_lookback_candles: Option<u32>,
+    pub compression_percentile_threshold: Option<Decimal>,
+    pub min_breakout_pct: Option<Decimal>,
+    pub max_breakout_extension_pct: Option<Decimal>,
+    pub min_volume_expansion_ratio: Option<Decimal>,
     pub lower_band_pct: Option<Decimal>,
     pub upper_band_pct: Option<Decimal>,
     pub min_range_width_pct: Option<Decimal>,
@@ -3063,7 +3092,12 @@ pub struct StrategyExperimentRequest {
     pub lookback_candidates: Vec<u32>,
     pub trend_lookback_candidates: Option<Vec<u32>>,
     pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub compression_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub compression_percentile_threshold_candidates: Option<Vec<Decimal>>,
+    pub min_breakout_pct_candidates: Option<Vec<Decimal>>,
+    pub max_breakout_extension_pct_candidates: Option<Vec<Decimal>>,
+    pub min_volume_expansion_ratio_candidates: Option<Vec<Decimal>>,
     pub lower_band_pct_candidates: Option<Vec<Decimal>>,
     pub upper_band_pct_candidates: Option<Vec<Decimal>>,
     pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
@@ -3127,7 +3161,17 @@ pub struct StrategyWalkForwardCandidate {
     #[serde(default)]
     pub momentum_lookback_candles: Option<u32>,
     #[serde(default)]
+    pub compression_lookback_candles: Option<u32>,
+    #[serde(default)]
     pub breakout_lookback_candles: Option<u32>,
+    #[serde(default)]
+    pub compression_percentile_threshold: Option<Decimal>,
+    #[serde(default)]
+    pub min_breakout_pct: Option<Decimal>,
+    #[serde(default)]
+    pub max_breakout_extension_pct: Option<Decimal>,
+    #[serde(default)]
+    pub min_volume_expansion_ratio: Option<Decimal>,
     #[serde(default)]
     pub lower_band_pct: Option<Decimal>,
     #[serde(default)]
@@ -3157,7 +3201,12 @@ fn default_strategy_walk_forward_candidate() -> StrategyWalkForwardCandidate {
         lookback_candles: 0,
         trend_lookback_candles: None,
         momentum_lookback_candles: None,
+        compression_lookback_candles: None,
         breakout_lookback_candles: None,
+        compression_percentile_threshold: None,
+        min_breakout_pct: None,
+        max_breakout_extension_pct: None,
+        min_volume_expansion_ratio: None,
         lower_band_pct: None,
         upper_band_pct: None,
         min_range_width_pct: None,
@@ -3445,6 +3494,12 @@ impl StrategyExperimentRequest {
                     .flatten(),
             )
             .chain(
+                self.compression_lookback_candidates
+                    .as_ref()
+                    .into_iter()
+                    .flatten(),
+            )
+            .chain(
                 self.breakout_lookback_candidates
                     .as_ref()
                     .into_iter()
@@ -3484,173 +3539,131 @@ impl StrategyExperimentRequest {
     }
 
     pub fn candidates(&self) -> Vec<StrategyExperimentCandidate> {
-        let holdings = self
-            .holding_candles_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![0]);
-        let stop_losses = self
-            .stop_loss_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::ZERO]);
-        let take_profits = self
-            .take_profit_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::ZERO]);
+        let holdings = non_empty_or(self.holding_candles_candidates.clone(), vec![0]);
+        let stop_losses = non_empty_or(self.stop_loss_pct_candidates.clone(), vec![Decimal::ZERO]);
+        let take_profits =
+            non_empty_or(self.take_profit_pct_candidates.clone(), vec![Decimal::ZERO]);
+        let trend_lookbacks = non_empty_or(
+            self.trend_lookback_candidates.clone(),
+            self.lookback_candidates.clone(),
+        );
+        let momentum_lookbacks = non_empty_or(self.momentum_lookback_candidates.clone(), vec![0]);
+        let compression_lookbacks = non_empty_or(
+            self.compression_lookback_candidates.clone(),
+            self.lookback_candidates.clone(),
+        );
+        let breakout_lookbacks = non_empty_or(
+            self.breakout_lookback_candidates.clone(),
+            self.lookback_candidates.clone(),
+        );
+        let compression_thresholds = non_empty_or(
+            self.compression_percentile_threshold_candidates.clone(),
+            vec![Decimal::new(25, 0)],
+        );
+        let min_breakouts = non_empty_or(
+            self.min_breakout_pct_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let max_extensions = non_empty_or(
+            self.max_breakout_extension_pct_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let volume_ratios = non_empty_or(
+            self.min_volume_expansion_ratio_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let lower_bands = non_empty_or(
+            self.lower_band_pct_candidates.clone(),
+            vec![Decimal::new(20, 0)],
+        );
+        let upper_bands = non_empty_or(
+            self.upper_band_pct_candidates.clone(),
+            vec![Decimal::new(80, 0)],
+        );
+        let min_range_widths = non_empty_or(
+            self.min_range_width_pct_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let max_range_widths = non_empty_or(
+            self.max_range_width_pct_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let min_close_above_sma_values = non_empty_or(
+            self.min_close_above_sma_pct_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let max_close_above_sma_values = non_empty_or(
+            self.max_close_above_sma_pct_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let min_momentum_return_values = non_empty_or(
+            self.min_momentum_return_pct_candidates.clone(),
+            vec![Decimal::ZERO],
+        );
+        let is_compression = self.strategy_id == "volatility_compression_breakout_v1";
+        let is_range = self.strategy_id == "range_reversion_v1";
+        let is_trend_v2 = self.strategy_id == "trend_filter_momentum_v2";
 
         let mut candidates = Vec::new();
-        let trend_lookbacks = self
-            .trend_lookback_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| self.lookback_candidates.clone());
-        let momentum_lookbacks = self
-            .momentum_lookback_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![0]);
-        let breakout_lookbacks = self
-            .breakout_lookback_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| self.lookback_candidates.clone());
-        let lower_bands = self
-            .lower_band_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::new(20, 0)]);
-        let upper_bands = self
-            .upper_band_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::new(80, 0)]);
-        let min_range_widths = self
-            .min_range_width_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::ZERO]);
-        let max_range_widths = self
-            .max_range_width_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::ZERO]);
-        let min_close_above_sma_values = self
-            .min_close_above_sma_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::ZERO]);
-        let max_close_above_sma_values = self
-            .max_close_above_sma_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::ZERO]);
-        let min_momentum_return_values = self
-            .min_momentum_return_pct_candidates
-            .clone()
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| vec![Decimal::ZERO]);
-
         for lookback_candles in &self.lookback_candidates {
             for trend_lookback_candles in &trend_lookbacks {
                 for momentum_lookback_candles in &momentum_lookbacks {
-                    for breakout_lookback_candles in &breakout_lookbacks {
-                        for lower_band_pct in &lower_bands {
-                            for upper_band_pct in &upper_bands {
-                                for min_range_width_pct in &min_range_widths {
-                                    for max_range_width_pct in &max_range_widths {
-                                        for min_close_above_sma_pct in &min_close_above_sma_values {
-                                            for max_close_above_sma_pct in
-                                                &max_close_above_sma_values
-                                            {
-                                                for min_momentum_return_pct in
-                                                    &min_momentum_return_values
-                                                {
-                                                    for holding_candles in &holdings {
-                                                        for stop_loss_pct in &stop_losses {
-                                                            for take_profit_pct in &take_profits {
-                                                                candidates.push(StrategyExperimentCandidate {
-                                                        lookback_candles: *lookback_candles,
-                                                        trend_lookback_candles: Some(
-                                                            *trend_lookback_candles,
-                                                        ),
-                                                        momentum_lookback_candles:
-                                                            if *momentum_lookback_candles == 0 {
-                                                                None
-                                                            } else {
-                                                                Some(*momentum_lookback_candles)
-                                                            },
-                                                        breakout_lookback_candles: Some(
-                                                            *breakout_lookback_candles,
-                                                        ),
-                                                        lower_band_pct: Some(*lower_band_pct)
-                                                            .filter(|_| {
-                                                                self.strategy_id
-                                                                    == "range_reversion_v1"
-                                                            }),
-                                                        upper_band_pct: Some(*upper_band_pct)
-                                                            .filter(|_| {
-                                                                self.strategy_id
-                                                                    == "range_reversion_v1"
-                                                            }),
-                                                        min_range_width_pct: Some(
-                                                            *min_range_width_pct,
-                                                        )
-                                                        .filter(|value| {
-                                                            self.strategy_id == "range_reversion_v1"
-                                                                && *value != Decimal::ZERO
-                                                        }),
-                                                        max_range_width_pct: Some(
-                                                            *max_range_width_pct,
-                                                        )
-                                                        .filter(|value| {
-                                                            self.strategy_id == "range_reversion_v1"
-                                                                && *value != Decimal::ZERO
-                                                        }),
-                                                        min_close_above_sma_pct: Some(
-                                                            *min_close_above_sma_pct,
-                                                        )
-                                                        .filter(|_| {
-                                                            self.strategy_id
-                                                                == "trend_filter_momentum_v2"
-                                                        }),
-                                                        max_close_above_sma_pct: Some(
-                                                            *max_close_above_sma_pct,
-                                                        )
-                                                        .filter(|value| {
-                                                            self.strategy_id
-                                                                == "trend_filter_momentum_v2"
-                                                                && *value != Decimal::ZERO
-                                                        }),
-                                                        min_momentum_return_pct: Some(
-                                                            *min_momentum_return_pct,
-                                                        )
-                                                        .filter(|_| {
-                                                            self.strategy_id
-                                                                == "trend_filter_momentum_v2"
-                                                        }),
-                                                        holding_candles: if *holding_candles == 0 {
-                                                            None
-                                                        } else {
-                                                            Some(*holding_candles)
-                                                        },
-                                                        stop_loss_pct: if *stop_loss_pct
-                                                            == Decimal::ZERO
+                    for compression_lookback_candles in &compression_lookbacks {
+                        for breakout_lookback_candles in &breakout_lookbacks {
+                            for compression_threshold in &compression_thresholds {
+                                for min_breakout_pct in &min_breakouts {
+                                    for max_extension_pct in &max_extensions {
+                                        for volume_ratio in &volume_ratios {
+                                            for lower_band_pct in &lower_bands {
+                                                for upper_band_pct in &upper_bands {
+                                                    for min_range_width_pct in &min_range_widths {
+                                                        for max_range_width_pct in &max_range_widths
                                                         {
-                                                            None
-                                                        } else {
-                                                            Some(*stop_loss_pct)
-                                                        },
-                                                        take_profit_pct: if *take_profit_pct
-                                                            == Decimal::ZERO
-                                                        {
-                                                            None
-                                                        } else {
-                                                            Some(*take_profit_pct)
-                                                        },
-                                                        max_signal_age_ms: self.max_signal_age_ms,
-                                                    });
+                                                            for min_close_above_sma_pct in
+                                                                &min_close_above_sma_values
+                                                            {
+                                                                for max_close_above_sma_pct in
+                                                                    &max_close_above_sma_values
+                                                                {
+                                                                    for min_momentum_return_pct in
+                                                                        &min_momentum_return_values
+                                                                    {
+                                                                        for holding_candles in
+                                                                            &holdings
+                                                                        {
+                                                                            for stop_loss_pct in
+                                                                                &stop_losses
+                                                                            {
+                                                                                for take_profit_pct in
+                                                                                    &take_profits
+                                                                                {
+                                                                                    candidates.push(StrategyExperimentCandidate {
+                                                                                        lookback_candles: *lookback_candles,
+                                                                                        trend_lookback_candles: Some(*trend_lookback_candles),
+                                                                                        momentum_lookback_candles: (*momentum_lookback_candles != 0).then_some(*momentum_lookback_candles),
+                                                                                        compression_lookback_candles: is_compression.then_some(*compression_lookback_candles),
+                                                                                        breakout_lookback_candles: Some(*breakout_lookback_candles),
+                                                                                        compression_percentile_threshold: is_compression.then_some(*compression_threshold),
+                                                                                        min_breakout_pct: (is_compression && *min_breakout_pct != Decimal::ZERO).then_some(*min_breakout_pct),
+                                                                                        max_breakout_extension_pct: (is_compression && *max_extension_pct != Decimal::ZERO).then_some(*max_extension_pct),
+                                                                                        min_volume_expansion_ratio: (is_compression && *volume_ratio != Decimal::ZERO).then_some(*volume_ratio),
+                                                                                        lower_band_pct: is_range.then_some(*lower_band_pct),
+                                                                                        upper_band_pct: is_range.then_some(*upper_band_pct),
+                                                                                        min_range_width_pct: (is_range && *min_range_width_pct != Decimal::ZERO).then_some(*min_range_width_pct),
+                                                                                        max_range_width_pct: (is_range && *max_range_width_pct != Decimal::ZERO).then_some(*max_range_width_pct),
+                                                                                        min_close_above_sma_pct: is_trend_v2.then_some(*min_close_above_sma_pct),
+                                                                                        max_close_above_sma_pct: (is_trend_v2 && *max_close_above_sma_pct != Decimal::ZERO).then_some(*max_close_above_sma_pct),
+                                                                                        min_momentum_return_pct: is_trend_v2.then_some(*min_momentum_return_pct),
+                                                                                        holding_candles: (*holding_candles != 0).then_some(*holding_candles),
+                                                                                        stop_loss_pct: (*stop_loss_pct != Decimal::ZERO).then_some(*stop_loss_pct),
+                                                                                        take_profit_pct: (*take_profit_pct != Decimal::ZERO).then_some(*take_profit_pct),
+                                                                                        max_signal_age_ms: self.max_signal_age_ms,
+                                                                                    });
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -3674,6 +3687,12 @@ impl StrategyExperimentRequest {
     }
 }
 
+fn non_empty_or<T>(values: Option<Vec<T>>, fallback: Vec<T>) -> Vec<T> {
+    values
+        .filter(|values| !values.is_empty())
+        .unwrap_or(fallback)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StrategyMultiTimeframeExperimentRequest {
     pub strategy_id: String,
@@ -3687,7 +3706,12 @@ pub struct StrategyMultiTimeframeExperimentRequest {
     pub lookback_candidates: Vec<u32>,
     pub trend_lookback_candidates: Option<Vec<u32>>,
     pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub compression_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub compression_percentile_threshold_candidates: Option<Vec<Decimal>>,
+    pub min_breakout_pct_candidates: Option<Vec<Decimal>>,
+    pub max_breakout_extension_pct_candidates: Option<Vec<Decimal>>,
+    pub min_volume_expansion_ratio_candidates: Option<Vec<Decimal>>,
     pub lower_band_pct_candidates: Option<Vec<Decimal>>,
     pub upper_band_pct_candidates: Option<Vec<Decimal>>,
     pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
@@ -3733,7 +3757,18 @@ impl StrategyMultiTimeframeExperimentRequest {
             lookback_candidates: self.lookback_candidates.clone(),
             trend_lookback_candidates: self.trend_lookback_candidates.clone(),
             momentum_lookback_candidates: self.momentum_lookback_candidates.clone(),
+            compression_lookback_candidates: self.compression_lookback_candidates.clone(),
             breakout_lookback_candidates: self.breakout_lookback_candidates.clone(),
+            compression_percentile_threshold_candidates: self
+                .compression_percentile_threshold_candidates
+                .clone(),
+            min_breakout_pct_candidates: self.min_breakout_pct_candidates.clone(),
+            max_breakout_extension_pct_candidates: self
+                .max_breakout_extension_pct_candidates
+                .clone(),
+            min_volume_expansion_ratio_candidates: self
+                .min_volume_expansion_ratio_candidates
+                .clone(),
             lower_band_pct_candidates: self.lower_band_pct_candidates.clone(),
             upper_band_pct_candidates: self.upper_band_pct_candidates.clone(),
             min_range_width_pct_candidates: self.min_range_width_pct_candidates.clone(),

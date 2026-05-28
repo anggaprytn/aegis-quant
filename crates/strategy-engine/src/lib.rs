@@ -21,13 +21,14 @@ pub struct StrategyValidationContext {
     pub max_position_notional: Option<Decimal>,
 }
 
-pub fn known_strategy_ids() -> [StrategyId; 6] {
+pub fn known_strategy_ids() -> [StrategyId; 7] {
     [
         StrategyId::MomentumV1,
         StrategyId::VolatilityBreakoutV1,
         StrategyId::TrendFilterMomentumV1,
         StrategyId::TrendFilterMomentumV2,
         StrategyId::VolatilityBreakoutV2,
+        StrategyId::VolatilityCompressionBreakoutV1,
         StrategyId::RangeReversionV1,
     ]
 }
@@ -46,7 +47,7 @@ pub fn validate_strategy_config(
                 StrategyConfigValidationSeverity::Error,
                 "unknown_strategy",
                 "strategy_id",
-                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v2, trend_filter_momentum_v1, volatility_breakout_v2, or range_reversion_v1",
+                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v2, trend_filter_momentum_v1, volatility_breakout_v2, volatility_compression_breakout_v1, or range_reversion_v1",
             ));
             return StrategyConfigValidationResult {
                 strategy_id: request.strategy_id.clone(),
@@ -211,6 +212,7 @@ pub fn validate_strategy_config(
         StrategyId::VolatilityBreakoutV1 => 5..=500,
         StrategyId::TrendFilterMomentumV1 | StrategyId::TrendFilterMomentumV2 => 2..=500,
         StrategyId::VolatilityBreakoutV2 => 5..=500,
+        StrategyId::VolatilityCompressionBreakoutV1 => 2..=500,
         StrategyId::RangeReversionV1 => 2..=500,
     };
     if !lookback_range.contains(&request.lookback_candles) {
@@ -247,6 +249,16 @@ pub fn validate_strategy_config(
             ));
         }
     }
+    if let Some(compression_lookback) = request.compression_lookback_candles {
+        if compression_lookback <= 1 {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_compression_lookback_candles",
+                "compression_lookback_candles",
+                "compression_lookback_candles must be greater than 1",
+            ));
+        }
+    }
     if strategy_id == StrategyId::TrendFilterMomentumV2 {
         let min_close_above_sma_pct = request.min_close_above_sma_pct.unwrap_or(Decimal::ZERO);
         let max_close_above_sma_pct = request.max_close_above_sma_pct.unwrap_or(Decimal::ONE);
@@ -277,12 +289,86 @@ pub fn validate_strategy_config(
         }
     }
     if let Some(breakout_lookback) = request.breakout_lookback_candles {
-        if breakout_lookback == 0 {
+        if breakout_lookback <= 1 {
             issues.push(issue(
                 StrategyConfigValidationSeverity::Error,
                 "invalid_breakout_lookback_candles",
                 "breakout_lookback_candles",
-                "breakout_lookback_candles must be greater than zero",
+                "breakout_lookback_candles must be greater than 1",
+            ));
+        }
+    }
+
+    if strategy_id == StrategyId::VolatilityCompressionBreakoutV1 {
+        let compression_lookback = request.compression_lookback_candles.unwrap_or(20);
+        let breakout_lookback = request.breakout_lookback_candles.unwrap_or(20);
+        let compression_threshold = request
+            .compression_percentile_threshold
+            .unwrap_or(Decimal::new(25, 0));
+        let min_breakout = request.min_breakout_pct.unwrap_or(Decimal::new(5, 2));
+        let max_extension = request
+            .max_breakout_extension_pct
+            .unwrap_or(Decimal::new(15, 1));
+        let min_volume_ratio = request
+            .min_volume_expansion_ratio
+            .unwrap_or(Decimal::new(11, 1));
+        let min_width = request.min_range_width_pct.unwrap_or(Decimal::new(2, 1));
+        let max_width = request.max_range_width_pct.unwrap_or(Decimal::new(5, 0));
+
+        if compression_lookback > breakout_lookback {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "compression_lookback_above_breakout_lookback",
+                "compression_lookback_candles",
+                "compression_lookback_candles must be less than or equal to breakout_lookback_candles",
+            ));
+        }
+        if compression_threshold <= Decimal::ZERO || compression_threshold > Decimal::new(100, 0) {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_compression_percentile_threshold",
+                "compression_percentile_threshold",
+                "compression_percentile_threshold must be greater than 0 and at most 100",
+            ));
+        }
+        if min_breakout < Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_breakout_pct",
+                "min_breakout_pct",
+                "min_breakout_pct must be greater than or equal to 0",
+            ));
+        }
+        if max_extension <= min_breakout {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_max_breakout_extension_pct",
+                "max_breakout_extension_pct",
+                "max_breakout_extension_pct must be greater than min_breakout_pct",
+            ));
+        }
+        if min_volume_ratio < Decimal::ONE {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_volume_expansion_ratio",
+                "min_volume_expansion_ratio",
+                "min_volume_expansion_ratio must be greater than or equal to 1",
+            ));
+        }
+        if min_width <= Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_range_width_pct",
+                "min_range_width_pct",
+                "min_range_width_pct must be greater than 0",
+            ));
+        }
+        if max_width <= min_width {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_max_range_width_pct",
+                "max_range_width_pct",
+                "max_range_width_pct must be greater than min_range_width_pct",
             ));
         }
     }
@@ -412,7 +498,28 @@ pub fn validate_strategy_config(
             lookback_candles: request.lookback_candles,
             trend_lookback_candles: request.trend_lookback_candles,
             momentum_lookback_candles: request.momentum_lookback_candles,
-            breakout_lookback_candles: request.breakout_lookback_candles,
+            compression_lookback_candles: request
+                .compression_lookback_candles
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1).then_some(20)),
+            breakout_lookback_candles: request
+                .breakout_lookback_candles
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1).then_some(20)),
+            compression_percentile_threshold: request
+                .compression_percentile_threshold
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1)
+                    .then_some(Decimal::new(25, 0))),
+            min_breakout_pct: request
+                .min_breakout_pct
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1)
+                    .then_some(Decimal::new(5, 2))),
+            max_breakout_extension_pct: request
+                .max_breakout_extension_pct
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1)
+                    .then_some(Decimal::new(15, 1))),
+            min_volume_expansion_ratio: request
+                .min_volume_expansion_ratio
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1)
+                    .then_some(Decimal::new(11, 1))),
             lower_band_pct: request
                 .lower_band_pct
                 .or((strategy_id == StrategyId::RangeReversionV1).then_some(lower_band_pct)),
@@ -421,10 +528,14 @@ pub fn validate_strategy_config(
                 .or((strategy_id == StrategyId::RangeReversionV1).then_some(upper_band_pct)),
             min_range_width_pct: request
                 .min_range_width_pct
-                .or((strategy_id == StrategyId::RangeReversionV1).then_some(min_range_width_pct)),
+                .or((strategy_id == StrategyId::RangeReversionV1).then_some(min_range_width_pct))
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1)
+                    .then_some(Decimal::new(2, 1))),
             max_range_width_pct: request
                 .max_range_width_pct
-                .or((strategy_id == StrategyId::RangeReversionV1).then_some(max_range_width_pct)),
+                .or((strategy_id == StrategyId::RangeReversionV1).then_some(max_range_width_pct))
+                .or((strategy_id == StrategyId::VolatilityCompressionBreakoutV1)
+                    .then_some(Decimal::new(5, 0))),
             min_close_above_sma_pct: request
                 .min_close_above_sma_pct
                 .or((strategy_id == StrategyId::TrendFilterMomentumV2).then_some(Decimal::ZERO)),
@@ -459,6 +570,9 @@ pub fn required_candle_count(config: &StrategyConfig) -> i64 {
             trend.max(momentum).max(2)
         }
         StrategyId::VolatilityBreakoutV2 => (breakout_lookback(config) as i64 + 1).max(2),
+        StrategyId::VolatilityCompressionBreakoutV1 => {
+            (compression_lookback(config) as i64 + breakout_lookback(config) as i64 + 1).max(2)
+        }
         StrategyId::RangeReversionV1 => (config.lookback_candles as i64 + 1).max(2),
         _ => (config.lookback_candles as i64 + 1).max(2),
     }
@@ -490,6 +604,9 @@ pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluation
         StrategyId::TrendFilterMomentumV1 => evaluate_trend_filter_momentum(&context, candles),
         StrategyId::TrendFilterMomentumV2 => evaluate_trend_filter_momentum_v2(&context, candles),
         StrategyId::VolatilityBreakoutV2 => evaluate_volume_breakout(&context, candles),
+        StrategyId::VolatilityCompressionBreakoutV1 => {
+            evaluate_volatility_compression_breakout(&context, candles)
+        }
         StrategyId::RangeReversionV1 => evaluate_range_reversion(&context, candles),
     }
 }
@@ -639,6 +756,9 @@ pub fn diagnose(
             StrategyId::VolatilityBreakoutV2 => {
                 diagnose_volume_breakout(&context, &candles, &mut condition_checks)
             }
+            StrategyId::VolatilityCompressionBreakoutV1 => {
+                diagnose_volatility_compression_breakout(&context, &candles, &mut condition_checks)
+            }
             StrategyId::RangeReversionV1 => {
                 diagnose_range_reversion(&context, &candles, &mut condition_checks)
             }
@@ -693,6 +813,9 @@ pub fn analyze_opportunity(
     let mut close_vs_high = Vec::new();
     let mut reversal_confirmation_count = 0_i64;
     let mut close_vs_sma_values = Vec::new();
+    let mut compression_ratios = Vec::new();
+    let mut breakout_pcts = Vec::new();
+    let mut volume_ratios = Vec::new();
 
     if candles.len() >= required {
         for end in required..=candles.len() {
@@ -710,6 +833,15 @@ pub fn analyze_opportunity(
                 StrategyId::TrendFilterMomentumV1 => analyze_trend_filter_window(config, window),
                 StrategyId::TrendFilterMomentumV2 => {
                     analyze_trend_filter_v2_window(config, window, &mut close_vs_sma_values)
+                }
+                StrategyId::VolatilityCompressionBreakoutV1 => {
+                    analyze_volatility_compression_breakout_window(
+                        config,
+                        window,
+                        &mut compression_ratios,
+                        &mut breakout_pcts,
+                        &mut volume_ratios,
+                    )
                 }
                 _ => analyze_generic_window(config, strategy_id, window)?,
             };
@@ -778,6 +910,9 @@ pub fn analyze_opportunity(
             "latest_close_vs_range_high_pct": distribution_json(&close_vs_high),
             "reversal_confirmation_count": reversal_confirmation_count,
             "close_vs_sma_pct": distribution_json(&close_vs_sma_values),
+            "compression_ratio": distribution_json(&compression_ratios),
+            "breakout_pct": distribution_json(&breakout_pcts),
+            "volume_ratio": distribution_json(&volume_ratios),
         }),
         recommendation,
         data_quality_status,
@@ -1092,6 +1227,77 @@ fn analyze_trend_filter_v2_window(
             "min_momentum_return_pct": min_momentum,
             "confidence": confidence,
             "confidence_floor": config.confidence_floor,
+        }),
+    }
+}
+
+fn analyze_volatility_compression_breakout_window(
+    config: &StrategyConfig,
+    window: &[Candle],
+    compression_ratios: &mut Vec<Decimal>,
+    breakout_pcts: &mut Vec<Decimal>,
+    volume_ratios: &mut Vec<Decimal>,
+) -> WindowOutcome {
+    let latest = window.last().expect("window must contain latest candle");
+    let metrics = calculate_compression_breakout_metrics(config, window);
+
+    let valid_config = validate_compression_breakout_config(config).is_none();
+    let compression_passed = valid_config && metrics.compression_passed;
+    let range_width_passed = valid_config && metrics.range_width_within_bounds;
+    let breakout_passed = valid_config && latest.close > metrics.breakout_level;
+    let breakout_large_enough = valid_config && metrics.breakout_pct >= min_breakout_pct(config);
+    let breakout_not_overextended =
+        valid_config && metrics.breakout_pct <= max_breakout_extension_pct(config);
+    let volume_confirmed =
+        valid_config && metrics.volume_ratio >= min_volume_expansion_ratio(config);
+    let bullish_close = latest.close > latest.open;
+    let final_would_signal = compression_passed
+        && range_width_passed
+        && breakout_passed
+        && breakout_large_enough
+        && breakout_not_overextended
+        && volume_confirmed
+        && bullish_close;
+
+    compression_ratios.push(metrics.compression_ratio);
+    breakout_pcts.push(metrics.breakout_pct);
+    volume_ratios.push(metrics.volume_ratio);
+
+    let conditions = vec![
+        condition("has_enough_data", true),
+        condition("valid_config", valid_config),
+        condition("compression_passed", compression_passed),
+        condition("range_width_within_bounds", range_width_passed),
+        condition("breakout_passed", breakout_passed),
+        condition("breakout_large_enough", breakout_large_enough),
+        condition("breakout_not_overextended", breakout_not_overextended),
+        condition("volume_confirmed", volume_confirmed),
+        condition("bullish_close", bullish_close),
+        condition("freshness", true),
+        condition("final_would_signal", final_would_signal),
+    ];
+    WindowOutcome {
+        open_time: latest.open_time,
+        close_time: latest.close_time,
+        would_signal: final_would_signal,
+        blocking_condition: first_failed(&conditions),
+        conditions,
+        details: json!({
+            "compression_lookback": compression_lookback(config),
+            "breakout_lookback": breakout_lookback(config),
+            "recent_avg_range_pct": metrics.recent_avg_range_pct,
+            "baseline_avg_range_pct": metrics.baseline_avg_range_pct,
+            "compression_ratio": metrics.compression_ratio,
+            "compression_passed": compression_passed,
+            "breakout_level": metrics.breakout_level,
+            "latest_close": latest.close,
+            "breakout_pct": metrics.breakout_pct,
+            "breakout_passed": breakout_passed,
+            "breakout_not_overextended": breakout_not_overextended,
+            "volume_ratio": metrics.volume_ratio,
+            "volume_confirmed": volume_confirmed,
+            "range_width_pct": metrics.range_width_pct,
+            "final_would_signal": final_would_signal,
         }),
     }
 }
@@ -1489,6 +1695,54 @@ fn evaluate_volume_breakout(
         latest,
         SignalReason::VolumeConfirmedBreakout,
         Decimal::new(72, 2),
+    )?)
+}
+
+fn evaluate_volatility_compression_breakout(
+    context: &StrategyEvaluationContext,
+    candles: Vec<Candle>,
+) -> Result<StrategyEvaluationResult, CoreError> {
+    if validate_compression_breakout_config(&context.config).is_some() {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    let required = required_candle_count(&context.config) as usize;
+    if candles.len() < required {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::InsufficientHistory,
+        ));
+    }
+
+    let recent = &candles[candles.len() - required..];
+    let latest = recent.last().expect("recent candles must be present");
+    let metrics = calculate_compression_breakout_metrics(&context.config, recent);
+
+    if !metrics.compression_passed
+        || !metrics.range_width_within_bounds
+        || latest.close <= metrics.breakout_level
+        || metrics.breakout_pct < min_breakout_pct(&context.config)
+        || metrics.breakout_pct > max_breakout_extension_pct(&context.config)
+        || metrics.volume_ratio < min_volume_expansion_ratio(&context.config)
+        || latest.close <= latest.open
+    {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    Ok(generated_result(
+        context,
+        latest,
+        SignalReason::VolatilityCompressionBreakout,
+        Decimal::new(71, 2),
     )?)
 }
 
@@ -2190,6 +2444,243 @@ fn diagnose_volume_breakout(
     )
 }
 
+fn diagnose_volatility_compression_breakout(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    if let Some(message) = validate_compression_breakout_config(&context.config) {
+        condition_checks.push(StrategyDiagnosticCheck {
+            name: "valid_config".to_string(),
+            passed: false,
+            severity: StrategyDiagnosticSeverity::Error,
+            message: message.clone(),
+            actual: Some("INVALID_CONFIG".to_string()),
+            expected: Some("valid compression breakout config".to_string()),
+        });
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::InvalidConfig,
+            no_signal_reason: Some(StrategyNoSignalReason::InvalidConfig),
+            summary: message,
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let required = required_candle_count(&context.config) as usize;
+    let recent = &candles[candles.len() - required..];
+    let latest = recent.last().expect("recent candles must be present");
+    let metrics = calculate_compression_breakout_metrics(&context.config, recent);
+    let min_width = min_range_width_pct(&context.config);
+    let max_width = max_range_width_pct(&context.config);
+    let min_breakout = min_breakout_pct(&context.config);
+    let max_extension = max_breakout_extension_pct(&context.config);
+    let min_volume_ratio = min_volume_expansion_ratio(&context.config);
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "compression_lookback".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Compression lookback closed candles.".to_string(),
+        actual: Some(compression_lookback(&context.config).to_string()),
+        expected: None,
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakout_lookback".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Breakout lookback closed candles excluding latest candle.".to_string(),
+        actual: Some(breakout_lookback(&context.config).to_string()),
+        expected: None,
+    });
+
+    let compression_passed = metrics.compression_passed;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "compression_passed".to_string(),
+        passed: compression_passed,
+        severity: if compression_passed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: format!(
+            "recent_avg_range_pct {} versus baseline {}th percentile range {} gives compression_ratio {}.",
+            metrics.recent_avg_range_pct,
+            compression_percentile_threshold(&context.config),
+            metrics.compression_threshold_range_pct,
+            metrics.compression_ratio
+        ),
+        actual: Some(metrics.recent_avg_range_pct.to_string()),
+        expected: Some(format!(
+            "<= {}",
+            metrics.compression_threshold_range_pct
+        )),
+    });
+    if !compression_passed {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::NoCompression,
+            "NO_COMPRESSION",
+            latest,
+            &metrics,
+        );
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "range_width_pct".to_string(),
+        passed: metrics.range_width_within_bounds,
+        severity: if metrics.range_width_within_bounds {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Prior breakout range width must remain within configured bounds.".to_string(),
+        actual: Some(metrics.range_width_pct.to_string()),
+        expected: Some(format!("{min_width}..={max_width}")),
+    });
+    if metrics.range_width_pct < min_width {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::RangeTooNarrow,
+            "RANGE_TOO_NARROW",
+            latest,
+            &metrics,
+        );
+    }
+    if metrics.range_width_pct > max_width {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::RangeTooWide,
+            "RANGE_TOO_WIDE",
+            latest,
+            &metrics,
+        );
+    }
+
+    let breakout_passed = latest.close > metrics.breakout_level;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakout_passed".to_string(),
+        passed: breakout_passed,
+        severity: if breakout_passed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Latest close must break above prior breakout level.".to_string(),
+        actual: Some(latest.close.to_string()),
+        expected: Some(format!("> {}", metrics.breakout_level)),
+    });
+    if !breakout_passed {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::NoBreakout,
+            "NO_BREAKOUT",
+            latest,
+            &metrics,
+        );
+    }
+
+    let breakout_large_enough = metrics.breakout_pct >= min_breakout;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakout_large_enough".to_string(),
+        passed: breakout_large_enough,
+        severity: if breakout_large_enough {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Breakout percent must meet the configured minimum.".to_string(),
+        actual: Some(metrics.breakout_pct.to_string()),
+        expected: Some(format!(">= {min_breakout}")),
+    });
+    if !breakout_large_enough {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::BreakoutTooSmall,
+            "BREAKOUT_TOO_SMALL",
+            latest,
+            &metrics,
+        );
+    }
+
+    let breakout_not_overextended = metrics.breakout_pct <= max_extension;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakout_not_overextended".to_string(),
+        passed: breakout_not_overextended,
+        severity: if breakout_not_overextended {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Breakout percent must not exceed the configured extension cap.".to_string(),
+        actual: Some(metrics.breakout_pct.to_string()),
+        expected: Some(format!("<= {max_extension}")),
+    });
+    if !breakout_not_overextended {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::BreakoutTooExtended,
+            "BREAKOUT_TOO_EXTENDED",
+            latest,
+            &metrics,
+        );
+    }
+
+    let volume_confirmed = metrics.volume_ratio >= min_volume_ratio;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "volume_confirmed".to_string(),
+        passed: volume_confirmed,
+        severity: if volume_confirmed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Latest volume must expand versus prior average volume.".to_string(),
+        actual: Some(metrics.volume_ratio.to_string()),
+        expected: Some(format!(">= {min_volume_ratio}")),
+    });
+    if !volume_confirmed {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::VolumeNotConfirmed,
+            "VOLUME_NOT_CONFIRMED",
+            latest,
+            &metrics,
+        );
+    }
+
+    let bullish_close = latest.close > latest.open;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "bullish_close".to_string(),
+        passed: bullish_close,
+        severity: if bullish_close {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Latest close must be above latest open.".to_string(),
+        actual: Some(format!("close={} open={}", latest.close, latest.open)),
+        expected: Some("close > open".to_string()),
+    });
+    if !bullish_close {
+        return compression_no_signal_outcome(
+            StrategyNoSignalReason::NoBreakout,
+            "NO_BREAKOUT",
+            latest,
+            &metrics,
+        );
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "final_decision".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Volatility compression breakout conditions passed.".to_string(),
+        actual: Some("WOULD_SIGNAL".to_string()),
+        expected: Some("WOULD_SIGNAL".to_string()),
+    });
+
+    confidence_outcome(
+        context,
+        latest,
+        SignalReason::VolatilityCompressionBreakout,
+        Decimal::new(71, 2),
+    )
+}
+
 fn diagnose_range_reversion(
     context: &StrategyEvaluationContext,
     candles: &[Candle],
@@ -2382,6 +2873,29 @@ fn diagnose_range_reversion(
     )
 }
 
+fn compression_no_signal_outcome(
+    reason: StrategyNoSignalReason,
+    reason_label: &str,
+    latest: &Candle,
+    metrics: &CompressionBreakoutMetrics,
+) -> Result<DiagnosticOutcome, CoreError> {
+    Ok(DiagnosticOutcome {
+        final_decision: StrategyDiagnosticsDecision::NoSignal,
+        no_signal_reason: Some(reason),
+        summary: format!(
+            "Volatility compression breakout did not trigger: {reason_label}; compression_ratio={}, breakout_level={}, latest_close={}, breakout_pct={}, volume_ratio={}, range_width_pct={}.",
+            metrics.compression_ratio,
+            metrics.breakout_level,
+            latest.close,
+            metrics.breakout_pct,
+            metrics.volume_ratio,
+            metrics.range_width_pct
+        ),
+        source_candle_open_time: None,
+        confidence: None,
+    })
+}
+
 fn confidence_outcome(
     context: &StrategyEvaluationContext,
     latest: &Candle,
@@ -2456,10 +2970,38 @@ fn momentum_lookback(config: &StrategyConfig) -> u32 {
     config.momentum_lookback_candles.unwrap_or(3)
 }
 
+fn compression_lookback(config: &StrategyConfig) -> u32 {
+    config
+        .compression_lookback_candles
+        .unwrap_or(config.lookback_candles)
+}
+
 fn breakout_lookback(config: &StrategyConfig) -> u32 {
     config
         .breakout_lookback_candles
         .unwrap_or(config.lookback_candles)
+}
+
+fn compression_percentile_threshold(config: &StrategyConfig) -> Decimal {
+    config
+        .compression_percentile_threshold
+        .unwrap_or(Decimal::new(25, 0))
+}
+
+fn min_breakout_pct(config: &StrategyConfig) -> Decimal {
+    config.min_breakout_pct.unwrap_or(Decimal::new(5, 2))
+}
+
+fn max_breakout_extension_pct(config: &StrategyConfig) -> Decimal {
+    config
+        .max_breakout_extension_pct
+        .unwrap_or(Decimal::new(15, 1))
+}
+
+fn min_volume_expansion_ratio(config: &StrategyConfig) -> Decimal {
+    config
+        .min_volume_expansion_ratio
+        .unwrap_or(Decimal::new(11, 1))
 }
 
 fn lower_band_pct(config: &StrategyConfig) -> Decimal {
@@ -2484,6 +3026,141 @@ fn max_close_above_sma_pct(config: &StrategyConfig) -> Decimal {
 
 fn min_momentum_return_pct(config: &StrategyConfig) -> Decimal {
     config.min_momentum_return_pct.unwrap_or(Decimal::ZERO)
+}
+
+fn validate_compression_breakout_config(config: &StrategyConfig) -> Option<String> {
+    let compression = compression_lookback(config);
+    let breakout = breakout_lookback(config);
+    let min_breakout = min_breakout_pct(config);
+    let max_extension = max_breakout_extension_pct(config);
+    let min_width = min_range_width_pct(config);
+    let max_width = max_range_width_pct(config);
+    if compression <= 1 || breakout <= 1 {
+        return Some(
+            "Invalid volatility compression breakout config: lookbacks must be greater than 1."
+                .to_string(),
+        );
+    }
+    if compression > breakout {
+        return Some(
+            "Invalid volatility compression breakout config: compression_lookback_candles must be less than or equal to breakout_lookback_candles."
+                .to_string(),
+        );
+    }
+    if min_breakout < Decimal::ZERO || max_extension <= min_breakout {
+        return Some(
+            "Invalid volatility compression breakout config: max_breakout_extension_pct must be greater than min_breakout_pct, and min_breakout_pct must be non-negative."
+                .to_string(),
+        );
+    }
+    if min_volume_expansion_ratio(config) < Decimal::ONE {
+        return Some(
+            "Invalid volatility compression breakout config: min_volume_expansion_ratio must be at least 1."
+                .to_string(),
+        );
+    }
+    if min_width <= Decimal::ZERO || max_width <= min_width {
+        return Some(
+            "Invalid volatility compression breakout config: range width bounds are invalid."
+                .to_string(),
+        );
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+struct CompressionBreakoutMetrics {
+    recent_avg_range_pct: Decimal,
+    baseline_avg_range_pct: Decimal,
+    compression_threshold_range_pct: Decimal,
+    compression_ratio: Decimal,
+    compression_passed: bool,
+    breakout_level: Decimal,
+    breakout_pct: Decimal,
+    volume_ratio: Decimal,
+    range_width_pct: Decimal,
+    range_width_within_bounds: bool,
+}
+
+fn calculate_compression_breakout_metrics(
+    config: &StrategyConfig,
+    window: &[Candle],
+) -> CompressionBreakoutMetrics {
+    let compression = compression_lookback(config) as usize;
+    let breakout = breakout_lookback(config) as usize;
+    let latest_index = window.len().saturating_sub(1);
+    let latest = &window[latest_index];
+    let recent_start = latest_index.saturating_sub(compression);
+    let recent_window = &window[recent_start..latest_index];
+    let baseline_end = recent_start;
+    let baseline_start = baseline_end.saturating_sub(breakout);
+    let baseline_window = if baseline_end > baseline_start {
+        &window[baseline_start..baseline_end]
+    } else {
+        recent_window
+    };
+    let breakout_start = latest_index.saturating_sub(breakout);
+    let breakout_window = &window[breakout_start..latest_index];
+
+    let recent_avg_range_pct = average_decimal(recent_window.iter().map(candle_range_pct));
+    let mut baseline_range_pcts = baseline_window
+        .iter()
+        .map(candle_range_pct)
+        .collect::<Vec<_>>();
+    baseline_range_pcts.sort();
+    let baseline_avg_range_pct = average_decimal(baseline_range_pcts.iter().copied());
+    let compression_threshold_range_pct = percentile(
+        &baseline_range_pcts,
+        compression_percentile_threshold(config),
+    );
+    let compression_ratio = pct_ratio(recent_avg_range_pct, baseline_avg_range_pct);
+    let breakout_level = breakout_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+    let breakout_pct = pct_ratio(latest.close - breakout_level, breakout_level);
+    let average_volume = average_decimal(breakout_window.iter().map(|candle| candle.volume));
+    let volume_ratio = if average_volume == Decimal::ZERO {
+        Decimal::ZERO
+    } else {
+        latest.volume / average_volume
+    };
+    let range_high = breakout_window
+        .iter()
+        .map(|candle| candle.high)
+        .max()
+        .unwrap_or(latest.high);
+    let range_low = breakout_window
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(latest.low);
+    let range_width_pct = pct_ratio(range_high - range_low, range_low);
+    let min_width = min_range_width_pct(config);
+    let max_width = max_range_width_pct(config);
+
+    CompressionBreakoutMetrics {
+        recent_avg_range_pct,
+        baseline_avg_range_pct,
+        compression_threshold_range_pct,
+        compression_ratio,
+        compression_passed: compression_threshold_range_pct > Decimal::ZERO
+            && recent_avg_range_pct <= compression_threshold_range_pct,
+        breakout_level,
+        breakout_pct,
+        volume_ratio,
+        range_width_pct,
+        range_width_within_bounds: range_width_pct >= min_width && range_width_pct <= max_width,
+    }
+}
+
+fn candle_range_pct(candle: &Candle) -> Decimal {
+    if candle.open > Decimal::ZERO {
+        ((candle.high - candle.low) / candle.open) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    }
 }
 
 #[derive(Debug)]
@@ -2559,7 +3236,12 @@ pub fn build_default_strategy_configs(
             lookback_candles: momentum_lookback_candles,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -2585,7 +3267,12 @@ pub fn build_default_strategy_configs(
             lookback_candles: breakout_lookback_candles,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -2611,7 +3298,12 @@ pub fn build_default_strategy_configs(
             lookback_candles: 20,
             trend_lookback_candles: Some(20),
             momentum_lookback_candles: Some(3),
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -2637,7 +3329,12 @@ pub fn build_default_strategy_configs(
             lookback_candles: 20,
             trend_lookback_candles: Some(20),
             momentum_lookback_candles: Some(3),
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -2663,7 +3360,12 @@ pub fn build_default_strategy_configs(
             lookback_candles: 20,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: Some(20),
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -2678,6 +3380,37 @@ pub fn build_default_strategy_configs(
             notes: Some("Research baseline volume-confirmed breakout config".to_string()),
         },
         StrategyConfig {
+            strategy_id: StrategyId::VolatilityCompressionBreakoutV1,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols: symbols.clone(),
+            timeframe: CandleInterval::OneHour,
+            suggested_notional,
+            max_signal_age_ms: 7_200_000,
+            cooldown_seconds: 14_400,
+            lookback_candles: 20,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            compression_lookback_candles: Some(20),
+            breakout_lookback_candles: Some(20),
+            compression_percentile_threshold: Some(Decimal::new(25, 0)),
+            min_breakout_pct: Some(Decimal::new(5, 2)),
+            max_breakout_extension_pct: Some(Decimal::new(15, 1)),
+            min_volume_expansion_ratio: Some(Decimal::new(11, 1)),
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: Some(Decimal::new(2, 1)),
+            max_range_width_pct: Some(Decimal::new(5, 0)),
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(5),
+            notes: Some("Research baseline volatility compression breakout config".to_string()),
+        },
+        StrategyConfig {
             strategy_id: StrategyId::RangeReversionV1,
             enabled: true,
             mode: StrategyMode::Research,
@@ -2689,7 +3422,12 @@ pub fn build_default_strategy_configs(
             lookback_candles: 20,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: Some(Decimal::new(20, 0)),
             upper_band_pct: Some(Decimal::new(80, 0)),
             min_range_width_pct: Some(Decimal::new(15, 2)),
@@ -2755,6 +3493,7 @@ fn max_strategy_confidence(strategy_id: StrategyId) -> Decimal {
             Decimal::new(68, 2)
         }
         StrategyId::VolatilityBreakoutV2 => Decimal::new(72, 2),
+        StrategyId::VolatilityCompressionBreakoutV1 => Decimal::new(71, 2),
         StrategyId::RangeReversionV1 => Decimal::new(66, 2),
     }
 }
@@ -2867,6 +3606,69 @@ mod tests {
         candles
     }
 
+    fn compression_candle(
+        index: i64,
+        open: Decimal,
+        high: Decimal,
+        low: Decimal,
+        close: Decimal,
+        volume: Decimal,
+    ) -> Candle {
+        let mut candle = range_candle(index, open, high, low, close);
+        candle.interval = CandleInterval::OneHour;
+        candle.close_time = candle.open_time + Duration::hours(1);
+        candle.volume = volume;
+        candle
+    }
+
+    fn compression_breakout_candles() -> Vec<Candle> {
+        let mut candles = Vec::new();
+        for index in 0..20 {
+            candles.push(compression_candle(
+                index,
+                Decimal::new(100, 0),
+                Decimal::new(110, 0),
+                Decimal::new(90, 0),
+                Decimal::new(100, 0),
+                Decimal::new(10, 0),
+            ));
+        }
+        for index in 20..40 {
+            candles.push(compression_candle(
+                index,
+                Decimal::new(100, 0),
+                Decimal::new(101, 0),
+                Decimal::new(99, 0),
+                Decimal::new(100, 0),
+                Decimal::new(10, 0),
+            ));
+        }
+        candles.push(compression_candle(
+            40,
+            Decimal::new(100, 0),
+            Decimal::new(102, 0),
+            Decimal::new(100, 0),
+            Decimal::new(1012, 1),
+            Decimal::new(15, 0),
+        ));
+        candles
+    }
+
+    fn compression_context(candles: Vec<Candle>) -> StrategyEvaluationContext {
+        let mut context = context(StrategyId::VolatilityCompressionBreakoutV1, candles);
+        context.config.timeframe = CandleInterval::OneHour;
+        context.config.lookback_candles = 20;
+        context.config.compression_lookback_candles = Some(20);
+        context.config.breakout_lookback_candles = Some(20);
+        context.config.compression_percentile_threshold = Some(Decimal::new(25, 0));
+        context.config.min_breakout_pct = Some(Decimal::new(5, 2));
+        context.config.max_breakout_extension_pct = Some(Decimal::new(15, 1));
+        context.config.min_volume_expansion_ratio = Some(Decimal::new(11, 1));
+        context.config.min_range_width_pct = Some(Decimal::new(2, 1));
+        context.config.max_range_width_pct = Some(Decimal::new(5, 0));
+        context
+    }
+
     fn context(strategy_id: StrategyId, candles: Vec<Candle>) -> StrategyEvaluationContext {
         let evaluated_at = candles
             .last()
@@ -2915,7 +3717,12 @@ mod tests {
             lookback_candles: 3,
             trend_lookback_candles: None,
             momentum_lookback_candles: None,
+            compression_lookback_candles: None,
             breakout_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
             lower_band_pct: None,
             upper_band_pct: None,
             min_range_width_pct: None,
@@ -3344,6 +4151,137 @@ mod tests {
             issue.severity == StrategyConfigValidationSeverity::Error
                 && issue.code == "invalid_trend_lookback_candles"
         }));
+    }
+
+    #[test]
+    fn volatility_compression_breakout_emits_buy_after_compression_breakout_and_volume() {
+        let result = evaluate(compression_context(compression_breakout_candles()))
+            .expect("evaluation should succeed");
+
+        assert!(result.generated);
+        assert_eq!(result.reason, SignalReason::VolatilityCompressionBreakout);
+    }
+
+    #[test]
+    fn volatility_compression_breakout_no_signal_without_compression() {
+        let mut candles = compression_breakout_candles();
+        for candle in candles.iter_mut().take(40).skip(20) {
+            candle.high = Decimal::new(112, 0);
+            candle.low = Decimal::new(88, 0);
+        }
+
+        let result = diagnose(compression_context(candles)).expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::NoCompression)
+        );
+    }
+
+    #[test]
+    fn volatility_compression_breakout_no_signal_without_breakout() {
+        let mut candles = compression_breakout_candles();
+        let latest = candles.last_mut().expect("latest candle");
+        latest.close = Decimal::new(1005, 1);
+
+        let result = diagnose(compression_context(candles)).expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::NoBreakout)
+        );
+    }
+
+    #[test]
+    fn volatility_compression_breakout_no_signal_when_breakout_too_extended() {
+        let mut candles = compression_breakout_candles();
+        let latest = candles.last_mut().expect("latest candle");
+        latest.close = Decimal::new(103, 0);
+        latest.high = Decimal::new(104, 0);
+
+        let result = diagnose(compression_context(candles)).expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::BreakoutTooExtended)
+        );
+    }
+
+    #[test]
+    fn volatility_compression_breakout_no_signal_without_volume_confirmation() {
+        let mut candles = compression_breakout_candles();
+        candles.last_mut().expect("latest candle").volume = Decimal::new(10, 0);
+
+        let result = diagnose(compression_context(candles)).expect("diagnostics should succeed");
+
+        assert_eq!(result.final_decision, StrategyDiagnosticsDecision::NoSignal);
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::VolumeNotConfirmed)
+        );
+    }
+
+    #[test]
+    fn volatility_compression_breakout_validation_rejects_invalid_config() {
+        let mut request = sample_request("volatility_compression_breakout_v1");
+        request.lookback_candles = 20;
+        request.compression_lookback_candles = Some(40);
+        request.breakout_lookback_candles = Some(20);
+
+        let result = validate_strategy_config(&request, &validation_context());
+
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|issue| {
+            issue.severity == StrategyConfigValidationSeverity::Error
+                && issue.code == "compression_lookback_above_breakout_lookback"
+        }));
+    }
+
+    #[test]
+    fn volatility_compression_breakout_diagnostics_include_exact_no_signal_reason() {
+        let mut candles = compression_breakout_candles();
+        candles.last_mut().expect("latest candle").volume = Decimal::new(10, 0);
+
+        let result = diagnose(compression_context(candles)).expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::VolumeNotConfirmed)
+        );
+        assert!(result
+            .condition_checks
+            .iter()
+            .any(|check| check.name == "volume_confirmed" && !check.passed));
+    }
+
+    #[test]
+    fn volatility_compression_breakout_opportunity_counts_blockers() {
+        let mut candles = compression_breakout_candles();
+        candles.extend(compression_breakout_candles().into_iter().enumerate().map(
+            |(offset, mut candle)| {
+                candle.open_time += Duration::hours(100 + offset as i64);
+                candle.close_time += Duration::hours(100 + offset as i64);
+                candle
+            },
+        ));
+        let context = compression_context(candles.clone());
+        let request = opportunity_request(StrategyId::VolatilityCompressionBreakoutV1);
+
+        let result = analyze_opportunity(&request, &context.config, &candles, Utc::now())
+            .expect("opportunity should succeed");
+
+        assert!(result.evaluable_windows > 0);
+        assert!(result
+            .condition_pass_rates
+            .iter()
+            .any(|rate| rate.condition == "compression_passed"));
+        assert!(result
+            .condition_pass_rates
+            .iter()
+            .any(|rate| rate.condition == "final_would_signal"));
     }
 
     #[test]

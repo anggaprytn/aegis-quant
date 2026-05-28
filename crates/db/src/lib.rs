@@ -582,7 +582,12 @@ pub struct StrategyConfigRecord {
     pub lookback_candles: i32,
     pub trend_lookback_candles: Option<i32>,
     pub momentum_lookback_candles: Option<i32>,
+    pub compression_lookback_candles: Option<i32>,
     pub breakout_lookback_candles: Option<i32>,
+    pub compression_percentile_threshold: Option<Decimal>,
+    pub min_breakout_pct: Option<Decimal>,
+    pub max_breakout_extension_pct: Option<Decimal>,
+    pub min_volume_expansion_ratio: Option<Decimal>,
     pub lower_band_pct: Option<Decimal>,
     pub upper_band_pct: Option<Decimal>,
     pub min_range_width_pct: Option<Decimal>,
@@ -8869,7 +8874,12 @@ async fn upsert_strategy_config_tx(
             lookback_candles,
             trend_lookback_candles,
             strategy_momentum_lookback_candles,
+            compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            compression_percentile_threshold,
+            min_breakout_pct,
+            max_breakout_extension_pct,
+            min_volume_expansion_ratio,
             lower_band_pct,
             upper_band_pct,
             min_range_width_pct,
@@ -8887,7 +8897,7 @@ async fn upsert_strategy_config_tx(
             updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, NOW(), NOW()
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, NOW(), NOW()
         )
         ON CONFLICT (strategy_id) DO UPDATE
         SET
@@ -8904,7 +8914,12 @@ async fn upsert_strategy_config_tx(
             lookback_candles = EXCLUDED.lookback_candles,
             trend_lookback_candles = EXCLUDED.trend_lookback_candles,
             strategy_momentum_lookback_candles = EXCLUDED.strategy_momentum_lookback_candles,
+            compression_lookback_candles = EXCLUDED.compression_lookback_candles,
             strategy_breakout_lookback_candles = EXCLUDED.strategy_breakout_lookback_candles,
+            compression_percentile_threshold = EXCLUDED.compression_percentile_threshold,
+            min_breakout_pct = EXCLUDED.min_breakout_pct,
+            max_breakout_extension_pct = EXCLUDED.max_breakout_extension_pct,
+            min_volume_expansion_ratio = EXCLUDED.min_volume_expansion_ratio,
             lower_band_pct = EXCLUDED.lower_band_pct,
             upper_band_pct = EXCLUDED.upper_band_pct,
             min_range_width_pct = EXCLUDED.min_range_width_pct,
@@ -8931,7 +8946,12 @@ async fn upsert_strategy_config_tx(
             lookback_candles,
             trend_lookback_candles,
             strategy_momentum_lookback_candles,
+            compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            compression_percentile_threshold,
+            min_breakout_pct,
+            max_breakout_extension_pct,
+            min_volume_expansion_ratio,
             lower_band_pct,
             upper_band_pct,
             min_range_width_pct,
@@ -8963,7 +8983,12 @@ async fn upsert_strategy_config_tx(
     .bind(config.lookback_candles as i32)
     .bind(config.trend_lookback_candles.map(|value| value as i32))
     .bind(config.momentum_lookback_candles.map(|value| value as i32))
+    .bind(config.compression_lookback_candles.map(|value| value as i32))
     .bind(config.breakout_lookback_candles.map(|value| value as i32))
+    .bind(config.compression_percentile_threshold)
+    .bind(config.min_breakout_pct)
+    .bind(config.max_breakout_extension_pct)
+    .bind(config.min_volume_expansion_ratio)
     .bind(config.lower_band_pct)
     .bind(config.upper_band_pct)
     .bind(config.min_range_width_pct)
@@ -9001,7 +9026,12 @@ async fn get_strategy_config_tx(
             lookback_candles,
             trend_lookback_candles,
             strategy_momentum_lookback_candles,
+            compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            compression_percentile_threshold,
+            min_breakout_pct,
+            max_breakout_extension_pct,
+            min_volume_expansion_ratio,
             lower_band_pct,
             upper_band_pct,
             min_range_width_pct,
@@ -9046,7 +9076,12 @@ pub async fn get_strategy_config(
             lookback_candles,
             trend_lookback_candles,
             strategy_momentum_lookback_candles,
+            compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            compression_percentile_threshold,
+            min_breakout_pct,
+            max_breakout_extension_pct,
+            min_volume_expansion_ratio,
             lower_band_pct,
             upper_band_pct,
             min_range_width_pct,
@@ -9414,7 +9449,12 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
             c.lookback_candles,
             c.trend_lookback_candles,
             c.strategy_momentum_lookback_candles,
+            c.compression_lookback_candles,
             c.strategy_breakout_lookback_candles,
+            c.compression_percentile_threshold,
+            c.min_breakout_pct,
+            c.max_breakout_extension_pct,
+            c.min_volume_expansion_ratio,
             c.lower_band_pct,
             c.upper_band_pct,
             c.min_range_width_pct,
@@ -9460,7 +9500,12 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
                 lookback_candles: row.get("lookback_candles"),
                 trend_lookback_candles: row.get("trend_lookback_candles"),
                 momentum_lookback_candles: row.get("strategy_momentum_lookback_candles"),
+                compression_lookback_candles: row.get("compression_lookback_candles"),
                 breakout_lookback_candles: row.get("strategy_breakout_lookback_candles"),
+                compression_percentile_threshold: row.get("compression_percentile_threshold"),
+                min_breakout_pct: row.get("min_breakout_pct"),
+                max_breakout_extension_pct: row.get("max_breakout_extension_pct"),
+                min_volume_expansion_ratio: row.get("min_volume_expansion_ratio"),
                 lower_band_pct: row.get("lower_band_pct"),
                 upper_band_pct: row.get("upper_band_pct"),
                 min_range_width_pct: row.get("min_range_width_pct"),
@@ -9510,7 +9555,14 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
         lookback_candles: record.lookback_candles as u32,
         trend_lookback_candles: record.trend_lookback_candles.map(|value| value as u32),
         momentum_lookback_candles: record.momentum_lookback_candles.map(|value| value as u32),
+        compression_lookback_candles: record
+            .compression_lookback_candles
+            .map(|value| value as u32),
         breakout_lookback_candles: record.breakout_lookback_candles.map(|value| value as u32),
+        compression_percentile_threshold: record.compression_percentile_threshold,
+        min_breakout_pct: record.min_breakout_pct,
+        max_breakout_extension_pct: record.max_breakout_extension_pct,
+        min_volume_expansion_ratio: record.min_volume_expansion_ratio,
         lower_band_pct: record.lower_band_pct,
         upper_band_pct: record.upper_band_pct,
         min_range_width_pct: record.min_range_width_pct,
@@ -10580,7 +10632,12 @@ fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
         lookback_candles: row.get("lookback_candles"),
         trend_lookback_candles: row.get("trend_lookback_candles"),
         momentum_lookback_candles: row.get("strategy_momentum_lookback_candles"),
+        compression_lookback_candles: row.get("compression_lookback_candles"),
         breakout_lookback_candles: row.get("strategy_breakout_lookback_candles"),
+        compression_percentile_threshold: row.get("compression_percentile_threshold"),
+        min_breakout_pct: row.get("min_breakout_pct"),
+        max_breakout_extension_pct: row.get("max_breakout_extension_pct"),
+        min_volume_expansion_ratio: row.get("min_volume_expansion_ratio"),
         lower_band_pct: row.get("lower_band_pct"),
         upper_band_pct: row.get("upper_band_pct"),
         min_range_width_pct: row.get("min_range_width_pct"),

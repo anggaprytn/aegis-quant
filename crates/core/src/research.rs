@@ -477,7 +477,12 @@ pub struct ResearchBatchRequest {
     pub lookback_candidates: Vec<u32>,
     pub trend_lookback_candidates: Option<Vec<u32>>,
     pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub compression_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub compression_percentile_threshold_candidates: Option<Vec<Decimal>>,
+    pub min_breakout_pct_candidates: Option<Vec<Decimal>>,
+    pub max_breakout_extension_pct_candidates: Option<Vec<Decimal>>,
+    pub min_volume_expansion_ratio_candidates: Option<Vec<Decimal>>,
     pub lower_band_pct_candidates: Option<Vec<Decimal>>,
     pub upper_band_pct_candidates: Option<Vec<Decimal>>,
     pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
@@ -1054,7 +1059,12 @@ pub struct ResearchCampaignRequest {
     pub lookback_candidates: Vec<u32>,
     pub trend_lookback_candidates: Option<Vec<u32>>,
     pub momentum_lookback_candidates: Option<Vec<u32>>,
+    pub compression_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub compression_percentile_threshold_candidates: Option<Vec<Decimal>>,
+    pub min_breakout_pct_candidates: Option<Vec<Decimal>>,
+    pub max_breakout_extension_pct_candidates: Option<Vec<Decimal>>,
+    pub min_volume_expansion_ratio_candidates: Option<Vec<Decimal>>,
     pub lower_band_pct_candidates: Option<Vec<Decimal>>,
     pub upper_band_pct_candidates: Option<Vec<Decimal>>,
     pub min_range_width_pct_candidates: Option<Vec<Decimal>>,
@@ -1140,7 +1150,18 @@ impl ResearchCampaignBatchPlan {
             lookback_candidates: campaign.lookback_candidates.clone(),
             trend_lookback_candidates: campaign.trend_lookback_candidates.clone(),
             momentum_lookback_candidates: campaign.momentum_lookback_candidates.clone(),
+            compression_lookback_candidates: campaign.compression_lookback_candidates.clone(),
             breakout_lookback_candidates: campaign.breakout_lookback_candidates.clone(),
+            compression_percentile_threshold_candidates: campaign
+                .compression_percentile_threshold_candidates
+                .clone(),
+            min_breakout_pct_candidates: campaign.min_breakout_pct_candidates.clone(),
+            max_breakout_extension_pct_candidates: campaign
+                .max_breakout_extension_pct_candidates
+                .clone(),
+            min_volume_expansion_ratio_candidates: campaign
+                .min_volume_expansion_ratio_candidates
+                .clone(),
             lower_band_pct_candidates: campaign.lower_band_pct_candidates.clone(),
             upper_band_pct_candidates: campaign.upper_band_pct_candidates.clone(),
             min_range_width_pct_candidates: campaign.min_range_width_pct_candidates.clone(),
@@ -2609,6 +2630,8 @@ impl ResearchRegimeLabel {
 pub enum ResearchCandidateFailureReason {
     OverfitRisk,
     FeeDrag,
+    NoBreakout,
+    BreakoutTooExtended,
     TooManyTrades,
     TooFewTrades,
     LowWinRate,
@@ -2624,6 +2647,8 @@ impl ResearchCandidateFailureReason {
         match self {
             Self::OverfitRisk => "OVERFIT_RISK",
             Self::FeeDrag => "FEE_DRAG",
+            Self::NoBreakout => "NO_BREAKOUT",
+            Self::BreakoutTooExtended => "BREAKOUT_TOO_EXTENDED",
             Self::TooManyTrades => "TOO_MANY_TRADES",
             Self::TooFewTrades => "TOO_FEW_TRADES",
             Self::LowWinRate => "LOW_WIN_RATE",
@@ -3537,6 +3562,23 @@ pub fn infer_research_candidate_failure_reasons(
     {
         reasons.insert(ResearchCandidateFailureReason::FeeDrag);
     }
+    if input.strategy_id == "volatility_compression_breakout_v1" {
+        if matches!(
+            input.regime_metric.label,
+            ResearchRegimeLabel::LowVolatility | ResearchRegimeLabel::Range
+        ) && input
+            .trade_count
+            .is_none_or(|count| count <= FEW_TRADES_THRESHOLD)
+        {
+            reasons.insert(ResearchCandidateFailureReason::NoBreakout);
+            reasons.insert(ResearchCandidateFailureReason::TooFewTrades);
+        }
+        if input.regime_metric.label == ResearchRegimeLabel::HighVolatility
+            && input.pnl_pct.is_some_and(|pnl| pnl <= Decimal::ZERO)
+        {
+            reasons.insert(ResearchCandidateFailureReason::BreakoutTooExtended);
+        }
+    }
     if input
         .win_rate
         .is_some_and(|win_rate| win_rate < Decimal::new(40, 0))
@@ -3797,6 +3839,7 @@ fn build_failure_recommendations(
                 ),
             ),
             ResearchCandidateFailureReason::FeeDrag
+            | ResearchCandidateFailureReason::BreakoutTooExtended
             | ResearchCandidateFailureReason::TooManyTrades => recommendations.push(
                 failure_recommendation(
                     "HIGH",
@@ -3828,6 +3871,7 @@ fn build_failure_recommendations(
             ),
             ResearchCandidateFailureReason::LowWinRate
             | ResearchCandidateFailureReason::HighDrawdown
+            | ResearchCandidateFailureReason::NoBreakout
             | ResearchCandidateFailureReason::WeakEdge => recommendations.push(
                 failure_recommendation(
                     "LOW",
@@ -3877,14 +3921,16 @@ fn failure_reason_rank(reason: ResearchCandidateFailureReason) -> i32 {
     match reason {
         ResearchCandidateFailureReason::OverfitRisk => 0,
         ResearchCandidateFailureReason::FeeDrag => 1,
-        ResearchCandidateFailureReason::RegimeMismatch => 2,
-        ResearchCandidateFailureReason::TooManyTrades => 3,
-        ResearchCandidateFailureReason::TooFewTrades => 4,
-        ResearchCandidateFailureReason::LowWinRate => 5,
-        ResearchCandidateFailureReason::HighDrawdown => 6,
-        ResearchCandidateFailureReason::WeakEdge => 7,
-        ResearchCandidateFailureReason::DataQualityDegraded => 8,
-        ResearchCandidateFailureReason::InsufficientData => 9,
+        ResearchCandidateFailureReason::BreakoutTooExtended => 2,
+        ResearchCandidateFailureReason::NoBreakout => 3,
+        ResearchCandidateFailureReason::RegimeMismatch => 4,
+        ResearchCandidateFailureReason::TooManyTrades => 5,
+        ResearchCandidateFailureReason::TooFewTrades => 6,
+        ResearchCandidateFailureReason::LowWinRate => 7,
+        ResearchCandidateFailureReason::HighDrawdown => 8,
+        ResearchCandidateFailureReason::WeakEdge => 9,
+        ResearchCandidateFailureReason::DataQualityDegraded => 10,
+        ResearchCandidateFailureReason::InsufficientData => 11,
     }
 }
 
@@ -14055,7 +14101,12 @@ mod tests {
             lookback_candidates: vec![10, 20],
             trend_lookback_candidates: None,
             momentum_lookback_candidates: Some(vec![2, 3]),
+            compression_lookback_candidates: None,
             breakout_lookback_candidates: None,
+            compression_percentile_threshold_candidates: None,
+            min_breakout_pct_candidates: None,
+            max_breakout_extension_pct_candidates: None,
+            min_volume_expansion_ratio_candidates: None,
             lower_band_pct_candidates: None,
             upper_band_pct_candidates: None,
             min_range_width_pct_candidates: None,

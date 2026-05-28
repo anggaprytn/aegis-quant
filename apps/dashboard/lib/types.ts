@@ -1122,7 +1122,12 @@ export type ResearchBatchRequest = {
   lookback_candidates: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
+  compression_percentile_threshold_candidates?: string[] | null;
+  min_breakout_pct_candidates?: string[] | null;
+  max_breakout_extension_pct_candidates?: string[] | null;
+  min_volume_expansion_ratio_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -1325,7 +1330,12 @@ export type ResearchCampaignRequest = {
   lookback_candidates?: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
+  compression_percentile_threshold_candidates?: string[] | null;
+  min_breakout_pct_candidates?: string[] | null;
+  max_breakout_extension_pct_candidates?: string[] | null;
+  min_volume_expansion_ratio_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -2997,7 +3007,12 @@ export type StrategyStatusView = {
   lookback_candles: number;
   trend_lookback_candles: number | null;
   momentum_lookback_candles: number | null;
+  compression_lookback_candles: number | null;
   breakout_lookback_candles: number | null;
+  compression_percentile_threshold: string | null;
+  min_breakout_pct: string | null;
+  max_breakout_extension_pct: string | null;
+  min_volume_expansion_ratio: string | null;
   lower_band_pct: string | null;
   upper_band_pct: string | null;
   min_range_width_pct: string | null;
@@ -3045,7 +3060,12 @@ export type StrategyConfigUpdateRequest = {
   lookback_candles: number;
   trend_lookback_candles?: number | null;
   momentum_lookback_candles?: number | null;
+  compression_lookback_candles?: number | null;
   breakout_lookback_candles?: number | null;
+  compression_percentile_threshold?: string | null;
+  min_breakout_pct?: string | null;
+  max_breakout_extension_pct?: string | null;
+  min_volume_expansion_ratio?: string | null;
   lower_band_pct?: string | null;
   upper_band_pct?: string | null;
   min_range_width_pct?: string | null;
@@ -3154,6 +3174,11 @@ export type StrategyNoSignalReason =
   | "TREND_MOMENTUM_NOT_POSITIVE"
   | "BREAKOUT_NOT_ABOVE_RECENT_HIGH"
   | "BREAKOUT_VOLUME_BELOW_AVERAGE"
+  | "NO_COMPRESSION"
+  | "NO_BREAKOUT"
+  | "BREAKOUT_TOO_SMALL"
+  | "BREAKOUT_TOO_EXTENDED"
+  | "VOLUME_NOT_CONFIRMED"
   | "INSUFFICIENT_DATA"
   | "RANGE_TOO_NARROW"
   | "RANGE_TOO_WIDE"
@@ -4346,7 +4371,12 @@ export type StrategyExperimentCandidate = {
   lookback_candles: number;
   trend_lookback_candles: number | null;
   momentum_lookback_candles: number | null;
+  compression_lookback_candles: number | null;
   breakout_lookback_candles: number | null;
+  compression_percentile_threshold: string | null;
+  min_breakout_pct: string | null;
+  max_breakout_extension_pct: string | null;
+  min_volume_expansion_ratio: string | null;
   holding_candles: number | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
@@ -4424,7 +4454,12 @@ export type StrategyExperimentRequest = {
   lookback_candidates: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
+  compression_percentile_threshold_candidates?: string[] | null;
+  min_breakout_pct_candidates?: string[] | null;
+  max_breakout_extension_pct_candidates?: string[] | null;
+  min_volume_expansion_ratio_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -4452,7 +4487,12 @@ export type StrategyMultiTimeframeExperimentRequest = {
   lookback_candidates: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
+  compression_percentile_threshold_candidates?: string[] | null;
+  min_breakout_pct_candidates?: string[] | null;
+  max_breakout_extension_pct_candidates?: string[] | null;
+  min_volume_expansion_ratio_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -4576,7 +4616,12 @@ export type StrategyWalkForwardCandidate = {
   lookback_candles: number;
   trend_lookback_candles?: number | null;
   momentum_lookback_candles?: number | null;
+  compression_lookback_candles?: number | null;
   breakout_lookback_candles?: number | null;
+  compression_percentile_threshold?: string | null;
+  min_breakout_pct?: string | null;
+  max_breakout_extension_pct?: string | null;
+  min_volume_expansion_ratio?: string | null;
   holding_candles: number | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
