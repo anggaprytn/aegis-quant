@@ -168,6 +168,14 @@ struct ResearchExperimentPlanReportSnapshot {
     accepted_without_plan_count: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ScheduledResearchReportSnapshot {
+    enabled_jobs: i64,
+    failed_runs: i64,
+    last_successful_run: Option<DateTime<Utc>>,
+    stale_jobs: i64,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -260,6 +268,7 @@ pub async fn generate_operator_report(
     let research_hypotheses = load_research_hypothesis_snapshot(&state.db_pool, &window).await?;
     let research_experiment_plans =
         load_research_experiment_plan_snapshot(&state.db_pool, &window).await?;
+    let scheduled_research = load_scheduled_research_snapshot(&state.db_pool, &window).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -280,6 +289,7 @@ pub async fn generate_operator_report(
         &regime_calibrations,
         &research_hypotheses,
         &research_experiment_plans,
+        &scheduled_research,
     );
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
@@ -323,6 +333,7 @@ pub async fn generate_operator_report(
             &regime_calibrations,
             &research_hypotheses,
             &research_experiment_plans,
+            &scheduled_research,
         )?,
         format: request.format,
         persisted: false,
@@ -1972,6 +1983,33 @@ async fn load_candidate_shadow_pnl_snapshot(
     Ok(Some(CandidateShadowPnlReportSnapshot::from(&attribution)))
 }
 
+async fn load_scheduled_research_snapshot(
+    pool: &PgPool,
+    window: &ReportWindow,
+) -> Result<ScheduledResearchReportSnapshot> {
+    let row = query(
+        r#"
+        SELECT
+            (SELECT COUNT(*)::BIGINT FROM scheduled_research_jobs WHERE enabled = TRUE) AS enabled_jobs,
+            (SELECT COUNT(*)::BIGINT FROM scheduled_research_job_runs WHERE status = 'FAILED' AND started_at >= $1 AND started_at <= $2) AS failed_runs,
+            (SELECT MAX(completed_at) FROM scheduled_research_job_runs WHERE status = 'COMPLETED') AS last_successful_run,
+            (SELECT COUNT(*)::BIGINT FROM scheduled_research_jobs WHERE enabled = TRUE AND next_run_at < $3) AS stale_jobs
+        "#,
+    )
+    .bind(window.start)
+    .bind(window.end)
+    .bind(window.generated_at - Duration::hours(1))
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ScheduledResearchReportSnapshot {
+        enabled_jobs: row.get("enabled_jobs"),
+        failed_runs: row.get("failed_runs"),
+        last_successful_run: row.get("last_successful_run"),
+        stale_jobs: row.get("stale_jobs"),
+    })
+}
+
 fn build_findings(
     system_market: &SystemAndMarketData,
     strategy: &StrategyBehaviorData,
@@ -1991,6 +2029,7 @@ fn build_findings(
     regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
     research_hypotheses: &ResearchHypothesisReportSnapshot,
     research_experiment_plans: &ResearchExperimentPlanReportSnapshot,
+    scheduled_research: &ScheduledResearchReportSnapshot,
 ) -> Vec<OperatorReportFinding> {
     let mut findings = Vec::new();
 
@@ -2894,6 +2933,38 @@ fn build_findings(
         ));
     }
 
+    if scheduled_research.failed_runs > 0 {
+        findings.push(finding(
+            "scheduled_research_job_failed",
+            OperatorReportSeverity::Medium,
+            "Scheduled research job failed",
+            &format!(
+                "{} scheduled research runs failed in the report window.",
+                scheduled_research.failed_runs
+            ),
+            "scheduled_research",
+        ));
+    } else if scheduled_research.enabled_jobs == 0 {
+        findings.push(finding(
+            "no_scheduled_research_jobs_enabled",
+            OperatorReportSeverity::Medium,
+            "No scheduled research jobs enabled",
+            "Research automation is configured but no scheduled jobs are enabled.",
+            "scheduled_research",
+        ));
+    } else {
+        findings.push(finding(
+            "scheduled_research_jobs_healthy",
+            OperatorReportSeverity::Low,
+            "Scheduled research jobs healthy",
+            &format!(
+                "{} scheduled research jobs are enabled with no failed runs in the report window.",
+                scheduled_research.enabled_jobs
+            ),
+            "scheduled_research",
+        ));
+    }
+
     findings
 }
 
@@ -3054,6 +3125,7 @@ fn build_sections(
     regime_calibrations: &ResearchRegimeCalibrationReportSnapshot,
     research_hypotheses: &ResearchHypothesisReportSnapshot,
     research_experiment_plans: &ResearchExperimentPlanReportSnapshot,
+    scheduled_research: &ScheduledResearchReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -3729,6 +3801,35 @@ fn build_sections(
             ],
             research_qualification,
         )?,
+        section(
+            "scheduled_research",
+            "Scheduled Research",
+            if scheduled_research.failed_runs > 0 || scheduled_research.enabled_jobs == 0 {
+                OperatorReportStatus::Warning
+            } else {
+                OperatorReportStatus::Ok
+            },
+            if scheduled_research.enabled_jobs == 0 {
+                "No scheduled research jobs are enabled."
+            } else if scheduled_research.failed_runs > 0 {
+                "At least one scheduled research run failed in the report window."
+            } else {
+                "Scheduled research jobs are healthy."
+            },
+            vec![
+                highlight("Enabled Jobs", scheduled_research.enabled_jobs.to_string()),
+                highlight("Failed Runs", scheduled_research.failed_runs.to_string()),
+                highlight(
+                    "Last Successful Run",
+                    scheduled_research
+                        .last_successful_run
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "N/A".to_string()),
+                ),
+                highlight("Stale Jobs", scheduled_research.stale_jobs.to_string()),
+            ],
+            scheduled_research,
+        )?,
     ];
 
     if let Some(quality) = market.data_quality.as_ref() {
@@ -4139,8 +4240,8 @@ mod tests {
         ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot,
         ResearchExperimentPlanReportSnapshot, ResearchHypothesisReportSnapshot,
         ResearchRegimeCalibrationReportSnapshot, ResearchRegimeDatasetReportSnapshot,
-        ResearchRegimeDiscoveryReportSnapshot, StrategyBehaviorData,
-        StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
+        ResearchRegimeDiscoveryReportSnapshot, ScheduledResearchReportSnapshot,
+        StrategyBehaviorData, StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
@@ -4315,6 +4416,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4352,6 +4454,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4384,6 +4487,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4416,6 +4520,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4474,6 +4579,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(!findings.is_empty());
@@ -4517,6 +4623,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4557,6 +4664,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(findings.iter().any(|finding| {
@@ -4603,6 +4711,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(!findings
@@ -4651,6 +4760,7 @@ mod tests {
             &ResearchRegimeCalibrationReportSnapshot::default(),
             &ResearchHypothesisReportSnapshot::default(),
             &ResearchExperimentPlanReportSnapshot::default(),
+            &ScheduledResearchReportSnapshot::default(),
         );
 
         assert!(findings

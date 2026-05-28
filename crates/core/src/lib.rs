@@ -7906,6 +7906,20 @@ pub enum CoreError {
     UnsupportedResearchExperimentPlanRunStatus(String),
     #[error("unsupported research experiment plan run mode: {0}")]
     UnsupportedResearchExperimentPlanRunMode(String),
+    #[error("unsupported scheduled research job status: {0}")]
+    UnsupportedScheduledResearchJobStatus(String),
+    #[error("unsupported scheduled research job kind: {0}")]
+    UnsupportedScheduledResearchJobKind(String),
+    #[error("unsupported scheduled research job run status: {0}")]
+    UnsupportedScheduledResearchJobRunStatus(String),
+    #[error("scheduled research job name cannot be empty")]
+    EmptyScheduledResearchJobName,
+    #[error("scheduled research job interval must be greater than zero")]
+    InvalidScheduledResearchJobInterval,
+    #[error("scheduled research max runs per tick must be greater than zero")]
+    InvalidScheduledResearchJobMaxRuns,
+    #[error("unsafe scheduled research job kind rejected: {0}")]
+    UnsafeScheduledResearchJobKind(String),
     #[error("unsupported strategy robustness matrix status: {0}")]
     UnsupportedStrategyRobustnessMatrixStatus(String),
     #[error("research campaign requires at least one strategy")]

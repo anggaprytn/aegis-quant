@@ -25,6 +25,7 @@ use strategy_engine::build_default_strategy_configs;
 use uuid::Uuid;
 
 pub mod pipeline;
+pub mod scheduled_research;
 pub mod testnet_shadow;
 pub mod testnet_shadow_runner;
 

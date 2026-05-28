@@ -4,13 +4,15 @@ use aegis_core::{
     Candle, CandleInterval, DataFreshnessStatus, FeedStatus, MarketDataSource, MarketMode,
     MarketTick, PaperCloseMode, PaperClosePositionRequest, PaperCloseStatus,
     PaperCloseValidationIssue, PaperPositionStatusFilter, PaperTradingPipelineRequest,
-    PipelineDecision, PipelineStepStatus, StrategyConfig, StrategyId, StrategyMode, Symbol,
-    TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlAction,
-    TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerStatus,
+    PipelineDecision, PipelineStepStatus, ScheduledResearchJobKind, ScheduledResearchJobRequest,
+    StrategyConfig, StrategyId, StrategyMode, Symbol, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerControlAction, TestnetShadowRunnerStaleFeedPolicy,
+    TestnetShadowRunnerStatus,
 };
 use api::{
     close_paper_position,
     pipeline::run_paper_pipeline,
+    scheduled_research::run_scheduled_research_job_once,
     testnet_shadow_runner::{
         apply_testnet_shadow_runner_control_action, load_testnet_shadow_runner_snapshot,
         persist_testnet_shadow_runner_config, run_shadow_runner_tick, RunnerTickMode,
@@ -20,8 +22,9 @@ use api::{
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use db::{
     get_default_paper_account, get_order_by_id, get_paper_position, get_risk_decision,
-    insert_market_tick, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
-    list_paper_positions, list_paper_trade_journal, list_recent_signals, list_recent_system_events,
+    insert_market_tick, insert_scheduled_research_job, list_open_paper_positions, list_orders,
+    list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
+    list_recent_signals, list_recent_system_events, scheduled_research_job_from_record,
     set_kill_switch_state, test_support::TestDatabase, upsert_candle, upsert_market_feed_status,
     upsert_strategy_config, StateActor,
 };
@@ -93,6 +96,55 @@ fn app_state(pool: db::PgPool) -> AppState {
         },
         strategy_runtime: runtime_config(),
     }
+}
+
+async fn execution_table_counts(pool: &db::PgPool) -> Vec<(String, i64)> {
+    sqlx::query_as(
+        r#"
+        SELECT name, count FROM (
+            SELECT 'orders' AS name, COUNT(*)::BIGINT AS count FROM orders
+            UNION ALL SELECT 'paper_positions', COUNT(*)::BIGINT FROM paper_positions
+            UNION ALL SELECT 'paper_fills', COUNT(*)::BIGINT FROM paper_fills
+            UNION ALL SELECT 'exchange_testnet_orders', COUNT(*)::BIGINT FROM exchange_testnet_orders
+            UNION ALL SELECT 'exchange_testnet_order_lifecycle_events', COUNT(*)::BIGINT FROM exchange_testnet_order_lifecycle_events
+            UNION ALL SELECT 'testnet_shadow_promotions', COUNT(*)::BIGINT FROM testnet_shadow_promotions
+        ) counts
+        ORDER BY name
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .expect("execution table counts should query")
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres test database"]
+async fn scheduled_research_run_once_records_run_and_keeps_execution_tables_unchanged() {
+    let db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let state = app_state(db.pool.clone());
+    let request = ScheduledResearchJobRequest {
+        name: "Aggregation status".to_string(),
+        kind: ScheduledResearchJobKind::AggregationStatus,
+        enabled: false,
+        interval_seconds: 60,
+        request: serde_json::json!({"symbols": ["BTCUSDT"], "target_intervals": ["5m"]}),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    };
+    let job_record = insert_scheduled_research_job(&db.pool, &request)
+        .await
+        .expect("scheduled job should persist");
+    let job = scheduled_research_job_from_record(&job_record).expect("job should map");
+    let before = execution_table_counts(&db.pool).await;
+
+    let run = run_scheduled_research_job_once(&state, &job)
+        .await
+        .expect("run-once should record a run");
+    assert_eq!(run.job_id, job.id);
+    assert!(run.error.is_none());
+    assert_eq!(before, execution_table_counts(&db.pool).await);
 }
 
 async fn seed_pipeline_happy_path(pool: &db::PgPool) {

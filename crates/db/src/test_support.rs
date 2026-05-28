@@ -14,6 +14,8 @@ const TEST_TABLES: &[&str] = &[
     "exchange_reconciliation_mismatches",
     "exchange_reconciliation_runs",
     "testnet_shadow_promotions",
+    "scheduled_research_job_runs",
+    "scheduled_research_jobs",
     "testnet_shadow_runner_state",
     "testnet_shadow_runner_config",
     "exchange_testnet_repair_actions",

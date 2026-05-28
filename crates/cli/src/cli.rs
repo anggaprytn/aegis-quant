@@ -7,8 +7,8 @@ use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
     ResearchCandidateQualificationThresholds, ResearchCandidateReviewAction,
     ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
-    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerStaleFeedPolicy,
+    ScheduledResearchJobKind, ScheduledResearchJobRequest, TestnetShadowPromotionRequest,
+    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -829,6 +829,64 @@ pub enum ResearchCommands {
     ExperimentPlans(ResearchExperimentPlanCommands),
     #[command(name = "robustness-matrix", subcommand)]
     RobustnessMatrix(ResearchRobustnessMatrixCommands),
+    #[command(name = "scheduled-jobs", subcommand)]
+    ScheduledJobs(ResearchScheduledJobCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchScheduledJobCommands {
+    List(ResearchBatchListArgs),
+    Get {
+        id: Uuid,
+    },
+    Create(ResearchScheduledJobCreateArgs),
+    Pause {
+        id: Uuid,
+    },
+    Resume {
+        id: Uuid,
+    },
+    Runs {
+        id: Uuid,
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+    },
+    #[command(name = "run-once")]
+    RunOnce {
+        id: Uuid,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchScheduledJobCreateArgs {
+    #[arg(long)]
+    pub name: String,
+    #[arg(long)]
+    pub kind: ScheduledResearchJobKind,
+    #[arg(long, default_value_t = false)]
+    pub enabled: bool,
+    #[arg(long = "interval-seconds")]
+    pub interval_seconds: i64,
+    #[arg(long, default_value = "{}")]
+    pub request: serde_json::Value,
+    #[arg(long = "max-runs-per-tick", default_value_t = 1)]
+    pub max_runs_per_tick: i32,
+    #[arg(long = "next-run-at")]
+    pub next_run_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl From<&ResearchScheduledJobCreateArgs> for ScheduledResearchJobRequest {
+    fn from(value: &ResearchScheduledJobCreateArgs) -> Self {
+        Self {
+            name: value.name.clone(),
+            kind: value.kind,
+            enabled: value.enabled,
+            interval_seconds: value.interval_seconds,
+            request: value.request.clone(),
+            max_runs_per_tick: value.max_runs_per_tick,
+            next_run_at: value.next_run_at,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

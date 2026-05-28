@@ -3709,6 +3709,95 @@ export type TestnetShadowRunnerControlResponse = {
   timestamp: string;
 };
 
+export type ScheduledResearchJobStatus =
+  | "DISABLED"
+  | "ENABLED"
+  | "PAUSED"
+  | "RUNNING"
+  | "ERROR";
+
+export type ScheduledResearchJobKind =
+  | "PROVIDER_HEALTH"
+  | "MARKET_DATA_QUALITY"
+  | "AGGREGATION_STATUS"
+  | "RESEARCH_BATCH"
+  | "RESEARCH_CAMPAIGN"
+  | "REGIME_DISCOVERY"
+  | "ROBUSTNESS_MATRIX"
+  | "OPERATOR_REPORT";
+
+export type ScheduledResearchJobRunStatus =
+  | "COMPLETED"
+  | "FAILED"
+  | "SKIPPED"
+  | "PARTIAL_SUCCESS";
+
+export type ScheduledResearchJob = {
+  id: string;
+  name: string;
+  kind: ScheduledResearchJobKind;
+  enabled: boolean;
+  interval_seconds: number;
+  request: Record<string, unknown>;
+  max_runs_per_tick: number;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  status: ScheduledResearchJobStatus;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScheduledResearchJobRun = {
+  id: string;
+  job_id: string;
+  status: ScheduledResearchJobRunStatus;
+  started_at: string;
+  completed_at: string | null;
+  result: Record<string, unknown>;
+  error: string | null;
+  created_artifact_type: string | null;
+  created_artifact_id: string | null;
+  correlation_id: string | null;
+};
+
+export type ScheduledResearchJobRequest = {
+  name: string;
+  kind: ScheduledResearchJobKind;
+  enabled: boolean;
+  interval_seconds: number;
+  request: Record<string, unknown>;
+  max_runs_per_tick: number;
+  next_run_at?: string | null;
+};
+
+export type ScheduledResearchJobsResponse = {
+  jobs: ScheduledResearchJob[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ScheduledResearchJobResponse = {
+  job: ScheduledResearchJob;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ScheduledResearchJobRunsResponse = {
+  runs: ScheduledResearchJobRun[];
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type ScheduledResearchJobRunResponse = {
+  run: ScheduledResearchJobRun;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ExchangeTestnetOrderLifecycleEvent = {
   previous_state: string | null;
   next_state: string;

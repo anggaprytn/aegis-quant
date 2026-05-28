@@ -32,9 +32,9 @@ use cli::cli::{
     ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
     ResearchExperimentPlanCommands, ResearchHypothesisCommands, ResearchRegimeCalibrationCommands,
     ResearchRegimeDatasetCommands, ResearchRegimeDiscoveryCommands,
-    ResearchRobustnessMatrixCommands, RiskCommands, RiskConfigCommands, StrategyCommands,
-    StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
-    TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchRobustnessMatrixCommands, ResearchScheduledJobCommands, RiskCommands,
+    RiskConfigCommands, StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands,
+    RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -884,6 +884,37 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         output::print_research_batch_triage(&response.triage);
                     }
+                }
+            },
+            ResearchCommands::ScheduledJobs(command) => match command {
+                ResearchScheduledJobCommands::List(args) => {
+                    let response = client.list_scheduled_research_jobs(args.limit).await?;
+                    output::print_json(&response)?;
+                }
+                ResearchScheduledJobCommands::Get { id } => {
+                    let response = client.get_scheduled_research_job(id).await?;
+                    output::print_json(&response)?;
+                }
+                ResearchScheduledJobCommands::Create(args) => {
+                    let request = (&args).into();
+                    let response = client.create_scheduled_research_job(&request).await?;
+                    output::print_json(&response)?;
+                }
+                ResearchScheduledJobCommands::Pause { id } => {
+                    let response = client.pause_scheduled_research_job(id).await?;
+                    output::print_json(&response)?;
+                }
+                ResearchScheduledJobCommands::Resume { id } => {
+                    let response = client.resume_scheduled_research_job(id).await?;
+                    output::print_json(&response)?;
+                }
+                ResearchScheduledJobCommands::Runs { id, limit } => {
+                    let response = client.list_scheduled_research_job_runs(id, limit).await?;
+                    output::print_json(&response)?;
+                }
+                ResearchScheduledJobCommands::RunOnce { id } => {
+                    let response = client.run_once_scheduled_research_job(id).await?;
+                    output::print_json(&response)?;
                 }
             },
             ResearchCommands::Candidates(command) => match command {

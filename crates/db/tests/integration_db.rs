@@ -21,8 +21,9 @@ use aegis_core::{
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus,
     ResearchRegimeDiscoverySummary, ResearchRegimeLabel, ResearchShadowPnlAttributionRequest,
     ResearchShadowPnlStatus, RiskCheckContext, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRuleDecision, RiskRuleResult, Side, SignalConfidence, SignalReason, SignalSide,
-    StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
+    RiskRuleDecision, RiskRuleResult, ScheduledResearchJobKind, ScheduledResearchJobRequest,
+    ScheduledResearchJobRun, ScheduledResearchJobRunStatus, Side, SignalConfidence, SignalReason,
+    SignalSide, StrategyCandidateObservationDecision, StrategyCandidateObservationFinding,
     StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
     StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
     StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
@@ -61,7 +62,8 @@ use db::{
     insert_exchange_testnet_order, insert_exchange_testnet_order_lifecycle_event,
     insert_market_data_repair_run, insert_paper_account, insert_research_candidate_shadow_run_link,
     insert_research_dataset_build, insert_research_hypothesis, insert_research_regime_calibration,
-    insert_research_regime_discovery, insert_risk_decision, insert_signal_deduped,
+    insert_research_regime_discovery, insert_risk_decision, insert_scheduled_research_job,
+    insert_scheduled_research_job_run, insert_signal_deduped,
     insert_strategy_candidate_observation, insert_strategy_experiment,
     insert_strategy_experiment_runs, insert_strategy_research_candidate,
     insert_strategy_robustness_matrix_cells, insert_strategy_robustness_matrix_run,
@@ -72,7 +74,8 @@ use db::{
     list_orders, list_recent_signals, list_research_candidate_shadow_runs,
     list_research_dataset_build_steps, list_research_hypotheses,
     list_research_regime_calibration_candidates, list_research_regime_calibrations,
-    list_research_regime_discovery_windows, list_strategy_candidate_observations,
+    list_research_regime_discovery_windows, list_scheduled_research_job_runs,
+    list_scheduled_research_jobs, list_strategy_candidate_observations,
     list_strategy_experiment_runs, list_strategy_experiments, list_strategy_performance_rankings,
     list_strategy_research_candidates, list_strategy_robustness_matrix_cells,
     list_strategy_robustness_matrix_runs, list_strategy_walk_forward_runs,
@@ -82,7 +85,8 @@ use db::{
     replace_research_dataset_build_steps, research_candidate_event_from_record,
     research_candidate_from_record, research_dataset_build_result_from_records,
     research_regime_calibration_result_from_records, research_regime_discovery_result_from_records,
-    resolve_promoted_research_candidate_for_shadow_run, set_kill_switch_state,
+    resolve_promoted_research_candidate_for_shadow_run, scheduled_research_job_from_record,
+    scheduled_research_job_run_from_record, set_kill_switch_state,
     strategy_candidate_observation_result_from_record, strategy_experiment_result_from_records,
     strategy_research_candidate_from_record, strategy_robustness_matrix_cell_from_record,
     strategy_robustness_matrix_result_from_record, strategy_walk_forward_result_from_records,
@@ -142,6 +146,59 @@ fn sample_research_coverage_result() -> ResearchDataCoverageResult {
         per_interval: Vec::new(),
         correlation_id: Some(Uuid::from_u128(0x777)),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres test database"]
+async fn scheduled_research_job_and_run_persist_without_execution_mutation() {
+    let db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let before = execution_table_counts(&db.pool).await;
+    let request = ScheduledResearchJobRequest {
+        name: "Aggregation status".to_string(),
+        kind: ScheduledResearchJobKind::AggregationStatus,
+        enabled: false,
+        interval_seconds: 60,
+        request: json!({}),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    };
+    let job_record = insert_scheduled_research_job(&db.pool, &request)
+        .await
+        .expect("scheduled job should persist");
+    let job = scheduled_research_job_from_record(&job_record).expect("job should map");
+    assert_eq!(job.kind, ScheduledResearchJobKind::AggregationStatus);
+    assert!(!job.enabled);
+
+    let run = ScheduledResearchJobRun {
+        id: Uuid::new_v4(),
+        job_id: job.id,
+        status: ScheduledResearchJobRunStatus::Completed,
+        started_at: fixed_time(),
+        completed_at: Some(fixed_time()),
+        result: json!({"ok": true}),
+        error: None,
+        created_artifact_type: Some("aggregation_status".to_string()),
+        created_artifact_id: None,
+        correlation_id: Some(Uuid::new_v4()),
+    };
+    let run_record = insert_scheduled_research_job_run(&db.pool, &run)
+        .await
+        .expect("scheduled run should persist");
+    let mapped_run =
+        scheduled_research_job_run_from_record(&run_record).expect("scheduled run should map");
+    assert_eq!(mapped_run.status, ScheduledResearchJobRunStatus::Completed);
+
+    let jobs = list_scheduled_research_jobs(&db.pool, 20)
+        .await
+        .expect("jobs should list");
+    let runs = list_scheduled_research_job_runs(&db.pool, job.id, 20)
+        .await
+        .expect("runs should list");
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(before, execution_table_counts(&db.pool).await);
 }
 
 fn sample_signal() -> StrategySignal {

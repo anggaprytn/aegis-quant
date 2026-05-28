@@ -78,11 +78,12 @@ use aegis_core::{
     ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
     ResearchShadowPnlAttributionResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
     RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, Side, SignalReason, StrategyCandidateObservationRequest,
-    StrategyCandidateObservationResult, StrategyCandidateRunnerAlignment,
-    StrategyComparisonSummary, StrategyConfig, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
+    RiskRejectionReason, ScheduledResearchJob, ScheduledResearchJobControlRequest,
+    ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobStatus, Side,
+    SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
+    StrategyCandidateRunnerAlignment, StrategyComparisonSummary, StrategyConfig,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDataHealth, StrategyDecisionBreakdown, StrategyDiagnosticCheck,
     StrategyDiagnosticsDecision, StrategyDiagnosticsResult, StrategyDryRunRequest,
     StrategyDryRunResult, StrategyEvaluationContext, StrategyExitAttributionRequest,
     StrategyExitAttributionResult, StrategyExperimentGlobalRanking, StrategyExperimentRequest,
@@ -110,6 +111,7 @@ use aegis_core::{
 };
 use api::{
     close_paper_position, ensure_default_paper_account, persist_paper_fill_accounting,
+    scheduled_research::run_scheduled_research_job_once,
     testnet_shadow::{run_testnet_shadow_once, TestnetShadowRunApiError},
     testnet_shadow_runner::{
         apply_testnet_shadow_runner_control_action, load_testnet_shadow_runner_snapshot,
@@ -152,27 +154,29 @@ use db::{
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
     get_research_experiment_plan, get_research_hypothesis, get_research_regime_calibration,
     get_research_regime_dataset, get_research_regime_discovery, get_risk_config,
-    get_risk_decision_by_id, get_session_by_id, get_session_by_id_and_hash,
-    get_strategy_backtest_breakdown, get_strategy_experiment, get_strategy_experiment_run,
-    get_strategy_paper_pnl_breakdown, get_strategy_performance_summary,
-    get_strategy_research_candidate, get_strategy_robustness_matrix_run,
-    get_strategy_shadow_decision_breakdown, get_strategy_status, get_strategy_walk_forward_run,
-    get_system_event, get_system_state, get_testnet_promotion_funnel_summary,
-    get_testnet_promotion_lifecycle_breakdown, get_testnet_promotion_outcome_breakdown,
-    get_testnet_shadow_promotion_by_id, get_testnet_shadow_run_by_id, get_user_by_email,
-    get_user_by_id, insert_audit_log, insert_exchange_testnet_order,
-    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
-    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
-    insert_research_batch, insert_research_batch_step, insert_research_campaign,
-    insert_research_campaign_batch, insert_research_candidate_qualification_evaluation,
-    insert_research_experiment_plan, insert_research_experiment_plan_run,
-    insert_research_hypothesis, insert_research_regime_calibration, insert_research_regime_dataset,
+    get_risk_decision_by_id, get_scheduled_research_job, get_session_by_id,
+    get_session_by_id_and_hash, get_strategy_backtest_breakdown, get_strategy_experiment,
+    get_strategy_experiment_run, get_strategy_paper_pnl_breakdown,
+    get_strategy_performance_summary, get_strategy_research_candidate,
+    get_strategy_robustness_matrix_run, get_strategy_shadow_decision_breakdown,
+    get_strategy_status, get_strategy_walk_forward_run, get_system_event, get_system_state,
+    get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
+    get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
+    get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
+    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
+    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
+    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
+    insert_research_campaign, insert_research_campaign_batch,
+    insert_research_candidate_qualification_evaluation, insert_research_experiment_plan,
+    insert_research_experiment_plan_run, insert_research_hypothesis,
+    insert_research_regime_calibration, insert_research_regime_dataset,
     insert_research_regime_discovery, insert_risk_config_audit, insert_risk_evaluation,
-    insert_session, insert_signal_deduped, insert_strategy_config_audit,
-    insert_strategy_research_candidate, insert_strategy_research_candidate_promotion,
-    insert_system_event, insert_testnet_shadow_promotion, insert_user,
-    link_research_candidate_walk_forward_run, list_backtest_runs, list_candle_backfill_runs,
-    list_candles, list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    insert_scheduled_research_job, insert_session, insert_signal_deduped,
+    insert_strategy_config_audit, insert_strategy_research_candidate,
+    insert_strategy_research_candidate_promotion, insert_system_event,
+    insert_testnet_shadow_promotion, insert_user, link_research_candidate_walk_forward_run,
+    list_backtest_runs, list_candle_backfill_runs, list_candles,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions,
     list_market_data_repair_runs, list_market_feed_statuses, list_open_paper_positions,
@@ -187,7 +191,8 @@ use db::{
     list_research_regime_calibration_candidates, list_research_regime_calibrations,
     list_research_regime_datasets, list_research_regime_discoveries,
     list_research_regime_discovery_windows, list_research_regime_windows, list_risk_config_audit,
-    list_risk_config_versions, list_strategy_candidate_observations, list_strategy_config_audit,
+    list_risk_config_versions, list_scheduled_research_job_runs, list_scheduled_research_jobs,
+    list_strategy_candidate_observations, list_strategy_config_audit,
     list_strategy_config_versions, list_strategy_experiment_runs, list_strategy_experiments,
     list_strategy_experiments_by_group, list_strategy_performance_rankings,
     list_strategy_robustness_matrix_cells, list_strategy_robustness_matrix_runs,
@@ -207,6 +212,7 @@ use db::{
     research_regime_discovery_result_from_records, research_regime_discovery_window_from_record,
     research_regime_window_from_record, revoke_session, risk_config_audit_from_record,
     risk_config_from_record, risk_config_version_from_record, rotate_session_refresh_token,
+    scheduled_research_job_from_record, scheduled_research_job_run_from_record,
     set_kill_switch_state, strategy_candidate_observation_result_from_record,
     strategy_config_audit_from_record, strategy_config_from_record,
     strategy_config_version_from_record, strategy_experiment_result_from_records,
@@ -217,10 +223,11 @@ use db::{
     summarize_candle_continuity_report, update_research_batch_summary,
     update_research_campaign_batch, update_research_campaign_summary,
     update_research_candidate_status, update_research_experiment_plan_validation,
-    update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
-    upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
-    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    update_scheduled_research_job_status, update_strategy_state,
+    update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
+    upsert_exchange_private_stream_state, upsert_paper_position, upsert_risk_config,
+    upsert_strategy_config, user_from_record, BacktestEquityPointRecord, BacktestTradeRecord,
+    CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
     ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
@@ -706,6 +713,10 @@ fn shadow_runtime_state(state: &AppState) -> ShadowAppState {
     }
 }
 
+fn scheduled_runtime_state(state: &AppState) -> ShadowAppState {
+    shadow_runtime_state(state)
+}
+
 #[derive(Serialize)]
 struct ActorResponse {
     actor: String,
@@ -1150,6 +1161,38 @@ struct OperatorReportResponse {
 #[derive(Serialize, Deserialize)]
 struct OperatorReportsListResponse {
     reports: Vec<OperatorReportListItem>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ScheduledResearchJobsResponse {
+    jobs: Vec<ScheduledResearchJob>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ScheduledResearchJobResponse {
+    job: ScheduledResearchJob,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ScheduledResearchJobRunsResponse {
+    runs: Vec<ScheduledResearchJobRun>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ScheduledResearchJobRunResponse {
+    run: ScheduledResearchJobRun,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3138,6 +3181,30 @@ async fn main() {
         .route(
             "/research/experiment-plans/:id",
             get(get_research_experiment_plan_handler),
+        )
+        .route(
+            "/research/scheduled-jobs",
+            get(list_scheduled_research_jobs_handler).post(create_scheduled_research_job_handler),
+        )
+        .route(
+            "/research/scheduled-jobs/:id/pause",
+            post(pause_scheduled_research_job_handler),
+        )
+        .route(
+            "/research/scheduled-jobs/:id/resume",
+            post(resume_scheduled_research_job_handler),
+        )
+        .route(
+            "/research/scheduled-jobs/:id/runs",
+            get(list_scheduled_research_job_runs_handler),
+        )
+        .route(
+            "/research/scheduled-jobs/:id/run-once",
+            post(run_once_scheduled_research_job_handler),
+        )
+        .route(
+            "/research/scheduled-jobs/:id",
+            get(get_scheduled_research_job_handler),
         )
         .route("/research/batches/run", post(run_research_batch_handler))
         .route("/research/batches", get(list_research_batches_handler))
@@ -17915,6 +17982,395 @@ async fn get_research_regime_calibration_candidates_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_query_research_regime_calibration_candidates",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_scheduled_research_jobs_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResearchBatchesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_scheduled_research_jobs(&state.db_pool, bounded_backfill_runs_limit(query.limit))
+        .await
+    {
+        Ok(records) => match records
+            .iter()
+            .map(scheduled_research_job_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(jobs) => (
+                StatusCode::OK,
+                Json(ScheduledResearchJobsResponse {
+                    jobs,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_scheduled_research_jobs",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_scheduled_research_jobs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_scheduled_research_job_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_scheduled_research_job(&state.db_pool, id).await {
+        Ok(Some(record)) => match scheduled_research_job_from_record(&record) {
+            Ok(job) => (
+                StatusCode::OK,
+                Json(ScheduledResearchJobResponse {
+                    job,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_scheduled_research_job",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "scheduled_research_job_not_found",
+                message: "Scheduled research job not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_scheduled_research_job",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn create_scheduled_research_job_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(payload): Json<ScheduledResearchJobRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_scheduled_research_job",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    match insert_scheduled_research_job(&state.db_pool, &payload).await {
+        Ok(record) => match scheduled_research_job_from_record(&record) {
+            Ok(job) => (
+                StatusCode::OK,
+                Json(ScheduledResearchJobResponse {
+                    job,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_scheduled_research_job",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_create_scheduled_research_job",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn pause_scheduled_research_job_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    Json(_payload): Json<ScheduledResearchJobControlRequest>,
+) -> impl IntoResponse {
+    set_scheduled_research_job_status(
+        &state,
+        id,
+        false,
+        ScheduledResearchJobStatus::Paused,
+        None,
+        request,
+    )
+    .await
+}
+
+async fn resume_scheduled_research_job_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    Json(_payload): Json<ScheduledResearchJobControlRequest>,
+) -> impl IntoResponse {
+    set_scheduled_research_job_status(
+        &state,
+        id,
+        true,
+        ScheduledResearchJobStatus::Enabled,
+        Some(Utc::now()),
+        request,
+    )
+    .await
+}
+
+async fn set_scheduled_research_job_status(
+    state: &AppState,
+    id: Uuid,
+    enabled: bool,
+    status: ScheduledResearchJobStatus,
+    next_run_at: Option<DateTime<Utc>>,
+    request: Option<Extension<RequestContext>>,
+) -> Response {
+    let request = request_context(request);
+    match update_scheduled_research_job_status(&state.db_pool, id, enabled, status, next_run_at)
+        .await
+    {
+        Ok(Some(record)) => match scheduled_research_job_from_record(&record) {
+            Ok(job) => (
+                StatusCode::OK,
+                Json(ScheduledResearchJobResponse {
+                    job,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_scheduled_research_job",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "scheduled_research_job_not_found",
+                message: "Scheduled research job not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_update_scheduled_research_job",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_scheduled_research_job_runs_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ResearchBatchesQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_scheduled_research_job_runs(
+        &state.db_pool,
+        id,
+        bounded_backfill_runs_limit(query.limit),
+    )
+    .await
+    {
+        Ok(records) => match records
+            .iter()
+            .map(scheduled_research_job_run_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()
+        {
+            Ok(runs) => (
+                StatusCode::OK,
+                Json(ScheduledResearchJobRunsResponse {
+                    runs,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_scheduled_research_job_runs",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_query_scheduled_research_job_runs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn run_once_scheduled_research_job_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    Json(_payload): Json<ScheduledResearchJobControlRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let job = match get_scheduled_research_job(&state.db_pool, id).await {
+        Ok(Some(record)) => match scheduled_research_job_from_record(&record) {
+            Ok(job) => job,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_scheduled_research_job",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "scheduled_research_job_not_found",
+                    message: "Scheduled research job not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_scheduled_research_job",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let runtime_state = scheduled_runtime_state(&state);
+    match run_scheduled_research_job_once(&runtime_state, &job).await {
+        Ok(run) => (
+            StatusCode::OK,
+            Json(ScheduledResearchJobRunResponse {
+                run,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_run_scheduled_research_job",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,

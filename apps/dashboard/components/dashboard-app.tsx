@@ -61,6 +61,10 @@ import type {
   ResearchRegimeStrategyLeaderboard,
   ResearchRegimeStrategyStatus,
   ResearchRegimeWindow,
+  ScheduledResearchJob,
+  ScheduledResearchJobKind,
+  ScheduledResearchJobRequest,
+  ScheduledResearchJobRun,
   ResearchCandidateObservationHistoryItem,
   ResearchCandidateQualificationResult,
   ResearchCandidateObservationSummary,
@@ -464,6 +468,27 @@ const DEFAULT_RESEARCH_REGIME_CALIBRATION_FORM: ResearchRegimeCalibrationRequest
   threshold_candidates: null,
   target_min_windows_per_regime: 5,
 };
+
+const DEFAULT_SCHEDULED_RESEARCH_JOB_FORM: ScheduledResearchJobRequest = {
+  name: "Aggregation status check",
+  kind: "AGGREGATION_STATUS",
+  enabled: false,
+  interval_seconds: 300,
+  request: {},
+  max_runs_per_tick: 1,
+  next_run_at: null,
+};
+
+const SCHEDULED_RESEARCH_JOB_KINDS: ScheduledResearchJobKind[] = [
+  "PROVIDER_HEALTH",
+  "MARKET_DATA_QUALITY",
+  "AGGREGATION_STATUS",
+  "RESEARCH_BATCH",
+  "RESEARCH_CAMPAIGN",
+  "REGIME_DISCOVERY",
+  "ROBUSTNESS_MATRIX",
+  "OPERATOR_REPORT",
+];
 
 const DEFAULT_REPORT_FORM: OperatorReportRequest = {
   start_time: "2026-05-24T00:00:00Z",
@@ -1007,6 +1032,11 @@ function AuthenticatedDashboard({
   const [selectedResearchCampaignId, setSelectedResearchCampaignId] = useState<string | null>(null);
   const [lastResearchCampaign, setLastResearchCampaign] =
     useState<ResearchCampaignResult | null>(null);
+  const [scheduledResearchJobForm, setScheduledResearchJobForm] =
+    useState<ScheduledResearchJobRequest>(DEFAULT_SCHEDULED_RESEARCH_JOB_FORM);
+  const [scheduledResearchRequestText, setScheduledResearchRequestText] = useState("{}");
+  const [selectedScheduledResearchJobId, setSelectedScheduledResearchJobId] =
+    useState<string | null>(null);
   const [selectedResearchHypothesisId, setSelectedResearchHypothesisId] = useState<string | null>(null);
   const [selectedResearchExperimentPlanId, setSelectedResearchExperimentPlanId] =
     useState<string | null>(null);
@@ -1488,6 +1518,18 @@ function AuthenticatedDashboard({
     queryKey: ["research-batch-triage", selectedResearchBatchId],
     queryFn: () => api.getResearchBatchTriage(selectedResearchBatchId ?? ""),
     enabled: Boolean(selectedResearchBatchId),
+  });
+  const scheduledResearchJobsQuery = useQuery({
+    queryKey: ["scheduled-research-jobs"],
+    queryFn: () => api.listScheduledResearchJobs(20),
+    enabled: user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 15_000,
+  });
+  const scheduledResearchRunsQuery = useQuery({
+    queryKey: ["scheduled-research-job-runs", selectedScheduledResearchJobId],
+    queryFn: () => api.listScheduledResearchJobRuns(selectedScheduledResearchJobId ?? "", 20),
+    enabled: Boolean(selectedScheduledResearchJobId),
+    refetchInterval: 15_000,
   });
   const researchCampaignsQuery = useQuery({
     queryKey: ["research-campaigns"],
@@ -1987,6 +2029,12 @@ function AuthenticatedDashboard({
       setSelectedResearchBatchId(researchBatchesQuery.data.batches[0].batch_id);
     }
   }, [researchBatchesQuery.data?.batches, selectedResearchBatchId]);
+
+  useEffect(() => {
+    if (!selectedScheduledResearchJobId && scheduledResearchJobsQuery.data?.jobs[0]) {
+      setSelectedScheduledResearchJobId(scheduledResearchJobsQuery.data.jobs[0].id);
+    }
+  }, [scheduledResearchJobsQuery.data?.jobs, selectedScheduledResearchJobId]);
 
   useEffect(() => {
     if (!selectedResearchCampaignId && researchCampaignsQuery.data?.campaigns[0]) {
@@ -2614,6 +2662,32 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({ queryKey: ["strategy-experiments"] });
     },
   });
+  const createScheduledResearchJobMutation = useMutation({
+    mutationFn: () => api.createScheduledResearchJob(scheduledResearchJobForm),
+    onSuccess: async (response) => {
+      setSelectedScheduledResearchJobId(response.job.id);
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-research-jobs"] });
+    },
+  });
+  const pauseScheduledResearchJobMutation = useMutation({
+    mutationFn: (id: string) => api.pauseScheduledResearchJob(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-research-jobs"] });
+    },
+  });
+  const resumeScheduledResearchJobMutation = useMutation({
+    mutationFn: (id: string) => api.resumeScheduledResearchJob(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-research-jobs"] });
+    },
+  });
+  const runOnceScheduledResearchJobMutation = useMutation({
+    mutationFn: (id: string) => api.runOnceScheduledResearchJob(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-research-jobs"] });
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-research-job-runs"] });
+    },
+  });
   const researchRegimeDatasetMutation = useMutation({
     mutationFn: () => api.buildResearchRegimeDataset(researchRegimeDatasetForm),
     onSuccess: async (response) => {
@@ -2867,6 +2941,10 @@ function AuthenticatedDashboard({
   const strategyExperiments = strategyExperimentsQuery.data?.experiments ?? [];
   const strategyWalkForwards = strategyWalkForwardsQuery.data?.walk_forwards ?? [];
   const researchBatches = researchBatchesQuery.data?.batches ?? [];
+  const scheduledResearchJobs = scheduledResearchJobsQuery.data?.jobs ?? [];
+  const selectedScheduledResearchJob =
+    scheduledResearchJobs.find((job) => job.id === selectedScheduledResearchJobId) ?? null;
+  const selectedScheduledResearchRuns = scheduledResearchRunsQuery.data?.runs ?? [];
   const researchRegimeDatasets = researchRegimeDatasetsQuery.data?.datasets ?? [];
   const selectedResearchRegimeDataset: ResearchRegimeDatasetResult | null =
     selectedResearchRegimeDatasetQuery.data?.dataset ?? lastResearchRegimeDataset;
@@ -6700,6 +6778,116 @@ function AuthenticatedDashboard({
                   />
                 </div>
               </Panel>
+              <Panel className="xl:col-span-12" title="Scheduled Research">
+                <div className="grid gap-3 md:grid-cols-5">
+                  <Field
+                    label="Name"
+                    value={scheduledResearchJobForm.name}
+                    onChange={(value) =>
+                      setScheduledResearchJobForm((current) => ({ ...current, name: value }))
+                    }
+                  />
+                  <label className="grid gap-1 text-sm">
+                    <span className="text-slate-400">Kind</span>
+                    <select
+                      className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-slate-100"
+                      value={scheduledResearchJobForm.kind}
+                      onChange={(event) =>
+                        setScheduledResearchJobForm((current) => ({
+                          ...current,
+                          kind: event.target.value as ScheduledResearchJobKind,
+                        }))
+                      }
+                    >
+                      {SCHEDULED_RESEARCH_JOB_KINDS.map((kind) => (
+                        <option key={kind} value={kind}>
+                          {kind}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Field
+                    label="Interval Seconds"
+                    value={String(scheduledResearchJobForm.interval_seconds)}
+                    onChange={(value) =>
+                      setScheduledResearchJobForm((current) => ({
+                        ...current,
+                        interval_seconds: Number(value) || 60,
+                      }))
+                    }
+                  />
+                  <Field
+                    label="Max Runs Per Tick"
+                    value={String(scheduledResearchJobForm.max_runs_per_tick)}
+                    onChange={(value) =>
+                      setScheduledResearchJobForm((current) => ({
+                        ...current,
+                        max_runs_per_tick: Number(value) || 1,
+                      }))
+                    }
+                  />
+                  <label className="flex items-end gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={scheduledResearchJobForm.enabled}
+                      onChange={(event) =>
+                        setScheduledResearchJobForm((current) => ({
+                          ...current,
+                          enabled: event.target.checked,
+                        }))
+                      }
+                    />
+                    Enabled
+                  </label>
+                </div>
+                <label className="mt-3 grid gap-1 text-sm">
+                  <span className="text-slate-400">Request JSON</span>
+                  <textarea
+                    className="min-h-24 rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-slate-100 outline-none"
+                    value={scheduledResearchRequestText}
+                    onChange={(event) => {
+                      setScheduledResearchRequestText(event.target.value);
+                      try {
+                        const parsed = JSON.parse(event.target.value) as Record<string, unknown>;
+                        setScheduledResearchJobForm((current) => ({ ...current, request: parsed }));
+                      } catch {
+                        // Keep the text editable; the create call will surface invalid JSON state.
+                      }
+                    }}
+                  />
+                </label>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <ActionButton
+                    label="Create Job"
+                    onClick={() => createScheduledResearchJobMutation.mutate()}
+                    busy={createScheduledResearchJobMutation.isPending}
+                    disabled={user.role === "VIEWER"}
+                  />
+                  <InlineStatus
+                    error={
+                      getErrorMessage(createScheduledResearchJobMutation.error) ||
+                      getErrorMessage(pauseScheduledResearchJobMutation.error) ||
+                      getErrorMessage(resumeScheduledResearchJobMutation.error) ||
+                      getErrorMessage(runOnceScheduledResearchJobMutation.error)
+                    }
+                  />
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <ScheduledResearchJobsTable
+                    jobs={scheduledResearchJobs}
+                    selectedId={selectedScheduledResearchJobId}
+                    canMutate={user.role === "OWNER" || user.role === "OPERATOR"}
+                    onSelect={setSelectedScheduledResearchJobId}
+                    onPause={(id) => pauseScheduledResearchJobMutation.mutate(id)}
+                    onResume={(id) => resumeScheduledResearchJobMutation.mutate(id)}
+                    onRunOnce={(id) => runOnceScheduledResearchJobMutation.mutate(id)}
+                  />
+                  <ScheduledResearchRunsTable
+                    job={selectedScheduledResearchJob}
+                    runs={selectedScheduledResearchRuns}
+                  />
+                </div>
+              </Panel>
               <Panel className="xl:col-span-7" title="Strategy Experiment Form">
                 <div className="grid gap-3 md:grid-cols-3">
                   {(
@@ -10478,6 +10666,98 @@ function ResearchBatchesTable({
         </button>
       ))}
     </div>
+  );
+}
+
+function ScheduledResearchJobsTable({
+  jobs,
+  selectedId,
+  canMutate,
+  onSelect,
+  onPause,
+  onResume,
+  onRunOnce,
+}: {
+  jobs: ScheduledResearchJob[];
+  selectedId: string | null;
+  canMutate: boolean;
+  onSelect: (jobId: string) => void;
+  onPause: (jobId: string) => void;
+  onResume: (jobId: string) => void;
+  onRunOnce: (jobId: string) => void;
+}) {
+  if (!jobs.length) {
+    return <EmptyState label="No scheduled research jobs found." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {jobs.map((job) => (
+        <div
+          key={job.id}
+          className={cn(
+            "rounded-xl border p-3",
+            job.id === selectedId ? "border-accent bg-accent/5" : "border-border bg-surface/60",
+          )}
+        >
+          <button className="w-full text-left" onClick={() => onSelect(job.id)} type="button">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="font-mono text-xs">{shortenId(job.id)}</span>
+              <span className="text-xs uppercase text-muted">{job.status}</span>
+            </div>
+            <div className="mt-1 text-sm text-slate-100">{job.name}</div>
+            <div className="mt-1 text-xs text-slate-300">
+              {job.kind} every {job.interval_seconds}s
+            </div>
+            <div className="mt-1 text-xs text-muted">
+              last={job.last_run_at ? formatDateTime(job.last_run_at) : "never"} next=
+              {job.next_run_at ? formatDateTime(job.next_run_at) : "n/a"}
+            </div>
+          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <ActionButton
+              label={job.status === "PAUSED" || !job.enabled ? "Resume" : "Pause"}
+              onClick={() =>
+                job.status === "PAUSED" || !job.enabled ? onResume(job.id) : onPause(job.id)
+              }
+              disabled={!canMutate}
+            />
+            <ActionButton label="Run Once" onClick={() => onRunOnce(job.id)} disabled={!canMutate} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScheduledResearchRunsTable({
+  job,
+  runs,
+}: {
+  job: ScheduledResearchJob | null;
+  runs: ScheduledResearchJobRun[];
+}) {
+  if (!job) {
+    return <EmptyState label="Select a scheduled research job." />;
+  }
+  if (!runs.length) {
+    return <EmptyState label="No scheduled research runs found." />;
+  }
+
+  return (
+    <Table
+      headers={["Run", "Status", "Started", "Artifact", "Correlation", "Error"]}
+      rows={runs.map((run) => [
+        mono(shortenId(run.id)),
+        run.status,
+        formatDateTime(run.started_at),
+        run.created_artifact_type
+          ? `${run.created_artifact_type}:${run.created_artifact_id ? shortenId(run.created_artifact_id) : "n/a"}`
+          : "N/A",
+        run.correlation_id ? mono(shortenId(run.correlation_id)) : "N/A",
+        run.error ?? "N/A",
+      ])}
+    />
   );
 }
 

@@ -122,6 +122,11 @@ import type {
   ResearchCandidateShadowPromotionRequest,
   ResearchCandidateShadowPromotionResultResponse,
   ResearchCandidateShadowRunsResponse,
+  ScheduledResearchJobRequest,
+  ScheduledResearchJobResponse,
+  ScheduledResearchJobRunResponse,
+  ScheduledResearchJobRunsResponse,
+  ScheduledResearchJobsResponse,
   ResearchCandidateWalkForwardEvidenceResponse,
   ResearchCandidateWatchlistResponse,
   ResearchCandidateResponse,
@@ -525,6 +530,36 @@ export const api = {
     request<ResearchBatchStepsResponse>(`/research/batches/${id}/steps`),
   getResearchBatchTriage: (id: string) =>
     request<ResearchBatchTriageResponse>(`/research/batches/${id}/triage`),
+  listScheduledResearchJobs: (limit = 20) =>
+    request<ScheduledResearchJobsResponse>("/research/scheduled-jobs", undefined, { limit }),
+  getScheduledResearchJob: (id: string) =>
+    request<ScheduledResearchJobResponse>(`/research/scheduled-jobs/${id}`),
+  createScheduledResearchJob: (payload: ScheduledResearchJobRequest) =>
+    request<ScheduledResearchJobResponse>("/research/scheduled-jobs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  pauseScheduledResearchJob: (id: string) =>
+    request<ScheduledResearchJobResponse>(`/research/scheduled-jobs/${id}/pause`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  resumeScheduledResearchJob: (id: string) =>
+    request<ScheduledResearchJobResponse>(`/research/scheduled-jobs/${id}/resume`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  listScheduledResearchJobRuns: (id: string, limit = 20) =>
+    request<ScheduledResearchJobRunsResponse>(
+      `/research/scheduled-jobs/${id}/runs`,
+      undefined,
+      { limit },
+    ),
+  runOnceScheduledResearchJob: (id: string) =>
+    request<ScheduledResearchJobRunResponse>(`/research/scheduled-jobs/${id}/run-once`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   runResearchCampaign: (payload: ResearchCampaignRequest) =>
     request<ResearchCampaignResponse>("/research/campaigns/run", {
       method: "POST",

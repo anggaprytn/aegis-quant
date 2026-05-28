@@ -8,7 +8,8 @@ RUN cargo build --release \
     -p api --bin api \
     -p market-ingest --bin market-ingest \
     -p api --bin testnet-shadow-runner \
-    -p api --bin candle-aggregator
+    -p api --bin candle-aggregator \
+    -p api --bin scheduled-research-runner
 
 FROM debian:bookworm-slim
 WORKDIR /app
@@ -21,6 +22,7 @@ COPY --from=builder /app/target/release/api /usr/local/bin/api
 COPY --from=builder /app/target/release/testnet-shadow-runner /usr/local/bin/testnet-shadow-runner
 COPY --from=builder /app/target/release/market-ingest /usr/local/bin/market-ingest
 COPY --from=builder /app/target/release/candle-aggregator /usr/local/bin/candle-aggregator
+COPY --from=builder /app/target/release/scheduled-research-runner /usr/local/bin/scheduled-research-runner
 
 EXPOSE 3000
 

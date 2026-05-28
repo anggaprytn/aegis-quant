@@ -105,6 +105,227 @@ fn default_research_regime_priority_order() -> Vec<ResearchRegimeLabel> {
     ]
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ScheduledResearchJobStatus {
+    Disabled,
+    Enabled,
+    Paused,
+    Running,
+    Error,
+}
+
+impl ScheduledResearchJobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "DISABLED",
+            Self::Enabled => "ENABLED",
+            Self::Paused => "PAUSED",
+            Self::Running => "RUNNING",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+impl std::str::FromStr for ScheduledResearchJobStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "DISABLED" => Ok(Self::Disabled),
+            "ENABLED" => Ok(Self::Enabled),
+            "PAUSED" => Ok(Self::Paused),
+            "RUNNING" => Ok(Self::Running),
+            "ERROR" => Ok(Self::Error),
+            other => Err(CoreError::UnsupportedScheduledResearchJobStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ScheduledResearchJobKind {
+    ProviderHealth,
+    MarketDataQuality,
+    AggregationStatus,
+    ResearchBatch,
+    ResearchCampaign,
+    RegimeDiscovery,
+    RobustnessMatrix,
+    OperatorReport,
+}
+
+impl ScheduledResearchJobKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderHealth => "PROVIDER_HEALTH",
+            Self::MarketDataQuality => "MARKET_DATA_QUALITY",
+            Self::AggregationStatus => "AGGREGATION_STATUS",
+            Self::ResearchBatch => "RESEARCH_BATCH",
+            Self::ResearchCampaign => "RESEARCH_CAMPAIGN",
+            Self::RegimeDiscovery => "REGIME_DISCOVERY",
+            Self::RobustnessMatrix => "ROBUSTNESS_MATRIX",
+            Self::OperatorReport => "OPERATOR_REPORT",
+        }
+    }
+
+    pub fn is_safe_research_kind(self) -> bool {
+        matches!(
+            self,
+            Self::ProviderHealth
+                | Self::MarketDataQuality
+                | Self::AggregationStatus
+                | Self::ResearchBatch
+                | Self::ResearchCampaign
+                | Self::RegimeDiscovery
+                | Self::RobustnessMatrix
+                | Self::OperatorReport
+        )
+    }
+}
+
+impl std::str::FromStr for ScheduledResearchJobKind {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PROVIDER_HEALTH" => Ok(Self::ProviderHealth),
+            "MARKET_DATA_QUALITY" => Ok(Self::MarketDataQuality),
+            "AGGREGATION_STATUS" => Ok(Self::AggregationStatus),
+            "RESEARCH_BATCH" => Ok(Self::ResearchBatch),
+            "RESEARCH_CAMPAIGN" => Ok(Self::ResearchCampaign),
+            "REGIME_DISCOVERY" => Ok(Self::RegimeDiscovery),
+            "ROBUSTNESS_MATRIX" => Ok(Self::RobustnessMatrix),
+            "OPERATOR_REPORT" => Ok(Self::OperatorReport),
+            other => Err(CoreError::UnsupportedScheduledResearchJobKind(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ScheduledResearchJobRunStatus {
+    Completed,
+    Failed,
+    Skipped,
+    PartialSuccess,
+}
+
+impl ScheduledResearchJobRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+            Self::Skipped => "SKIPPED",
+            Self::PartialSuccess => "PARTIAL_SUCCESS",
+        }
+    }
+}
+
+impl std::str::FromStr for ScheduledResearchJobRunStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            "SKIPPED" => Ok(Self::Skipped),
+            "PARTIAL_SUCCESS" => Ok(Self::PartialSuccess),
+            other => Err(CoreError::UnsupportedScheduledResearchJobRunStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduledResearchJob {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: ScheduledResearchJobKind,
+    pub enabled: bool,
+    pub interval_seconds: i64,
+    pub request: Value,
+    pub max_runs_per_tick: i32,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub status: ScheduledResearchJobStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduledResearchJobRun {
+    pub id: Uuid,
+    pub job_id: Uuid,
+    pub status: ScheduledResearchJobRunStatus,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub result: Value,
+    pub error: Option<String>,
+    pub created_artifact_type: Option<String>,
+    pub created_artifact_id: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScheduledResearchJobRequest {
+    pub name: String,
+    pub kind: ScheduledResearchJobKind,
+    #[serde(default)]
+    pub enabled: bool,
+    pub interval_seconds: i64,
+    #[serde(default)]
+    pub request: Value,
+    #[serde(default = "default_scheduled_research_max_runs_per_tick")]
+    pub max_runs_per_tick: i32,
+    pub next_run_at: Option<DateTime<Utc>>,
+}
+
+fn default_scheduled_research_max_runs_per_tick() -> i32 {
+    1
+}
+
+impl ScheduledResearchJobRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.name.trim().is_empty() {
+            return Err(CoreError::EmptyScheduledResearchJobName);
+        }
+        if !self.kind.is_safe_research_kind() {
+            return Err(CoreError::UnsafeScheduledResearchJobKind(
+                self.kind.as_str().to_string(),
+            ));
+        }
+        if self.interval_seconds <= 0 {
+            return Err(CoreError::InvalidScheduledResearchJobInterval);
+        }
+        if self.max_runs_per_tick <= 0 {
+            return Err(CoreError::InvalidScheduledResearchJobMaxRuns);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledResearchJobControlRequest {
+    pub reason: Option<String>,
+    pub correlation_id: Option<Uuid>,
+}
+
+pub fn scheduled_research_next_run_at(
+    completed_at: DateTime<Utc>,
+    interval_seconds: i64,
+) -> Result<DateTime<Utc>, CoreError> {
+    if interval_seconds <= 0 {
+        return Err(CoreError::InvalidScheduledResearchJobInterval);
+    }
+    Ok(completed_at + Duration::seconds(interval_seconds))
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchBatchStatus {
@@ -15295,5 +15516,56 @@ mod tests {
         };
         assert_eq!(artifact.artifact_type(), Some("robustness_matrix_run_id"));
         assert_eq!(artifact.artifact_id(), Some(run_id));
+    }
+
+    #[test]
+    fn scheduled_research_disabled_job_request_is_valid_but_disabled() {
+        let request = ScheduledResearchJobRequest {
+            name: "Aggregation status".to_string(),
+            kind: ScheduledResearchJobKind::AggregationStatus,
+            enabled: false,
+            interval_seconds: 60,
+            request: json!({}),
+            max_runs_per_tick: 1,
+            next_run_at: None,
+        };
+        assert!(request.validate().is_ok());
+        assert!(!request.enabled);
+    }
+
+    #[test]
+    fn scheduled_research_unsafe_job_kind_is_rejected_by_parser() {
+        assert!("PAPER_ORDER".parse::<ScheduledResearchJobKind>().is_err());
+        assert!("LIVE_ORDER".parse::<ScheduledResearchJobKind>().is_err());
+        assert!("PROMOTE_CANDIDATE"
+            .parse::<ScheduledResearchJobKind>()
+            .is_err());
+    }
+
+    #[test]
+    fn scheduled_research_next_run_at_uses_interval_seconds() {
+        let completed_at = ts(1, 0, 0);
+        assert_eq!(
+            scheduled_research_next_run_at(completed_at, 300).unwrap(),
+            ts(1, 5, 0)
+        );
+        assert!(scheduled_research_next_run_at(completed_at, 0).is_err());
+    }
+
+    #[test]
+    fn scheduled_research_max_runs_per_tick_must_be_positive() {
+        let request = ScheduledResearchJobRequest {
+            name: "Bad max".to_string(),
+            kind: ScheduledResearchJobKind::AggregationStatus,
+            enabled: true,
+            interval_seconds: 60,
+            request: json!({}),
+            max_runs_per_tick: 0,
+            next_run_at: None,
+        };
+        assert!(matches!(
+            request.validate(),
+            Err(CoreError::InvalidScheduledResearchJobMaxRuns)
+        ));
     }
 }

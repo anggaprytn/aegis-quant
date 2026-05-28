@@ -29,7 +29,9 @@ use aegis_core::{
     ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
     ResearchRegimeDiscoveryResult, ResearchRegimeDiscoveryStatus, ResearchRegimeDiscoverySummary,
     ResearchRegimeLabel, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput,
+    ResearchShadowPnlAttributionResult, ResearchShadowPnlRunInput, ScheduledResearchJob,
+    ScheduledResearchJobKind, ScheduledResearchJobRequest, ScheduledResearchJobRun,
+    ScheduledResearchJobRunStatus, ScheduledResearchJobStatus,
     StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
     StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
     StrategyCandidateObservationSummary, StrategyResearchCandidate,
@@ -259,6 +261,353 @@ pub struct ResearchExperimentPlanEventRecord {
     pub payload: Value,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledResearchJobRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub interval_seconds: i64,
+    pub request: Value,
+    pub max_runs_per_tick: i32,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledResearchJobRunRecord {
+    pub id: Uuid,
+    pub job_id: Uuid,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub result: Value,
+    pub error: Option<String>,
+    pub created_artifact_type: Option<String>,
+    pub created_artifact_id: Option<Uuid>,
+    pub correlation_id: Option<Uuid>,
+}
+
+fn scheduled_research_job_record_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> ScheduledResearchJobRecord {
+    ScheduledResearchJobRecord {
+        id: row.get("id"),
+        name: row.get("name"),
+        kind: row.get("kind"),
+        enabled: row.get("enabled"),
+        interval_seconds: row.get("interval_seconds"),
+        request: row.get("request"),
+        max_runs_per_tick: row.get("max_runs_per_tick"),
+        last_run_at: row.get("last_run_at"),
+        next_run_at: row.get("next_run_at"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn scheduled_research_job_run_record_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> ScheduledResearchJobRunRecord {
+    ScheduledResearchJobRunRecord {
+        id: row.get("id"),
+        job_id: row.get("job_id"),
+        status: row.get("status"),
+        started_at: row.get("started_at"),
+        completed_at: row.get("completed_at"),
+        result: row.get("result"),
+        error: row.get("error"),
+        created_artifact_type: row.get("created_artifact_type"),
+        created_artifact_id: row.get("created_artifact_id"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+pub fn scheduled_research_job_from_record(
+    record: &ScheduledResearchJobRecord,
+) -> Result<ScheduledResearchJob> {
+    Ok(ScheduledResearchJob {
+        id: record.id,
+        name: record.name.clone(),
+        kind: record.kind.parse::<ScheduledResearchJobKind>()?,
+        enabled: record.enabled,
+        interval_seconds: record.interval_seconds,
+        request: record.request.clone(),
+        max_runs_per_tick: record.max_runs_per_tick,
+        last_run_at: record.last_run_at,
+        next_run_at: record.next_run_at,
+        status: record.status.parse::<ScheduledResearchJobStatus>()?,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    })
+}
+
+pub fn scheduled_research_job_run_from_record(
+    record: &ScheduledResearchJobRunRecord,
+) -> Result<ScheduledResearchJobRun> {
+    Ok(ScheduledResearchJobRun {
+        id: record.id,
+        job_id: record.job_id,
+        status: record.status.parse::<ScheduledResearchJobRunStatus>()?,
+        started_at: record.started_at,
+        completed_at: record.completed_at,
+        result: record.result.clone(),
+        error: record.error.clone(),
+        created_artifact_type: record.created_artifact_type.clone(),
+        created_artifact_id: record.created_artifact_id,
+        correlation_id: record.correlation_id,
+    })
+}
+
+pub async fn insert_scheduled_research_job(
+    pool: &PgPool,
+    request: &ScheduledResearchJobRequest,
+) -> Result<ScheduledResearchJobRecord> {
+    request.validate()?;
+    let status = if request.enabled {
+        ScheduledResearchJobStatus::Enabled
+    } else {
+        ScheduledResearchJobStatus::Disabled
+    };
+    let next_run_at = request
+        .next_run_at
+        .or_else(|| request.enabled.then(Utc::now));
+    let row = sqlx::query(
+        r#"
+        INSERT INTO scheduled_research_jobs (
+            id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, next_run_at, status, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, NOW(), NOW())
+        RETURNING id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, next_run_at, status, created_at, updated_at
+        "#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(request.name.trim())
+    .bind(request.kind.as_str())
+    .bind(request.enabled)
+    .bind(request.interval_seconds)
+    .bind(&request.request)
+    .bind(request.max_runs_per_tick)
+    .bind(next_run_at)
+    .bind(status.as_str())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(scheduled_research_job_record_from_row(&row))
+}
+
+pub async fn list_scheduled_research_jobs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<ScheduledResearchJobRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, next_run_at, status, created_at, updated_at
+        FROM scheduled_research_jobs
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(scheduled_research_job_record_from_row)
+        .collect())
+}
+
+pub async fn get_scheduled_research_job(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ScheduledResearchJobRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, next_run_at, status, created_at, updated_at
+        FROM scheduled_research_jobs
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(scheduled_research_job_record_from_row))
+}
+
+pub async fn list_due_scheduled_research_jobs(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    limit: i64,
+) -> Result<Vec<ScheduledResearchJobRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, next_run_at, status, created_at, updated_at
+        FROM scheduled_research_jobs
+        WHERE enabled = TRUE
+          AND status IN ('ENABLED', 'ERROR')
+          AND next_run_at IS NOT NULL
+          AND next_run_at <= $1
+        ORDER BY next_run_at ASC, created_at ASC
+        LIMIT $2
+        "#,
+    )
+    .bind(now)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(scheduled_research_job_record_from_row)
+        .collect())
+}
+
+pub async fn update_scheduled_research_job_status(
+    pool: &PgPool,
+    id: Uuid,
+    enabled: bool,
+    status: ScheduledResearchJobStatus,
+    next_run_at: Option<DateTime<Utc>>,
+) -> Result<Option<ScheduledResearchJobRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE scheduled_research_jobs
+        SET enabled = $2,
+            status = $3,
+            next_run_at = $4,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, next_run_at, status, created_at, updated_at
+        "#,
+    )
+    .bind(id)
+    .bind(enabled)
+    .bind(status.as_str())
+    .bind(next_run_at)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(scheduled_research_job_record_from_row))
+}
+
+pub async fn mark_scheduled_research_job_after_run(
+    pool: &PgPool,
+    id: Uuid,
+    completed_at: DateTime<Utc>,
+    next_run_at: Option<DateTime<Utc>>,
+    status: ScheduledResearchJobStatus,
+) -> Result<Option<ScheduledResearchJobRecord>> {
+    let row = sqlx::query(
+        r#"
+        UPDATE scheduled_research_jobs
+        SET last_run_at = $2,
+            next_run_at = $3,
+            status = $4,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING id, name, kind, enabled, interval_seconds, request, max_runs_per_tick,
+            last_run_at, next_run_at, status, created_at, updated_at
+        "#,
+    )
+    .bind(id)
+    .bind(completed_at)
+    .bind(next_run_at)
+    .bind(status.as_str())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.as_ref().map(scheduled_research_job_record_from_row))
+}
+
+pub async fn insert_scheduled_research_job_run(
+    pool: &PgPool,
+    run: &ScheduledResearchJobRun,
+) -> Result<ScheduledResearchJobRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO scheduled_research_job_runs (
+            id, job_id, status, started_at, completed_at, result, error,
+            created_artifact_type, created_artifact_id, correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id, job_id, status, started_at, completed_at, result, error,
+            created_artifact_type, created_artifact_id, correlation_id
+        "#,
+    )
+    .bind(run.id)
+    .bind(run.job_id)
+    .bind(run.status.as_str())
+    .bind(run.started_at)
+    .bind(run.completed_at)
+    .bind(&run.result)
+    .bind(&run.error)
+    .bind(&run.created_artifact_type)
+    .bind(run.created_artifact_id)
+    .bind(run.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(scheduled_research_job_run_record_from_row(&row))
+}
+
+pub async fn list_scheduled_research_job_runs(
+    pool: &PgPool,
+    job_id: Uuid,
+    limit: i64,
+) -> Result<Vec<ScheduledResearchJobRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, job_id, status, started_at, completed_at, result, error,
+            created_artifact_type, created_artifact_id, correlation_id
+        FROM scheduled_research_job_runs
+        WHERE job_id = $1
+        ORDER BY started_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(job_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(scheduled_research_job_run_record_from_row)
+        .collect())
+}
+
+pub async fn count_recent_scheduled_research_runs(
+    pool: &PgPool,
+    since: DateTime<Utc>,
+) -> Result<(i64, i64)> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS total,
+            COUNT(*) FILTER (WHERE status = 'FAILED')::BIGINT AS failed
+        FROM scheduled_research_job_runs
+        WHERE started_at >= $1
+        "#,
+    )
+    .bind(since)
+    .fetch_one(pool)
+    .await?;
+
+    Ok((row.get("total"), row.get("failed")))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

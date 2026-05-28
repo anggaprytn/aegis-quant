@@ -32,20 +32,22 @@ use aegis_core::{
     ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
     ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
     RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    StrategyCandidateObservationResult, StrategyComparisonSummary, StrategyConfigAuditEntry,
-    StrategyConfigUpdateRequest, StrategyConfigValidationResult, StrategyConfigVersion,
-    StrategyDecisionBreakdown, StrategyDiagnosticsResult, StrategyDryRunRequest,
-    StrategyDryRunResult, StrategyExitAttributionResult, StrategyExperimentRequest,
-    StrategyExperimentResult, StrategyExperimentRun, StrategyMultiTimeframeExperimentRequest,
-    StrategyMultiTimeframeExperimentResult, StrategyOpportunityAnalysisResult,
-    StrategyPerformanceSummary, StrategyRobustnessMatrixCell, StrategyRobustnessMatrixRequest,
-    StrategyRobustnessMatrixResult, StrategySignalFeatureAttributionResult,
-    StrategyWalkForwardRequest, StrategyWalkForwardResult, StrategyWalkForwardWindowResult,
-    TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary, TestnetPromotionLifecycleBreakdown,
-    TestnetPromotionOutcomeBreakdown, TestnetShadowPromotionPreview, TestnetShadowPromotionRequest,
-    TestnetShadowPromotionResult, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
-    TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerControlRequest, TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
+    ScheduledResearchJob, ScheduledResearchJobControlRequest, ScheduledResearchJobRequest,
+    ScheduledResearchJobRun, StrategyCandidateObservationResult, StrategyComparisonSummary,
+    StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
+    StrategyConfigVersion, StrategyDecisionBreakdown, StrategyDiagnosticsResult,
+    StrategyDryRunRequest, StrategyDryRunResult, StrategyExitAttributionResult,
+    StrategyExperimentRequest, StrategyExperimentResult, StrategyExperimentRun,
+    StrategyMultiTimeframeExperimentRequest, StrategyMultiTimeframeExperimentResult,
+    StrategyOpportunityAnalysisResult, StrategyPerformanceSummary, StrategyRobustnessMatrixCell,
+    StrategyRobustnessMatrixRequest, StrategyRobustnessMatrixResult,
+    StrategySignalFeatureAttributionResult, StrategyWalkForwardRequest, StrategyWalkForwardResult,
+    StrategyWalkForwardWindowResult, TestnetPromotionFunnelRow, TestnetPromotionFunnelSummary,
+    TestnetPromotionLifecycleBreakdown, TestnetPromotionOutcomeBreakdown,
+    TestnetShadowPromotionPreview, TestnetShadowPromotionRequest, TestnetShadowPromotionResult,
+    TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest, TestnetShadowRunResult,
+    TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput, TestnetShadowRunnerControlRequest,
+    TestnetShadowRunnerState, TestnetShadowRunnerTickResult,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -774,6 +776,83 @@ impl ApiClient {
     ) -> Result<ResearchBatchTriageResponse, ApiClientError> {
         self.get(&format!("/research/batches/{batch_id}/triage"), &[])
             .await
+    }
+
+    pub async fn list_scheduled_research_jobs(
+        &self,
+        limit: i64,
+    ) -> Result<ScheduledResearchJobsResponse, ApiClientError> {
+        self.get("/research/scheduled-jobs", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_scheduled_research_job(
+        &self,
+        id: Uuid,
+    ) -> Result<ScheduledResearchJobResponse, ApiClientError> {
+        self.get(&format!("/research/scheduled-jobs/{id}"), &[])
+            .await
+    }
+
+    pub async fn create_scheduled_research_job(
+        &self,
+        request: &ScheduledResearchJobRequest,
+    ) -> Result<ScheduledResearchJobResponse, ApiClientError> {
+        self.post("/research/scheduled-jobs", request).await
+    }
+
+    pub async fn pause_scheduled_research_job(
+        &self,
+        id: Uuid,
+    ) -> Result<ScheduledResearchJobResponse, ApiClientError> {
+        self.post(
+            &format!("/research/scheduled-jobs/{id}/pause"),
+            &ScheduledResearchJobControlRequest {
+                reason: None,
+                correlation_id: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn resume_scheduled_research_job(
+        &self,
+        id: Uuid,
+    ) -> Result<ScheduledResearchJobResponse, ApiClientError> {
+        self.post(
+            &format!("/research/scheduled-jobs/{id}/resume"),
+            &ScheduledResearchJobControlRequest {
+                reason: None,
+                correlation_id: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn list_scheduled_research_job_runs(
+        &self,
+        id: Uuid,
+        limit: i64,
+    ) -> Result<ScheduledResearchJobRunsResponse, ApiClientError> {
+        self.get(
+            &format!("/research/scheduled-jobs/{id}/runs"),
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn run_once_scheduled_research_job(
+        &self,
+        id: Uuid,
+    ) -> Result<ScheduledResearchJobRunResponse, ApiClientError> {
+        self.post(
+            &format!("/research/scheduled-jobs/{id}/run-once"),
+            &ScheduledResearchJobControlRequest {
+                reason: None,
+                correlation_id: None,
+            },
+        )
+        .await
     }
 
     pub async fn run_research_campaign(
@@ -2779,6 +2858,38 @@ pub struct ResearchBatchStepsResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResearchBatchTriageResponse {
     pub triage: ResearchBatchTriage,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScheduledResearchJobsResponse {
+    pub jobs: Vec<ScheduledResearchJob>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScheduledResearchJobResponse {
+    pub job: ScheduledResearchJob,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScheduledResearchJobRunsResponse {
+    pub runs: Vec<ScheduledResearchJobRun>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScheduledResearchJobRunResponse {
+    pub run: ScheduledResearchJobRun,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
