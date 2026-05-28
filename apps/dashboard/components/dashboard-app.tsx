@@ -259,12 +259,21 @@ type StrategyExperimentFormState = {
   lookbacks: string;
   trend_lookbacks: string;
   momentum_lookbacks: string;
+  pullback_lookbacks: string;
+  pullback_sma_lookbacks: string;
   compression_lookbacks: string;
   breakout_lookbacks: string;
   compression_percentile_threshold: string;
   min_breakout_pct: string;
   max_breakout_extension_pct: string;
   min_volume_expansion_ratio: string;
+  min_trend_return_pct: string;
+  min_trend_slope_pct: string;
+  min_pullback_depth_pct: string;
+  max_pullback_depth_pct: string;
+  min_reclaim_pct: string;
+  min_volume_ratio: string;
+  max_choppiness: string;
   lower_band_pct: string;
   min_range_width_pct: string;
   max_range_width_pct: string;
@@ -295,8 +304,17 @@ type StrategyWalkForwardFormState = {
   lookback_candles: string;
   trend_lookback: string;
   momentum_lookback: string;
+  pullback_lookback: string;
+  pullback_sma_lookback: string;
   compression_lookback: string;
   breakout_lookback: string;
+  min_trend_return_pct: string;
+  min_trend_slope_pct: string;
+  min_pullback_depth_pct: string;
+  max_pullback_depth_pct: string;
+  min_reclaim_pct: string;
+  min_volume_ratio: string;
+  max_choppiness: string;
   holding_candles: string;
   stop_loss_pct: string;
   take_profit_pct: string;
@@ -316,12 +334,21 @@ const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   lookbacks: "10,20,50",
   trend_lookbacks: "10,20,50",
   momentum_lookbacks: "2,3,5",
+  pullback_lookbacks: "5,10,20",
+  pullback_sma_lookbacks: "20",
   compression_lookbacks: "10,20,40",
   breakout_lookbacks: "10,20,40",
   compression_percentile_threshold: "25",
   min_breakout_pct: "0.05,0.1,0.2",
   max_breakout_extension_pct: "0.75,1.0,1.5",
   min_volume_expansion_ratio: "1.0,1.1,1.3",
+  min_trend_return_pct: "1.0,2.0,4.0",
+  min_trend_slope_pct: "0",
+  min_pullback_depth_pct: "0.3,0.5,1.0",
+  max_pullback_depth_pct: "3.0,5.0,8.0",
+  min_reclaim_pct: "0.05",
+  min_volume_ratio: "0.8",
+  max_choppiness: "50,60,70",
   lower_band_pct: "10,20,30",
   min_range_width_pct: "0.15",
   max_range_width_pct: "3.0",
@@ -352,8 +379,17 @@ const DEFAULT_STRATEGY_WALK_FORWARD_FORM: StrategyWalkForwardFormState = {
   lookback_candles: "50",
   trend_lookback: "50",
   momentum_lookback: "2",
+  pullback_lookback: "10",
+  pullback_sma_lookback: "20",
   compression_lookback: "",
   breakout_lookback: "",
+  min_trend_return_pct: "2.0",
+  min_trend_slope_pct: "0",
+  min_pullback_depth_pct: "0.3",
+  max_pullback_depth_pct: "5.0",
+  min_reclaim_pct: "0.05",
+  min_volume_ratio: "0.8",
+  max_choppiness: "60",
   holding_candles: "3",
   stop_loss_pct: "",
   take_profit_pct: "",
@@ -408,12 +444,22 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
   slippage_bps: "5",
   experiment_timeframes: ["5m", "15m"],
   lookback_candidates: [10, 20, 50],
+  trend_lookback_candidates: [30, 50, 100],
   momentum_lookback_candidates: [2, 3, 5],
+  pullback_lookback_candidates: [5, 10, 20],
+  pullback_sma_lookback_candidates: [20],
   compression_lookback_candidates: [10, 20, 40],
   breakout_lookback_candidates: [10, 20, 40],
   min_breakout_pct_candidates: ["0.05", "0.1", "0.2"],
   max_breakout_extension_pct_candidates: ["0.75", "1.0", "1.5"],
   min_volume_expansion_ratio_candidates: ["1.0", "1.1", "1.3"],
+  min_trend_return_pct_candidates: ["1.0", "2.0", "4.0"],
+  min_trend_slope_pct_candidates: ["0"],
+  min_pullback_depth_pct_candidates: ["0.3", "0.5", "1.0"],
+  max_pullback_depth_pct_candidates: ["3.0", "5.0", "8.0"],
+  min_reclaim_pct_candidates: ["0.05"],
+  min_volume_ratio_candidates: ["0.8"],
+  max_choppiness_candidates: ["50", "60", "70"],
   min_close_above_sma_pct_candidates: ["0"],
   max_close_above_sma_pct_candidates: ["0.5", "1.0", "1.5"],
   min_momentum_return_pct_candidates: ["0", "0.1", "0.2"],
@@ -432,6 +478,7 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
     "range_reversion_v1",
     "volatility_breakout_v2",
     "volatility_compression_breakout_v1",
+    "trend_pullback_continuation_v1",
   ],
   symbols: ["BTCUSDT", "ETHUSDT"],
   experiment_timeframes: ["5m", "15m"],
@@ -449,12 +496,22 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   walk_forward_top_n: 3,
   base_interval: "1m",
   lookback_candidates: [10, 20, 50],
+  trend_lookback_candidates: [30, 50, 100],
   momentum_lookback_candidates: [2, 3, 5],
+  pullback_lookback_candidates: [5, 10, 20],
+  pullback_sma_lookback_candidates: [20],
   compression_lookback_candidates: [10, 20, 40],
   breakout_lookback_candidates: [10, 20, 40],
   min_breakout_pct_candidates: ["0.05", "0.1", "0.2"],
   max_breakout_extension_pct_candidates: ["0.75", "1.0", "1.5"],
   min_volume_expansion_ratio_candidates: ["1.0", "1.1", "1.3"],
+  min_trend_return_pct_candidates: ["1.0", "2.0", "4.0"],
+  min_trend_slope_pct_candidates: ["0"],
+  min_pullback_depth_pct_candidates: ["0.3", "0.5", "1.0"],
+  max_pullback_depth_pct_candidates: ["3.0", "5.0", "8.0"],
+  min_reclaim_pct_candidates: ["0.05"],
+  min_volume_ratio_candidates: ["0.8"],
+  max_choppiness_candidates: ["50", "60", "70"],
   min_close_above_sma_pct_candidates: ["0"],
   max_close_above_sma_pct_candidates: ["0.5", "1.0", "1.5"],
   min_momentum_return_pct_candidates: ["0", "0.1", "0.2"],
@@ -557,6 +614,8 @@ function strategyConfigFormFromStatus(
     momentum_lookback_candles: strategy?.momentum_lookback_candles ?? null,
     compression_lookback_candles: strategy?.compression_lookback_candles ?? null,
     breakout_lookback_candles: strategy?.breakout_lookback_candles ?? null,
+    pullback_lookback_candles: strategy?.pullback_lookback_candles ?? null,
+    pullback_sma_lookback_candles: strategy?.pullback_sma_lookback_candles ?? null,
     compression_percentile_threshold: strategy?.compression_percentile_threshold ?? null,
     min_breakout_pct: strategy?.min_breakout_pct ?? null,
     max_breakout_extension_pct: strategy?.max_breakout_extension_pct ?? null,
@@ -568,6 +627,13 @@ function strategyConfigFormFromStatus(
     min_close_above_sma_pct: strategy?.min_close_above_sma_pct ?? null,
     max_close_above_sma_pct: strategy?.max_close_above_sma_pct ?? null,
     min_momentum_return_pct: strategy?.min_momentum_return_pct ?? null,
+    min_trend_return_pct: strategy?.min_trend_return_pct ?? null,
+    min_trend_slope_pct: strategy?.min_trend_slope_pct ?? null,
+    min_pullback_depth_pct: strategy?.min_pullback_depth_pct ?? null,
+    max_pullback_depth_pct: strategy?.max_pullback_depth_pct ?? null,
+    min_reclaim_pct: strategy?.min_reclaim_pct ?? null,
+    min_volume_ratio: strategy?.min_volume_ratio ?? null,
+    max_choppiness: strategy?.max_choppiness ?? null,
     confidence_floor: strategy?.confidence_floor ?? null,
     stop_loss_pct: strategy?.stop_loss_pct ?? null,
     take_profit_pct: strategy?.take_profit_pct ?? null,
@@ -685,6 +751,8 @@ function buildStrategyExperimentRequest(
     lookback_candidates: parseIntegerList(form.lookbacks),
     trend_lookback_candidates: parseIntegerList(form.trend_lookbacks),
     momentum_lookback_candidates: parseIntegerList(form.momentum_lookbacks),
+    pullback_lookback_candidates: parseIntegerList(form.pullback_lookbacks),
+    pullback_sma_lookback_candidates: parseIntegerList(form.pullback_sma_lookbacks),
     compression_lookback_candidates: parseIntegerList(form.compression_lookbacks),
     breakout_lookback_candidates: parseIntegerList(form.breakout_lookbacks),
     compression_percentile_threshold_candidates: parseDecimalList(
@@ -693,6 +761,13 @@ function buildStrategyExperimentRequest(
     min_breakout_pct_candidates: parseDecimalList(form.min_breakout_pct),
     max_breakout_extension_pct_candidates: parseDecimalList(form.max_breakout_extension_pct),
     min_volume_expansion_ratio_candidates: parseDecimalList(form.min_volume_expansion_ratio),
+    min_trend_return_pct_candidates: parseDecimalList(form.min_trend_return_pct),
+    min_trend_slope_pct_candidates: parseDecimalList(form.min_trend_slope_pct),
+    min_pullback_depth_pct_candidates: parseDecimalList(form.min_pullback_depth_pct),
+    max_pullback_depth_pct_candidates: parseDecimalList(form.max_pullback_depth_pct),
+    min_reclaim_pct_candidates: parseDecimalList(form.min_reclaim_pct),
+    min_volume_ratio_candidates: parseDecimalList(form.min_volume_ratio),
+    max_choppiness_candidates: parseDecimalList(form.max_choppiness),
     lower_band_pct_candidates: parseDecimalList(form.lower_band_pct),
     min_range_width_pct_candidates: parseDecimalList(form.min_range_width_pct),
     max_range_width_pct_candidates: parseDecimalList(form.max_range_width_pct),
@@ -729,10 +804,23 @@ function buildStrategyWalkForwardRequest(
       lookback_candles: Number(form.lookback_candles),
       trend_lookback_candles: form.trend_lookback ? Number(form.trend_lookback) : null,
       momentum_lookback_candles: form.momentum_lookback ? Number(form.momentum_lookback) : null,
+      pullback_lookback_candles: form.pullback_lookback
+        ? Number(form.pullback_lookback)
+        : null,
+      pullback_sma_lookback_candles: form.pullback_sma_lookback
+        ? Number(form.pullback_sma_lookback)
+        : null,
       compression_lookback_candles: form.compression_lookback
         ? Number(form.compression_lookback)
         : null,
       breakout_lookback_candles: form.breakout_lookback ? Number(form.breakout_lookback) : null,
+      min_trend_return_pct: form.min_trend_return_pct || null,
+      min_trend_slope_pct: form.min_trend_slope_pct || null,
+      min_pullback_depth_pct: form.min_pullback_depth_pct || null,
+      max_pullback_depth_pct: form.max_pullback_depth_pct || null,
+      min_reclaim_pct: form.min_reclaim_pct || null,
+      min_volume_ratio: form.min_volume_ratio || null,
+      max_choppiness: form.max_choppiness || null,
       holding_candles: form.holding_candles ? Number(form.holding_candles) : null,
       stop_loss_pct: form.stop_loss_pct || null,
       take_profit_pct: form.take_profit_pct || null,
@@ -4332,6 +4420,26 @@ function AuthenticatedDashboard({
                       }
                     />
                     <Field
+                      label="Pullback Lookback"
+                      value={String(strategyConfigForm.pullback_lookback_candles ?? "")}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          pullback_lookback_candles: value ? Number(value) || 0 : null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Pullback SMA Lookback"
+                      value={String(strategyConfigForm.pullback_sma_lookback_candles ?? "")}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          pullback_sma_lookback_candles: value ? Number(value) || 0 : null,
+                        }))
+                      }
+                    />
+                    <Field
                       label="Breakout Lookback"
                       value={String(strategyConfigForm.breakout_lookback_candles ?? "")}
                       onChange={(value) =>
@@ -4438,6 +4546,76 @@ function AuthenticatedDashboard({
                         setStrategyConfigForm((current) => ({
                           ...current,
                           min_momentum_return_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Trend Return %"
+                      value={strategyConfigForm.min_trend_return_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_trend_return_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Trend Slope %"
+                      value={strategyConfigForm.min_trend_slope_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_trend_slope_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Pullback Depth %"
+                      value={strategyConfigForm.min_pullback_depth_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_pullback_depth_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Max Pullback Depth %"
+                      value={strategyConfigForm.max_pullback_depth_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          max_pullback_depth_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Reclaim %"
+                      value={strategyConfigForm.min_reclaim_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_reclaim_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Volume Ratio"
+                      value={strategyConfigForm.min_volume_ratio ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_volume_ratio: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Max Choppiness"
+                      value={strategyConfigForm.max_choppiness ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          max_choppiness: value || null,
                         }))
                       }
                     />
@@ -7277,7 +7455,16 @@ function AuthenticatedDashboard({
                       ["lookbacks", "Lookbacks"],
                       ["trend_lookbacks", "Trend Lookbacks"],
                       ["momentum_lookbacks", "Momentum Lookbacks"],
+                      ["pullback_lookbacks", "Pullback Lookbacks"],
+                      ["pullback_sma_lookbacks", "Pullback SMA Lookbacks"],
                       ["breakout_lookbacks", "Breakout Lookbacks"],
+                      ["min_trend_return_pct", "Min Trend Return %"],
+                      ["min_trend_slope_pct", "Min Trend Slope %"],
+                      ["min_pullback_depth_pct", "Min Pullback Depth %"],
+                      ["max_pullback_depth_pct", "Max Pullback Depth %"],
+                      ["min_reclaim_pct", "Min Reclaim %"],
+                      ["min_volume_ratio", "Min Volume Ratio"],
+                      ["max_choppiness", "Max Choppiness"],
                       ["lower_band_pct", "Lower Band %"],
                       ["min_range_width_pct", "Min Range Width %"],
                       ["max_range_width_pct", "Max Range Width %"],
@@ -7435,7 +7622,16 @@ function AuthenticatedDashboard({
                       ["lookback_candles", "Lookback Candles"],
                       ["trend_lookback", "Trend Lookback"],
                       ["momentum_lookback", "Momentum Lookback"],
+                      ["pullback_lookback", "Pullback Lookback"],
+                      ["pullback_sma_lookback", "Pullback SMA Lookback"],
                       ["breakout_lookback", "Breakout Lookback"],
+                      ["min_trend_return_pct", "Min Trend Return %"],
+                      ["min_trend_slope_pct", "Min Trend Slope %"],
+                      ["min_pullback_depth_pct", "Min Pullback Depth %"],
+                      ["max_pullback_depth_pct", "Max Pullback Depth %"],
+                      ["min_reclaim_pct", "Min Reclaim %"],
+                      ["min_volume_ratio", "Min Volume Ratio"],
+                      ["max_choppiness", "Max Choppiness"],
                       ["holding_candles", "Holding Candles"],
                       ["stop_loss_pct", "Stop Loss %"],
                       ["take_profit_pct", "Take Profit %"],

@@ -1504,6 +1504,7 @@ pub enum StrategyId {
     VolatilityBreakoutV2,
     VolatilityCompressionBreakoutV1,
     RangeReversionV1,
+    TrendPullbackContinuationV1,
 }
 
 impl StrategyId {
@@ -1516,6 +1517,7 @@ impl StrategyId {
             Self::VolatilityBreakoutV2 => "volatility_breakout_v2",
             Self::VolatilityCompressionBreakoutV1 => "volatility_compression_breakout_v1",
             Self::RangeReversionV1 => "range_reversion_v1",
+            Self::TrendPullbackContinuationV1 => "trend_pullback_continuation_v1",
         }
     }
 }
@@ -1532,6 +1534,7 @@ impl std::str::FromStr for StrategyId {
             "volatility_breakout_v2" => Ok(Self::VolatilityBreakoutV2),
             "volatility_compression_breakout_v1" => Ok(Self::VolatilityCompressionBreakoutV1),
             "range_reversion_v1" => Ok(Self::RangeReversionV1),
+            "trend_pullback_continuation_v1" => Ok(Self::TrendPullbackContinuationV1),
             other => Err(CoreError::UnsupportedStrategyId(other.to_string())),
         }
     }
@@ -1686,6 +1689,7 @@ pub enum SignalReason {
     VolumeConfirmedBreakout,
     VolatilityCompressionBreakout,
     RangeReversion,
+    TrendPullbackContinuation,
     ConditionsNotMet,
     InsufficientHistory,
     StrategyDisabled,
@@ -1701,6 +1705,7 @@ impl SignalReason {
             Self::VolumeConfirmedBreakout => "volume_confirmed_breakout",
             Self::VolatilityCompressionBreakout => "volatility_compression_breakout",
             Self::RangeReversion => "range_reversion",
+            Self::TrendPullbackContinuation => "trend_pullback_continuation",
             Self::ConditionsNotMet => "conditions_not_met",
             Self::InsufficientHistory => "insufficient_history",
             Self::StrategyDisabled => "strategy_disabled",
@@ -1720,6 +1725,7 @@ impl std::str::FromStr for SignalReason {
             "volume_confirmed_breakout" => Ok(Self::VolumeConfirmedBreakout),
             "volatility_compression_breakout" => Ok(Self::VolatilityCompressionBreakout),
             "range_reversion" => Ok(Self::RangeReversion),
+            "trend_pullback_continuation" => Ok(Self::TrendPullbackContinuation),
             "conditions_not_met" => Ok(Self::ConditionsNotMet),
             "insufficient_history" => Ok(Self::InsufficientHistory),
             "strategy_disabled" => Ok(Self::StrategyDisabled),
@@ -1758,6 +1764,8 @@ pub struct StrategyConfig {
     pub momentum_lookback_candles: Option<u32>,
     pub compression_lookback_candles: Option<u32>,
     pub breakout_lookback_candles: Option<u32>,
+    pub pullback_lookback_candles: Option<u32>,
+    pub pullback_sma_lookback_candles: Option<u32>,
     pub compression_percentile_threshold: Option<Decimal>,
     pub min_breakout_pct: Option<Decimal>,
     pub max_breakout_extension_pct: Option<Decimal>,
@@ -1769,6 +1777,13 @@ pub struct StrategyConfig {
     pub min_close_above_sma_pct: Option<Decimal>,
     pub max_close_above_sma_pct: Option<Decimal>,
     pub min_momentum_return_pct: Option<Decimal>,
+    pub min_trend_return_pct: Option<Decimal>,
+    pub min_trend_slope_pct: Option<Decimal>,
+    pub min_pullback_depth_pct: Option<Decimal>,
+    pub max_pullback_depth_pct: Option<Decimal>,
+    pub min_reclaim_pct: Option<Decimal>,
+    pub min_volume_ratio: Option<Decimal>,
+    pub max_choppiness: Option<Decimal>,
     pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -1811,6 +1826,8 @@ pub struct StrategyConfigUpdateRequest {
     pub momentum_lookback_candles: Option<u32>,
     pub compression_lookback_candles: Option<u32>,
     pub breakout_lookback_candles: Option<u32>,
+    pub pullback_lookback_candles: Option<u32>,
+    pub pullback_sma_lookback_candles: Option<u32>,
     pub compression_percentile_threshold: Option<Decimal>,
     pub min_breakout_pct: Option<Decimal>,
     pub max_breakout_extension_pct: Option<Decimal>,
@@ -1822,6 +1839,13 @@ pub struct StrategyConfigUpdateRequest {
     pub min_close_above_sma_pct: Option<Decimal>,
     pub max_close_above_sma_pct: Option<Decimal>,
     pub min_momentum_return_pct: Option<Decimal>,
+    pub min_trend_return_pct: Option<Decimal>,
+    pub min_trend_slope_pct: Option<Decimal>,
+    pub min_pullback_depth_pct: Option<Decimal>,
+    pub max_pullback_depth_pct: Option<Decimal>,
+    pub min_reclaim_pct: Option<Decimal>,
+    pub min_volume_ratio: Option<Decimal>,
+    pub max_choppiness: Option<Decimal>,
     pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -2456,6 +2480,9 @@ pub enum StrategyNoSignalReason {
     CloseTooCloseToSma,
     CloseTooExtendedAboveSma,
     MomentumNotConfirmed,
+    TrendNotConfirmed,
+    PullbackTooShallow,
+    PullbackTooDeep,
     TrendMomentumNotPositive,
     TrendTooExtended,
     VolatilityBelowMinimum,
@@ -2471,6 +2498,8 @@ pub enum StrategyNoSignalReason {
     RangeTooWide,
     NotNearLowerBand,
     NoReversalConfirmation,
+    ReclaimNotConfirmed,
+    TooChoppy,
     ConfidenceBelowFloor,
     InsufficientCandles,
     StrategyDisabled,
@@ -2487,6 +2516,9 @@ impl StrategyNoSignalReason {
             Self::CloseTooCloseToSma => "CLOSE_TOO_CLOSE_TO_SMA",
             Self::CloseTooExtendedAboveSma => "CLOSE_TOO_EXTENDED_ABOVE_SMA",
             Self::MomentumNotConfirmed => "MOMENTUM_NOT_CONFIRMED",
+            Self::TrendNotConfirmed => "TREND_NOT_CONFIRMED",
+            Self::PullbackTooShallow => "PULLBACK_TOO_SHALLOW",
+            Self::PullbackTooDeep => "PULLBACK_TOO_DEEP",
             Self::TrendMomentumNotPositive => "TREND_MOMENTUM_NOT_POSITIVE",
             Self::TrendTooExtended => "TREND_TOO_EXTENDED",
             Self::VolatilityBelowMinimum => "VOLATILITY_BELOW_MINIMUM",
@@ -2502,6 +2534,8 @@ impl StrategyNoSignalReason {
             Self::RangeTooWide => "RANGE_TOO_WIDE",
             Self::NotNearLowerBand => "NOT_NEAR_LOWER_BAND",
             Self::NoReversalConfirmation => "NO_REVERSAL_CONFIRMATION",
+            Self::ReclaimNotConfirmed => "RECLAIM_NOT_CONFIRMED",
+            Self::TooChoppy => "TOO_CHOPPY",
             Self::ConfidenceBelowFloor => "CONFIDENCE_BELOW_FLOOR",
             Self::InsufficientCandles => "INSUFFICIENT_CANDLES",
             Self::StrategyDisabled => "STRATEGY_DISABLED",
@@ -3220,6 +3254,8 @@ pub struct StrategyExperimentCandidate {
     pub momentum_lookback_candles: Option<u32>,
     pub compression_lookback_candles: Option<u32>,
     pub breakout_lookback_candles: Option<u32>,
+    pub pullback_lookback_candles: Option<u32>,
+    pub pullback_sma_lookback_candles: Option<u32>,
     pub compression_percentile_threshold: Option<Decimal>,
     pub min_breakout_pct: Option<Decimal>,
     pub max_breakout_extension_pct: Option<Decimal>,
@@ -3231,6 +3267,13 @@ pub struct StrategyExperimentCandidate {
     pub min_close_above_sma_pct: Option<Decimal>,
     pub max_close_above_sma_pct: Option<Decimal>,
     pub min_momentum_return_pct: Option<Decimal>,
+    pub min_trend_return_pct: Option<Decimal>,
+    pub min_trend_slope_pct: Option<Decimal>,
+    pub min_pullback_depth_pct: Option<Decimal>,
+    pub max_pullback_depth_pct: Option<Decimal>,
+    pub min_reclaim_pct: Option<Decimal>,
+    pub min_volume_ratio: Option<Decimal>,
+    pub max_choppiness: Option<Decimal>,
     pub holding_candles: Option<u32>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -3258,6 +3301,8 @@ pub struct StrategyExperimentRequest {
     pub momentum_lookback_candidates: Option<Vec<u32>>,
     pub compression_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub pullback_lookback_candidates: Option<Vec<u32>>,
+    pub pullback_sma_lookback_candidates: Option<Vec<u32>>,
     pub compression_percentile_threshold_candidates: Option<Vec<Decimal>>,
     pub min_breakout_pct_candidates: Option<Vec<Decimal>>,
     pub max_breakout_extension_pct_candidates: Option<Vec<Decimal>>,
@@ -3269,6 +3314,13 @@ pub struct StrategyExperimentRequest {
     pub min_close_above_sma_pct_candidates: Option<Vec<Decimal>>,
     pub max_close_above_sma_pct_candidates: Option<Vec<Decimal>>,
     pub min_momentum_return_pct_candidates: Option<Vec<Decimal>>,
+    pub min_trend_return_pct_candidates: Option<Vec<Decimal>>,
+    pub min_trend_slope_pct_candidates: Option<Vec<Decimal>>,
+    pub min_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
+    pub max_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
+    pub min_reclaim_pct_candidates: Option<Vec<Decimal>>,
+    pub min_volume_ratio_candidates: Option<Vec<Decimal>>,
+    pub max_choppiness_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
     pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
     pub take_profit_pct_candidates: Option<Vec<Decimal>>,
@@ -3329,6 +3381,10 @@ pub struct StrategyWalkForwardCandidate {
     #[serde(default)]
     pub breakout_lookback_candles: Option<u32>,
     #[serde(default)]
+    pub pullback_lookback_candles: Option<u32>,
+    #[serde(default)]
+    pub pullback_sma_lookback_candles: Option<u32>,
+    #[serde(default)]
     pub compression_percentile_threshold: Option<Decimal>,
     #[serde(default)]
     pub min_breakout_pct: Option<Decimal>,
@@ -3351,6 +3407,20 @@ pub struct StrategyWalkForwardCandidate {
     #[serde(default)]
     pub min_momentum_return_pct: Option<Decimal>,
     #[serde(default)]
+    pub min_trend_return_pct: Option<Decimal>,
+    #[serde(default)]
+    pub min_trend_slope_pct: Option<Decimal>,
+    #[serde(default)]
+    pub min_pullback_depth_pct: Option<Decimal>,
+    #[serde(default)]
+    pub max_pullback_depth_pct: Option<Decimal>,
+    #[serde(default)]
+    pub min_reclaim_pct: Option<Decimal>,
+    #[serde(default)]
+    pub min_volume_ratio: Option<Decimal>,
+    #[serde(default)]
+    pub max_choppiness: Option<Decimal>,
+    #[serde(default)]
     pub holding_candles: Option<u32>,
     #[serde(default)]
     pub stop_loss_pct: Option<Decimal>,
@@ -3367,6 +3437,8 @@ fn default_strategy_walk_forward_candidate() -> StrategyWalkForwardCandidate {
         momentum_lookback_candles: None,
         compression_lookback_candles: None,
         breakout_lookback_candles: None,
+        pullback_lookback_candles: None,
+        pullback_sma_lookback_candles: None,
         compression_percentile_threshold: None,
         min_breakout_pct: None,
         max_breakout_extension_pct: None,
@@ -3378,6 +3450,13 @@ fn default_strategy_walk_forward_candidate() -> StrategyWalkForwardCandidate {
         min_close_above_sma_pct: None,
         max_close_above_sma_pct: None,
         min_momentum_return_pct: None,
+        min_trend_return_pct: None,
+        min_trend_slope_pct: None,
+        min_pullback_depth_pct: None,
+        max_pullback_depth_pct: None,
+        min_reclaim_pct: None,
+        min_volume_ratio: None,
+        max_choppiness: None,
         holding_candles: None,
         stop_loss_pct: None,
         take_profit_pct: None,
@@ -3669,6 +3748,18 @@ impl StrategyExperimentRequest {
                     .into_iter()
                     .flatten(),
             )
+            .chain(
+                self.pullback_lookback_candidates
+                    .as_ref()
+                    .into_iter()
+                    .flatten(),
+            )
+            .chain(
+                self.pullback_sma_lookback_candidates
+                    .as_ref()
+                    .into_iter()
+                    .flatten(),
+            )
             .copied()
         {
             if lookback == 0 {
@@ -3764,6 +3855,137 @@ impl StrategyExperimentRequest {
             self.min_momentum_return_pct_candidates.clone(),
             vec![Decimal::ZERO],
         );
+        if self.strategy_id == "trend_pullback_continuation_v1" {
+            let pullback_lookbacks = non_empty_or(
+                self.pullback_lookback_candidates.clone(),
+                self.lookback_candidates.clone(),
+            );
+            let pullback_sma_lookbacks =
+                non_empty_or(self.pullback_sma_lookback_candidates.clone(), vec![20]);
+            let min_trend_returns = non_empty_or(
+                self.min_trend_return_pct_candidates.clone(),
+                vec![Decimal::new(2, 0)],
+            );
+            let min_trend_slopes = non_empty_or(
+                self.min_trend_slope_pct_candidates.clone(),
+                vec![Decimal::ZERO],
+            );
+            let min_pullback_depths = non_empty_or(
+                self.min_pullback_depth_pct_candidates.clone(),
+                vec![Decimal::new(3, 1)],
+            );
+            let max_pullback_depths = non_empty_or(
+                self.max_pullback_depth_pct_candidates.clone(),
+                vec![Decimal::new(5, 0)],
+            );
+            let min_reclaims = non_empty_or(
+                self.min_reclaim_pct_candidates.clone(),
+                vec![Decimal::new(5, 2)],
+            );
+            let min_volumes = non_empty_or(
+                self.min_volume_ratio_candidates.clone(),
+                vec![Decimal::new(8, 1)],
+            );
+            let max_choppiness_values = non_empty_or(
+                self.max_choppiness_candidates.clone(),
+                vec![Decimal::new(60, 0)],
+            );
+            let mut candidates = Vec::new();
+            for trend_lookback_candles in &trend_lookbacks {
+                for pullback_lookback_candles in &pullback_lookbacks {
+                    for pullback_sma_lookback_candles in &pullback_sma_lookbacks {
+                        for min_trend_return_pct in &min_trend_returns {
+                            for min_trend_slope_pct in &min_trend_slopes {
+                                for min_pullback_depth_pct in &min_pullback_depths {
+                                    for max_pullback_depth_pct in &max_pullback_depths {
+                                        for max_close_above_sma_pct in &max_close_above_sma_values {
+                                            for min_reclaim_pct in &min_reclaims {
+                                                for min_volume_ratio in &min_volumes {
+                                                    for max_choppiness in &max_choppiness_values {
+                                                        for holding_candles in &holdings {
+                                                            candidates
+                                                                .push(StrategyExperimentCandidate {
+                                                                lookback_candles:
+                                                                    *pullback_sma_lookback_candles,
+                                                                trend_lookback_candles: Some(
+                                                                    *trend_lookback_candles,
+                                                                ),
+                                                                momentum_lookback_candles: None,
+                                                                compression_lookback_candles: None,
+                                                                breakout_lookback_candles: None,
+                                                                pullback_lookback_candles: Some(
+                                                                    *pullback_lookback_candles,
+                                                                ),
+                                                                pullback_sma_lookback_candles: Some(
+                                                                    *pullback_sma_lookback_candles,
+                                                                ),
+                                                                compression_percentile_threshold:
+                                                                    None,
+                                                                min_breakout_pct: None,
+                                                                max_breakout_extension_pct: None,
+                                                                min_volume_expansion_ratio: None,
+                                                                lower_band_pct: None,
+                                                                upper_band_pct: None,
+                                                                min_range_width_pct: None,
+                                                                max_range_width_pct: None,
+                                                                min_close_above_sma_pct: Some(
+                                                                    Decimal::ZERO,
+                                                                ),
+                                                                max_close_above_sma_pct: Some(
+                                                                    *max_close_above_sma_pct,
+                                                                ),
+                                                                min_momentum_return_pct: None,
+                                                                min_trend_return_pct: Some(
+                                                                    *min_trend_return_pct,
+                                                                ),
+                                                                min_trend_slope_pct: Some(
+                                                                    *min_trend_slope_pct,
+                                                                ),
+                                                                min_pullback_depth_pct: Some(
+                                                                    *min_pullback_depth_pct,
+                                                                ),
+                                                                max_pullback_depth_pct: Some(
+                                                                    *max_pullback_depth_pct,
+                                                                ),
+                                                                min_reclaim_pct: Some(
+                                                                    *min_reclaim_pct,
+                                                                ),
+                                                                min_volume_ratio: Some(
+                                                                    *min_volume_ratio,
+                                                                ),
+                                                                max_choppiness: Some(
+                                                                    *max_choppiness,
+                                                                ),
+                                                                holding_candles: (*holding_candles
+                                                                    != 0)
+                                                                    .then_some(*holding_candles),
+                                                                stop_loss_pct: None,
+                                                                take_profit_pct: None,
+                                                                max_signal_age_ms: self
+                                                                    .max_signal_age_ms,
+                                                            });
+                                                            if self.max_runs.is_some_and(
+                                                                |max_runs| {
+                                                                    candidates.len()
+                                                                        >= max_runs as usize
+                                                                },
+                                                            ) {
+                                                                return candidates;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return candidates;
+        }
         let is_compression = self.strategy_id == "volatility_compression_breakout_v1";
         let is_range = self.strategy_id == "range_reversion_v1";
         let is_trend_v2 = self.strategy_id == "trend_filter_momentum_v2";
@@ -3807,6 +4029,8 @@ impl StrategyExperimentRequest {
                                                                                         momentum_lookback_candles: (*momentum_lookback_candles != 0).then_some(*momentum_lookback_candles),
                                                                                         compression_lookback_candles: is_compression.then_some(*compression_lookback_candles),
                                                                                         breakout_lookback_candles: Some(*breakout_lookback_candles),
+                                                                                        pullback_lookback_candles: None,
+                                                                                        pullback_sma_lookback_candles: None,
                                                                                         compression_percentile_threshold: is_compression.then_some(*compression_threshold),
                                                                                         min_breakout_pct: (is_compression && *min_breakout_pct != Decimal::ZERO).then_some(*min_breakout_pct),
                                                                                         max_breakout_extension_pct: (is_compression && *max_extension_pct != Decimal::ZERO).then_some(*max_extension_pct),
@@ -3818,6 +4042,13 @@ impl StrategyExperimentRequest {
                                                                                         min_close_above_sma_pct: is_trend_v2.then_some(*min_close_above_sma_pct),
                                                                                         max_close_above_sma_pct: (is_trend_v2 && *max_close_above_sma_pct != Decimal::ZERO).then_some(*max_close_above_sma_pct),
                                                                                         min_momentum_return_pct: is_trend_v2.then_some(*min_momentum_return_pct),
+                                                                                        min_trend_return_pct: None,
+                                                                                        min_trend_slope_pct: None,
+                                                                                        min_pullback_depth_pct: None,
+                                                                                        max_pullback_depth_pct: None,
+                                                                                        min_reclaim_pct: None,
+                                                                                        min_volume_ratio: None,
+                                                                                        max_choppiness: None,
                                                                                         holding_candles: (*holding_candles != 0).then_some(*holding_candles),
                                                                                         stop_loss_pct: (*stop_loss_pct != Decimal::ZERO).then_some(*stop_loss_pct),
                                                                                         take_profit_pct: (*take_profit_pct != Decimal::ZERO).then_some(*take_profit_pct),
@@ -3872,6 +4103,8 @@ pub struct StrategyMultiTimeframeExperimentRequest {
     pub momentum_lookback_candidates: Option<Vec<u32>>,
     pub compression_lookback_candidates: Option<Vec<u32>>,
     pub breakout_lookback_candidates: Option<Vec<u32>>,
+    pub pullback_lookback_candidates: Option<Vec<u32>>,
+    pub pullback_sma_lookback_candidates: Option<Vec<u32>>,
     pub compression_percentile_threshold_candidates: Option<Vec<Decimal>>,
     pub min_breakout_pct_candidates: Option<Vec<Decimal>>,
     pub max_breakout_extension_pct_candidates: Option<Vec<Decimal>>,
@@ -3883,6 +4116,13 @@ pub struct StrategyMultiTimeframeExperimentRequest {
     pub min_close_above_sma_pct_candidates: Option<Vec<Decimal>>,
     pub max_close_above_sma_pct_candidates: Option<Vec<Decimal>>,
     pub min_momentum_return_pct_candidates: Option<Vec<Decimal>>,
+    pub min_trend_return_pct_candidates: Option<Vec<Decimal>>,
+    pub min_trend_slope_pct_candidates: Option<Vec<Decimal>>,
+    pub min_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
+    pub max_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
+    pub min_reclaim_pct_candidates: Option<Vec<Decimal>>,
+    pub min_volume_ratio_candidates: Option<Vec<Decimal>>,
+    pub max_choppiness_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
     pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
     pub take_profit_pct_candidates: Option<Vec<Decimal>>,
@@ -3923,6 +4163,8 @@ impl StrategyMultiTimeframeExperimentRequest {
             momentum_lookback_candidates: self.momentum_lookback_candidates.clone(),
             compression_lookback_candidates: self.compression_lookback_candidates.clone(),
             breakout_lookback_candidates: self.breakout_lookback_candidates.clone(),
+            pullback_lookback_candidates: self.pullback_lookback_candidates.clone(),
+            pullback_sma_lookback_candidates: self.pullback_sma_lookback_candidates.clone(),
             compression_percentile_threshold_candidates: self
                 .compression_percentile_threshold_candidates
                 .clone(),
@@ -3940,6 +4182,13 @@ impl StrategyMultiTimeframeExperimentRequest {
             min_close_above_sma_pct_candidates: self.min_close_above_sma_pct_candidates.clone(),
             max_close_above_sma_pct_candidates: self.max_close_above_sma_pct_candidates.clone(),
             min_momentum_return_pct_candidates: self.min_momentum_return_pct_candidates.clone(),
+            min_trend_return_pct_candidates: self.min_trend_return_pct_candidates.clone(),
+            min_trend_slope_pct_candidates: self.min_trend_slope_pct_candidates.clone(),
+            min_pullback_depth_pct_candidates: self.min_pullback_depth_pct_candidates.clone(),
+            max_pullback_depth_pct_candidates: self.max_pullback_depth_pct_candidates.clone(),
+            min_reclaim_pct_candidates: self.min_reclaim_pct_candidates.clone(),
+            min_volume_ratio_candidates: self.min_volume_ratio_candidates.clone(),
+            max_choppiness_candidates: self.max_choppiness_candidates.clone(),
             holding_candles_candidates: self.holding_candles_candidates.clone(),
             stop_loss_pct_candidates: self.stop_loss_pct_candidates.clone(),
             take_profit_pct_candidates: self.take_profit_pct_candidates.clone(),
@@ -8485,6 +8734,64 @@ mod tests {
     fn password_min_length_is_enforced() {
         assert!(validate_password_length("123456789012").is_ok());
         assert!(validate_password_length("too-short").is_err());
+    }
+
+    #[test]
+    fn trend_pullback_experiment_candidates_include_pullback_fields() {
+        let request = super::StrategyExperimentRequest {
+            strategy_id: "trend_pullback_continuation_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1h".to_string(),
+            start_time: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2024, 2, 1, 0, 0, 0).unwrap(),
+            initial_capital: Decimal::new(100_000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            lookback_candidates: vec![20],
+            trend_lookback_candidates: Some(vec![30, 50]),
+            momentum_lookback_candidates: None,
+            compression_lookback_candidates: None,
+            breakout_lookback_candidates: None,
+            pullback_lookback_candidates: Some(vec![5, 10]),
+            pullback_sma_lookback_candidates: Some(vec![20]),
+            compression_percentile_threshold_candidates: None,
+            min_breakout_pct_candidates: None,
+            max_breakout_extension_pct_candidates: None,
+            min_volume_expansion_ratio_candidates: None,
+            lower_band_pct_candidates: None,
+            upper_band_pct_candidates: None,
+            min_range_width_pct_candidates: None,
+            max_range_width_pct_candidates: None,
+            min_close_above_sma_pct_candidates: None,
+            max_close_above_sma_pct_candidates: Some(vec![Decimal::new(1, 0)]),
+            min_momentum_return_pct_candidates: None,
+            min_trend_return_pct_candidates: Some(vec![Decimal::new(2, 0)]),
+            min_trend_slope_pct_candidates: Some(vec![Decimal::ZERO]),
+            min_pullback_depth_pct_candidates: Some(vec![Decimal::new(3, 1)]),
+            max_pullback_depth_pct_candidates: Some(vec![Decimal::new(5, 0)]),
+            min_reclaim_pct_candidates: Some(vec![Decimal::new(5, 2)]),
+            min_volume_ratio_candidates: Some(vec![Decimal::new(8, 1)]),
+            max_choppiness_candidates: Some(vec![Decimal::new(60, 0)]),
+            holding_candles_candidates: Some(vec![10, 20]),
+            stop_loss_pct_candidates: None,
+            take_profit_pct_candidates: None,
+            max_signal_age_ms: Some(7_200_000),
+            max_runs: Some(3),
+            correlation_id: None,
+        };
+
+        let candidates = request.candidates();
+
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].trend_lookback_candles, Some(30));
+        assert_eq!(candidates[0].pullback_lookback_candles, Some(5));
+        assert_eq!(candidates[0].pullback_sma_lookback_candles, Some(20));
+        assert_eq!(
+            candidates[0].min_pullback_depth_pct,
+            Some(Decimal::new(3, 1))
+        );
+        assert_eq!(candidates[0].max_choppiness, Some(Decimal::new(60, 0)));
+        assert_eq!(candidates[0].holding_candles, Some(10));
     }
 
     #[test]

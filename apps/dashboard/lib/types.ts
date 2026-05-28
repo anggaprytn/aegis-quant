@@ -1122,12 +1122,21 @@ export type ResearchBatchRequest = {
   lookback_candidates: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  pullback_lookback_candidates?: number[] | null;
+  pullback_sma_lookback_candidates?: number[] | null;
   compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   compression_percentile_threshold_candidates?: string[] | null;
   min_breakout_pct_candidates?: string[] | null;
   max_breakout_extension_pct_candidates?: string[] | null;
   min_volume_expansion_ratio_candidates?: string[] | null;
+  min_trend_return_pct_candidates?: string[] | null;
+  min_trend_slope_pct_candidates?: string[] | null;
+  min_pullback_depth_pct_candidates?: string[] | null;
+  max_pullback_depth_pct_candidates?: string[] | null;
+  min_reclaim_pct_candidates?: string[] | null;
+  min_volume_ratio_candidates?: string[] | null;
+  max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -1334,12 +1343,21 @@ export type ResearchCampaignRequest = {
   lookback_candidates?: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  pullback_lookback_candidates?: number[] | null;
+  pullback_sma_lookback_candidates?: number[] | null;
   compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   compression_percentile_threshold_candidates?: string[] | null;
   min_breakout_pct_candidates?: string[] | null;
   max_breakout_extension_pct_candidates?: string[] | null;
   min_volume_expansion_ratio_candidates?: string[] | null;
+  min_trend_return_pct_candidates?: string[] | null;
+  min_trend_slope_pct_candidates?: string[] | null;
+  min_pullback_depth_pct_candidates?: string[] | null;
+  max_pullback_depth_pct_candidates?: string[] | null;
+  min_reclaim_pct_candidates?: string[] | null;
+  min_volume_ratio_candidates?: string[] | null;
+  max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -3024,6 +3042,8 @@ export type StrategyStatusView = {
   momentum_lookback_candles: number | null;
   compression_lookback_candles: number | null;
   breakout_lookback_candles: number | null;
+  pullback_lookback_candles: number | null;
+  pullback_sma_lookback_candles: number | null;
   compression_percentile_threshold: string | null;
   min_breakout_pct: string | null;
   max_breakout_extension_pct: string | null;
@@ -3035,6 +3055,13 @@ export type StrategyStatusView = {
   min_close_above_sma_pct: string | null;
   max_close_above_sma_pct: string | null;
   min_momentum_return_pct: string | null;
+  min_trend_return_pct: string | null;
+  min_trend_slope_pct: string | null;
+  min_pullback_depth_pct: string | null;
+  max_pullback_depth_pct: string | null;
+  min_reclaim_pct: string | null;
+  min_volume_ratio: string | null;
+  max_choppiness: string | null;
   confidence_floor: string | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
@@ -3077,6 +3104,8 @@ export type StrategyConfigUpdateRequest = {
   momentum_lookback_candles?: number | null;
   compression_lookback_candles?: number | null;
   breakout_lookback_candles?: number | null;
+  pullback_lookback_candles?: number | null;
+  pullback_sma_lookback_candles?: number | null;
   compression_percentile_threshold?: string | null;
   min_breakout_pct?: string | null;
   max_breakout_extension_pct?: string | null;
@@ -3088,6 +3117,13 @@ export type StrategyConfigUpdateRequest = {
   min_close_above_sma_pct?: string | null;
   max_close_above_sma_pct?: string | null;
   min_momentum_return_pct?: string | null;
+  min_trend_return_pct?: string | null;
+  min_trend_slope_pct?: string | null;
+  min_pullback_depth_pct?: string | null;
+  max_pullback_depth_pct?: string | null;
+  min_reclaim_pct?: string | null;
+  min_volume_ratio?: string | null;
+  max_choppiness?: string | null;
   confidence_floor?: string | null;
   stop_loss_pct?: string | null;
   take_profit_pct?: string | null;
@@ -3186,6 +3222,13 @@ export type StrategyDiagnosticsDecision =
 export type StrategyNoSignalReason =
   | "MOMENTUM_NOT_STRICTLY_HIGHER_CLOSES"
   | "TREND_CLOSE_NOT_ABOVE_SMA"
+  | "CLOSE_BELOW_SMA"
+  | "CLOSE_TOO_CLOSE_TO_SMA"
+  | "CLOSE_TOO_EXTENDED_ABOVE_SMA"
+  | "MOMENTUM_NOT_CONFIRMED"
+  | "TREND_NOT_CONFIRMED"
+  | "PULLBACK_TOO_SHALLOW"
+  | "PULLBACK_TOO_DEEP"
   | "TREND_MOMENTUM_NOT_POSITIVE"
   | "BREAKOUT_NOT_ABOVE_RECENT_HIGH"
   | "BREAKOUT_VOLUME_BELOW_AVERAGE"
@@ -3199,6 +3242,8 @@ export type StrategyNoSignalReason =
   | "RANGE_TOO_WIDE"
   | "NOT_NEAR_LOWER_BAND"
   | "NO_REVERSAL_CONFIRMATION"
+  | "RECLAIM_NOT_CONFIRMED"
+  | "TOO_CHOPPY"
   | "CONFIDENCE_BELOW_FLOOR"
   | "INSUFFICIENT_CANDLES"
   | "STRATEGY_DISABLED"
@@ -4468,12 +4513,21 @@ export type StrategyExperimentCandidate = {
   lookback_candles: number;
   trend_lookback_candles: number | null;
   momentum_lookback_candles: number | null;
+  pullback_lookback_candles: number | null;
+  pullback_sma_lookback_candles: number | null;
   compression_lookback_candles: number | null;
   breakout_lookback_candles: number | null;
   compression_percentile_threshold: string | null;
   min_breakout_pct: string | null;
   max_breakout_extension_pct: string | null;
   min_volume_expansion_ratio: string | null;
+  min_trend_return_pct: string | null;
+  min_trend_slope_pct: string | null;
+  min_pullback_depth_pct: string | null;
+  max_pullback_depth_pct: string | null;
+  min_reclaim_pct: string | null;
+  min_volume_ratio: string | null;
+  max_choppiness: string | null;
   holding_candles: number | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;
@@ -4560,12 +4614,21 @@ export type StrategyExperimentRequest = {
   lookback_candidates: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  pullback_lookback_candidates?: number[] | null;
+  pullback_sma_lookback_candidates?: number[] | null;
   compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   compression_percentile_threshold_candidates?: string[] | null;
   min_breakout_pct_candidates?: string[] | null;
   max_breakout_extension_pct_candidates?: string[] | null;
   min_volume_expansion_ratio_candidates?: string[] | null;
+  min_trend_return_pct_candidates?: string[] | null;
+  min_trend_slope_pct_candidates?: string[] | null;
+  min_pullback_depth_pct_candidates?: string[] | null;
+  max_pullback_depth_pct_candidates?: string[] | null;
+  min_reclaim_pct_candidates?: string[] | null;
+  min_volume_ratio_candidates?: string[] | null;
+  max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -4593,12 +4656,21 @@ export type StrategyMultiTimeframeExperimentRequest = {
   lookback_candidates: number[];
   trend_lookback_candidates?: number[] | null;
   momentum_lookback_candidates?: number[] | null;
+  pullback_lookback_candidates?: number[] | null;
+  pullback_sma_lookback_candidates?: number[] | null;
   compression_lookback_candidates?: number[] | null;
   breakout_lookback_candidates?: number[] | null;
   compression_percentile_threshold_candidates?: string[] | null;
   min_breakout_pct_candidates?: string[] | null;
   max_breakout_extension_pct_candidates?: string[] | null;
   min_volume_expansion_ratio_candidates?: string[] | null;
+  min_trend_return_pct_candidates?: string[] | null;
+  min_trend_slope_pct_candidates?: string[] | null;
+  min_pullback_depth_pct_candidates?: string[] | null;
+  max_pullback_depth_pct_candidates?: string[] | null;
+  min_reclaim_pct_candidates?: string[] | null;
+  min_volume_ratio_candidates?: string[] | null;
+  max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
   upper_band_pct_candidates?: string[] | null;
   min_range_width_pct_candidates?: string[] | null;
@@ -4726,12 +4798,21 @@ export type StrategyWalkForwardCandidate = {
   lookback_candles: number;
   trend_lookback_candles?: number | null;
   momentum_lookback_candles?: number | null;
+  pullback_lookback_candles?: number | null;
+  pullback_sma_lookback_candles?: number | null;
   compression_lookback_candles?: number | null;
   breakout_lookback_candles?: number | null;
   compression_percentile_threshold?: string | null;
   min_breakout_pct?: string | null;
   max_breakout_extension_pct?: string | null;
   min_volume_expansion_ratio?: string | null;
+  min_trend_return_pct?: string | null;
+  min_trend_slope_pct?: string | null;
+  min_pullback_depth_pct?: string | null;
+  max_pullback_depth_pct?: string | null;
+  min_reclaim_pct?: string | null;
+  min_volume_ratio?: string | null;
+  max_choppiness?: string | null;
   holding_candles: number | null;
   stop_loss_pct: string | null;
   take_profit_pct: string | null;

@@ -584,6 +584,8 @@ pub struct StrategyConfigRecord {
     pub momentum_lookback_candles: Option<i32>,
     pub compression_lookback_candles: Option<i32>,
     pub breakout_lookback_candles: Option<i32>,
+    pub pullback_lookback_candles: Option<i32>,
+    pub pullback_sma_lookback_candles: Option<i32>,
     pub compression_percentile_threshold: Option<Decimal>,
     pub min_breakout_pct: Option<Decimal>,
     pub max_breakout_extension_pct: Option<Decimal>,
@@ -595,6 +597,13 @@ pub struct StrategyConfigRecord {
     pub min_close_above_sma_pct: Option<Decimal>,
     pub max_close_above_sma_pct: Option<Decimal>,
     pub min_momentum_return_pct: Option<Decimal>,
+    pub min_trend_return_pct: Option<Decimal>,
+    pub min_trend_slope_pct: Option<Decimal>,
+    pub min_pullback_depth_pct: Option<Decimal>,
+    pub max_pullback_depth_pct: Option<Decimal>,
+    pub min_reclaim_pct: Option<Decimal>,
+    pub min_volume_ratio: Option<Decimal>,
+    pub max_choppiness: Option<Decimal>,
     pub confidence_floor: Option<Decimal>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
@@ -8904,6 +8913,8 @@ async fn upsert_strategy_config_tx(
             strategy_momentum_lookback_candles,
             compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            pullback_lookback_candles,
+            pullback_sma_lookback_candles,
             compression_percentile_threshold,
             min_breakout_pct,
             max_breakout_extension_pct,
@@ -8915,6 +8926,13 @@ async fn upsert_strategy_config_tx(
             min_close_above_sma_pct,
             max_close_above_sma_pct,
             min_momentum_return_pct,
+            min_trend_return_pct,
+            min_trend_slope_pct,
+            min_pullback_depth_pct,
+            max_pullback_depth_pct,
+            min_reclaim_pct,
+            min_volume_ratio,
+            max_choppiness,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -8925,7 +8943,7 @@ async fn upsert_strategy_config_tx(
             updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, NOW(), NOW()
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, NOW(), NOW()
         )
         ON CONFLICT (strategy_id) DO UPDATE
         SET
@@ -8944,6 +8962,8 @@ async fn upsert_strategy_config_tx(
             strategy_momentum_lookback_candles = EXCLUDED.strategy_momentum_lookback_candles,
             compression_lookback_candles = EXCLUDED.compression_lookback_candles,
             strategy_breakout_lookback_candles = EXCLUDED.strategy_breakout_lookback_candles,
+            pullback_lookback_candles = EXCLUDED.pullback_lookback_candles,
+            pullback_sma_lookback_candles = EXCLUDED.pullback_sma_lookback_candles,
             compression_percentile_threshold = EXCLUDED.compression_percentile_threshold,
             min_breakout_pct = EXCLUDED.min_breakout_pct,
             max_breakout_extension_pct = EXCLUDED.max_breakout_extension_pct,
@@ -8955,6 +8975,13 @@ async fn upsert_strategy_config_tx(
             min_close_above_sma_pct = EXCLUDED.min_close_above_sma_pct,
             max_close_above_sma_pct = EXCLUDED.max_close_above_sma_pct,
             min_momentum_return_pct = EXCLUDED.min_momentum_return_pct,
+            min_trend_return_pct = EXCLUDED.min_trend_return_pct,
+            min_trend_slope_pct = EXCLUDED.min_trend_slope_pct,
+            min_pullback_depth_pct = EXCLUDED.min_pullback_depth_pct,
+            max_pullback_depth_pct = EXCLUDED.max_pullback_depth_pct,
+            min_reclaim_pct = EXCLUDED.min_reclaim_pct,
+            min_volume_ratio = EXCLUDED.min_volume_ratio,
+            max_choppiness = EXCLUDED.max_choppiness,
             confidence_floor = EXCLUDED.confidence_floor,
             stop_loss_pct = EXCLUDED.stop_loss_pct,
             take_profit_pct = EXCLUDED.take_profit_pct,
@@ -8976,6 +9003,8 @@ async fn upsert_strategy_config_tx(
             strategy_momentum_lookback_candles,
             compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            pullback_lookback_candles,
+            pullback_sma_lookback_candles,
             compression_percentile_threshold,
             min_breakout_pct,
             max_breakout_extension_pct,
@@ -8987,6 +9016,13 @@ async fn upsert_strategy_config_tx(
             min_close_above_sma_pct,
             max_close_above_sma_pct,
             min_momentum_return_pct,
+            min_trend_return_pct,
+            min_trend_slope_pct,
+            min_pullback_depth_pct,
+            max_pullback_depth_pct,
+            min_reclaim_pct,
+            min_volume_ratio,
+            max_choppiness,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -9013,6 +9049,8 @@ async fn upsert_strategy_config_tx(
     .bind(config.momentum_lookback_candles.map(|value| value as i32))
     .bind(config.compression_lookback_candles.map(|value| value as i32))
     .bind(config.breakout_lookback_candles.map(|value| value as i32))
+    .bind(config.pullback_lookback_candles.map(|value| value as i32))
+    .bind(config.pullback_sma_lookback_candles.map(|value| value as i32))
     .bind(config.compression_percentile_threshold)
     .bind(config.min_breakout_pct)
     .bind(config.max_breakout_extension_pct)
@@ -9024,6 +9062,13 @@ async fn upsert_strategy_config_tx(
     .bind(config.min_close_above_sma_pct)
     .bind(config.max_close_above_sma_pct)
     .bind(config.min_momentum_return_pct)
+    .bind(config.min_trend_return_pct)
+    .bind(config.min_trend_slope_pct)
+    .bind(config.min_pullback_depth_pct)
+    .bind(config.max_pullback_depth_pct)
+    .bind(config.min_reclaim_pct)
+    .bind(config.min_volume_ratio)
+    .bind(config.max_choppiness)
     .bind(config.confidence_floor)
     .bind(config.stop_loss_pct)
     .bind(config.take_profit_pct)
@@ -9056,6 +9101,8 @@ async fn get_strategy_config_tx(
             strategy_momentum_lookback_candles,
             compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            pullback_lookback_candles,
+            pullback_sma_lookback_candles,
             compression_percentile_threshold,
             min_breakout_pct,
             max_breakout_extension_pct,
@@ -9067,6 +9114,13 @@ async fn get_strategy_config_tx(
             min_close_above_sma_pct,
             max_close_above_sma_pct,
             min_momentum_return_pct,
+            min_trend_return_pct,
+            min_trend_slope_pct,
+            min_pullback_depth_pct,
+            max_pullback_depth_pct,
+            min_reclaim_pct,
+            min_volume_ratio,
+            max_choppiness,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -9106,6 +9160,8 @@ pub async fn get_strategy_config(
             strategy_momentum_lookback_candles,
             compression_lookback_candles,
             strategy_breakout_lookback_candles,
+            pullback_lookback_candles,
+            pullback_sma_lookback_candles,
             compression_percentile_threshold,
             min_breakout_pct,
             max_breakout_extension_pct,
@@ -9117,6 +9173,13 @@ pub async fn get_strategy_config(
             min_close_above_sma_pct,
             max_close_above_sma_pct,
             min_momentum_return_pct,
+            min_trend_return_pct,
+            min_trend_slope_pct,
+            min_pullback_depth_pct,
+            max_pullback_depth_pct,
+            min_reclaim_pct,
+            min_volume_ratio,
+            max_choppiness,
             confidence_floor,
             stop_loss_pct,
             take_profit_pct,
@@ -9479,6 +9542,8 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
             c.strategy_momentum_lookback_candles,
             c.compression_lookback_candles,
             c.strategy_breakout_lookback_candles,
+            c.pullback_lookback_candles,
+            c.pullback_sma_lookback_candles,
             c.compression_percentile_threshold,
             c.min_breakout_pct,
             c.max_breakout_extension_pct,
@@ -9490,6 +9555,13 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
             c.min_close_above_sma_pct,
             c.max_close_above_sma_pct,
             c.min_momentum_return_pct,
+            c.min_trend_return_pct,
+            c.min_trend_slope_pct,
+            c.min_pullback_depth_pct,
+            c.max_pullback_depth_pct,
+            c.min_reclaim_pct,
+            c.min_volume_ratio,
+            c.max_choppiness,
             c.confidence_floor,
             c.stop_loss_pct,
             c.take_profit_pct,
@@ -9530,6 +9602,8 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
                 momentum_lookback_candles: row.get("strategy_momentum_lookback_candles"),
                 compression_lookback_candles: row.get("compression_lookback_candles"),
                 breakout_lookback_candles: row.get("strategy_breakout_lookback_candles"),
+                pullback_lookback_candles: row.get("pullback_lookback_candles"),
+                pullback_sma_lookback_candles: row.get("pullback_sma_lookback_candles"),
                 compression_percentile_threshold: row.get("compression_percentile_threshold"),
                 min_breakout_pct: row.get("min_breakout_pct"),
                 max_breakout_extension_pct: row.get("max_breakout_extension_pct"),
@@ -9541,6 +9615,13 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
                 min_close_above_sma_pct: row.get("min_close_above_sma_pct"),
                 max_close_above_sma_pct: row.get("max_close_above_sma_pct"),
                 min_momentum_return_pct: row.get("min_momentum_return_pct"),
+                min_trend_return_pct: row.get("min_trend_return_pct"),
+                min_trend_slope_pct: row.get("min_trend_slope_pct"),
+                min_pullback_depth_pct: row.get("min_pullback_depth_pct"),
+                max_pullback_depth_pct: row.get("max_pullback_depth_pct"),
+                min_reclaim_pct: row.get("min_reclaim_pct"),
+                min_volume_ratio: row.get("min_volume_ratio"),
+                max_choppiness: row.get("max_choppiness"),
                 confidence_floor: row.get("confidence_floor"),
                 stop_loss_pct: row.get("stop_loss_pct"),
                 take_profit_pct: row.get("take_profit_pct"),
@@ -9587,6 +9668,10 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
             .compression_lookback_candles
             .map(|value| value as u32),
         breakout_lookback_candles: record.breakout_lookback_candles.map(|value| value as u32),
+        pullback_lookback_candles: record.pullback_lookback_candles.map(|value| value as u32),
+        pullback_sma_lookback_candles: record
+            .pullback_sma_lookback_candles
+            .map(|value| value as u32),
         compression_percentile_threshold: record.compression_percentile_threshold,
         min_breakout_pct: record.min_breakout_pct,
         max_breakout_extension_pct: record.max_breakout_extension_pct,
@@ -9598,6 +9683,13 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
         min_close_above_sma_pct: record.min_close_above_sma_pct,
         max_close_above_sma_pct: record.max_close_above_sma_pct,
         min_momentum_return_pct: record.min_momentum_return_pct,
+        min_trend_return_pct: record.min_trend_return_pct,
+        min_trend_slope_pct: record.min_trend_slope_pct,
+        min_pullback_depth_pct: record.min_pullback_depth_pct,
+        max_pullback_depth_pct: record.max_pullback_depth_pct,
+        min_reclaim_pct: record.min_reclaim_pct,
+        min_volume_ratio: record.min_volume_ratio,
+        max_choppiness: record.max_choppiness,
         confidence_floor: record.confidence_floor,
         stop_loss_pct: record.stop_loss_pct,
         take_profit_pct: record.take_profit_pct,
@@ -10662,6 +10754,8 @@ fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
         momentum_lookback_candles: row.get("strategy_momentum_lookback_candles"),
         compression_lookback_candles: row.get("compression_lookback_candles"),
         breakout_lookback_candles: row.get("strategy_breakout_lookback_candles"),
+        pullback_lookback_candles: row.get("pullback_lookback_candles"),
+        pullback_sma_lookback_candles: row.get("pullback_sma_lookback_candles"),
         compression_percentile_threshold: row.get("compression_percentile_threshold"),
         min_breakout_pct: row.get("min_breakout_pct"),
         max_breakout_extension_pct: row.get("max_breakout_extension_pct"),
@@ -10673,6 +10767,13 @@ fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
         min_close_above_sma_pct: row.get("min_close_above_sma_pct"),
         max_close_above_sma_pct: row.get("max_close_above_sma_pct"),
         min_momentum_return_pct: row.get("min_momentum_return_pct"),
+        min_trend_return_pct: row.get("min_trend_return_pct"),
+        min_trend_slope_pct: row.get("min_trend_slope_pct"),
+        min_pullback_depth_pct: row.get("min_pullback_depth_pct"),
+        max_pullback_depth_pct: row.get("max_pullback_depth_pct"),
+        min_reclaim_pct: row.get("min_reclaim_pct"),
+        min_volume_ratio: row.get("min_volume_ratio"),
+        max_choppiness: row.get("max_choppiness"),
         confidence_floor: row.get("confidence_floor"),
         stop_loss_pct: row.get("stop_loss_pct"),
         take_profit_pct: row.get("take_profit_pct"),
