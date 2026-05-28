@@ -88,17 +88,51 @@ Use `AEGIS_ACCESS_TOKEN` with the smoke script when authenticated research read 
 
 ## VPS Read-Only Scheduled Research Validation
 
-Use the VPS read-only validator after deployment or during scheduler triage when you need evidence without mutating production state:
+Use the VPS read-only validator after deployment or during scheduler triage when you need evidence without mutating production state. SSH to the VPS and run it from the deployed repo:
+
+```bash
+ssh tencent
+cd /app/aegis-quant
+./scripts/validate-vps-readonly.sh
+```
+
+The validator is designed for Docker-based VPS deployments. If `AEGIS_READONLY_DATABASE_URL` is set, it uses local `psql` with that URL and expects the URL to use the `aegis_readonly` role. If the URL is not set and the `aegis-quant-postgres` container is running, it runs:
+
+```bash
+docker exec -i aegis-quant-postgres psql -U aegis_readonly -d aegis_quant -c "<SELECT * FROM ai_read...>"
+```
+
+This means Postgres does not need to expose a host port for validation. If neither a read-only URL nor the Docker container is available, DB checks are reported as `WARN` unless `--strict` is passed.
+
+Run with an API token when authenticated read-only research endpoints should be included:
 
 ```bash
 AEGIS_API_BASE_URL=http://127.0.0.1:3100 \
 AEGIS_DASHBOARD_URL=http://127.0.0.1:3101 \
 AEGIS_ACCESS_TOKEN="$AEGIS_ACCESS_TOKEN" \
-AEGIS_READONLY_DATABASE_URL="$AEGIS_READONLY_DATABASE_URL" \
 ./scripts/validate-vps-readonly.sh
 ```
 
-The script only uses `docker ps`, `docker logs --tail`, `curl` GET requests, and `psql` SELECT statements against `ai_read` views through `AEGIS_READONLY_DATABASE_URL`. It does not run sync, restart containers, apply migrations, create jobs, run jobs, call POST endpoints, or touch execution paths. If a token or read-only database URL is not available, those checks are reported as WARN/SKIP-style warnings instead of falling back to write-capable credentials.
+Useful modes:
+
+```bash
+./scripts/validate-vps-readonly.sh --skip-db
+./scripts/validate-vps-readonly.sh --skip-api
+./scripts/validate-vps-readonly.sh --strict
+./scripts/validate-vps-readonly.sh --json
+```
+
+The script only uses `docker ps`, `docker logs --tail`, `curl` GET requests, `psql` SELECT statements against `ai_read` views, and Docker exec into `aegis-quant-postgres` as `aegis_readonly`. It does not run sync, restart containers, apply migrations, create jobs, run jobs, call POST endpoints, or touch execution paths. If a token is not available, authenticated scheduled research API checks are reported as `WARN` and skipped.
+
+DB validation queries are limited to these read-only views:
+
+```sql
+SELECT * FROM ai_read.candle_coverage;
+SELECT * FROM ai_read.execution_safety_counts;
+SELECT * FROM ai_read.shadow_decision_summary;
+SELECT * FROM ai_read.research_candidate_status;
+SELECT * FROM ai_read.walk_forward_status;
+```
 
 Expected healthy shape:
 
@@ -124,8 +158,11 @@ OK   GET /market/candles/aggregation-status HTTP 200; rows=9 stale_or_missing=0
 == Scheduled Jobs ==
 OK   GET /research/scheduled-jobs HTTP 200; jobs=14 enabled=14 auto_paused=0 backing_off=0
 
+== Database ==
+OK   DB validation mode: docker exec aegis-quant-postgres as aegis_readonly
+
 == Execution Safety ==
-OK   ai_read.execution_safety_counts
+OK   ai_read.execution_safety_counts all reported counts are zero
 orders|0
 paper_positions|0
 paper_fills|0
@@ -134,6 +171,16 @@ exchange_testnet_orders|0
 == Summary ==
 OK=... WARN=0 FAIL=0
 ```
+
+`OK` means a read-only check completed successfully. `WARN` means the check was unavailable, skipped, stale, missing, or otherwise worth operator attention without making the validator fail by default. `FAIL` means a required endpoint was unreachable or returned an unexpected hard error. With `--strict`, missing `ai_read` views and skipped DB validation become failures.
+
+If an `ai_read` view is missing, the validator prints a warning like:
+
+```txt
+WARN ai_read.walk_forward_status missing or inaccessible; install/grant the ai_read read-only view for VPS validation
+```
+
+Do not inspect the underlying tables with write-capable credentials as part of validation. Apply or repair the `ai_read` schema through the normal reviewed migration/deployment path, then rerun the validator. On the VPS, keep validation read-only: do not run migrations, `syncaegis`, Docker restarts, scheduled jobs, POST requests, or direct SQL against non-`ai_read` tables during this check.
 
 If scheduler jobs are `AUTO_PAUSED` or `BACKING_OFF`, do not immediately reset failures. First inspect the listed job name, last failure reason, and scheduler logs. Fix the underlying input problem, usually provider reachability, missing candles, stale aggregation, or report-generation dependencies. Only after the cause is understood should an operator use the normal authenticated reset or resume flow.
 
