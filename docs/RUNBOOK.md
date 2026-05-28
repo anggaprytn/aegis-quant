@@ -47,10 +47,16 @@ If VPS operations use the host CLI at `/usr/local/bin/aegis`, install it from th
 ./scripts/install-vps-cli.sh
 ```
 
-The installer builds `cargo build --release -p cli`, installs `target/release/aegis` to `/usr/local/bin/aegis`, then verifies:
+The VPS host does not need a Rust toolchain. The installer uses host Cargo when available:
 
 ```bash
-aegis --version      # if supported by the current CLI build
+cargo build --release -p cli
+```
+
+If `cargo` is unavailable, it falls back to Docker, builds the repo `Dockerfile`, extracts `/usr/local/bin/aegis` from the built image, installs it to `/usr/local/bin/aegis`, then verifies:
+
+```bash
+aegis --help
 aegis research --help
 aegis research scheduled-jobs --help
 ```
@@ -61,6 +67,21 @@ If `/usr/local/bin/syncaegis` is managed outside this repo, keep the script itse
 cd /app/aegis-quant
 /app/aegis-quant/scripts/install-vps-cli.sh
 ```
+
+To refresh only the scheduled research runner image/container after pulling runner changes, use the targeted helper:
+
+```bash
+./scripts/refresh-vps-scheduled-runner.sh
+```
+
+It only runs:
+
+```bash
+docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler build scheduled-research-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d --force-recreate scheduled-research-runner
+```
+
+It does not run `docker compose down`, touch Postgres volumes, recreate API/dashboard/market-ingest, edit `.env`, or enable the scheduler.
 
 Do not reset VPS volumes as part of routine sync. Take a database backup before migrations or destructive maintenance.
 
@@ -218,10 +239,13 @@ Keep the runner disabled during deploys, run migrations, make sure the host `aeg
 ```bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 ./scripts/install-vps-cli.sh
+./scripts/refresh-vps-scheduled-runner.sh
 cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
 cargo run -p cli -- research scheduled-jobs bootstrap-safe
 cargo run -p cli -- research scheduled-jobs list
 ```
+
+Only run `scheduled-jobs bootstrap-safe` after the host CLI supports `aegis research scheduled-jobs --help` and the disabled scheduler container is idling instead of restart-looping.
 
 The safe bootstrap creates only:
 
