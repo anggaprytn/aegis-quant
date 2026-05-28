@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use aegis_core::MarketMode;
 use api::{
-    scheduled_research::{run_scheduled_research_tick, runner_interval_from_env},
+    scheduled_research::{
+        run_scheduled_research_tick, scheduled_research_runner_mode_from_env,
+        ScheduledResearchRunnerMode,
+    },
     AppConfig, AppState, StrategyRuntimeConfig,
 };
 use chrono::Utc;
@@ -14,15 +17,15 @@ use tracing::{info, warn};
 async fn main() {
     init_tracing();
 
-    let enabled = std::env::var("SCHEDULED_RESEARCH_RUNNER_ENABLED")
-        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
-        .unwrap_or(false);
-    if !enabled {
-        info!(
-            "scheduled research runner disabled; set SCHEDULED_RESEARCH_RUNNER_ENABLED=true to run"
-        );
-        return;
-    }
+    let mode =
+        scheduled_research_runner_mode_from_env().expect("invalid scheduled runner configuration");
+    let interval_seconds = match mode {
+        ScheduledResearchRunnerMode::Enabled { interval_seconds } => interval_seconds,
+        ScheduledResearchRunnerMode::Disabled { sleep_seconds } => {
+            idle_while_disabled(sleep_seconds).await;
+            return;
+        }
+    };
 
     let config = AppConfig::from_env().expect("invalid application configuration");
     let db_pool = connect_pool(&DbConfig {
@@ -44,11 +47,10 @@ async fn main() {
         strategy_runtime: StrategyRuntimeConfig::from_env()
             .expect("invalid strategy runtime configuration"),
     };
-    let interval_seconds = runner_interval_from_env().expect("invalid scheduled runner interval");
 
     info!(
-        interval_seconds,
-        "starting scheduled research runner daemon"
+        enabled = true,
+        interval_seconds, "starting scheduled research runner daemon"
     );
     loop {
         match run_scheduled_research_tick(&state, 100).await {
@@ -66,12 +68,60 @@ async fn main() {
             }
         }
 
+        if wait_for_shutdown_or_sleep(Duration::from_secs(interval_seconds.max(1))).await {
+            info!("received shutdown signal, stopping scheduled research runner daemon");
+            break;
+        }
+    }
+}
+
+async fn idle_while_disabled(sleep_seconds: u64) {
+    info!(
+        enabled = false,
+        sleep_seconds,
+        no_jobs_processed = true,
+        "scheduled research runner disabled; idling"
+    );
+    loop {
+        if wait_for_shutdown_or_sleep(Duration::from_secs(sleep_seconds.max(1))).await {
+            info!("received shutdown signal, stopping disabled scheduled research runner");
+            break;
+        }
+        info!(
+            enabled = false,
+            sleep_seconds,
+            no_jobs_processed = true,
+            "scheduled research runner disabled; idling"
+        );
+    }
+}
+
+async fn wait_for_shutdown_or_sleep(duration: Duration) -> bool {
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("received ctrl-c, stopping scheduled research runner daemon");
-                break;
+            result = tokio::signal::ctrl_c() => {
+                if let Err(err) = result {
+                    warn!(error = %err, "failed to listen for ctrl-c");
+                }
+                true
             }
-            _ = tokio::time::sleep(Duration::from_secs(interval_seconds.max(1))) => {}
+            _ = sigterm.recv() => true,
+            _ = tokio::time::sleep(duration) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(err) = result {
+                    warn!(error = %err, "failed to listen for ctrl-c");
+                }
+                true
+            }
+            _ = tokio::time::sleep(duration) => false,
         }
     }
 }

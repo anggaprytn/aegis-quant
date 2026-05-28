@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::AppState;
 
 pub const DEFAULT_SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS: u64 = 60;
+pub const DEFAULT_SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS: u64 = 300;
 pub const DEFAULT_SCHEDULED_RESEARCH_MAX_CONSECUTIVE_FAILURES: i32 = 5;
 pub const DEFAULT_SCHEDULED_RESEARCH_BACKOFF_BASE_SECONDS: i64 = 300;
 pub const DEFAULT_SCHEDULED_RESEARCH_BACKOFF_MAX_SECONDS: i64 = 3600;
@@ -838,10 +839,60 @@ fn before_counts_json(counts: &ExecutionTableCounts) -> Value {
 }
 
 pub fn runner_interval_from_env() -> Result<u64> {
-    Ok(std::env::var("SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS")
-        .unwrap_or_else(|_| DEFAULT_SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS.to_string())
+    parse_runner_interval(std::env::var("SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS").ok())
+}
+
+pub fn runner_disabled_sleep_seconds_from_env() -> Result<u64> {
+    parse_runner_disabled_sleep_seconds(
+        std::env::var("SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS").ok(),
+    )
+}
+
+fn parse_runner_interval(value: Option<String>) -> Result<u64> {
+    Ok(value
+        .unwrap_or_else(|| DEFAULT_SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS.to_string())
         .parse()
         .context("invalid SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS")?)
+}
+
+fn parse_runner_disabled_sleep_seconds(value: Option<String>) -> Result<u64> {
+    Ok(value
+        .unwrap_or_else(|| DEFAULT_SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS.to_string())
+        .parse()
+        .context("invalid SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS")?)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduledResearchRunnerMode {
+    Enabled { interval_seconds: u64 },
+    Disabled { sleep_seconds: u64 },
+}
+
+pub fn scheduled_research_runner_mode_from_env() -> Result<ScheduledResearchRunnerMode> {
+    parse_scheduled_research_runner_mode(
+        std::env::var("SCHEDULED_RESEARCH_RUNNER_ENABLED").ok(),
+        std::env::var("SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS").ok(),
+        std::env::var("SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS").ok(),
+    )
+}
+
+fn parse_scheduled_research_runner_mode(
+    enabled: Option<String>,
+    interval_seconds: Option<String>,
+    disabled_sleep_seconds: Option<String>,
+) -> Result<ScheduledResearchRunnerMode> {
+    let enabled = enabled
+        .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
+        .unwrap_or(false);
+    if enabled {
+        Ok(ScheduledResearchRunnerMode::Enabled {
+            interval_seconds: parse_runner_interval(interval_seconds)?,
+        })
+    } else {
+        Ok(ScheduledResearchRunnerMode::Disabled {
+            sleep_seconds: parse_runner_disabled_sleep_seconds(disabled_sleep_seconds)?,
+        })
+    }
 }
 
 fn env_i32(name: &str, default: i32) -> i32 {
@@ -1070,5 +1121,46 @@ mod tests {
         assert_eq!(request.expected_interval_seconds, Some(900));
         assert_eq!(request.max_allowed_gap_count, Some(0));
         assert_eq!((request.end_time - request.start_time).num_minutes(), 90);
+    }
+
+    #[test]
+    fn scheduled_runner_disabled_mode_uses_idle_sleep_default() {
+        let mode = parse_scheduled_research_runner_mode(None, None, None).unwrap();
+        assert_eq!(
+            mode,
+            ScheduledResearchRunnerMode::Disabled {
+                sleep_seconds: DEFAULT_SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS
+            }
+        );
+    }
+
+    #[test]
+    fn scheduled_runner_disabled_mode_uses_configured_idle_sleep() {
+        let mode = parse_scheduled_research_runner_mode(
+            Some("false".to_string()),
+            Some("5".to_string()),
+            Some("7".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            mode,
+            ScheduledResearchRunnerMode::Disabled { sleep_seconds: 7 }
+        );
+    }
+
+    #[test]
+    fn scheduled_runner_enabled_mode_uses_tick_interval() {
+        let mode = parse_scheduled_research_runner_mode(
+            Some("true".to_string()),
+            Some("11".to_string()),
+            Some("7".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            mode,
+            ScheduledResearchRunnerMode::Enabled {
+                interval_seconds: 11
+            }
+        );
     }
 }

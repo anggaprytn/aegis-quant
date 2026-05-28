@@ -41,6 +41,27 @@ docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -
 docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
 ```
 
+If VPS operations use the host CLI at `/usr/local/bin/aegis`, install it from the same checked-out source after the deploy:
+
+```bash
+./scripts/install-vps-cli.sh
+```
+
+The installer builds `cargo build --release -p cli`, installs `target/release/aegis` to `/usr/local/bin/aegis`, then verifies:
+
+```bash
+aegis --version      # if supported by the current CLI build
+aegis research --help
+aegis research scheduled-jobs --help
+```
+
+If `/usr/local/bin/syncaegis` is managed outside this repo, keep the script itself out of git and add this step after `git pull` and the service builds:
+
+```bash
+cd /app/aegis-quant
+/app/aegis-quant/scripts/install-vps-cli.sh
+```
+
 Do not reset VPS volumes as part of routine sync. Take a database backup before migrations or destructive maintenance.
 
 ## Migrations
@@ -190,10 +211,13 @@ If `ai_read.execution_safety_counts` reports non-zero counts on a VPS that shoul
 
 ## Scheduled Research Runner
 
-The scheduled research runner is disabled by default. Keep it disabled during deploys, run migrations, then bootstrap low-risk monitoring jobs first:
+The scheduled research runner is disabled by default. When `SCHEDULED_RESEARCH_RUNNER_ENABLED=false`, the runner stays alive in idle mode, logs `scheduled research runner disabled; idling`, and does not connect to the database or process jobs. The idle sleep interval is controlled by `SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS` and defaults to `300`. In this state the Docker container should show `Up`, not `Restarting`.
+
+Keep the runner disabled during deploys, run migrations, make sure the host `aegis` CLI is current if using it on the VPS, then bootstrap low-risk monitoring jobs first:
 
 ```bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
+./scripts/install-vps-cli.sh
 cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
 cargo run -p cli -- research scheduled-jobs bootstrap-safe
 cargo run -p cli -- research scheduled-jobs list
@@ -212,7 +236,7 @@ Jobs are created disabled unless `--enable` is passed. The normal VPS path is:
 cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
 cargo run -p cli -- research scheduled-jobs bootstrap-safe
 cargo run -p cli -- research scheduled-jobs bootstrap-safe --enable
-# set SCHEDULED_RESEARCH_RUNNER_ENABLED=true in .env first
+# set SCHEDULED_RESEARCH_RUNNER_ENABLED=true in .env first, then restart the scheduler
 docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d scheduled-research-runner
 ```
 
