@@ -146,14 +146,16 @@ docker exec -i aegis-quant-postgres psql -U aegis_readonly -d aegis_quant -c "<S
 
 This means Postgres does not need to expose a host port for validation. If neither a read-only URL nor the Docker container is available, DB checks are reported as `WARN` unless `--strict` is passed.
 
-Run with an API token when authenticated read-only research endpoints should be included:
+Run with VPS CLI auth token auto-load (no token required on command line):
 
 ```bash
 AEGIS_API_BASE_URL=http://127.0.0.1:3100 \
 AEGIS_DASHBOARD_URL=http://127.0.0.1:3101 \
-AEGIS_ACCESS_TOKEN="$AEGIS_ACCESS_TOKEN" \
 ./scripts/validate-vps-readonly.sh
 ```
+
+`validate-vps-readonly.sh` is read-only and does not print secrets.
+It uses `AEGIS_ACCESS_TOKEN` when set, otherwise loads `~/.config/aegis/token.json` as fallback.
 
 Useful modes:
 
@@ -188,8 +190,8 @@ OK   GET /system/health HTTP 200
 OK   dashboard HTTP 200
 
 == Containers ==
-OK   aegis-quant-api running; no error-like log lines in last 80 lines
-OK   aegis-quant-scheduled-research-runner running; no error-like log lines in last 80 lines
+OK   aegis-quant-api running; no meaningful warning patterns in last 80 lines
+OK   aegis-quant-scheduled-research-runner running; no meaningful warning patterns in last 80 lines
 
 == Market Feed ==
 OK   GET /market/feed-status HTTP 200; feeds=3 stale_or_degraded=0

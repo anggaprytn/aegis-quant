@@ -4,6 +4,7 @@ set -euo pipefail
 API_BASE_URL="${AEGIS_API_BASE_URL:-http://127.0.0.1:3100}"
 DASHBOARD_URL="${AEGIS_DASHBOARD_URL:-http://127.0.0.1:3101}"
 ACCESS_TOKEN="${AEGIS_ACCESS_TOKEN:-}"
+TOKEN_SOURCE="none"
 READONLY_DATABASE_URL="${AEGIS_READONLY_DATABASE_URL:-}"
 TAIL_LINES="${AEGIS_VALIDATE_LOG_TAIL_LINES:-80}"
 JOB_LIMIT="${AEGIS_VALIDATE_JOB_LIMIT:-50}"
@@ -44,6 +45,7 @@ Environment:
   AEGIS_API_BASE_URL              default http://127.0.0.1:3100
   AEGIS_DASHBOARD_URL            default http://127.0.0.1:3101
   AEGIS_ACCESS_TOKEN             optional bearer token for authenticated GET endpoints
+  token fallback uses ~/.config/aegis/token.json when AEGIS_ACCESS_TOKEN is unset
   AEGIS_READONLY_DATABASE_URL    optional Postgres URL; must use aegis_readonly
   AEGIS_VALIDATE_LOG_TAIL_LINES  default 80
   AEGIS_VALIDATE_JOB_LIMIT       default 50
@@ -109,6 +111,11 @@ warn() {
   record_event "WARN" "$1"
 }
 
+info() {
+  printf 'INFO  %s\n' "$1"
+  record_event "INFO" "$1"
+}
+
 fail() {
   FAIL_COUNT=$((FAIL_COUNT + 1))
   printf 'FAIL %s\n' "$1"
@@ -127,6 +134,34 @@ need_command() {
     return 0
   fi
   warn "$1 not installed; skipping checks that require it"
+  return 1
+}
+
+load_access_token() {
+  if [ -n "$ACCESS_TOKEN" ]; then
+    TOKEN_SOURCE="environment"
+    return 0
+  fi
+
+  local token_file="${HOME}/.config/aegis/token.json"
+  if [ ! -f "$token_file" ]; then
+    TOKEN_SOURCE="missing"
+    return 1
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    ACCESS_TOKEN="$(jq -r '.access_token // empty' "$token_file" 2>/dev/null || true)"
+  else
+    ACCESS_TOKEN="$(sed -n 's/.*\"access_token\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' "$token_file" 2>/dev/null | head -n 1 || true)"
+  fi
+
+  if [ -n "$ACCESS_TOKEN" ] && [ "$ACCESS_TOKEN" != "null" ]; then
+    TOKEN_SOURCE="file:$token_file"
+    return 0
+  fi
+
+  TOKEN_SOURCE="invalid"
+  ACCESS_TOKEN=""
   return 1
 }
 
@@ -177,9 +212,37 @@ docker_running() {
 
 docker_error_count() {
   local name="$1"
-  docker logs --tail "$TAIL_LINES" "$name" 2>&1 \
-    | redact_log_line \
-    | grep -Eic '(^|[^A-Za-z])(ERROR|FATAL|panic|panicked|failed)([^A-Za-z]|$)' || true
+  local logs
+  local line
+  local count=0
+
+  logs="$(docker logs --tail "$TAIL_LINES" "$name" 2>&1 | redact_log_line)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+
+    if grep -Eq 'disabled; idling|failed_runs=0|error_count=0|failed=0|no 500s|database system is ready to accept connections|startup process|shutting down|shutdown complete' <<<"$line"; then
+      continue
+    fi
+
+    if grep -Eiq 'level=ERROR|\\bpanic\\b|\\bpanicked\\b' <<<"$line"; then
+      count=$((count + 1))
+      continue
+    fi
+
+    if grep -Eiq '\\blevel=FATAL\\b|\\bFATAL\\b' <<<"$line"; then
+      if ! grep -Eiq 'clean shutdown|shutdown|shut.?down|terminated|terminating|closed|close' <<<"$line"; then
+        count=$((count + 1))
+      fi
+      continue
+    fi
+
+    if grep -Eiq 'status[=: ]+500|failed_runs=[1-9][0-9]*|auto_paused|backing_off|connection refused|relation does not exist|permission denied|\"failed_runs\": *[1-9][0-9]*|\\blevel=ERROR\\b|\\b\"level\"[[:space:]]*:[[:space:]]*\"ERROR\"' <<<"$line"; then
+      count=$((count + 1))
+      continue
+    fi
+  done <<<"$logs"
+
+  printf '%s\n' "$count"
 }
 
 readonly_url_looks_safe() {
@@ -440,6 +503,19 @@ run_api_checks() {
         ok "GET /research/scheduled-jobs HTTP 200; jobs=$job_count enabled=$enabled_count auto_paused=$auto_paused_count backing_off=$backing_off_count"
         jq -r '.jobs[]? | "  " + .id + " " + .name + " kind=" + .kind + " status=" + .status + " enabled=" + (.enabled | tostring) + " next_run_at=" + (.next_run_at // "null") + " failures=" + ((.consecutive_failure_count // 0) | tostring)' 2>/dev/null <<<"$jobs_body" || true
 
+        if [ "$job_count" = "0" ] || [ -z "$job_count" ]; then
+          fail "scheduled jobs endpoint returned no jobs; expected at least one safe monitoring job"
+        fi
+        if [ "$enabled_count" = "0" ] || [ -z "$enabled_count" ]; then
+          fail "scheduled jobs endpoint returned 0 enabled jobs; expected safe jobs to be enabled"
+        fi
+        if [ "$auto_paused_count" != "0" ]; then
+          fail "scheduled jobs endpoint shows auto-paused=$auto_paused_count (expected 0)"
+        fi
+        if [ "$backing_off_count" != "0" ]; then
+          fail "scheduled jobs endpoint shows backing_off=$backing_off_count (expected 0)"
+        fi
+
         if [ "$auto_paused_count" != "0" ] || [ "$backing_off_count" != "0" ]; then
           warn "scheduled research has auto-paused or backing-off jobs"
           jq -r '.jobs[]? | select((.status // "") == "AUTO_PAUSED" or (.status // "") == "BACKING_OFF" or (.backoff_until // null) != null) | "  attention " + .name + " status=" + .status + " backoff_until=" + (.backoff_until // "null") + " reason=" + (.auto_paused_reason // .last_failure_reason // "null")' 2>/dev/null <<<"$jobs_body" || true
@@ -450,19 +526,25 @@ run_api_checks() {
           while IFS= read -r job_id; do
             [ -n "$job_id" ] || continue
             job_name="$(jq -r --arg id "$job_id" '.jobs[]? | select(.id == $id) | .name' 2>/dev/null <<<"$jobs_body")"
-            runs_status="$(curl_status "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT")"
-            case "$runs_status" in
-              200)
-                runs_body="$(curl_get "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT" || true)"
-                run_count="$(json_count "$runs_body" '.runs | length')"
-                failed_runs="$(json_count "$runs_body" '[.runs[]? | select((.status // "") | test("FAILED"; "i"))] | length')"
-                latest_run="$(jq -r '.runs[0]? | "latest_started_at=" + (.started_at // "null") + " status=" + (.status // "unknown") + " completed_at=" + (.completed_at // "null") + " artifact=" + (.created_artifact_type // "none")' 2>/dev/null <<<"$runs_body")"
-                ok "GET recent scheduled job runs for $job_name; runs=$run_count failed=$failed_runs ${latest_run:-latest_started_at=null}"
-                ;;
-              401|403)
-                warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status; token lacks access"
-                ;;
-              *)
+                runs_status="$(curl_status "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT")"
+                case "$runs_status" in
+                  200)
+                    runs_body="$(curl_get "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT" || true)"
+                    run_count="$(json_count "$runs_body" '.runs | length')"
+                    failed_runs="$(json_count "$runs_body" '[.runs[]? | select((.status // "") | test("FAILED"; "i"))] | length')"
+                    latest_run="$(jq -r '.runs[0]? | "latest_started_at=" + (.started_at // "null") + " status=" + (.status // "unknown") + " completed_at=" + (.completed_at // "null") + " artifact=" + (.created_artifact_type // "none")' 2>/dev/null <<<"$runs_body")"
+                    ok "GET recent scheduled job runs for $job_name; runs=$run_count failed=$failed_runs ${latest_run:-latest_started_at=null}"
+                    if [ "$failed_runs" != "0" ]; then
+                      fail "scheduled job $job_name recent runs include failed=$failed_runs"
+                    fi
+                    if [ "$run_count" = "0" ]; then
+                      warn "scheduled job $job_name has no recent runs in the sample"
+                    fi
+                    ;;
+                  401|403)
+                    warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status; token lacks access"
+                    ;;
+                  *)
                 warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status for $job_name"
                 ;;
             esac
@@ -505,9 +587,9 @@ run_container_checks() {
       if docker_running "$container"; then
         errors="$(docker_error_count "$container")"
         if [ "$errors" = "0" ]; then
-          ok "$container running; no error-like log lines in last $TAIL_LINES lines"
+          ok "$container running; no meaningful warning patterns in last $TAIL_LINES lines"
         else
-          warn "$container running; $errors error-like log line(s) in last $TAIL_LINES lines"
+          warn "$container running; $errors meaningful warning pattern(s) in last $TAIL_LINES lines"
         fi
       else
         warn "$container is not running"
@@ -575,6 +657,29 @@ echo "Dashboard: $DASHBOARD_URL"
 echo "Strict: $STRICT"
 echo "API checks: $([ "$SKIP_API" -eq 1 ] && printf 'skipped' || printf 'enabled')"
 echo "Database checks: $([ "$SKIP_DB" -eq 1 ] && printf 'skipped' || printf 'enabled')"
+load_access_token
+if [ -n "$ACCESS_TOKEN" ]; then
+  case "$TOKEN_SOURCE" in
+    environment)
+      echo "Auth token: provided via AEGIS_ACCESS_TOKEN"
+      ;;
+    file:*)
+      echo "Auth token: loaded from ~/.config/aegis/token.json"
+      ;;
+    *)
+      echo "Auth token: available"
+      ;;
+  esac
+else
+  echo "Auth token: unavailable; authenticated endpoints may be skipped"
+  if [ "$TOKEN_SOURCE" = "missing" ]; then
+    warn "AEGIS_ACCESS_TOKEN unset and ~/.config/aegis/token.json not found; authenticated API checks will be skipped"
+  elif [ "$TOKEN_SOURCE" = "invalid" ]; then
+    warn "failed to load token from ~/.config/aegis/token.json; authenticated API checks may be skipped"
+  else
+    warn "no access token available; authenticated API checks may be skipped"
+  fi
+fi
 
 if [ "$SKIP_API" -eq 1 ]; then
   warn "API checks skipped by --skip-api"
