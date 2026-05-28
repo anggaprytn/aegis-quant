@@ -159,15 +159,19 @@ bash scripts/validate-vps-readonly.sh
 `validate-vps-readonly.sh` is read-only and does not print secrets.
 It uses `AEGIS_ACCESS_TOKEN` when set, otherwise loads `~/.config/aegis/token.json` as fallback.
 By default it is read-only and will not run any auth login flow automatically.
-Use `--auto-login` to enable a safe optional refresh flow:
+Use `--auto-login` to run a safe optional startup auth refresh flow.
+- Recommended VPS read-only command:
 
 ```bash
 export AEGIS_API_BASE_URL=http://127.0.0.1:3100
 export AEGIS_DASHBOARD_URL=http://127.0.0.1:3101
 
-# --auto-login may call aegislogin (POST /auth/login) when authenticated checks return 401
 bash scripts/validate-vps-readonly.sh --auto-login
 ```
+
+- `--auto-login` performs an auth login POST (`aegislogin`) once at startup and then uses `~/.config/aegis/token.json`.
+- Default mode is read-only and does not run login automatically.
+- Token values are never printed.
 
 ## Fix stale validator token
 
@@ -177,8 +181,8 @@ If authenticated checks return `401`, use the manual token refresh flow:
 unset AEGIS_ACCESS_TOKEN
 aegislogin
 
-export AEGIS_API_BASE_URL=http://127.0.0.1:3100
 export AEGIS_ACCESS_TOKEN="$(jq -r '.access_token' ~/.config/aegis/token.json)"
+export AEGIS_API_BASE_URL=http://127.0.0.1:3100
 
 bash scripts/validate-vps-readonly.sh
 ```
@@ -186,6 +190,7 @@ bash scripts/validate-vps-readonly.sh
 - `AEGIS_ACCESS_TOKEN` in the environment has priority in the validator.
 - If it is stale, unset it before running the validator.
 - The validator never prints token values.
+- Token values are never printed by `validate-vps-readonly.sh`.
 
 Useful modes:
 

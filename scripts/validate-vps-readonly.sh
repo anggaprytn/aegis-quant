@@ -3,12 +3,12 @@ set -euo pipefail
 
 API_BASE_URL="${AEGIS_API_BASE_URL:-http://127.0.0.1:3100}"
 DASHBOARD_URL="${AEGIS_DASHBOARD_URL:-http://127.0.0.1:3101}"
-ACCESS_TOKEN="${AEGIS_ACCESS_TOKEN:-}"
+AUTH_TOKEN="${AEGIS_ACCESS_TOKEN:-}"
 TOKEN_SOURCE="none"
 PREFER_CLI_TOKEN=0
 AUTO_LOGIN=0
-AUTO_LOGIN_ATTEMPTED=0
 READONLY_DATABASE_URL="${AEGIS_READONLY_DATABASE_URL:-}"
+AUTO_LOGIN_ATTEMPTED=0
 TAIL_LINES="${AEGIS_VALIDATE_LOG_TAIL_LINES:-80}"
 JOB_LIMIT="${AEGIS_VALIDATE_JOB_LIMIT:-50}"
 RUN_LIMIT="${AEGIS_VALIDATE_RUN_LIMIT:-20}"
@@ -46,7 +46,7 @@ Flags:
   --prefer-cli-token
             Ignore AEGIS_ACCESS_TOKEN and load token from ~/.config/aegis/token.json.
   --auto-login
-            Retry one-time authenticated checks by running aegislogin when auth returns 401.
+            Refresh CLI token once at startup before authenticated checks by running aegislogin once.
 
 Environment:
   AEGIS_API_BASE_URL              default http://127.0.0.1:3100
@@ -155,28 +155,28 @@ load_token_from_file() {
 
   if [ ! -f "$token_file" ]; then
     TOKEN_SOURCE="missing"
-    ACCESS_TOKEN=""
+    AUTH_TOKEN=""
     return 1
   fi
 
   if command -v jq >/dev/null 2>&1; then
-    ACCESS_TOKEN="$(jq -r '.access_token // empty' "$token_file" 2>/dev/null || true)"
+    AUTH_TOKEN="$(jq -r '.access_token // empty' "$token_file" 2>/dev/null || true)"
   else
-    ACCESS_TOKEN="$(sed -n 's/.*\"access_token\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' "$token_file" 2>/dev/null | head -n 1 || true)"
+    AUTH_TOKEN="$(sed -n 's/.*\"access_token\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' "$token_file" 2>/dev/null | head -n 1 || true)"
   fi
 
-  if [ -n "$ACCESS_TOKEN" ] && [ "$ACCESS_TOKEN" != "null" ]; then
+  if [ -n "$AUTH_TOKEN" ] && [ "$AUTH_TOKEN" != "null" ]; then
     TOKEN_SOURCE="file:$token_file"
     return 0
   fi
 
   TOKEN_SOURCE="invalid"
-  ACCESS_TOKEN=""
+  AUTH_TOKEN=""
   return 1
 }
 
 load_access_token() {
-  if [ "$PREFER_CLI_TOKEN" -eq 0 ] && [ -n "$ACCESS_TOKEN" ]; then
+  if [ "$PREFER_CLI_TOKEN" -eq 0 ] && [ -n "$AUTH_TOKEN" ]; then
     TOKEN_SOURCE="environment"
     return 0
   fi
@@ -184,46 +184,84 @@ load_access_token() {
   load_token_from_file
 }
 
+is_http_status_numeric() {
+  [[ "$1" =~ ^[0-9]{3}$ ]]
+}
+
+validate_http_status() {
+  local status="$1"
+  local label="$2"
+
+  if is_http_status_numeric "$status"; then
+    return 0
+  fi
+
+  fail "${label} returned non-numeric HTTP status"
+  return 1
+}
+
 token_stale_hint() {
   warn 'Token may be missing or stale. Run with --auto-login or refresh manually with: unset AEGIS_ACCESS_TOKEN && aegislogin'
 }
 
-maybe_auto_login() {
+warn_for_auth_401() {
+  if [ "$AUTO_LOGIN" -eq 1 ] && [ "$AUTO_LOGIN_ATTEMPTED" -eq 1 ]; then
+    warn 'authenticated GET returned 401 after auto-login; token may still be invalid'
+    return
+  fi
+  token_stale_hint
+}
+
+startup_auto_login() {
   if [ "$AUTO_LOGIN" -eq 0 ] || [ "$AUTO_LOGIN_ATTEMPTED" -eq 1 ]; then
     return 1
   fi
 
   AUTO_LOGIN_ATTEMPTED=1
-
-  # Override only in-script token state; keep host environment untouched.
-  ACCESS_TOKEN=""
+  info "Auto-login enabled; refreshing CLI token before authenticated checks"
+  AUTH_TOKEN=""
   TOKEN_SOURCE="none"
 
-  info "Authenticated request returned 401; refreshing CLI token via aegislogin" >&2
+  local login_log
+  login_log="$(mktemp)"
 
   if ! command -v aegislogin >/dev/null 2>&1; then
-    warn "aegislogin command not found; cannot auto-refresh token" >&2
+    warn "aegislogin command not found; cannot auto-refresh token"
+    rm -f "$login_log"
     return 1
   fi
 
-  if ! aegislogin; then
-    warn "aegislogin failed; token refresh was not completed" >&2
-    return 1
+  if ! aegislogin >"$login_log" 2>&1; then
+    warn "aegislogin failed during auto-login; using token file only"
+    rm -f "$login_log"
+  else
+    rm -f "$login_log"
   fi
 
   if ! load_token_from_file; then
-    warn "Unable to load token from ~/.config/aegis/token.json after aegislogin" >&2
+    warn "Unable to load token from ~/.config/aegis/token.json after aegislogin"
     return 1
   fi
 
-  info "Token reloaded from CLI token file" >&2
+  ok "Auth token loaded from CLI token file"
   return 0
+}
+
+load_auth_token() {
+  if [ "$AUTO_LOGIN" -eq 1 ]; then
+    if startup_auto_login; then
+      return 0
+    fi
+    return 1
+  fi
+
+  load_access_token
 }
 
 curl_get() {
   local url="$1"
-  if [ -n "$ACCESS_TOKEN" ]; then
-    curl -fsS -H "Authorization: Bearer $ACCESS_TOKEN" "$url"
+  if [ -n "$AUTH_TOKEN" ]; then
+    curl -fsS -H "Authorization: Bearer $AUTH_TOKEN" "$url"
   else
     curl -fsS "$url"
   fi
@@ -231,27 +269,39 @@ curl_get() {
 
 curl_status() {
   local url="$1"
-  if [ -n "$ACCESS_TOKEN" ]; then
-    curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ACCESS_TOKEN" "$url" 2>/dev/null || true
-  else
-    curl -sS -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || true
-  fi
-}
-
-curl_status_with_auto_login() {
-  local url="$1"
   local status
 
-  status="$(curl_status "$url")"
-  if [ "$status" = "401" ] && maybe_auto_login; then
-    status="$(curl_status "$url")"
+  if [ -n "$AUTH_TOKEN" ]; then
+    status="$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $AUTH_TOKEN" "$url" 2>/dev/null || true)"
+  else
+    status="$(curl -sS -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || true)"
   fi
 
-  printf '%s' "$status"
+  if is_http_status_numeric "$status"; then
+    printf '%s' "$status"
+    return 0
+  fi
+
+  if [ -z "$status" ]; then
+    printf '000'
+    return 0
+  fi
+
+  printf 'NON_NUMERIC'
 }
 
 dashboard_status() {
-  curl -sS -o /dev/null -w "%{http_code}" "$DASHBOARD_URL" 2>/dev/null || true
+  local status
+  status="$(curl -sS -o /dev/null -w "%{http_code}" "$DASHBOARD_URL" 2>/dev/null || true)"
+  if is_http_status_numeric "$status"; then
+    printf '%s' "$status"
+    return 0
+  fi
+  if [ -z "$status" ]; then
+    printf '000'
+    return 0
+  fi
+  printf 'NON_NUMERIC'
 }
 
 json_count() {
@@ -468,135 +518,145 @@ print_execution_safety_counts() {
 run_api_checks() {
   section "API Health"
   health_status="$(curl_status "$API_BASE_URL/system/health")"
-  case "$health_status" in
-    200)
-      ok "GET /system/health HTTP 200"
-      ;;
-    000)
-      fail "GET /system/health unreachable at $API_BASE_URL"
-      ;;
-    *)
-      fail "GET /system/health HTTP $health_status"
-      ;;
-  esac
+  if validate_http_status "$health_status" "GET /system/health"; then
+    case "$health_status" in
+      200)
+        ok "GET /system/health HTTP 200"
+        ;;
+      000)
+        fail "GET /system/health unreachable at $API_BASE_URL"
+        ;;
+      *)
+        fail "GET /system/health HTTP $health_status"
+        ;;
+    esac
+  fi
 
   section "Dashboard"
   dash_status="$(dashboard_status)"
-  case "$dash_status" in
-    200|301|302|307|308)
-      ok "dashboard HTTP $dash_status"
-      ;;
-    000)
-      warn "dashboard unreachable at $DASHBOARD_URL"
-      ;;
-    *)
-      warn "dashboard HTTP $dash_status at $DASHBOARD_URL"
-      ;;
-  esac
+  if validate_http_status "$dash_status" "dashboard"; then
+    case "$dash_status" in
+      200|301|302|307|308)
+        ok "dashboard HTTP $dash_status"
+        ;;
+      000)
+        warn "dashboard unreachable at $DASHBOARD_URL"
+        ;;
+      *)
+        warn "dashboard HTTP $dash_status at $DASHBOARD_URL"
+        ;;
+    esac
+  fi
 
   section "Market Feed"
-  feed_status="$(curl_status_with_auto_login "$API_BASE_URL/market/feed-status")"
-  case "$feed_status" in
-    200)
-      feed_body="$(curl_get "$API_BASE_URL/market/feed-status" || true)"
-      if command -v jq >/dev/null 2>&1; then
-        feed_count="$(json_count "$feed_body" '.feeds | length')"
-        stale_count="$(json_count "$feed_body" '[.feeds[]? | select((.freshness_status // .status // "") | test("stale|degraded|error"; "i"))] | length')"
-        ok "GET /market/feed-status HTTP 200; feeds=$feed_count stale_or_degraded=$stale_count"
-        jq -r '.feeds[]? | "  " + .exchange + " " + .symbol + " status=" + (.status // "unknown") + " freshness=" + (.freshness_status // "unknown") + " last_event_at=" + (.last_event_at // "null")' 2>/dev/null <<<"$feed_body" || true
-      else
-        ok "GET /market/feed-status HTTP 200"
-        warn "jq not installed; feed summary not parsed"
-      fi
-      ;;
-    401|403)
-      if [ "$feed_status" = "401" ]; then
-        token_stale_hint
-      else
-        warn "GET /market/feed-status HTTP $feed_status; token has insufficient privileges"
-      fi
-      ;;
-    404)
-      warn "GET /market/feed-status HTTP 404; endpoint not present in this build"
-      ;;
-    000)
-      fail "GET /market/feed-status unreachable"
-      ;;
-    *)
-      fail "GET /market/feed-status HTTP $feed_status"
-      ;;
-  esac
+  feed_status="$(curl_status "$API_BASE_URL/market/feed-status")"
+  if validate_http_status "$feed_status" "GET /market/feed-status"; then
+    case "$feed_status" in
+      200)
+        feed_body="$(curl_get "$API_BASE_URL/market/feed-status" || true)"
+        if command -v jq >/dev/null 2>&1; then
+          feed_count="$(json_count "$feed_body" '.feeds | length')"
+          stale_count="$(json_count "$feed_body" '[.feeds[]? | select((.freshness_status // .status // "") | test("stale|degraded|error"; "i"))] | length')"
+          ok "GET /market/feed-status HTTP 200; feeds=$feed_count stale_or_degraded=$stale_count"
+          jq -r '.feeds[]? | "  " + .exchange + " " + .symbol + " status=" + (.status // "unknown") + " freshness=" + (.freshness_status // "unknown") + " last_event_at=" + (.last_event_at // "null")' 2>/dev/null <<<"$feed_body" || true
+        else
+          ok "GET /market/feed-status HTTP 200"
+          warn "jq not installed; feed summary not parsed"
+        fi
+        ;;
+      401|403)
+        if [ "$feed_status" = "401" ]; then
+          warn_for_auth_401
+        else
+          warn "GET /market/feed-status HTTP $feed_status; token has insufficient privileges"
+        fi
+        ;;
+      404)
+        warn "GET /market/feed-status HTTP 404; endpoint not present in this build"
+        ;;
+      000)
+        fail "GET /market/feed-status unreachable"
+        ;;
+      *)
+        fail "GET /market/feed-status HTTP $feed_status"
+        ;;
+    esac
+  fi
 
   section "Aggregation Status"
-  aggregation_status="$(curl_status_with_auto_login "$API_BASE_URL/market/candles/aggregation-status")"
-  case "$aggregation_status" in
-    200)
-      aggregation_body="$(curl_get "$API_BASE_URL/market/candles/aggregation-status" || true)"
-      if command -v jq >/dev/null 2>&1; then
-        row_count="$(json_count "$aggregation_body" '.rows | length')"
-        stale_count="$(json_count "$aggregation_body" '[.rows[]? | select((.status // "") | test("stale|lagging|missing|error"; "i"))] | length')"
-        ok "GET /market/candles/aggregation-status HTTP 200; rows=$row_count stale_or_missing=$stale_count"
-        jq -r '.rows[]? | "  " + .symbol + " " + .source_interval + "->" + .target_interval + " status=" + (.status // "unknown") + " lag_seconds=" + ((.lag_seconds // "null") | tostring)' 2>/dev/null <<<"$aggregation_body" || true
-      else
-        ok "GET /market/candles/aggregation-status HTTP 200"
-        warn "jq not installed; aggregation summary not parsed"
-      fi
-      ;;
-    401|403)
-      if [ "$aggregation_status" = "401" ]; then
-        token_stale_hint
-      else
-        warn "GET /market/candles/aggregation-status HTTP $aggregation_status; token has insufficient privileges"
-      fi
-      ;;
-    404)
-      warn "GET /market/candles/aggregation-status HTTP 404; endpoint not present in this build"
-      ;;
-    000)
-      fail "GET /market/candles/aggregation-status unreachable"
-      ;;
-    *)
-      fail "GET /market/candles/aggregation-status HTTP $aggregation_status"
-      ;;
-  esac
+  aggregation_status="$(curl_status "$API_BASE_URL/market/candles/aggregation-status")"
+  if validate_http_status "$aggregation_status" "GET /market/candles/aggregation-status"; then
+    case "$aggregation_status" in
+      200)
+        aggregation_body="$(curl_get "$API_BASE_URL/market/candles/aggregation-status" || true)"
+        if command -v jq >/dev/null 2>&1; then
+          row_count="$(json_count "$aggregation_body" '.rows | length')"
+          stale_count="$(json_count "$aggregation_body" '[.rows[]? | select((.status // "") | test("stale|lagging|missing|error"; "i"))] | length')"
+          ok "GET /market/candles/aggregation-status HTTP 200; rows=$row_count stale_or_missing=$stale_count"
+          jq -r '.rows[]? | "  " + .symbol + " " + .source_interval + "->" + .target_interval + " status=" + (.status // "unknown") + " lag_seconds=" + ((.lag_seconds // "null") | tostring)' 2>/dev/null <<<"$aggregation_body" || true
+        else
+          ok "GET /market/candles/aggregation-status HTTP 200"
+          warn "jq not installed; aggregation summary not parsed"
+        fi
+        ;;
+      401|403)
+        if [ "$aggregation_status" = "401" ]; then
+          warn_for_auth_401
+        else
+          warn "GET /market/candles/aggregation-status HTTP $aggregation_status; token has insufficient privileges"
+        fi
+        ;;
+      404)
+        warn "GET /market/candles/aggregation-status HTTP 404; endpoint not present in this build"
+        ;;
+      000)
+        fail "GET /market/candles/aggregation-status unreachable"
+        ;;
+      *)
+        fail "GET /market/candles/aggregation-status HTTP $aggregation_status"
+        ;;
+    esac
+  fi
 
   section "Scheduled Jobs"
-  jobs_status="$(curl_status_with_auto_login "$API_BASE_URL/research/scheduled-jobs?limit=$JOB_LIMIT")"
-  case "$jobs_status" in
-    200)
-      jobs_body="$(curl_get "$API_BASE_URL/research/scheduled-jobs?limit=$JOB_LIMIT" || true)"
-      if command -v jq >/dev/null 2>&1; then
-        job_count="$(json_count "$jobs_body" '.jobs | length')"
-        enabled_count="$(json_count "$jobs_body" '[.jobs[]? | select(.enabled == true)] | length')"
-        auto_paused_count="$(json_count "$jobs_body" '[.jobs[]? | select((.status // "") == "AUTO_PAUSED")] | length')"
-        backing_off_count="$(json_count "$jobs_body" '[.jobs[]? | select((.status // "") == "BACKING_OFF" or (.backoff_until // null) != null)] | length')"
-        ok "GET /research/scheduled-jobs HTTP 200; jobs=$job_count enabled=$enabled_count auto_paused=$auto_paused_count backing_off=$backing_off_count"
-        jq -r '.jobs[]? | "  " + .id + " " + .name + " kind=" + .kind + " status=" + .status + " enabled=" + (.enabled | tostring) + " next_run_at=" + (.next_run_at // "null") + " failures=" + ((.consecutive_failure_count // 0) | tostring)' 2>/dev/null <<<"$jobs_body" || true
+  jobs_status="$(curl_status "$API_BASE_URL/research/scheduled-jobs?limit=$JOB_LIMIT")"
+  if validate_http_status "$jobs_status" "GET /research/scheduled-jobs"; then
+    case "$jobs_status" in
+      200)
+        jobs_body="$(curl_get "$API_BASE_URL/research/scheduled-jobs?limit=$JOB_LIMIT" || true)"
+        if command -v jq >/dev/null 2>&1; then
+          job_count="$(json_count "$jobs_body" '.jobs | length')"
+          enabled_count="$(json_count "$jobs_body" '[.jobs[]? | select(.enabled == true)] | length')"
+          auto_paused_count="$(json_count "$jobs_body" '[.jobs[]? | select((.status // "") == "AUTO_PAUSED")] | length')"
+          backing_off_count="$(json_count "$jobs_body" '[.jobs[]? | select((.status // "") == "BACKING_OFF" or (.backoff_until // null) != null)] | length')"
+          ok "GET /research/scheduled-jobs HTTP 200; jobs=$job_count enabled=$enabled_count auto_paused=$auto_paused_count backing_off=$backing_off_count"
+          jq -r '.jobs[]? | "  " + .id + " " + .name + " kind=" + .kind + " status=" + .status + " enabled=" + (.enabled | tostring) + " next_run_at=" + (.next_run_at // "null") + " failures=" + ((.consecutive_failure_count // 0) | tostring)' 2>/dev/null <<<"$jobs_body" || true
 
-        if [ "$job_count" = "0" ] || [ -z "$job_count" ]; then
-          fail "scheduled jobs endpoint returned no jobs; expected at least one safe monitoring job"
-        fi
-        if [ "$enabled_count" = "0" ] || [ -z "$enabled_count" ]; then
-          fail "scheduled jobs endpoint returned 0 enabled jobs; expected safe jobs to be enabled"
-        fi
-        if [ "$auto_paused_count" != "0" ]; then
-          fail "scheduled jobs endpoint shows auto-paused=$auto_paused_count (expected 0)"
-        fi
-        if [ "$backing_off_count" != "0" ]; then
-          fail "scheduled jobs endpoint shows backing_off=$backing_off_count (expected 0)"
-        fi
+          if [ "$job_count" = "0" ] || [ -z "$job_count" ]; then
+            fail "scheduled jobs endpoint returned no jobs; expected at least one safe monitoring job"
+          fi
+          if [ "$enabled_count" = "0" ] || [ -z "$enabled_count" ]; then
+            fail "scheduled jobs endpoint returned 0 enabled jobs; expected safe jobs to be enabled"
+          fi
+          if [ "$auto_paused_count" != "0" ]; then
+            fail "scheduled jobs endpoint shows auto-paused=$auto_paused_count (expected 0)"
+          fi
+          if [ "$backing_off_count" != "0" ]; then
+            fail "scheduled jobs endpoint shows backing_off=$backing_off_count (expected 0)"
+          fi
 
-        if [ "$auto_paused_count" != "0" ] || [ "$backing_off_count" != "0" ]; then
-          warn "scheduled research has auto-paused or backing-off jobs"
-          jq -r '.jobs[]? | select((.status // "") == "AUTO_PAUSED" or (.status // "") == "BACKING_OFF" or (.backoff_until // null) != null) | "  attention " + .name + " status=" + .status + " backoff_until=" + (.backoff_until // "null") + " reason=" + (.auto_paused_reason // .last_failure_reason // "null")' 2>/dev/null <<<"$jobs_body" || true
-        fi
+          if [ "$auto_paused_count" != "0" ] || [ "$backing_off_count" != "0" ]; then
+            warn "scheduled research has auto-paused or backing-off jobs"
+            jq -r '.jobs[]? | select((.status // "") == "AUTO_PAUSED" or (.status // "") == "BACKING_OFF" or (.backoff_until // null) != null) | "  attention " + .name + " status=" + .status + " backoff_until=" + (.backoff_until // "null") + " reason=" + (.auto_paused_reason // .last_failure_reason // "null")' 2>/dev/null <<<"$jobs_body" || true
+          fi
 
-        sampled_job_ids="$(jq -r ".jobs[]?.id" 2>/dev/null <<<"$jobs_body" | head -n "$RUN_JOB_SAMPLE_LIMIT")"
-        if [ -n "$sampled_job_ids" ]; then
-          while IFS= read -r job_id; do
-            [ -n "$job_id" ] || continue
-            job_name="$(jq -r --arg id "$job_id" '.jobs[]? | select(.id == $id) | .name' 2>/dev/null <<<"$jobs_body")"
-                runs_status="$(curl_status_with_auto_login "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT")"
+          sampled_job_ids="$(jq -r ".jobs[]?.id" 2>/dev/null <<<"$jobs_body" | head -n "$RUN_JOB_SAMPLE_LIMIT")"
+          if [ -n "$sampled_job_ids" ]; then
+            while IFS= read -r job_id; do
+              [ -n "$job_id" ] || continue
+              job_name="$(jq -r --arg id "$job_id" '.jobs[]? | select(.id == $id) | .name' 2>/dev/null <<<"$jobs_body")"
+              runs_status="$(curl_status "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT")"
+              if validate_http_status "$runs_status" "GET /research/scheduled-jobs/$job_id/runs"; then
                 case "$runs_status" in
                   200)
                     runs_body="$(curl_get "$API_BASE_URL/research/scheduled-jobs/$job_id/runs?limit=$RUN_LIMIT" || true)"
@@ -613,41 +673,43 @@ run_api_checks() {
                     ;;
                   401|403)
                     if [ "$runs_status" = "401" ]; then
-                      token_stale_hint
+                      warn_for_auth_401
                     else
                       warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status; token has insufficient privileges"
                     fi
                     ;;
                   *)
-                warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status for $job_name"
-                ;;
-            esac
-          done <<<"$sampled_job_ids"
+                    warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status for $job_name"
+                    ;;
+                esac
+              fi
+            done <<<"$sampled_job_ids"
+          else
+            warn "no scheduled jobs returned; recent job run endpoint not checked"
+          fi
         else
-          warn "no scheduled jobs returned; recent job run endpoint not checked"
+          ok "GET /research/scheduled-jobs HTTP 200"
+          warn "jq not installed; scheduled job summary not parsed"
         fi
-      else
-        ok "GET /research/scheduled-jobs HTTP 200"
-        warn "jq not installed; scheduled job summary not parsed"
-      fi
-      ;;
-    401|403)
-      if [ "$jobs_status" = "401" ]; then
-        token_stale_hint
-      else
-        warn "GET /research/scheduled-jobs HTTP $jobs_status; token has insufficient privileges"
-      fi
-      ;;
-    404)
-      warn "GET /research/scheduled-jobs HTTP 404; endpoint not present in this build"
-      ;;
-    000)
-      fail "GET /research/scheduled-jobs unreachable"
-      ;;
-    *)
-      fail "GET /research/scheduled-jobs HTTP $jobs_status"
-      ;;
-  esac
+        ;;
+      401|403)
+        if [ "$jobs_status" = "401" ]; then
+          warn_for_auth_401
+        else
+          warn "GET /research/scheduled-jobs HTTP $jobs_status; token has insufficient privileges"
+        fi
+        ;;
+      404)
+        warn "GET /research/scheduled-jobs HTTP 404; endpoint not present in this build"
+        ;;
+      000)
+        fail "GET /research/scheduled-jobs unreachable"
+        ;;
+      *)
+        fail "GET /research/scheduled-jobs HTTP $jobs_status"
+        ;;
+    esac
+  fi
 }
 
 run_container_checks() {
@@ -735,11 +797,8 @@ echo "Dashboard: $DASHBOARD_URL"
 echo "Strict: $STRICT"
 echo "API checks: $([ "$SKIP_API" -eq 1 ] && printf 'skipped' || printf 'enabled')"
 echo "Database checks: $([ "$SKIP_DB" -eq 1 ] && printf 'skipped' || printf 'enabled')"
-if [ "$AUTO_LOGIN" -eq 1 ]; then
-  info "Auto-login enabled"
-fi
-load_access_token
-if [ -n "$ACCESS_TOKEN" ]; then
+load_auth_token || true
+if [ -n "$AUTH_TOKEN" ]; then
   case "$TOKEN_SOURCE" in
     environment)
       echo "Auth token: provided via AEGIS_ACCESS_TOKEN"
