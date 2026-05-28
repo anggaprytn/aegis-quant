@@ -157,6 +157,24 @@ AEGIS_DASHBOARD_URL=http://127.0.0.1:3101 \
 `validate-vps-readonly.sh` is read-only and does not print secrets.
 It uses `AEGIS_ACCESS_TOKEN` when set, otherwise loads `~/.config/aegis/token.json` as fallback.
 
+## Fix stale validator token
+
+If authenticated checks return `401`, refresh the CLI token cache and re-run the validator:
+
+```bash
+unset AEGIS_ACCESS_TOKEN
+aegislogin
+
+export AEGIS_API_BASE_URL=http://127.0.0.1:3100
+export AEGIS_ACCESS_TOKEN="$(jq -r '.access_token' ~/.config/aegis/token.json)"
+
+bash scripts/validate-vps-readonly.sh
+```
+
+- `AEGIS_ACCESS_TOKEN` in the environment has priority in the validator.
+- If it is stale, unset it before running the validator.
+- The validator never prints token values.
+
 Useful modes:
 
 ```bash

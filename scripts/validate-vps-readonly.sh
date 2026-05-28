@@ -5,6 +5,7 @@ API_BASE_URL="${AEGIS_API_BASE_URL:-http://127.0.0.1:3100}"
 DASHBOARD_URL="${AEGIS_DASHBOARD_URL:-http://127.0.0.1:3101}"
 ACCESS_TOKEN="${AEGIS_ACCESS_TOKEN:-}"
 TOKEN_SOURCE="none"
+PREFER_CLI_TOKEN=0
 READONLY_DATABASE_URL="${AEGIS_READONLY_DATABASE_URL:-}"
 TAIL_LINES="${AEGIS_VALIDATE_LOG_TAIL_LINES:-80}"
 JOB_LIMIT="${AEGIS_VALIDATE_JOB_LIMIT:-50}"
@@ -24,7 +25,7 @@ JSON_EVENTS=()
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/validate-vps-readonly.sh [--strict] [--json] [--skip-db] [--skip-api]
+Usage: scripts/validate-vps-readonly.sh [--strict] [--json] [--skip-db] [--skip-api] [--prefer-cli-token]
 
 Read-only VPS validation for Aegis API and Docker-based ai_read database views.
 
@@ -40,11 +41,13 @@ Flags:
   --json     Also print a compact JSON event summary at the end.
   --skip-db  Skip all database checks.
   --skip-api Skip API and dashboard checks.
+  --prefer-cli-token
+            Ignore AEGIS_ACCESS_TOKEN and load token from ~/.config/aegis/token.json.
 
 Environment:
   AEGIS_API_BASE_URL              default http://127.0.0.1:3100
   AEGIS_DASHBOARD_URL            default http://127.0.0.1:3101
-  AEGIS_ACCESS_TOKEN             optional bearer token for authenticated GET endpoints
+  AEGIS_ACCESS_TOKEN             optional bearer token for authenticated GET endpoints; takes precedence over token.json when set
   token fallback uses ~/.config/aegis/token.json when AEGIS_ACCESS_TOKEN is unset
   AEGIS_READONLY_DATABASE_URL    optional Postgres URL; must use aegis_readonly
   AEGIS_VALIDATE_LOG_TAIL_LINES  default 80
@@ -67,6 +70,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-api)
       SKIP_API=1
+      ;;
+    --prefer-cli-token)
+      PREFER_CLI_TOKEN=1
       ;;
     -h|--help)
       usage
@@ -138,7 +144,7 @@ need_command() {
 }
 
 load_access_token() {
-  if [ -n "$ACCESS_TOKEN" ]; then
+  if [ "$PREFER_CLI_TOKEN" -eq 0 ] && [ -n "$ACCESS_TOKEN" ]; then
     TOKEN_SOURCE="environment"
     return 0
   fi
@@ -163,6 +169,10 @@ load_access_token() {
   TOKEN_SOURCE="invalid"
   ACCESS_TOKEN=""
   return 1
+}
+
+token_stale_hint() {
+  warn 'Token may be missing or stale. Run: unset AEGIS_ACCESS_TOKEN && aegislogin, then export AEGIS_ACCESS_TOKEN from ~/.config/aegis/token.json'
 }
 
 curl_get() {
@@ -443,7 +453,11 @@ run_api_checks() {
       fi
       ;;
     401|403)
-      warn "GET /market/feed-status HTTP $feed_status; set AEGIS_ACCESS_TOKEN if required"
+      if [ "$feed_status" = "401" ]; then
+        token_stale_hint
+      else
+        warn "GET /market/feed-status HTTP $feed_status; token has insufficient privileges"
+      fi
       ;;
     404)
       warn "GET /market/feed-status HTTP 404; endpoint not present in this build"
@@ -472,7 +486,11 @@ run_api_checks() {
       fi
       ;;
     401|403)
-      warn "GET /market/candles/aggregation-status HTTP $aggregation_status; set AEGIS_ACCESS_TOKEN if required"
+      if [ "$aggregation_status" = "401" ]; then
+        token_stale_hint
+      else
+        warn "GET /market/candles/aggregation-status HTTP $aggregation_status; token has insufficient privileges"
+      fi
       ;;
     404)
       warn "GET /market/candles/aggregation-status HTTP 404; endpoint not present in this build"
@@ -542,7 +560,11 @@ run_api_checks() {
                     fi
                     ;;
                   401|403)
-                    warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status; token lacks access"
+                    if [ "$runs_status" = "401" ]; then
+                      token_stale_hint
+                    else
+                      warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status; token has insufficient privileges"
+                    fi
                     ;;
                   *)
                 warn "GET /research/scheduled-jobs/:id/runs HTTP $runs_status for $job_name"
@@ -558,7 +580,11 @@ run_api_checks() {
       fi
       ;;
     401|403)
-      warn "GET /research/scheduled-jobs HTTP $jobs_status; token lacks access"
+      if [ "$jobs_status" = "401" ]; then
+        token_stale_hint
+      else
+        warn "GET /research/scheduled-jobs HTTP $jobs_status; token has insufficient privileges"
+      fi
       ;;
     404)
       warn "GET /research/scheduled-jobs HTTP 404; endpoint not present in this build"
