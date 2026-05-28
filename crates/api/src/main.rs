@@ -2718,6 +2718,9 @@ struct StrategyStatusView {
     min_pullback_depth_pct: Option<String>,
     max_pullback_depth_pct: Option<String>,
     min_reclaim_pct: Option<String>,
+    min_breakdown_pct: Option<String>,
+    min_reclaim_close_pct: Option<String>,
+    min_lower_wick_pct: Option<String>,
     min_volume_ratio: Option<String>,
     max_choppiness: Option<String>,
     confidence_floor: Option<String>,
@@ -4387,6 +4390,18 @@ fn strategy_status_view(record: StrategyStatusRecord) -> StrategyStatusView {
             .max_pullback_depth_pct
             .map(|value| value.to_string()),
         min_reclaim_pct: record.config.min_reclaim_pct.map(|value| value.to_string()),
+        min_breakdown_pct: record
+            .config
+            .min_breakdown_pct
+            .map(|value| value.to_string()),
+        min_reclaim_close_pct: record
+            .config
+            .min_reclaim_close_pct
+            .map(|value| value.to_string()),
+        min_lower_wick_pct: record
+            .config
+            .min_lower_wick_pct
+            .map(|value| value.to_string()),
         min_volume_ratio: record
             .config
             .min_volume_ratio
@@ -4447,6 +4462,9 @@ fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfi
         min_pullback_depth_pct: config.min_pullback_depth_pct,
         max_pullback_depth_pct: config.max_pullback_depth_pct,
         min_reclaim_pct: config.min_reclaim_pct,
+        min_breakdown_pct: config.min_breakdown_pct,
+        min_reclaim_close_pct: config.min_reclaim_close_pct,
+        min_lower_wick_pct: config.min_lower_wick_pct,
         min_volume_ratio: config.min_volume_ratio,
         max_choppiness: config.max_choppiness,
         confidence_floor: config.confidence_floor,
@@ -16550,6 +16568,9 @@ fn strategy_config_request_with_candidate_overrides(
         min_pullback_depth_pct: base.min_pullback_depth_pct,
         max_pullback_depth_pct: base.max_pullback_depth_pct,
         min_reclaim_pct: base.min_reclaim_pct,
+        min_breakdown_pct: base.min_breakdown_pct,
+        min_reclaim_close_pct: base.min_reclaim_close_pct,
+        min_lower_wick_pct: base.min_lower_wick_pct,
         min_volume_ratio: base.min_volume_ratio,
         max_choppiness: base.max_choppiness,
         confidence_floor: base.confidence_floor,
@@ -16992,6 +17013,9 @@ async fn execute_research_batch(
                     .max_pullback_depth_pct_candidates
                     .clone(),
                 min_reclaim_pct_candidates: payload.min_reclaim_pct_candidates.clone(),
+                min_breakdown_pct_candidates: payload.min_breakdown_pct_candidates.clone(),
+                min_reclaim_close_pct_candidates: payload.min_reclaim_close_pct_candidates.clone(),
+                min_lower_wick_pct_candidates: payload.min_lower_wick_pct_candidates.clone(),
                 min_volume_ratio_candidates: payload.min_volume_ratio_candidates.clone(),
                 max_choppiness_candidates: payload.max_choppiness_candidates.clone(),
                 holding_candles_candidates: payload.holding_candles_candidates.clone(),
@@ -17105,7 +17129,10 @@ async fn execute_research_batch(
                     min_pullback_depth_pct: None,
                     max_pullback_depth_pct: None,
                     min_reclaim_pct: None,
-                    min_volume_ratio: None,
+                    min_breakdown_pct: experiment_run.candidate.min_breakdown_pct,
+                    min_reclaim_close_pct: experiment_run.candidate.min_reclaim_close_pct,
+                    min_lower_wick_pct: experiment_run.candidate.min_lower_wick_pct,
+                    min_volume_ratio: experiment_run.candidate.min_volume_ratio,
                     max_choppiness: None,
                     holding_candles: experiment_run.candidate.holding_candles,
                     stop_loss_pct: experiment_run.candidate.stop_loss_pct,
@@ -20626,6 +20653,15 @@ async fn research_batch_request_from_plan(
         min_reclaim_pct_candidates: source
             .as_ref()
             .and_then(|request| request.min_reclaim_pct_candidates.clone()),
+        min_breakdown_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_breakdown_pct_candidates.clone()),
+        min_reclaim_close_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_reclaim_close_pct_candidates.clone()),
+        min_lower_wick_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_lower_wick_pct_candidates.clone()),
         min_volume_ratio_candidates: source
             .as_ref()
             .and_then(|request| request.min_volume_ratio_candidates.clone()),
@@ -20784,6 +20820,15 @@ async fn research_campaign_request_from_plan(
         min_reclaim_pct_candidates: source
             .as_ref()
             .and_then(|request| request.min_reclaim_pct_candidates.clone()),
+        min_breakdown_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_breakdown_pct_candidates.clone()),
+        min_reclaim_close_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_reclaim_close_pct_candidates.clone()),
+        min_lower_wick_pct_candidates: source
+            .as_ref()
+            .and_then(|request| request.min_lower_wick_pct_candidates.clone()),
         min_volume_ratio_candidates: source
             .as_ref()
             .and_then(|request| request.min_volume_ratio_candidates.clone()),
@@ -20903,6 +20948,9 @@ async fn strategy_experiment_request_from_plan(
         min_pullback_depth_pct_candidates: batch.min_pullback_depth_pct_candidates,
         max_pullback_depth_pct_candidates: batch.max_pullback_depth_pct_candidates,
         min_reclaim_pct_candidates: batch.min_reclaim_pct_candidates,
+        min_breakdown_pct_candidates: batch.min_breakdown_pct_candidates,
+        min_reclaim_close_pct_candidates: batch.min_reclaim_close_pct_candidates,
+        min_lower_wick_pct_candidates: batch.min_lower_wick_pct_candidates,
         min_volume_ratio_candidates: batch.min_volume_ratio_candidates,
         max_choppiness_candidates: batch.max_choppiness_candidates,
         holding_candles_candidates: batch.holding_candles_candidates,
@@ -20981,6 +21029,9 @@ async fn strategy_walk_forward_request_from_plan(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             holding_candles: None,
@@ -30054,6 +30105,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -30167,6 +30221,9 @@ mod tests {
                 min_pullback_depth_pct: None,
                 max_pullback_depth_pct: None,
                 min_reclaim_pct: None,
+                min_breakdown_pct: None,
+                min_reclaim_close_pct: None,
+                min_lower_wick_pct: None,
                 min_volume_ratio: None,
                 max_choppiness: None,
                 holding_candles: Some(3),
@@ -31421,6 +31478,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,

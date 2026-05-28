@@ -725,6 +725,9 @@ impl ReplayEngine {
                 min_pullback_depth_pct: candidate.min_pullback_depth_pct,
                 max_pullback_depth_pct: candidate.max_pullback_depth_pct,
                 min_reclaim_pct: candidate.min_reclaim_pct,
+                min_breakdown_pct: None,
+                min_reclaim_close_pct: None,
+                min_lower_wick_pct: None,
                 min_volume_ratio: candidate.min_volume_ratio,
                 max_choppiness: candidate.max_choppiness,
                 holding_candles: candidate.holding_candles,
@@ -2410,6 +2413,9 @@ fn extract_signal_feature_metrics(
         StrategyId::TrendPullbackContinuationV1 => {
             extract_trend_pullback_continuation_features(config, candles, index)
         }
+        StrategyId::FailedBreakdownReclaimV1 => {
+            extract_failed_breakdown_reclaim_features(config, candles, index)
+        }
         _ => Vec::new(),
     };
     let candle = &candles[index];
@@ -2666,6 +2672,55 @@ fn extract_trend_pullback_continuation_features(
         decimal_feature_metric("choppiness", choppiness),
         decimal_feature_metric("candle_body_pct", candle_body_pct(latest)),
         decimal_feature_metric("candle_range_pct", candle_range_pct(latest)),
+    ]
+}
+
+fn extract_failed_breakdown_reclaim_features(
+    config: &StrategyConfig,
+    candles: &[Candle],
+    index: usize,
+) -> Vec<StrategySignalFeatureMetric> {
+    let lookback = config.lookback_candles as usize;
+    if index < lookback {
+        return Vec::new();
+    }
+    let latest = &candles[index];
+    let lookback_window = &candles[index - lookback..index];
+    let lookback_low = lookback_window
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(latest.low);
+    let breakdown_pct = if lookback_low > Decimal::ZERO {
+        ((lookback_low - latest.low) / lookback_low) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let reclaim_close_pct = pct_change(latest.close, lookback_low);
+    let body_floor = latest.open.min(latest.close);
+    let lower_wick_pct = if latest.open > Decimal::ZERO {
+        ((body_floor - latest.low) / latest.open) * Decimal::new(100, 0)
+    } else {
+        Decimal::ZERO
+    };
+    let average_volume = average_decimal_replay(lookback_window.iter().map(|candle| candle.volume));
+    let volume_ratio = if average_volume > Decimal::ZERO {
+        latest.volume / average_volume
+    } else {
+        Decimal::ZERO
+    };
+    let sma_window_len = 20usize.min(index + 1);
+    let sma_window = &candles[index + 1 - sma_window_len..=index];
+    let sma = average_decimal_replay(sma_window.iter().map(|candle| candle.close));
+
+    vec![
+        decimal_feature_metric("breakdown_pct", breakdown_pct),
+        decimal_feature_metric("reclaim_close_pct", reclaim_close_pct),
+        decimal_feature_metric("lower_wick_pct", lower_wick_pct),
+        decimal_feature_metric("volume_ratio", volume_ratio),
+        decimal_feature_metric("candle_body_pct", candle_body_pct(latest)),
+        decimal_feature_metric("candle_range_pct", candle_range_pct(latest)),
+        decimal_feature_metric("close_vs_sma_pct", pct_change(latest.close, sma)),
     ]
 }
 
@@ -3065,9 +3120,24 @@ fn strategy_config_update_from_candidate(
             .min_reclaim_pct
             .filter(|_| strategy_id == StrategyId::TrendPullbackContinuationV1.as_str())
             .or(base_config.min_reclaim_pct),
+        min_breakdown_pct: candidate
+            .min_breakdown_pct
+            .filter(|_| strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str())
+            .or(base_config.min_breakdown_pct),
+        min_reclaim_close_pct: candidate
+            .min_reclaim_close_pct
+            .filter(|_| strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str())
+            .or(base_config.min_reclaim_close_pct),
+        min_lower_wick_pct: candidate
+            .min_lower_wick_pct
+            .filter(|_| strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str())
+            .or(base_config.min_lower_wick_pct),
         min_volume_ratio: candidate
             .min_volume_ratio
-            .filter(|_| strategy_id == StrategyId::TrendPullbackContinuationV1.as_str())
+            .filter(|_| {
+                strategy_id == StrategyId::TrendPullbackContinuationV1.as_str()
+                    || strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str()
+            })
             .or(base_config.min_volume_ratio),
         max_choppiness: candidate
             .max_choppiness
@@ -3641,10 +3711,28 @@ fn walk_forward_strategy_override(
             .min_reclaim_pct
             .filter(|_| request.strategy_id == StrategyId::TrendPullbackContinuationV1.as_str())
             .or(base_config.min_reclaim_pct),
+        min_breakdown_pct: request
+            .candidate_config
+            .min_breakdown_pct
+            .filter(|_| request.strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str())
+            .or(base_config.min_breakdown_pct),
+        min_reclaim_close_pct: request
+            .candidate_config
+            .min_reclaim_close_pct
+            .filter(|_| request.strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str())
+            .or(base_config.min_reclaim_close_pct),
+        min_lower_wick_pct: request
+            .candidate_config
+            .min_lower_wick_pct
+            .filter(|_| request.strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str())
+            .or(base_config.min_lower_wick_pct),
         min_volume_ratio: request
             .candidate_config
             .min_volume_ratio
-            .filter(|_| request.strategy_id == StrategyId::TrendPullbackContinuationV1.as_str())
+            .filter(|_| {
+                request.strategy_id == StrategyId::TrendPullbackContinuationV1.as_str()
+                    || request.strategy_id == StrategyId::FailedBreakdownReclaimV1.as_str()
+            })
             .or(base_config.min_volume_ratio),
         max_choppiness: request
             .candidate_config
@@ -3740,6 +3828,9 @@ fn strategy_walk_forward_candidate_from_config(
         min_pullback_depth_pct: read_decimal(&["min_pullback_depth_pct"])?,
         max_pullback_depth_pct: read_decimal(&["max_pullback_depth_pct"])?,
         min_reclaim_pct: read_decimal(&["min_reclaim_pct"])?,
+        min_breakdown_pct: read_decimal(&["min_breakdown_pct", "breakdown_pct"])?,
+        min_reclaim_close_pct: read_decimal(&["min_reclaim_close_pct", "reclaim_close_pct"])?,
+        min_lower_wick_pct: read_decimal(&["min_lower_wick_pct", "lower_wick_pct"])?,
         min_volume_ratio: read_decimal(&["min_volume_ratio"])?,
         max_choppiness: read_decimal(&["max_choppiness"])?,
         holding_candles: read_u32(&["holding_candles", "holding"]),
@@ -5130,6 +5221,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -5284,6 +5378,20 @@ mod tests {
         config
     }
 
+    fn failed_breakdown_reclaim_feature_strategy_config() -> StrategyConfig {
+        let mut config = sample_strategy_config();
+        config.strategy_id = StrategyId::FailedBreakdownReclaimV1;
+        config.cooldown_seconds = 0;
+        config.max_signal_age_ms = 300_000;
+        config.holding_candles = Some(1);
+        config.lookback_candles = 40;
+        config.min_breakdown_pct = Some(Decimal::new(5, 2));
+        config.min_reclaim_close_pct = Some(Decimal::ZERO);
+        config.min_lower_wick_pct = Some(Decimal::ONE);
+        config.min_volume_ratio = Some(Decimal::ZERO);
+        config
+    }
+
     fn range_reversion_feature_candles() -> Vec<Candle> {
         vec![
             candle(0, 100, 102, 99, 100),
@@ -5329,6 +5437,16 @@ mod tests {
         candles.push(signal);
         candles.push(candle(60, 146, 148, 145, 147));
         candles.push(candle(61, 147, 149, 146, 148));
+        candles
+    }
+
+    fn failed_breakdown_reclaim_feature_candles() -> Vec<Candle> {
+        let mut candles = (0..40)
+            .map(|index| candle(index, 100, 101, 100, 100))
+            .collect::<Vec<_>>();
+        candles.push(candle(40, 100, 102, 98, 101));
+        candles.push(candle(41, 101, 103, 100, 102));
+        candles.push(candle(42, 102, 104, 101, 103));
         candles
     }
 
@@ -5435,6 +5553,9 @@ mod tests {
             min_pullback_depth_pct_candidates: None,
             max_pullback_depth_pct_candidates: None,
             min_reclaim_pct_candidates: None,
+            min_breakdown_pct_candidates: None,
+            min_reclaim_close_pct_candidates: None,
+            min_lower_wick_pct_candidates: None,
             min_volume_ratio_candidates: None,
             max_choppiness_candidates: None,
             holding_candles_candidates: Some(vec![3, 5]),
@@ -5479,6 +5600,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -5522,6 +5646,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -5565,6 +5692,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -5622,6 +5752,9 @@ mod tests {
             min_pullback_depth_pct_candidates: None,
             max_pullback_depth_pct_candidates: None,
             min_reclaim_pct_candidates: None,
+            min_breakdown_pct_candidates: None,
+            min_reclaim_close_pct_candidates: None,
+            min_lower_wick_pct_candidates: None,
             min_volume_ratio_candidates: None,
             max_choppiness_candidates: None,
             holding_candles_candidates: Some(vec![3]),
@@ -5717,6 +5850,9 @@ mod tests {
                 min_pullback_depth_pct: None,
                 max_pullback_depth_pct: None,
                 min_reclaim_pct: None,
+                min_breakdown_pct: None,
+                min_reclaim_close_pct: None,
+                min_lower_wick_pct: None,
                 min_volume_ratio: None,
                 max_choppiness: None,
                 holding_candles: Some(3),
@@ -5788,6 +5924,9 @@ mod tests {
                 min_pullback_depth_pct: None,
                 max_pullback_depth_pct: None,
                 min_reclaim_pct: None,
+                min_breakdown_pct: None,
+                min_reclaim_close_pct: None,
+                min_lower_wick_pct: None,
                 min_volume_ratio: None,
                 max_choppiness: None,
                 holding_candles: Some(3),
@@ -6375,6 +6514,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             holding_candles: Some(5),
@@ -6811,6 +6953,47 @@ mod tests {
             "choppiness",
             "candle_body_pct",
             "candle_range_pct",
+            "hour_of_day_utc",
+            "day_of_week",
+        ] {
+            assert!(
+                sample
+                    .metrics
+                    .iter()
+                    .any(|metric| metric.feature_name == feature_name),
+                "missing feature {feature_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn signal_feature_extracts_failed_breakdown_reclaim_features() {
+        let result = calculate_signal_feature_attribution(
+            &signal_feature_attribution_request("failed_breakdown_reclaim_v1"),
+            &failed_breakdown_reclaim_feature_strategy_config(),
+            &Symbol::new("BTCUSDT").unwrap(),
+            failed_breakdown_reclaim_feature_candles(),
+            Utc.with_ymd_and_hms(2026, 5, 2, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            result.attributed_signals > 0,
+            "raw={} executable={} attributed={} status={:?}",
+            result.total_raw_signals,
+            result.executable_signals,
+            result.attributed_signals,
+            result.status
+        );
+        let sample = result.samples.first().expect("sample");
+        for feature_name in [
+            "breakdown_pct",
+            "reclaim_close_pct",
+            "lower_wick_pct",
+            "volume_ratio",
+            "candle_body_pct",
+            "candle_range_pct",
+            "close_vs_sma_pct",
             "hour_of_day_utc",
             "day_of_week",
         ] {

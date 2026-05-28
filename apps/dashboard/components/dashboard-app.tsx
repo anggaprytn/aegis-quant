@@ -272,6 +272,9 @@ type StrategyExperimentFormState = {
   min_pullback_depth_pct: string;
   max_pullback_depth_pct: string;
   min_reclaim_pct: string;
+  min_breakdown_pct: string;
+  min_reclaim_close_pct: string;
+  min_lower_wick_pct: string;
   min_volume_ratio: string;
   max_choppiness: string;
   lower_band_pct: string;
@@ -313,6 +316,9 @@ type StrategyWalkForwardFormState = {
   min_pullback_depth_pct: string;
   max_pullback_depth_pct: string;
   min_reclaim_pct: string;
+  min_breakdown_pct: string;
+  min_reclaim_close_pct: string;
+  min_lower_wick_pct: string;
   min_volume_ratio: string;
   max_choppiness: string;
   holding_candles: string;
@@ -347,6 +353,9 @@ const DEFAULT_STRATEGY_EXPERIMENT_FORM: StrategyExperimentFormState = {
   min_pullback_depth_pct: "0.3,0.5,1.0",
   max_pullback_depth_pct: "3.0,5.0,8.0",
   min_reclaim_pct: "0.05",
+  min_breakdown_pct: "0.05,0.1,0.2,0.5",
+  min_reclaim_close_pct: "0,0.05,0.1",
+  min_lower_wick_pct: "0.1,0.3,0.5,1.0",
   min_volume_ratio: "0.8",
   max_choppiness: "50,60,70",
   lower_band_pct: "10,20,30",
@@ -388,6 +397,9 @@ const DEFAULT_STRATEGY_WALK_FORWARD_FORM: StrategyWalkForwardFormState = {
   min_pullback_depth_pct: "0.3",
   max_pullback_depth_pct: "5.0",
   min_reclaim_pct: "0.05",
+  min_breakdown_pct: "0.05,0.1,0.2,0.5",
+  min_reclaim_close_pct: "0,0.05,0.1",
+  min_lower_wick_pct: "0.1,0.3,0.5,1.0",
   min_volume_ratio: "0.8",
   max_choppiness: "60",
   holding_candles: "3",
@@ -458,6 +470,9 @@ const DEFAULT_RESEARCH_BATCH_FORM: ResearchBatchRequest = {
   min_pullback_depth_pct_candidates: ["0.3", "0.5", "1.0"],
   max_pullback_depth_pct_candidates: ["3.0", "5.0", "8.0"],
   min_reclaim_pct_candidates: ["0.05"],
+  min_breakdown_pct_candidates: ["0.05", "0.1", "0.2", "0.5"],
+  min_reclaim_close_pct_candidates: ["0", "0.05", "0.1"],
+  min_lower_wick_pct_candidates: ["0.1", "0.3", "0.5", "1.0"],
   min_volume_ratio_candidates: ["0.8"],
   max_choppiness_candidates: ["50", "60", "70"],
   min_close_above_sma_pct_candidates: ["0"],
@@ -479,6 +494,7 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
     "volatility_breakout_v2",
     "volatility_compression_breakout_v1",
     "trend_pullback_continuation_v1",
+    "failed_breakdown_reclaim_v1",
   ],
   symbols: ["BTCUSDT", "ETHUSDT"],
   experiment_timeframes: ["5m", "15m"],
@@ -510,6 +526,9 @@ const DEFAULT_RESEARCH_CAMPAIGN_FORM: ResearchCampaignRequest = {
   min_pullback_depth_pct_candidates: ["0.3", "0.5", "1.0"],
   max_pullback_depth_pct_candidates: ["3.0", "5.0", "8.0"],
   min_reclaim_pct_candidates: ["0.05"],
+  min_breakdown_pct_candidates: ["0.05", "0.1", "0.2", "0.5"],
+  min_reclaim_close_pct_candidates: ["0", "0.05", "0.1"],
+  min_lower_wick_pct_candidates: ["0.1", "0.3", "0.5", "1.0"],
   min_volume_ratio_candidates: ["0.8"],
   max_choppiness_candidates: ["50", "60", "70"],
   min_close_above_sma_pct_candidates: ["0"],
@@ -632,6 +651,9 @@ function strategyConfigFormFromStatus(
     min_pullback_depth_pct: strategy?.min_pullback_depth_pct ?? null,
     max_pullback_depth_pct: strategy?.max_pullback_depth_pct ?? null,
     min_reclaim_pct: strategy?.min_reclaim_pct ?? null,
+    min_breakdown_pct: strategy?.min_breakdown_pct ?? null,
+    min_reclaim_close_pct: strategy?.min_reclaim_close_pct ?? null,
+    min_lower_wick_pct: strategy?.min_lower_wick_pct ?? null,
     min_volume_ratio: strategy?.min_volume_ratio ?? null,
     max_choppiness: strategy?.max_choppiness ?? null,
     confidence_floor: strategy?.confidence_floor ?? null,
@@ -766,6 +788,9 @@ function buildStrategyExperimentRequest(
     min_pullback_depth_pct_candidates: parseDecimalList(form.min_pullback_depth_pct),
     max_pullback_depth_pct_candidates: parseDecimalList(form.max_pullback_depth_pct),
     min_reclaim_pct_candidates: parseDecimalList(form.min_reclaim_pct),
+    min_breakdown_pct_candidates: parseDecimalList(form.min_breakdown_pct),
+    min_reclaim_close_pct_candidates: parseDecimalList(form.min_reclaim_close_pct),
+    min_lower_wick_pct_candidates: parseDecimalList(form.min_lower_wick_pct),
     min_volume_ratio_candidates: parseDecimalList(form.min_volume_ratio),
     max_choppiness_candidates: parseDecimalList(form.max_choppiness),
     lower_band_pct_candidates: parseDecimalList(form.lower_band_pct),
@@ -819,6 +844,9 @@ function buildStrategyWalkForwardRequest(
       min_pullback_depth_pct: form.min_pullback_depth_pct || null,
       max_pullback_depth_pct: form.max_pullback_depth_pct || null,
       min_reclaim_pct: form.min_reclaim_pct || null,
+      min_breakdown_pct: form.min_breakdown_pct || null,
+      min_reclaim_close_pct: form.min_reclaim_close_pct || null,
+      min_lower_wick_pct: form.min_lower_wick_pct || null,
       min_volume_ratio: form.min_volume_ratio || null,
       max_choppiness: form.max_choppiness || null,
       holding_candles: form.holding_candles ? Number(form.holding_candles) : null,
@@ -4600,6 +4628,36 @@ function AuthenticatedDashboard({
                       }
                     />
                     <Field
+                      label="Min Breakdown %"
+                      value={strategyConfigForm.min_breakdown_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_breakdown_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Reclaim Close %"
+                      value={strategyConfigForm.min_reclaim_close_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_reclaim_close_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
+                      label="Min Lower Wick %"
+                      value={strategyConfigForm.min_lower_wick_pct ?? ""}
+                      onChange={(value) =>
+                        setStrategyConfigForm((current) => ({
+                          ...current,
+                          min_lower_wick_pct: value || null,
+                        }))
+                      }
+                    />
+                    <Field
                       label="Min Volume Ratio"
                       value={strategyConfigForm.min_volume_ratio ?? ""}
                       onChange={(value) =>
@@ -7463,6 +7521,9 @@ function AuthenticatedDashboard({
                       ["min_pullback_depth_pct", "Min Pullback Depth %"],
                       ["max_pullback_depth_pct", "Max Pullback Depth %"],
                       ["min_reclaim_pct", "Min Reclaim %"],
+                      ["min_breakdown_pct", "Min Breakdown %"],
+                      ["min_reclaim_close_pct", "Min Reclaim Close %"],
+                      ["min_lower_wick_pct", "Min Lower Wick %"],
                       ["min_volume_ratio", "Min Volume Ratio"],
                       ["max_choppiness", "Max Choppiness"],
                       ["lower_band_pct", "Lower Band %"],
@@ -7630,6 +7691,9 @@ function AuthenticatedDashboard({
                       ["min_pullback_depth_pct", "Min Pullback Depth %"],
                       ["max_pullback_depth_pct", "Max Pullback Depth %"],
                       ["min_reclaim_pct", "Min Reclaim %"],
+                      ["min_breakdown_pct", "Min Breakdown %"],
+                      ["min_reclaim_close_pct", "Min Reclaim Close %"],
+                      ["min_lower_wick_pct", "Min Lower Wick %"],
                       ["min_volume_ratio", "Min Volume Ratio"],
                       ["max_choppiness", "Max Choppiness"],
                       ["holding_candles", "Holding Candles"],
@@ -12499,7 +12563,12 @@ function ResearchBatchDetail({
 }
 
 const DEFAULT_ROBUSTNESS_MATRIX_FORM: StrategyRobustnessMatrixRequest = {
-  strategy_ids: ["trend_filter_momentum_v1", "trend_filter_momentum_v2", "range_reversion_v1"],
+  strategy_ids: [
+    "failed_breakdown_reclaim_v1",
+    "trend_filter_momentum_v1",
+    "trend_filter_momentum_v2",
+    "range_reversion_v1",
+  ],
   symbols: ["BTCUSDT", "ETHUSDT"],
   timeframes: ["5m", "15m"],
   windows: [],

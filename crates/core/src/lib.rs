@@ -1505,6 +1505,7 @@ pub enum StrategyId {
     VolatilityCompressionBreakoutV1,
     RangeReversionV1,
     TrendPullbackContinuationV1,
+    FailedBreakdownReclaimV1,
 }
 
 impl StrategyId {
@@ -1518,6 +1519,7 @@ impl StrategyId {
             Self::VolatilityCompressionBreakoutV1 => "volatility_compression_breakout_v1",
             Self::RangeReversionV1 => "range_reversion_v1",
             Self::TrendPullbackContinuationV1 => "trend_pullback_continuation_v1",
+            Self::FailedBreakdownReclaimV1 => "failed_breakdown_reclaim_v1",
         }
     }
 }
@@ -1535,6 +1537,7 @@ impl std::str::FromStr for StrategyId {
             "volatility_compression_breakout_v1" => Ok(Self::VolatilityCompressionBreakoutV1),
             "range_reversion_v1" => Ok(Self::RangeReversionV1),
             "trend_pullback_continuation_v1" => Ok(Self::TrendPullbackContinuationV1),
+            "failed_breakdown_reclaim_v1" => Ok(Self::FailedBreakdownReclaimV1),
             other => Err(CoreError::UnsupportedStrategyId(other.to_string())),
         }
     }
@@ -1690,6 +1693,7 @@ pub enum SignalReason {
     VolatilityCompressionBreakout,
     RangeReversion,
     TrendPullbackContinuation,
+    FailedBreakdownReclaim,
     ConditionsNotMet,
     InsufficientHistory,
     StrategyDisabled,
@@ -1706,6 +1710,7 @@ impl SignalReason {
             Self::VolatilityCompressionBreakout => "volatility_compression_breakout",
             Self::RangeReversion => "range_reversion",
             Self::TrendPullbackContinuation => "trend_pullback_continuation",
+            Self::FailedBreakdownReclaim => "failed_breakdown_reclaim",
             Self::ConditionsNotMet => "conditions_not_met",
             Self::InsufficientHistory => "insufficient_history",
             Self::StrategyDisabled => "strategy_disabled",
@@ -1726,6 +1731,7 @@ impl std::str::FromStr for SignalReason {
             "volatility_compression_breakout" => Ok(Self::VolatilityCompressionBreakout),
             "range_reversion" => Ok(Self::RangeReversion),
             "trend_pullback_continuation" => Ok(Self::TrendPullbackContinuation),
+            "failed_breakdown_reclaim" => Ok(Self::FailedBreakdownReclaim),
             "conditions_not_met" => Ok(Self::ConditionsNotMet),
             "insufficient_history" => Ok(Self::InsufficientHistory),
             "strategy_disabled" => Ok(Self::StrategyDisabled),
@@ -1782,6 +1788,9 @@ pub struct StrategyConfig {
     pub min_pullback_depth_pct: Option<Decimal>,
     pub max_pullback_depth_pct: Option<Decimal>,
     pub min_reclaim_pct: Option<Decimal>,
+    pub min_breakdown_pct: Option<Decimal>,
+    pub min_reclaim_close_pct: Option<Decimal>,
+    pub min_lower_wick_pct: Option<Decimal>,
     pub min_volume_ratio: Option<Decimal>,
     pub max_choppiness: Option<Decimal>,
     pub confidence_floor: Option<Decimal>,
@@ -1844,6 +1853,9 @@ pub struct StrategyConfigUpdateRequest {
     pub min_pullback_depth_pct: Option<Decimal>,
     pub max_pullback_depth_pct: Option<Decimal>,
     pub min_reclaim_pct: Option<Decimal>,
+    pub min_breakdown_pct: Option<Decimal>,
+    pub min_reclaim_close_pct: Option<Decimal>,
+    pub min_lower_wick_pct: Option<Decimal>,
     pub min_volume_ratio: Option<Decimal>,
     pub max_choppiness: Option<Decimal>,
     pub confidence_floor: Option<Decimal>,
@@ -2490,9 +2502,12 @@ pub enum StrategyNoSignalReason {
     BreakoutVolumeBelowAverage,
     NoCompression,
     NoBreakout,
+    NoBreakdown,
     BreakoutTooSmall,
+    BreakdownTooSmall,
     BreakoutTooExtended,
     VolumeNotConfirmed,
+    LowerWickTooSmall,
     InsufficientData,
     RangeTooNarrow,
     RangeTooWide,
@@ -2526,9 +2541,12 @@ impl StrategyNoSignalReason {
             Self::BreakoutVolumeBelowAverage => "BREAKOUT_VOLUME_BELOW_AVERAGE",
             Self::NoCompression => "NO_COMPRESSION",
             Self::NoBreakout => "NO_BREAKOUT",
+            Self::NoBreakdown => "NO_BREAKDOWN",
             Self::BreakoutTooSmall => "BREAKOUT_TOO_SMALL",
+            Self::BreakdownTooSmall => "BREAKDOWN_TOO_SMALL",
             Self::BreakoutTooExtended => "BREAKOUT_TOO_EXTENDED",
             Self::VolumeNotConfirmed => "VOLUME_NOT_CONFIRMED",
+            Self::LowerWickTooSmall => "LOWER_WICK_TOO_SMALL",
             Self::InsufficientData => "INSUFFICIENT_DATA",
             Self::RangeTooNarrow => "RANGE_TOO_NARROW",
             Self::RangeTooWide => "RANGE_TOO_WIDE",
@@ -3272,6 +3290,9 @@ pub struct StrategyExperimentCandidate {
     pub min_pullback_depth_pct: Option<Decimal>,
     pub max_pullback_depth_pct: Option<Decimal>,
     pub min_reclaim_pct: Option<Decimal>,
+    pub min_breakdown_pct: Option<Decimal>,
+    pub min_reclaim_close_pct: Option<Decimal>,
+    pub min_lower_wick_pct: Option<Decimal>,
     pub min_volume_ratio: Option<Decimal>,
     pub max_choppiness: Option<Decimal>,
     pub holding_candles: Option<u32>,
@@ -3319,6 +3340,9 @@ pub struct StrategyExperimentRequest {
     pub min_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
     pub max_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
     pub min_reclaim_pct_candidates: Option<Vec<Decimal>>,
+    pub min_breakdown_pct_candidates: Option<Vec<Decimal>>,
+    pub min_reclaim_close_pct_candidates: Option<Vec<Decimal>>,
+    pub min_lower_wick_pct_candidates: Option<Vec<Decimal>>,
     pub min_volume_ratio_candidates: Option<Vec<Decimal>>,
     pub max_choppiness_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
@@ -3417,6 +3441,12 @@ pub struct StrategyWalkForwardCandidate {
     #[serde(default)]
     pub min_reclaim_pct: Option<Decimal>,
     #[serde(default)]
+    pub min_breakdown_pct: Option<Decimal>,
+    #[serde(default)]
+    pub min_reclaim_close_pct: Option<Decimal>,
+    #[serde(default)]
+    pub min_lower_wick_pct: Option<Decimal>,
+    #[serde(default)]
     pub min_volume_ratio: Option<Decimal>,
     #[serde(default)]
     pub max_choppiness: Option<Decimal>,
@@ -3455,6 +3485,9 @@ fn default_strategy_walk_forward_candidate() -> StrategyWalkForwardCandidate {
         min_pullback_depth_pct: None,
         max_pullback_depth_pct: None,
         min_reclaim_pct: None,
+        min_breakdown_pct: None,
+        min_reclaim_close_pct: None,
+        min_lower_wick_pct: None,
         min_volume_ratio: None,
         max_choppiness: None,
         holding_candles: None,
@@ -3855,6 +3888,78 @@ impl StrategyExperimentRequest {
             self.min_momentum_return_pct_candidates.clone(),
             vec![Decimal::ZERO],
         );
+        if self.strategy_id == "failed_breakdown_reclaim_v1" {
+            let min_breakdowns = non_empty_or(
+                self.min_breakdown_pct_candidates.clone(),
+                vec![Decimal::new(5, 2)],
+            );
+            let min_reclaim_closes = non_empty_or(
+                self.min_reclaim_close_pct_candidates.clone(),
+                vec![Decimal::ZERO],
+            );
+            let min_lower_wicks = non_empty_or(
+                self.min_lower_wick_pct_candidates.clone(),
+                vec![Decimal::ONE],
+            );
+            let min_volumes = non_empty_or(
+                self.min_volume_ratio_candidates.clone(),
+                vec![Decimal::ZERO],
+            );
+            let mut candidates = Vec::new();
+            for lookback_candles in &self.lookback_candidates {
+                for min_breakdown_pct in &min_breakdowns {
+                    for min_reclaim_close_pct in &min_reclaim_closes {
+                        for min_lower_wick_pct in &min_lower_wicks {
+                            for min_volume_ratio in &min_volumes {
+                                for holding_candles in &holdings {
+                                    candidates.push(StrategyExperimentCandidate {
+                                        lookback_candles: *lookback_candles,
+                                        trend_lookback_candles: None,
+                                        momentum_lookback_candles: None,
+                                        compression_lookback_candles: None,
+                                        breakout_lookback_candles: None,
+                                        pullback_lookback_candles: None,
+                                        pullback_sma_lookback_candles: None,
+                                        compression_percentile_threshold: None,
+                                        min_breakout_pct: None,
+                                        max_breakout_extension_pct: None,
+                                        min_volume_expansion_ratio: None,
+                                        lower_band_pct: None,
+                                        upper_band_pct: None,
+                                        min_range_width_pct: None,
+                                        max_range_width_pct: None,
+                                        min_close_above_sma_pct: None,
+                                        max_close_above_sma_pct: None,
+                                        min_momentum_return_pct: None,
+                                        min_trend_return_pct: None,
+                                        min_trend_slope_pct: None,
+                                        min_pullback_depth_pct: None,
+                                        max_pullback_depth_pct: None,
+                                        min_reclaim_pct: None,
+                                        min_breakdown_pct: Some(*min_breakdown_pct),
+                                        min_reclaim_close_pct: Some(*min_reclaim_close_pct),
+                                        min_lower_wick_pct: Some(*min_lower_wick_pct),
+                                        min_volume_ratio: Some(*min_volume_ratio),
+                                        max_choppiness: None,
+                                        holding_candles: (*holding_candles != 0)
+                                            .then_some(*holding_candles),
+                                        stop_loss_pct: None,
+                                        take_profit_pct: None,
+                                        max_signal_age_ms: self.max_signal_age_ms,
+                                    });
+                                    if self.max_runs.is_some_and(|max_runs| {
+                                        candidates.len() >= max_runs as usize
+                                    }) {
+                                        return candidates;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return candidates;
+        }
         if self.strategy_id == "trend_pullback_continuation_v1" {
             let pullback_lookbacks = non_empty_or(
                 self.pullback_lookback_candidates.clone(),
@@ -3950,6 +4055,9 @@ impl StrategyExperimentRequest {
                                                                 min_reclaim_pct: Some(
                                                                     *min_reclaim_pct,
                                                                 ),
+                                                                min_breakdown_pct: None,
+                                                                min_reclaim_close_pct: None,
+                                                                min_lower_wick_pct: None,
                                                                 min_volume_ratio: Some(
                                                                     *min_volume_ratio,
                                                                 ),
@@ -4047,6 +4155,9 @@ impl StrategyExperimentRequest {
                                                                                         min_pullback_depth_pct: None,
                                                                                         max_pullback_depth_pct: None,
                                                                                         min_reclaim_pct: None,
+                                                                                        min_breakdown_pct: None,
+                                                                                        min_reclaim_close_pct: None,
+                                                                                        min_lower_wick_pct: None,
                                                                                         min_volume_ratio: None,
                                                                                         max_choppiness: None,
                                                                                         holding_candles: (*holding_candles != 0).then_some(*holding_candles),
@@ -4121,6 +4232,9 @@ pub struct StrategyMultiTimeframeExperimentRequest {
     pub min_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
     pub max_pullback_depth_pct_candidates: Option<Vec<Decimal>>,
     pub min_reclaim_pct_candidates: Option<Vec<Decimal>>,
+    pub min_breakdown_pct_candidates: Option<Vec<Decimal>>,
+    pub min_reclaim_close_pct_candidates: Option<Vec<Decimal>>,
+    pub min_lower_wick_pct_candidates: Option<Vec<Decimal>>,
     pub min_volume_ratio_candidates: Option<Vec<Decimal>>,
     pub max_choppiness_candidates: Option<Vec<Decimal>>,
     pub holding_candles_candidates: Option<Vec<u32>>,
@@ -4187,6 +4301,9 @@ impl StrategyMultiTimeframeExperimentRequest {
             min_pullback_depth_pct_candidates: self.min_pullback_depth_pct_candidates.clone(),
             max_pullback_depth_pct_candidates: self.max_pullback_depth_pct_candidates.clone(),
             min_reclaim_pct_candidates: self.min_reclaim_pct_candidates.clone(),
+            min_breakdown_pct_candidates: self.min_breakdown_pct_candidates.clone(),
+            min_reclaim_close_pct_candidates: self.min_reclaim_close_pct_candidates.clone(),
+            min_lower_wick_pct_candidates: self.min_lower_wick_pct_candidates.clone(),
             min_volume_ratio_candidates: self.min_volume_ratio_candidates.clone(),
             max_choppiness_candidates: self.max_choppiness_candidates.clone(),
             holding_candles_candidates: self.holding_candles_candidates.clone(),
@@ -8770,6 +8887,9 @@ mod tests {
             min_pullback_depth_pct_candidates: Some(vec![Decimal::new(3, 1)]),
             max_pullback_depth_pct_candidates: Some(vec![Decimal::new(5, 0)]),
             min_reclaim_pct_candidates: Some(vec![Decimal::new(5, 2)]),
+            min_breakdown_pct_candidates: None,
+            min_reclaim_close_pct_candidates: None,
+            min_lower_wick_pct_candidates: None,
             min_volume_ratio_candidates: Some(vec![Decimal::new(8, 1)]),
             max_choppiness_candidates: Some(vec![Decimal::new(60, 0)]),
             holding_candles_candidates: Some(vec![10, 20]),
@@ -8792,6 +8912,64 @@ mod tests {
         );
         assert_eq!(candidates[0].max_choppiness, Some(Decimal::new(60, 0)));
         assert_eq!(candidates[0].holding_candles, Some(10));
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_experiment_candidates_include_reclaim_fields() {
+        let request = super::StrategyExperimentRequest {
+            strategy_id: "failed_breakdown_reclaim_v1".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            timeframe: "1h".to_string(),
+            start_time: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            end_time: Utc.with_ymd_and_hms(2024, 2, 1, 0, 0, 0).unwrap(),
+            initial_capital: Decimal::new(100_000, 0),
+            fee_bps: Decimal::new(10, 0),
+            slippage_bps: Decimal::new(5, 0),
+            lookback_candidates: vec![10, 40],
+            trend_lookback_candidates: None,
+            momentum_lookback_candidates: None,
+            compression_lookback_candidates: None,
+            breakout_lookback_candidates: None,
+            pullback_lookback_candidates: None,
+            pullback_sma_lookback_candidates: None,
+            compression_percentile_threshold_candidates: None,
+            min_breakout_pct_candidates: None,
+            max_breakout_extension_pct_candidates: None,
+            min_volume_expansion_ratio_candidates: None,
+            lower_band_pct_candidates: None,
+            upper_band_pct_candidates: None,
+            min_range_width_pct_candidates: None,
+            max_range_width_pct_candidates: None,
+            min_close_above_sma_pct_candidates: None,
+            max_close_above_sma_pct_candidates: None,
+            min_momentum_return_pct_candidates: None,
+            min_trend_return_pct_candidates: None,
+            min_trend_slope_pct_candidates: None,
+            min_pullback_depth_pct_candidates: None,
+            max_pullback_depth_pct_candidates: None,
+            min_reclaim_pct_candidates: None,
+            min_breakdown_pct_candidates: Some(vec![Decimal::new(5, 2)]),
+            min_reclaim_close_pct_candidates: Some(vec![Decimal::ZERO]),
+            min_lower_wick_pct_candidates: Some(vec![Decimal::ONE]),
+            min_volume_ratio_candidates: Some(vec![Decimal::ZERO]),
+            max_choppiness_candidates: None,
+            holding_candles_candidates: Some(vec![5]),
+            stop_loss_pct_candidates: None,
+            take_profit_pct_candidates: None,
+            max_signal_age_ms: Some(7_200_000),
+            max_runs: None,
+            correlation_id: None,
+        };
+
+        let candidates = request.candidates();
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].lookback_candles, 10);
+        assert_eq!(candidates[0].min_breakdown_pct, Some(Decimal::new(5, 2)));
+        assert_eq!(candidates[0].min_reclaim_close_pct, Some(Decimal::ZERO));
+        assert_eq!(candidates[0].min_lower_wick_pct, Some(Decimal::ONE));
+        assert_eq!(candidates[0].min_volume_ratio, Some(Decimal::ZERO));
+        assert_eq!(candidates[0].holding_candles, Some(5));
     }
 
     #[test]

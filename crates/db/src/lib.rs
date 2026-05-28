@@ -602,6 +602,9 @@ pub struct StrategyConfigRecord {
     pub min_pullback_depth_pct: Option<Decimal>,
     pub max_pullback_depth_pct: Option<Decimal>,
     pub min_reclaim_pct: Option<Decimal>,
+    pub min_breakdown_pct: Option<Decimal>,
+    pub min_reclaim_close_pct: Option<Decimal>,
+    pub min_lower_wick_pct: Option<Decimal>,
     pub min_volume_ratio: Option<Decimal>,
     pub max_choppiness: Option<Decimal>,
     pub confidence_floor: Option<Decimal>,
@@ -8931,6 +8934,9 @@ async fn upsert_strategy_config_tx(
             min_pullback_depth_pct,
             max_pullback_depth_pct,
             min_reclaim_pct,
+            min_breakdown_pct,
+            min_reclaim_close_pct,
+            min_lower_wick_pct,
             min_volume_ratio,
             max_choppiness,
             confidence_floor,
@@ -8943,7 +8949,7 @@ async fn upsert_strategy_config_tx(
             updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, NOW(), NOW()
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, NOW(), NOW()
         )
         ON CONFLICT (strategy_id) DO UPDATE
         SET
@@ -8980,6 +8986,9 @@ async fn upsert_strategy_config_tx(
             min_pullback_depth_pct = EXCLUDED.min_pullback_depth_pct,
             max_pullback_depth_pct = EXCLUDED.max_pullback_depth_pct,
             min_reclaim_pct = EXCLUDED.min_reclaim_pct,
+            min_breakdown_pct = EXCLUDED.min_breakdown_pct,
+            min_reclaim_close_pct = EXCLUDED.min_reclaim_close_pct,
+            min_lower_wick_pct = EXCLUDED.min_lower_wick_pct,
             min_volume_ratio = EXCLUDED.min_volume_ratio,
             max_choppiness = EXCLUDED.max_choppiness,
             confidence_floor = EXCLUDED.confidence_floor,
@@ -9021,6 +9030,9 @@ async fn upsert_strategy_config_tx(
             min_pullback_depth_pct,
             max_pullback_depth_pct,
             min_reclaim_pct,
+            min_breakdown_pct,
+            min_reclaim_close_pct,
+            min_lower_wick_pct,
             min_volume_ratio,
             max_choppiness,
             confidence_floor,
@@ -9067,6 +9079,9 @@ async fn upsert_strategy_config_tx(
     .bind(config.min_pullback_depth_pct)
     .bind(config.max_pullback_depth_pct)
     .bind(config.min_reclaim_pct)
+    .bind(config.min_breakdown_pct)
+    .bind(config.min_reclaim_close_pct)
+    .bind(config.min_lower_wick_pct)
     .bind(config.min_volume_ratio)
     .bind(config.max_choppiness)
     .bind(config.confidence_floor)
@@ -9119,6 +9134,9 @@ async fn get_strategy_config_tx(
             min_pullback_depth_pct,
             max_pullback_depth_pct,
             min_reclaim_pct,
+            min_breakdown_pct,
+            min_reclaim_close_pct,
+            min_lower_wick_pct,
             min_volume_ratio,
             max_choppiness,
             confidence_floor,
@@ -9178,6 +9196,9 @@ pub async fn get_strategy_config(
             min_pullback_depth_pct,
             max_pullback_depth_pct,
             min_reclaim_pct,
+            min_breakdown_pct,
+            min_reclaim_close_pct,
+            min_lower_wick_pct,
             min_volume_ratio,
             max_choppiness,
             confidence_floor,
@@ -9560,6 +9581,9 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
             c.min_pullback_depth_pct,
             c.max_pullback_depth_pct,
             c.min_reclaim_pct,
+            c.min_breakdown_pct,
+            c.min_reclaim_close_pct,
+            c.min_lower_wick_pct,
             c.min_volume_ratio,
             c.max_choppiness,
             c.confidence_floor,
@@ -9620,6 +9644,9 @@ pub async fn list_strategy_status(pool: &PgPool) -> Result<Vec<StrategyStatusRec
                 min_pullback_depth_pct: row.get("min_pullback_depth_pct"),
                 max_pullback_depth_pct: row.get("max_pullback_depth_pct"),
                 min_reclaim_pct: row.get("min_reclaim_pct"),
+                min_breakdown_pct: row.get("min_breakdown_pct"),
+                min_reclaim_close_pct: row.get("min_reclaim_close_pct"),
+                min_lower_wick_pct: row.get("min_lower_wick_pct"),
                 min_volume_ratio: row.get("min_volume_ratio"),
                 max_choppiness: row.get("max_choppiness"),
                 confidence_floor: row.get("confidence_floor"),
@@ -9688,6 +9715,9 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
         min_pullback_depth_pct: record.min_pullback_depth_pct,
         max_pullback_depth_pct: record.max_pullback_depth_pct,
         min_reclaim_pct: record.min_reclaim_pct,
+        min_breakdown_pct: record.min_breakdown_pct,
+        min_reclaim_close_pct: record.min_reclaim_close_pct,
+        min_lower_wick_pct: record.min_lower_wick_pct,
         min_volume_ratio: record.min_volume_ratio,
         max_choppiness: record.max_choppiness,
         confidence_floor: record.confidence_floor,
@@ -10772,6 +10802,9 @@ fn map_strategy_config(row: &sqlx::postgres::PgRow) -> StrategyConfigRecord {
         min_pullback_depth_pct: row.get("min_pullback_depth_pct"),
         max_pullback_depth_pct: row.get("max_pullback_depth_pct"),
         min_reclaim_pct: row.get("min_reclaim_pct"),
+        min_breakdown_pct: row.get("min_breakdown_pct"),
+        min_reclaim_close_pct: row.get("min_reclaim_close_pct"),
+        min_lower_wick_pct: row.get("min_lower_wick_pct"),
         min_volume_ratio: row.get("min_volume_ratio"),
         max_choppiness: row.get("max_choppiness"),
         confidence_floor: row.get("confidence_floor"),

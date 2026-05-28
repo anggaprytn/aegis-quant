@@ -1135,6 +1135,9 @@ export type ResearchBatchRequest = {
   min_pullback_depth_pct_candidates?: string[] | null;
   max_pullback_depth_pct_candidates?: string[] | null;
   min_reclaim_pct_candidates?: string[] | null;
+  min_breakdown_pct_candidates?: string[] | null;
+  min_reclaim_close_pct_candidates?: string[] | null;
+  min_lower_wick_pct_candidates?: string[] | null;
   min_volume_ratio_candidates?: string[] | null;
   max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
@@ -1356,6 +1359,9 @@ export type ResearchCampaignRequest = {
   min_pullback_depth_pct_candidates?: string[] | null;
   max_pullback_depth_pct_candidates?: string[] | null;
   min_reclaim_pct_candidates?: string[] | null;
+  min_breakdown_pct_candidates?: string[] | null;
+  min_reclaim_close_pct_candidates?: string[] | null;
+  min_lower_wick_pct_candidates?: string[] | null;
   min_volume_ratio_candidates?: string[] | null;
   max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
@@ -3060,6 +3066,9 @@ export type StrategyStatusView = {
   min_pullback_depth_pct: string | null;
   max_pullback_depth_pct: string | null;
   min_reclaim_pct: string | null;
+  min_breakdown_pct: string | null;
+  min_reclaim_close_pct: string | null;
+  min_lower_wick_pct: string | null;
   min_volume_ratio: string | null;
   max_choppiness: string | null;
   confidence_floor: string | null;
@@ -3122,6 +3131,9 @@ export type StrategyConfigUpdateRequest = {
   min_pullback_depth_pct?: string | null;
   max_pullback_depth_pct?: string | null;
   min_reclaim_pct?: string | null;
+  min_breakdown_pct?: string | null;
+  min_reclaim_close_pct?: string | null;
+  min_lower_wick_pct?: string | null;
   min_volume_ratio?: string | null;
   max_choppiness?: string | null;
   confidence_floor?: string | null;
@@ -4526,6 +4538,9 @@ export type StrategyExperimentCandidate = {
   min_pullback_depth_pct: string | null;
   max_pullback_depth_pct: string | null;
   min_reclaim_pct: string | null;
+  min_breakdown_pct: string | null;
+  min_reclaim_close_pct: string | null;
+  min_lower_wick_pct: string | null;
   min_volume_ratio: string | null;
   max_choppiness: string | null;
   holding_candles: number | null;
@@ -4627,6 +4642,9 @@ export type StrategyExperimentRequest = {
   min_pullback_depth_pct_candidates?: string[] | null;
   max_pullback_depth_pct_candidates?: string[] | null;
   min_reclaim_pct_candidates?: string[] | null;
+  min_breakdown_pct_candidates?: string[] | null;
+  min_reclaim_close_pct_candidates?: string[] | null;
+  min_lower_wick_pct_candidates?: string[] | null;
   min_volume_ratio_candidates?: string[] | null;
   max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
@@ -4669,6 +4687,9 @@ export type StrategyMultiTimeframeExperimentRequest = {
   min_pullback_depth_pct_candidates?: string[] | null;
   max_pullback_depth_pct_candidates?: string[] | null;
   min_reclaim_pct_candidates?: string[] | null;
+  min_breakdown_pct_candidates?: string[] | null;
+  min_reclaim_close_pct_candidates?: string[] | null;
+  min_lower_wick_pct_candidates?: string[] | null;
   min_volume_ratio_candidates?: string[] | null;
   max_choppiness_candidates?: string[] | null;
   lower_band_pct_candidates?: string[] | null;
@@ -4811,6 +4832,9 @@ export type StrategyWalkForwardCandidate = {
   min_pullback_depth_pct?: string | null;
   max_pullback_depth_pct?: string | null;
   min_reclaim_pct?: string | null;
+  min_breakdown_pct?: string | null;
+  min_reclaim_close_pct?: string | null;
+  min_lower_wick_pct?: string | null;
   min_volume_ratio?: string | null;
   max_choppiness?: string | null;
   holding_candles: number | null;

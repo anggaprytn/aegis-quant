@@ -21,7 +21,7 @@ pub struct StrategyValidationContext {
     pub max_position_notional: Option<Decimal>,
 }
 
-pub fn known_strategy_ids() -> [StrategyId; 8] {
+pub fn known_strategy_ids() -> [StrategyId; 9] {
     [
         StrategyId::MomentumV1,
         StrategyId::VolatilityBreakoutV1,
@@ -31,6 +31,7 @@ pub fn known_strategy_ids() -> [StrategyId; 8] {
         StrategyId::VolatilityCompressionBreakoutV1,
         StrategyId::RangeReversionV1,
         StrategyId::TrendPullbackContinuationV1,
+        StrategyId::FailedBreakdownReclaimV1,
     ]
 }
 
@@ -48,7 +49,7 @@ pub fn validate_strategy_config(
                 StrategyConfigValidationSeverity::Error,
                 "unknown_strategy",
                 "strategy_id",
-                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v2, trend_filter_momentum_v1, volatility_breakout_v2, volatility_compression_breakout_v1, range_reversion_v1, or trend_pullback_continuation_v1",
+                "strategy_id must be one of momentum_v1, volatility_breakout_v1, trend_filter_momentum_v2, trend_filter_momentum_v1, volatility_breakout_v2, volatility_compression_breakout_v1, range_reversion_v1, trend_pullback_continuation_v1, or failed_breakdown_reclaim_v1",
             ));
             return StrategyConfigValidationResult {
                 strategy_id: request.strategy_id.clone(),
@@ -216,6 +217,7 @@ pub fn validate_strategy_config(
         StrategyId::VolatilityCompressionBreakoutV1 => 2..=500,
         StrategyId::RangeReversionV1 => 2..=500,
         StrategyId::TrendPullbackContinuationV1 => 2..=500,
+        StrategyId::FailedBreakdownReclaimV1 => 2..=500,
     };
     if !lookback_range.contains(&request.lookback_candles) {
         issues.push(issue(
@@ -386,6 +388,66 @@ pub fn validate_strategy_config(
                 "max_signal_age_ms",
                 &format!(
                     "max_signal_age_ms must be at most {}ms for {} pullback continuation research",
+                    recommended_max,
+                    timeframe.as_str()
+                ),
+            ));
+        }
+    }
+
+    if strategy_id == StrategyId::FailedBreakdownReclaimV1 {
+        let min_breakdown = request.min_breakdown_pct.unwrap_or(Decimal::new(5, 2));
+        let min_reclaim_close = request.min_reclaim_close_pct.unwrap_or(Decimal::ZERO);
+        let min_lower_wick = request.min_lower_wick_pct.unwrap_or(Decimal::ONE);
+        let min_volume_ratio = request.min_volume_ratio.unwrap_or(Decimal::ZERO);
+
+        if request.lookback_candles <= 1 {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_lookback_candles",
+                "lookback_candles",
+                "lookback_candles must be greater than 1 for failed breakdown reclaim",
+            ));
+        }
+        if min_breakdown < Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_breakdown_pct",
+                "min_breakdown_pct",
+                "min_breakdown_pct must be greater than or equal to 0",
+            ));
+        }
+        if min_reclaim_close < Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_reclaim_close_pct",
+                "min_reclaim_close_pct",
+                "min_reclaim_close_pct must be greater than or equal to 0",
+            ));
+        }
+        if min_lower_wick < Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_lower_wick_pct",
+                "min_lower_wick_pct",
+                "min_lower_wick_pct must be greater than or equal to 0",
+            ));
+        }
+        if min_volume_ratio < Decimal::ZERO {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_min_volume_ratio",
+                "min_volume_ratio",
+                "min_volume_ratio must be greater than or equal to 0",
+            ));
+        }
+        if request.max_signal_age_ms > recommended_max {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                &format!("max_signal_age_ms_unreasonable_for_{}", timeframe.as_str()),
+                "max_signal_age_ms",
+                &format!(
+                    "max_signal_age_ms must be at most {}ms for {} failed breakdown reclaim research",
                     recommended_max,
                     timeframe.as_str()
                 ),
@@ -680,10 +742,21 @@ pub fn validate_strategy_config(
                 .min_reclaim_pct
                 .or((strategy_id == StrategyId::TrendPullbackContinuationV1)
                     .then_some(Decimal::new(5, 2))),
+            min_breakdown_pct: request
+                .min_breakdown_pct
+                .or((strategy_id == StrategyId::FailedBreakdownReclaimV1)
+                    .then_some(Decimal::new(5, 2))),
+            min_reclaim_close_pct: request
+                .min_reclaim_close_pct
+                .or((strategy_id == StrategyId::FailedBreakdownReclaimV1).then_some(Decimal::ZERO)),
+            min_lower_wick_pct: request
+                .min_lower_wick_pct
+                .or((strategy_id == StrategyId::FailedBreakdownReclaimV1).then_some(Decimal::ONE)),
             min_volume_ratio: request
                 .min_volume_ratio
                 .or((strategy_id == StrategyId::TrendPullbackContinuationV1)
-                    .then_some(Decimal::new(8, 1))),
+                    .then_some(Decimal::new(8, 1)))
+                .or((strategy_id == StrategyId::FailedBreakdownReclaimV1).then_some(Decimal::ZERO)),
             max_choppiness: request
                 .max_choppiness
                 .or((strategy_id == StrategyId::TrendPullbackContinuationV1)
@@ -723,6 +796,7 @@ pub fn required_candle_count(config: &StrategyConfig) -> i64 {
             let sma = pullback_sma_lookback(config) as i64;
             trend.max(pullback).max(sma).max(20).max(2)
         }
+        StrategyId::FailedBreakdownReclaimV1 => (config.lookback_candles as i64 + 1).max(2),
         _ => (config.lookback_candles as i64 + 1).max(2),
     }
 }
@@ -759,6 +833,9 @@ pub fn evaluate(context: StrategyEvaluationContext) -> Result<StrategyEvaluation
         StrategyId::RangeReversionV1 => evaluate_range_reversion(&context, candles),
         StrategyId::TrendPullbackContinuationV1 => {
             evaluate_trend_pullback_continuation(&context, candles)
+        }
+        StrategyId::FailedBreakdownReclaimV1 => {
+            evaluate_failed_breakdown_reclaim(&context, candles)
         }
     }
 }
@@ -917,6 +994,9 @@ pub fn diagnose(
             StrategyId::TrendPullbackContinuationV1 => {
                 diagnose_trend_pullback_continuation(&context, &candles, &mut condition_checks)
             }
+            StrategyId::FailedBreakdownReclaimV1 => {
+                diagnose_failed_breakdown_reclaim(&context, &candles, &mut condition_checks)
+            }
         }?
     };
 
@@ -970,6 +1050,9 @@ pub fn analyze_opportunity(
     let mut close_vs_sma_values = Vec::new();
     let mut compression_ratios = Vec::new();
     let mut breakout_pcts = Vec::new();
+    let mut breakdown_pcts = Vec::new();
+    let mut reclaim_close_pcts = Vec::new();
+    let mut lower_wick_pcts = Vec::new();
     let mut volume_ratios = Vec::new();
 
     if candles.len() >= required {
@@ -1006,6 +1089,14 @@ pub fn analyze_opportunity(
                         &mut volume_ratios,
                     )
                 }
+                StrategyId::FailedBreakdownReclaimV1 => analyze_failed_breakdown_reclaim_window(
+                    config,
+                    window,
+                    &mut breakdown_pcts,
+                    &mut reclaim_close_pcts,
+                    &mut lower_wick_pcts,
+                    &mut volume_ratios,
+                ),
                 _ => analyze_generic_window(config, strategy_id, window)?,
             };
 
@@ -1075,6 +1166,9 @@ pub fn analyze_opportunity(
             "close_vs_sma_pct": distribution_json(&close_vs_sma_values),
             "compression_ratio": distribution_json(&compression_ratios),
             "breakout_pct": distribution_json(&breakout_pcts),
+            "breakdown_pct": distribution_json(&breakdown_pcts),
+            "reclaim_close_pct": distribution_json(&reclaim_close_pcts),
+            "lower_wick_pct": distribution_json(&lower_wick_pcts),
             "volume_ratio": distribution_json(&volume_ratios),
         }),
         recommendation,
@@ -1523,6 +1617,70 @@ fn analyze_trend_pullback_continuation_window(
             "reclaim_confirmed": metrics.reclaim_confirmed,
             "volume_ratio": metrics.volume_ratio,
             "choppiness": metrics.choppiness,
+            "final_would_signal": final_would_signal,
+        }),
+    }
+}
+
+fn analyze_failed_breakdown_reclaim_window(
+    config: &StrategyConfig,
+    window: &[Candle],
+    breakdown_pcts: &mut Vec<Decimal>,
+    reclaim_close_pcts: &mut Vec<Decimal>,
+    lower_wick_pcts: &mut Vec<Decimal>,
+    volume_ratios: &mut Vec<Decimal>,
+) -> WindowOutcome {
+    let latest = window.last().expect("window must contain latest candle");
+    let metrics = calculate_failed_breakdown_reclaim_metrics(config, window);
+    breakdown_pcts.push(metrics.breakdown_pct);
+    reclaim_close_pcts.push(metrics.reclaim_close_pct);
+    lower_wick_pcts.push(metrics.lower_wick_pct);
+    volume_ratios.push(metrics.volume_ratio);
+
+    let valid_config = validate_failed_breakdown_reclaim_config(config).is_none();
+    let breakdown_detected = valid_config && latest.low < metrics.lookback_low;
+    let breakdown_depth_valid = valid_config && metrics.breakdown_pct >= min_breakdown_pct(config);
+    let reclaim_confirmed = valid_config
+        && latest.close >= metrics.lookback_low
+        && metrics.reclaim_close_pct >= min_reclaim_close_pct(config);
+    let lower_wick_valid = valid_config && metrics.lower_wick_pct >= min_lower_wick_pct(config);
+    let volume_confirmed = valid_config
+        && (min_volume_ratio_failed_reclaim(config) == Decimal::ZERO
+            || metrics.volume_ratio >= min_volume_ratio_failed_reclaim(config));
+    let final_would_signal = breakdown_detected
+        && breakdown_depth_valid
+        && reclaim_confirmed
+        && lower_wick_valid
+        && volume_confirmed;
+    let conditions = vec![
+        condition("has_enough_data", true),
+        condition("valid_config", valid_config),
+        condition("breakdown_detected", breakdown_detected),
+        condition("breakdown_depth_valid", breakdown_depth_valid),
+        condition("reclaim_confirmed", reclaim_confirmed),
+        condition("lower_wick_valid", lower_wick_valid),
+        condition("volume_confirmed", volume_confirmed),
+        condition("freshness", true),
+        condition("final_would_signal", final_would_signal),
+    ];
+    WindowOutcome {
+        open_time: latest.open_time,
+        close_time: latest.close_time,
+        would_signal: final_would_signal,
+        blocking_condition: first_failed(&conditions),
+        conditions,
+        details: json!({
+            "lookback_low": metrics.lookback_low,
+            "latest_low": metrics.latest_low,
+            "latest_close": metrics.latest_close,
+            "breakdown_pct": metrics.breakdown_pct,
+            "reclaim_close_pct": metrics.reclaim_close_pct,
+            "lower_wick_pct": metrics.lower_wick_pct,
+            "volume_ratio": metrics.volume_ratio,
+            "average_volume": metrics.average_volume,
+            "candle_body_pct": metrics.candle_body_pct,
+            "candle_range_pct": metrics.candle_range_pct,
+            "close_vs_sma_pct": metrics.close_vs_sma_pct,
             "final_would_signal": final_would_signal,
         }),
     }
@@ -2076,6 +2234,53 @@ fn evaluate_trend_pullback_continuation(
         latest,
         SignalReason::TrendPullbackContinuation,
         Decimal::new(69, 2),
+    )?)
+}
+
+fn evaluate_failed_breakdown_reclaim(
+    context: &StrategyEvaluationContext,
+    candles: Vec<Candle>,
+) -> Result<StrategyEvaluationResult, CoreError> {
+    if validate_failed_breakdown_reclaim_config(&context.config).is_some() {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    let required = required_candle_count(&context.config) as usize;
+    if candles.len() < required {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::InsufficientHistory,
+        ));
+    }
+
+    let recent = &candles[candles.len() - required..];
+    let latest = recent.last().expect("recent candles must be present");
+    let metrics = calculate_failed_breakdown_reclaim_metrics(&context.config, recent);
+    if latest.low >= metrics.lookback_low
+        || metrics.breakdown_pct < min_breakdown_pct(&context.config)
+        || latest.close < metrics.lookback_low
+        || metrics.reclaim_close_pct < min_reclaim_close_pct(&context.config)
+        || metrics.lower_wick_pct < min_lower_wick_pct(&context.config)
+        || (min_volume_ratio_failed_reclaim(&context.config) > Decimal::ZERO
+            && metrics.volume_ratio < min_volume_ratio_failed_reclaim(&context.config))
+    {
+        return Ok(no_signal_result(
+            context,
+            context.config.timeframe,
+            SignalReason::ConditionsNotMet,
+        ));
+    }
+
+    Ok(generated_result(
+        context,
+        latest,
+        SignalReason::FailedBreakdownReclaim,
+        Decimal::new(70, 2),
     )?)
 }
 
@@ -3364,6 +3569,225 @@ fn diagnose_trend_pullback_continuation(
     )
 }
 
+fn diagnose_failed_breakdown_reclaim(
+    context: &StrategyEvaluationContext,
+    candles: &[Candle],
+    condition_checks: &mut Vec<StrategyDiagnosticCheck>,
+) -> Result<DiagnosticOutcome, CoreError> {
+    if let Some(message) = validate_failed_breakdown_reclaim_config(&context.config) {
+        condition_checks.push(StrategyDiagnosticCheck {
+            name: "valid_config".to_string(),
+            passed: false,
+            severity: StrategyDiagnosticSeverity::Error,
+            message: message.clone(),
+            actual: Some("INVALID_CONFIG".to_string()),
+            expected: Some("valid failed breakdown reclaim config".to_string()),
+        });
+        return Ok(DiagnosticOutcome {
+            final_decision: StrategyDiagnosticsDecision::InvalidConfig,
+            no_signal_reason: Some(StrategyNoSignalReason::InvalidConfig),
+            summary: message,
+            source_candle_open_time: None,
+            confidence: None,
+        });
+    }
+
+    let required = required_candle_count(&context.config) as usize;
+    let recent = &candles[candles.len() - required..];
+    let latest = recent.last().expect("recent candles must be present");
+    let metrics = calculate_failed_breakdown_reclaim_metrics(&context.config, recent);
+    let min_breakdown = min_breakdown_pct(&context.config);
+    let min_reclaim_close = min_reclaim_close_pct(&context.config);
+    let min_lower_wick = min_lower_wick_pct(&context.config);
+    let min_volume = min_volume_ratio_failed_reclaim(&context.config);
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "lookback_low".to_string(),
+        passed: metrics.lookback_low > Decimal::ZERO,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Lowest low over the previous lookback candles, excluding the latest candle."
+            .to_string(),
+        actual: Some(metrics.lookback_low.to_string()),
+        expected: Some("> 0".to_string()),
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "latest_low".to_string(),
+        passed: latest.low > Decimal::ZERO,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Latest closed candle low.".to_string(),
+        actual: Some(metrics.latest_low.to_string()),
+        expected: Some("> 0".to_string()),
+    });
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "latest_close".to_string(),
+        passed: latest.close > Decimal::ZERO,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Latest closed candle close.".to_string(),
+        actual: Some(metrics.latest_close.to_string()),
+        expected: Some("> 0".to_string()),
+    });
+
+    let breakdown_detected = latest.low < metrics.lookback_low;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakdown_detected".to_string(),
+        passed: breakdown_detected,
+        severity: if breakdown_detected {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Latest low must undercut the previous lookback low.".to_string(),
+        actual: Some(format!(
+            "latest_low={}, lookback_low={}",
+            latest.low, metrics.lookback_low
+        )),
+        expected: Some("latest_low < lookback_low".to_string()),
+    });
+    if !breakdown_detected {
+        return failed_reclaim_no_signal_outcome(
+            StrategyNoSignalReason::NoBreakdown,
+            "NO_BREAKDOWN",
+            &metrics,
+        );
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "breakdown_pct".to_string(),
+        passed: metrics.breakdown_pct >= min_breakdown,
+        severity: if metrics.breakdown_pct >= min_breakdown {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Breakdown depth below the lookback low.".to_string(),
+        actual: Some(metrics.breakdown_pct.to_string()),
+        expected: Some(format!(">= {min_breakdown}")),
+    });
+    if metrics.breakdown_pct < min_breakdown {
+        return failed_reclaim_no_signal_outcome(
+            StrategyNoSignalReason::BreakdownTooSmall,
+            "BREAKDOWN_TOO_SMALL",
+            &metrics,
+        );
+    }
+
+    let reclaim_confirmed =
+        latest.close >= metrics.lookback_low && metrics.reclaim_close_pct >= min_reclaim_close;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "reclaim_confirmed".to_string(),
+        passed: reclaim_confirmed,
+        severity: if reclaim_confirmed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Latest close must reclaim the lookback low by the configured threshold."
+            .to_string(),
+        actual: Some(format!(
+            "latest_close={}, lookback_low={}, reclaim_close_pct={}",
+            latest.close, metrics.lookback_low, metrics.reclaim_close_pct
+        )),
+        expected: Some(format!(
+            "latest_close >= lookback_low and reclaim_close_pct >= {min_reclaim_close}"
+        )),
+    });
+    if !reclaim_confirmed {
+        return failed_reclaim_no_signal_outcome(
+            StrategyNoSignalReason::ReclaimNotConfirmed,
+            "RECLAIM_NOT_CONFIRMED",
+            &metrics,
+        );
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "lower_wick_pct".to_string(),
+        passed: metrics.lower_wick_pct >= min_lower_wick,
+        severity: if metrics.lower_wick_pct >= min_lower_wick {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Lower wick size as a percent of open.".to_string(),
+        actual: Some(metrics.lower_wick_pct.to_string()),
+        expected: Some(format!(">= {min_lower_wick}")),
+    });
+    if metrics.lower_wick_pct < min_lower_wick {
+        return failed_reclaim_no_signal_outcome(
+            StrategyNoSignalReason::LowerWickTooSmall,
+            "LOWER_WICK_TOO_SMALL",
+            &metrics,
+        );
+    }
+
+    let volume_confirmed = min_volume == Decimal::ZERO || metrics.volume_ratio >= min_volume;
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "volume_ratio".to_string(),
+        passed: volume_confirmed,
+        severity: if volume_confirmed {
+            StrategyDiagnosticSeverity::Info
+        } else {
+            StrategyDiagnosticSeverity::Warn
+        },
+        message: "Latest volume versus previous lookback average volume.".to_string(),
+        actual: Some(format!(
+            "volume_ratio={}, average_volume={}",
+            metrics.volume_ratio, metrics.average_volume
+        )),
+        expected: if min_volume == Decimal::ZERO {
+            Some("disabled".to_string())
+        } else {
+            Some(format!(">= {min_volume}"))
+        },
+    });
+    if !volume_confirmed {
+        return failed_reclaim_no_signal_outcome(
+            StrategyNoSignalReason::VolumeNotConfirmed,
+            "VOLUME_NOT_CONFIRMED",
+            &metrics,
+        );
+    }
+
+    condition_checks.push(StrategyDiagnosticCheck {
+        name: "final_decision".to_string(),
+        passed: true,
+        severity: StrategyDiagnosticSeverity::Info,
+        message: "Failed breakdown reclaim conditions passed.".to_string(),
+        actual: Some("WOULD_SIGNAL".to_string()),
+        expected: Some("WOULD_SIGNAL".to_string()),
+    });
+
+    confidence_outcome(
+        context,
+        latest,
+        SignalReason::FailedBreakdownReclaim,
+        Decimal::new(70, 2),
+    )
+}
+
+fn failed_reclaim_no_signal_outcome(
+    reason: StrategyNoSignalReason,
+    reason_label: &str,
+    metrics: &FailedBreakdownReclaimMetrics,
+) -> Result<DiagnosticOutcome, CoreError> {
+    Ok(DiagnosticOutcome {
+        final_decision: StrategyDiagnosticsDecision::NoSignal,
+        no_signal_reason: Some(reason),
+        summary: format!(
+            "Failed breakdown reclaim did not trigger: {reason_label}; lookback_low={}, latest_low={}, latest_close={}, breakdown_pct={}, reclaim_close_pct={}, lower_wick_pct={}, volume_ratio={}, average_volume={}, final_decision=NO_SIGNAL.",
+            metrics.lookback_low,
+            metrics.latest_low,
+            metrics.latest_close,
+            metrics.breakdown_pct,
+            metrics.reclaim_close_pct,
+            metrics.lower_wick_pct,
+            metrics.volume_ratio,
+            metrics.average_volume
+        ),
+        source_candle_open_time: None,
+        confidence: None,
+    })
+}
+
 fn pullback_no_signal_outcome(
     reason: StrategyNoSignalReason,
     reason_label: &str,
@@ -3572,12 +3996,114 @@ fn min_reclaim_pct(config: &StrategyConfig) -> Decimal {
     config.min_reclaim_pct.unwrap_or(Decimal::new(5, 2))
 }
 
+fn min_breakdown_pct(config: &StrategyConfig) -> Decimal {
+    config.min_breakdown_pct.unwrap_or(Decimal::new(5, 2))
+}
+
+fn min_reclaim_close_pct(config: &StrategyConfig) -> Decimal {
+    config.min_reclaim_close_pct.unwrap_or(Decimal::ZERO)
+}
+
+fn min_lower_wick_pct(config: &StrategyConfig) -> Decimal {
+    config.min_lower_wick_pct.unwrap_or(Decimal::ONE)
+}
+
 fn min_volume_ratio(config: &StrategyConfig) -> Decimal {
     config.min_volume_ratio.unwrap_or(Decimal::new(8, 1))
 }
 
+fn min_volume_ratio_failed_reclaim(config: &StrategyConfig) -> Decimal {
+    config.min_volume_ratio.unwrap_or(Decimal::ZERO)
+}
+
 fn max_choppiness(config: &StrategyConfig) -> Decimal {
     config.max_choppiness.unwrap_or(Decimal::new(60, 0))
+}
+
+fn validate_failed_breakdown_reclaim_config(config: &StrategyConfig) -> Option<String> {
+    if config.lookback_candles <= 1 {
+        return Some(
+            "Invalid failed breakdown reclaim config: lookback_candles must be greater than 1."
+                .to_string(),
+        );
+    }
+    if min_breakdown_pct(config) < Decimal::ZERO
+        || min_reclaim_close_pct(config) < Decimal::ZERO
+        || min_lower_wick_pct(config) < Decimal::ZERO
+        || min_volume_ratio_failed_reclaim(config) < Decimal::ZERO
+    {
+        return Some(
+            "Invalid failed breakdown reclaim config: breakdown, reclaim, wick, and volume thresholds must be non-negative."
+                .to_string(),
+        );
+    }
+    let (_, recommended_max_signal_age_ms) = config.timeframe.recommended_max_signal_age_ms();
+    if config.max_signal_age_ms > recommended_max_signal_age_ms {
+        return Some(
+            "Invalid failed breakdown reclaim config: max_signal_age_ms is unreasonable for timeframe."
+                .to_string(),
+        );
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+struct FailedBreakdownReclaimMetrics {
+    lookback_low: Decimal,
+    latest_low: Decimal,
+    latest_close: Decimal,
+    breakdown_pct: Decimal,
+    reclaim_close_pct: Decimal,
+    lower_wick_pct: Decimal,
+    volume_ratio: Decimal,
+    average_volume: Decimal,
+    candle_body_pct: Decimal,
+    candle_range_pct: Decimal,
+    close_vs_sma_pct: Decimal,
+}
+
+fn calculate_failed_breakdown_reclaim_metrics(
+    config: &StrategyConfig,
+    window: &[Candle],
+) -> FailedBreakdownReclaimMetrics {
+    let latest = window.last().expect("window must contain latest candle");
+    let lookback = config.lookback_candles as usize;
+    let previous_window = &window[window.len() - lookback - 1..window.len() - 1];
+    let lookback_low = previous_window
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(latest.low);
+    let breakdown_pct = pct_ratio(lookback_low - latest.low, lookback_low);
+    let reclaim_close_pct = pct_ratio(latest.close - lookback_low, lookback_low);
+    let body_floor = latest.open.min(latest.close);
+    let lower_wick_pct = pct_ratio(body_floor - latest.low, latest.open);
+    let candle_body_pct = pct_ratio((latest.close - latest.open).abs(), latest.open);
+    let latest_candle_range_pct = candle_range_pct(latest);
+    let average_volume = average_decimal(previous_window.iter().map(|candle| candle.volume));
+    let volume_ratio = if average_volume == Decimal::ZERO {
+        Decimal::ZERO
+    } else {
+        latest.volume / average_volume
+    };
+    let sma_window_len = 20usize.min(window.len());
+    let sma_window = &window[window.len() - sma_window_len..];
+    let sma = average_decimal(sma_window.iter().map(|candle| candle.close));
+    let close_vs_sma_pct = pct_ratio(latest.close - sma, sma);
+
+    FailedBreakdownReclaimMetrics {
+        lookback_low,
+        latest_low: latest.low,
+        latest_close: latest.close,
+        breakdown_pct,
+        reclaim_close_pct,
+        lower_wick_pct,
+        volume_ratio,
+        average_volume,
+        candle_body_pct,
+        candle_range_pct: latest_candle_range_pct,
+        close_vs_sma_pct,
+    }
 }
 
 fn validate_trend_pullback_config(config: &StrategyConfig) -> Option<String> {
@@ -3928,6 +4454,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -3968,6 +4497,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -4008,6 +4540,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -4048,6 +4583,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -4088,6 +4626,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -4128,6 +4669,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -4168,6 +4712,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -4180,7 +4727,7 @@ pub fn build_default_strategy_configs(
             strategy_id: StrategyId::TrendPullbackContinuationV1,
             enabled: true,
             mode: StrategyMode::Research,
-            symbols,
+            symbols: symbols.clone(),
             timeframe: CandleInterval::OneHour,
             suggested_notional,
             max_signal_age_ms: 7_200_000,
@@ -4208,6 +4755,9 @@ pub fn build_default_strategy_configs(
             min_pullback_depth_pct: Some(Decimal::new(3, 1)),
             max_pullback_depth_pct: Some(Decimal::new(5, 0)),
             min_reclaim_pct: Some(Decimal::new(5, 2)),
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: Some(Decimal::new(8, 1)),
             max_choppiness: Some(Decimal::new(60, 0)),
             confidence_floor: None,
@@ -4215,6 +4765,49 @@ pub fn build_default_strategy_configs(
             take_profit_pct: None,
             holding_candles: Some(20),
             notes: Some("Research baseline trend pullback continuation config".to_string()),
+        },
+        StrategyConfig {
+            strategy_id: StrategyId::FailedBreakdownReclaimV1,
+            enabled: true,
+            mode: StrategyMode::Research,
+            symbols,
+            timeframe: CandleInterval::OneHour,
+            suggested_notional,
+            max_signal_age_ms: 7_200_000,
+            cooldown_seconds: 14_400,
+            lookback_candles: 40,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            compression_lookback_candles: None,
+            breakout_lookback_candles: None,
+            pullback_lookback_candles: None,
+            pullback_sma_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
+            min_trend_return_pct: None,
+            min_trend_slope_pct: None,
+            min_pullback_depth_pct: None,
+            max_pullback_depth_pct: None,
+            min_reclaim_pct: None,
+            min_breakdown_pct: Some(Decimal::new(5, 2)),
+            min_reclaim_close_pct: Some(Decimal::ZERO),
+            min_lower_wick_pct: Some(Decimal::ONE),
+            min_volume_ratio: Some(Decimal::ZERO),
+            max_choppiness: None,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(5),
+            notes: Some("Research baseline failed breakdown reclaim config".to_string()),
         },
     ]
 }
@@ -4271,6 +4864,7 @@ fn max_strategy_confidence(strategy_id: StrategyId) -> Decimal {
         StrategyId::VolatilityCompressionBreakoutV1 => Decimal::new(71, 2),
         StrategyId::RangeReversionV1 => Decimal::new(66, 2),
         StrategyId::TrendPullbackContinuationV1 => Decimal::new(69, 2),
+        StrategyId::FailedBreakdownReclaimV1 => Decimal::new(70, 2),
     }
 }
 
@@ -4530,6 +5124,43 @@ mod tests {
         context
     }
 
+    fn failed_reclaim_candles(latest_low: Decimal, latest_close: Decimal) -> Vec<Candle> {
+        let mut candles = Vec::new();
+        for index in 0..40 {
+            candles.push(pullback_candle(
+                index,
+                Decimal::new(100, 0),
+                Decimal::new(101, 0),
+                Decimal::new(100, 0),
+                Decimal::new(1005, 1),
+                Decimal::new(100, 0),
+            ));
+        }
+        candles.push(pullback_candle(
+            40,
+            Decimal::new(100, 0),
+            Decimal::new(102, 0),
+            latest_low,
+            latest_close,
+            Decimal::new(100, 0),
+        ));
+        candles
+    }
+
+    fn failed_reclaim_context(candles: Vec<Candle>) -> StrategyEvaluationContext {
+        let mut context = context(StrategyId::FailedBreakdownReclaimV1, candles);
+        context.config.timeframe = CandleInterval::OneHour;
+        context.config.max_signal_age_ms = 7_200_000;
+        context.config.cooldown_seconds = 14_400;
+        context.config.lookback_candles = 40;
+        context.config.min_breakdown_pct = Some(Decimal::new(5, 2));
+        context.config.min_reclaim_close_pct = Some(Decimal::ZERO);
+        context.config.min_lower_wick_pct = Some(Decimal::ONE);
+        context.config.min_volume_ratio = Some(Decimal::ZERO);
+        context.config.holding_candles = Some(5);
+        context
+    }
+
     fn context(strategy_id: StrategyId, candles: Vec<Candle>) -> StrategyEvaluationContext {
         let evaluated_at = candles
             .last()
@@ -4598,6 +5229,9 @@ mod tests {
             min_pullback_depth_pct: None,
             max_pullback_depth_pct: None,
             min_reclaim_pct: None,
+            min_breakdown_pct: None,
+            min_reclaim_close_pct: None,
+            min_lower_wick_pct: None,
             min_volume_ratio: None,
             max_choppiness: None,
             confidence_floor: None,
@@ -5290,6 +5924,146 @@ mod tests {
             .top_blocking_conditions
             .iter()
             .any(|row| row.condition == "pullback_depth_valid"));
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_emits_buy_when_reclaim_and_wick_pass() {
+        let result = evaluate(failed_reclaim_context(failed_reclaim_candles(
+            Decimal::new(98, 0),
+            Decimal::new(1001, 1),
+        )))
+        .expect("evaluation should succeed");
+
+        assert!(result.generated);
+        assert_eq!(result.reason, SignalReason::FailedBreakdownReclaim);
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_no_signal_when_no_breakdown() {
+        let result = diagnose(failed_reclaim_context(failed_reclaim_candles(
+            Decimal::new(100, 0),
+            Decimal::new(1001, 1),
+        )))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::NoBreakdown)
+        );
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_no_signal_when_breakdown_too_small() {
+        let result = diagnose(failed_reclaim_context(failed_reclaim_candles(
+            Decimal::new(9998, 2),
+            Decimal::new(1001, 1),
+        )))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::BreakdownTooSmall)
+        );
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_no_signal_when_close_does_not_reclaim() {
+        let result = diagnose(failed_reclaim_context(failed_reclaim_candles(
+            Decimal::new(98, 0),
+            Decimal::new(999, 1),
+        )))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::ReclaimNotConfirmed)
+        );
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_no_signal_when_lower_wick_too_small() {
+        let result = diagnose(failed_reclaim_context(failed_reclaim_candles(
+            Decimal::new(998, 1),
+            Decimal::new(1001, 1),
+        )))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::LowerWickTooSmall)
+        );
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_volume_filter_blocks_when_enabled() {
+        let mut context = failed_reclaim_context(failed_reclaim_candles(
+            Decimal::new(98, 0),
+            Decimal::new(1001, 1),
+        ));
+        context.config.min_volume_ratio = Some(Decimal::new(11, 1));
+        context.candles.last_mut().expect("latest candle").volume = Decimal::new(50, 0);
+
+        let result = diagnose(context).expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::VolumeNotConfirmed)
+        );
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_validation_rejects_invalid_config() {
+        let mut request = sample_request("failed_breakdown_reclaim_v1");
+        request.timeframe = "1h".to_string();
+        request.lookback_candles = 40;
+        request.min_lower_wick_pct = Some(Decimal::new(-1, 0));
+        request.max_signal_age_ms = 7_200_000;
+
+        let result = validate_strategy_config(&request, &validation_context());
+
+        assert!(!result.valid);
+        assert!(result
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid_min_lower_wick_pct"));
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_diagnostics_explain_no_signal_reason() {
+        let result = diagnose(failed_reclaim_context(failed_reclaim_candles(
+            Decimal::new(98, 0),
+            Decimal::new(999, 1),
+        )))
+        .expect("diagnostics should succeed");
+
+        assert_eq!(
+            result.no_signal_reason,
+            Some(StrategyNoSignalReason::ReclaimNotConfirmed)
+        );
+        assert!(result.summary.contains("RECLAIM_NOT_CONFIRMED"));
+        assert!(result
+            .condition_checks
+            .iter()
+            .any(|check| check.name == "breakdown_pct"));
+    }
+
+    #[test]
+    fn failed_breakdown_reclaim_opportunity_counts_blockers() {
+        let candles = failed_reclaim_candles(Decimal::new(98, 0), Decimal::new(999, 1));
+        let config = failed_reclaim_context(candles.clone()).config;
+        let request = opportunity_request(StrategyId::FailedBreakdownReclaimV1);
+
+        let result =
+            analyze_opportunity(&request, &config, &candles, Utc::now()).expect("opportunity");
+
+        assert!(result
+            .top_blocking_conditions
+            .iter()
+            .any(|row| row.condition == "reclaim_confirmed"));
+        assert!(result
+            .condition_pass_rates
+            .iter()
+            .any(|row| row.condition == "lower_wick_valid"));
     }
 
     #[test]
