@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use aegis_core::{
@@ -1392,6 +1393,9 @@ pub enum ResearchCandidateCommands {
     List(ResearchCandidateListArgs),
     Watchlist(ResearchCandidateWatchlistArgs),
     Get { candidate_id: Uuid },
+    ExportBundle(ResearchCandidateExportBundleArgs),
+    ImportBundlePreview(ResearchCandidateImportBundlePreviewArgs),
+    ImportBundle(ResearchCandidateImportBundleArgs),
     Events { candidate_id: Uuid },
     Reviews { candidate_id: Uuid },
     Observations { candidate_id: Uuid },
@@ -1415,6 +1419,27 @@ pub enum ResearchCandidateCommands {
     Decide(ResearchCandidateDecideArgs),
     PromoteShadowPreview(ResearchCandidatePromoteShadowPreviewArgs),
     PromoteShadowApply(ResearchCandidatePromoteShadowApplyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateExportBundleArgs {
+    pub candidate_id: Uuid,
+    #[arg(long)]
+    pub output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateImportBundlePreviewArgs {
+    #[arg(long)]
+    pub file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateImportBundleArgs {
+    #[arg(long)]
+    pub file: PathBuf,
+    #[arg(long)]
+    pub confirm: String,
 }
 
 #[derive(Debug, Args)]

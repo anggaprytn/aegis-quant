@@ -4,6 +4,7 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
@@ -7742,6 +7743,157 @@ pub struct ResearchCandidateLifecycleEvent {
     pub payload: Value,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateEvidenceBundleCandidate {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub status: ResearchCandidateStatus,
+    pub config: Value,
+    pub config_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ResearchCandidateEvidenceProvenance {
+    pub source_experiment_run_id: Option<Uuid>,
+    pub source_walk_forward_run_id: Option<Uuid>,
+    pub source_robustness_matrix_run_id: Option<Uuid>,
+    pub source_proposal_id: Option<Uuid>,
+    pub source_batch_id: Option<Uuid>,
+    pub campaign_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateExecutionBoundary {
+    pub no_paper_testnet_live: bool,
+    pub import_does_not_authorize_execution: bool,
+    pub paper_testnet_live_boundary_crossed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateEvidenceBundleIntegrity {
+    pub bundle_fingerprint: String,
+    pub algorithm: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateEvidenceBundle {
+    pub schema_version: String,
+    pub exported_at: DateTime<Utc>,
+    pub source_environment: Option<String>,
+    pub candidate: ResearchCandidateEvidenceBundleCandidate,
+    pub evidence_provenance: ResearchCandidateEvidenceProvenance,
+    pub evidence_summary: Value,
+    pub warnings: Vec<String>,
+    pub execution_boundary: ResearchCandidateExecutionBoundary,
+    pub integrity: ResearchCandidateEvidenceBundleIntegrity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateImportBundlePreviewRequest {
+    pub bundle: ResearchCandidateEvidenceBundle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateImportBundleRequest {
+    pub bundle: ResearchCandidateEvidenceBundle,
+    pub confirm: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateImportProposedActions {
+    pub create_candidate: bool,
+    pub create_proposal: bool,
+    pub attach_evidence_summary: bool,
+    pub preserve_imported_status: bool,
+    pub imported_candidate_status: ResearchCandidateStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateImportBundlePreview {
+    pub bundle_fingerprint: String,
+    pub config_fingerprint: String,
+    pub source_candidate_id: Uuid,
+    pub candidate_id: Option<Uuid>,
+    pub candidate_exists: bool,
+    pub config_exists: bool,
+    pub import_exists: bool,
+    pub proposed_actions: ResearchCandidateImportProposedActions,
+    pub missing_source_ids: Vec<String>,
+    pub warnings: Vec<String>,
+    pub blockers: Vec<String>,
+    pub confirmation_required: String,
+    pub recommendation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateImportBundleResult {
+    pub preview: ResearchCandidateImportBundlePreview,
+    pub candidate: ResearchCandidate,
+    pub import_audit_id: Uuid,
+    pub applied: bool,
+}
+
+pub fn expected_research_candidate_import_confirmation(config_fingerprint: &str) -> String {
+    format!("IMPORT RESEARCH CANDIDATE {}", config_fingerprint.trim())
+}
+
+pub fn is_valid_research_candidate_import_confirmation(
+    config_fingerprint: &str,
+    confirmation_text: &str,
+) -> bool {
+    confirmation_text == expected_research_candidate_import_confirmation(config_fingerprint)
+}
+
+pub fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json_value).collect()),
+        Value::Object(map) => {
+            let mut sorted = serde_json::Map::new();
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = map.get(key) {
+                    sorted.insert(key.clone(), canonical_json_value(value));
+                }
+            }
+            Value::Object(sorted)
+        }
+        other => other.clone(),
+    }
+}
+
+pub fn hash_canonical_json_value(value: &Value) -> Result<String, CoreError> {
+    let normalized = canonical_json_value(value);
+    let bytes = serde_json::to_vec(&normalized)
+        .map_err(|err| CoreError::InvalidResearchCandidateImportBundle(err.to_string()))?;
+    let digest = Sha256::digest(bytes);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+pub fn research_candidate_bundle_fingerprint_payload(
+    bundle: &ResearchCandidateEvidenceBundle,
+) -> Value {
+    json!({
+        "schema_version": bundle.schema_version,
+        "exported_at": bundle.exported_at,
+        "source_environment": bundle.source_environment,
+        "candidate": bundle.candidate,
+        "evidence_provenance": bundle.evidence_provenance,
+        "evidence_summary": bundle.evidence_summary,
+        "warnings": bundle.warnings,
+        "execution_boundary": bundle.execution_boundary,
+    })
+}
+
+pub fn research_candidate_bundle_fingerprint(
+    bundle: &ResearchCandidateEvidenceBundle,
+) -> Result<String, CoreError> {
+    hash_canonical_json_value(&research_candidate_bundle_fingerprint_payload(bundle))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -17905,5 +18057,68 @@ mod tests {
             request.validate(),
             Err(CoreError::InvalidScheduledResearchJobMaxRuns)
         ));
+    }
+
+    #[test]
+    fn research_candidate_bundle_fingerprint_is_deterministic_for_object_key_order() {
+        let mut first = sample_research_candidate_bundle(json!({
+            "b": 2,
+            "a": {"z": 1, "y": 2}
+        }));
+        let mut second = sample_research_candidate_bundle(json!({
+            "a": {"y": 2, "z": 1},
+            "b": 2
+        }));
+        first.integrity.bundle_fingerprint = research_candidate_bundle_fingerprint(&first).unwrap();
+        second.integrity.bundle_fingerprint =
+            research_candidate_bundle_fingerprint(&second).unwrap();
+
+        assert_eq!(
+            first.integrity.bundle_fingerprint,
+            second.integrity.bundle_fingerprint
+        );
+    }
+
+    #[test]
+    fn research_candidate_import_confirmation_requires_exact_config_fingerprint() {
+        let fingerprint = "399c3e554330ffb1bfbeafe1f1b090e32ba51e985eb383d242527137833750da";
+        assert!(is_valid_research_candidate_import_confirmation(
+            fingerprint,
+            &expected_research_candidate_import_confirmation(fingerprint)
+        ));
+        assert!(!is_valid_research_candidate_import_confirmation(
+            fingerprint,
+            "IMPORT RESEARCH CANDIDATE wrong"
+        ));
+    }
+
+    fn sample_research_candidate_bundle(config: Value) -> ResearchCandidateEvidenceBundle {
+        ResearchCandidateEvidenceBundle {
+            schema_version: "research_candidate_evidence_bundle.v1".to_string(),
+            exported_at: ts(1, 0, 0),
+            source_environment: Some("test".to_string()),
+            candidate: ResearchCandidateEvidenceBundleCandidate {
+                candidate_id: Uuid::parse_str("70867792-93df-494c-9a8b-d961c73107e4").unwrap(),
+                strategy_id: "failed_breakdown_reclaim_v1".to_string(),
+                symbol: "ETHUSDT".to_string(),
+                timeframe: "1h".to_string(),
+                status: ResearchCandidateStatus::PromotedToShadowConfig,
+                config,
+                config_fingerprint:
+                    "399c3e554330ffb1bfbeafe1f1b090e32ba51e985eb383d242527137833750da".to_string(),
+            },
+            evidence_provenance: ResearchCandidateEvidenceProvenance::default(),
+            evidence_summary: json!({"qualification_status": "NOT_QUALIFIED"}),
+            warnings: vec!["not paper/testnet-ready".to_string()],
+            execution_boundary: ResearchCandidateExecutionBoundary {
+                no_paper_testnet_live: true,
+                import_does_not_authorize_execution: true,
+                paper_testnet_live_boundary_crossed: false,
+            },
+            integrity: ResearchCandidateEvidenceBundleIntegrity {
+                bundle_fingerprint: String::new(),
+                algorithm: "sha256:canonical-json-without-integrity".to_string(),
+            },
+        }
     }
 }

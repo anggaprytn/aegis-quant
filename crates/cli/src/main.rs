@@ -1,10 +1,12 @@
 use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateReviewRequest, ResearchExperimentPlanRunMode,
-    ResearchExperimentPlanRunRequest, ResearchHypothesisGenerationRequest,
-    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest,
-    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
+    ResearchCandidateEvidenceBundle, ResearchCandidateImportBundlePreviewRequest,
+    ResearchCandidateImportBundleRequest, ResearchCandidateReviewRequest,
+    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunRequest,
+    ResearchHypothesisGenerationRequest, ResearchHypothesisIncludedSource,
+    ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -41,6 +43,7 @@ use cli::config::{
 };
 use cli::output;
 use serde::{Deserialize, Serialize};
+use std::fs;
 
 #[derive(Deserialize, Serialize)]
 struct ResearchCandidateDecisionErrorResponse {
@@ -1029,6 +1032,59 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         output::print_research_candidate(&response.candidate);
                     }
+                }
+                ResearchCandidateCommands::ExportBundle(args) => {
+                    let response = client
+                        .export_research_candidate_bundle(args.candidate_id)
+                        .await?;
+                    let bytes = serde_json::to_vec_pretty(&response.bundle)?;
+                    fs::write(&args.output, bytes).with_context(|| {
+                        format!("failed to write bundle to {}", args.output.display())
+                    })?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        println!(
+                            "exported research candidate bundle: {}",
+                            args.output.display()
+                        );
+                        println!(
+                            "bundle_fingerprint: {}",
+                            response.bundle.integrity.bundle_fingerprint
+                        );
+                    }
+                }
+                ResearchCandidateCommands::ImportBundlePreview(args) => {
+                    let bytes = fs::read(&args.file).with_context(|| {
+                        format!("failed to read bundle from {}", args.file.display())
+                    })?;
+                    let bundle: ResearchCandidateEvidenceBundle = serde_json::from_slice(&bytes)
+                        .with_context(|| {
+                            format!("failed to parse bundle JSON from {}", args.file.display())
+                        })?;
+                    let response = client
+                        .preview_research_candidate_import_bundle(
+                            &ResearchCandidateImportBundlePreviewRequest { bundle },
+                        )
+                        .await?;
+                    output::print_json(&response)?;
+                }
+                ResearchCandidateCommands::ImportBundle(args) => {
+                    let bytes = fs::read(&args.file).with_context(|| {
+                        format!("failed to read bundle from {}", args.file.display())
+                    })?;
+                    let bundle: ResearchCandidateEvidenceBundle = serde_json::from_slice(&bytes)
+                        .with_context(|| {
+                            format!("failed to parse bundle JSON from {}", args.file.display())
+                        })?;
+                    let response = client
+                        .import_research_candidate_bundle(&ResearchCandidateImportBundleRequest {
+                            bundle,
+                            confirm: args.confirm,
+                            correlation_id: None,
+                        })
+                        .await?;
+                    output::print_json(&response)?;
                 }
                 ResearchCandidateCommands::Events { candidate_id } => {
                     let response = client.list_research_candidate_events(candidate_id).await?;

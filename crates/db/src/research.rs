@@ -163,6 +163,21 @@ pub struct ResearchCandidateProposalRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateImportRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub bundle_fingerprint: String,
+    pub config_fingerprint: String,
+    pub source_candidate_id: Uuid,
+    pub source_environment: Option<String>,
+    pub imported_status: String,
+    pub evidence_summary_json: Value,
+    pub warnings_json: Value,
+    pub imported_at: DateTime<Utc>,
+    pub imported_by: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchExperimentPlanRunRecord {
     pub id: Uuid,
     pub plan_id: Uuid,
@@ -3495,6 +3510,188 @@ pub async fn mark_research_candidate_proposal_promoted(
     .await?;
 
     Ok(row.map(map_research_candidate_proposal))
+}
+
+fn map_research_candidate_import(row: sqlx::postgres::PgRow) -> ResearchCandidateImportRecord {
+    ResearchCandidateImportRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        bundle_fingerprint: row.get("bundle_fingerprint"),
+        config_fingerprint: row.get("config_fingerprint"),
+        source_candidate_id: row.get("source_candidate_id"),
+        source_environment: row.try_get("source_environment").unwrap_or(None),
+        imported_status: row.get("imported_status"),
+        evidence_summary_json: row.get("evidence_summary_json"),
+        warnings_json: row.get("warnings_json"),
+        imported_at: row.get("imported_at"),
+        imported_by: row.try_get("imported_by").unwrap_or(None),
+    }
+}
+
+pub async fn get_research_candidate_import_by_bundle_fingerprint(
+    pool: &PgPool,
+    bundle_fingerprint: &str,
+) -> Result<Option<ResearchCandidateImportRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            bundle_fingerprint,
+            config_fingerprint,
+            source_candidate_id,
+            source_environment,
+            imported_status,
+            evidence_summary_json,
+            warnings_json,
+            imported_at,
+            imported_by
+        FROM research_candidate_imports
+        WHERE bundle_fingerprint = $1
+        "#,
+    )
+    .bind(bundle_fingerprint)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_import))
+}
+
+pub async fn get_research_candidate_import_by_source_config(
+    pool: &PgPool,
+    source_candidate_id: Uuid,
+    config_fingerprint: &str,
+) -> Result<Option<ResearchCandidateImportRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            bundle_fingerprint,
+            config_fingerprint,
+            source_candidate_id,
+            source_environment,
+            imported_status,
+            evidence_summary_json,
+            warnings_json,
+            imported_at,
+            imported_by
+        FROM research_candidate_imports
+        WHERE source_candidate_id = $1
+          AND config_fingerprint = $2
+        "#,
+    )
+    .bind(source_candidate_id)
+    .bind(config_fingerprint)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_import))
+}
+
+pub async fn find_research_candidate_id_by_import_or_proposal_config(
+    pool: &PgPool,
+    strategy_id: &str,
+    symbol: &str,
+    timeframe: &str,
+    config_fingerprint: &str,
+) -> Result<Option<Uuid>> {
+    let row = sqlx::query(
+        r#"
+        SELECT candidate_id
+        FROM (
+            SELECT imported.candidate_id, imported.imported_at AS created_at
+            FROM research_candidate_imports imported
+            INNER JOIN research_candidates candidate ON candidate.id = imported.candidate_id
+            WHERE candidate.strategy_id = $1
+              AND candidate.symbol = $2
+              AND candidate.timeframe = $3
+              AND imported.config_fingerprint = $4
+            UNION ALL
+            SELECT proposal.promoted_candidate_id AS candidate_id, proposal.created_at
+            FROM research_candidate_proposals proposal
+            WHERE proposal.strategy_id = $1
+              AND proposal.symbol = $2
+              AND proposal.timeframe = $3
+              AND proposal.config_fingerprint = $4
+              AND proposal.promoted_candidate_id IS NOT NULL
+        ) matches
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(strategy_id)
+    .bind(symbol.trim().to_ascii_uppercase())
+    .bind(timeframe)
+    .bind(config_fingerprint)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| row.get("candidate_id")))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_research_candidate_import(
+    pool: &PgPool,
+    id: Uuid,
+    candidate_id: Uuid,
+    bundle_fingerprint: &str,
+    config_fingerprint: &str,
+    source_candidate_id: Uuid,
+    source_environment: Option<&str>,
+    imported_status: ResearchCandidateStatus,
+    evidence_summary_json: &Value,
+    warnings_json: &Value,
+    imported_at: DateTime<Utc>,
+    imported_by: Option<Uuid>,
+) -> Result<ResearchCandidateImportRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO research_candidate_imports (
+            id,
+            candidate_id,
+            bundle_fingerprint,
+            config_fingerprint,
+            source_candidate_id,
+            source_environment,
+            imported_status,
+            evidence_summary_json,
+            warnings_json,
+            imported_at,
+            imported_by
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (bundle_fingerprint) DO UPDATE
+        SET candidate_id = research_candidate_imports.candidate_id
+        RETURNING
+            id,
+            candidate_id,
+            bundle_fingerprint,
+            config_fingerprint,
+            source_candidate_id,
+            source_environment,
+            imported_status,
+            evidence_summary_json,
+            warnings_json,
+            imported_at,
+            imported_by
+        "#,
+    )
+    .bind(id)
+    .bind(candidate_id)
+    .bind(bundle_fingerprint)
+    .bind(config_fingerprint)
+    .bind(source_candidate_id)
+    .bind(source_environment)
+    .bind(imported_status.as_str())
+    .bind(evidence_summary_json.clone())
+    .bind(warnings_json.clone())
+    .bind(imported_at)
+    .bind(imported_by)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_research_candidate_import(row))
 }
 
 pub async fn insert_research_regime_dataset(

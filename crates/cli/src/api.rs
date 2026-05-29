@@ -14,28 +14,31 @@ use aegis_core::{
     ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
-    ResearchCandidateLifecycleEvent, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewRequest,
-    ResearchCandidateReviewResult, ResearchCandidateShadowObserveOnceRequest,
-    ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchExperimentPlan, ResearchExperimentPlanRunRequest,
-    ResearchExperimentPlanRunResult, ResearchHypothesis, ResearchHypothesisGenerationRequest,
-    ResearchHypothesisGenerationResult, ResearchHypothesisStatus,
-    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
-    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
-    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
-    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
-    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeStrategyLeaderboard,
-    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, ResearchStaleRunRecoveryRequest,
-    ResearchStaleRunRecoveryResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
-    RiskConfigVersion, ScheduledResearchBootstrapSafeRequest, ScheduledResearchBootstrapSafeResult,
+    ResearchCandidateEvidenceBundle, ResearchCandidateImportBundlePreview,
+    ResearchCandidateImportBundlePreviewRequest, ResearchCandidateImportBundleRequest,
+    ResearchCandidateImportBundleResult, ResearchCandidateLifecycleEvent,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewRequest, ResearchCandidateReviewResult,
+    ResearchCandidateShadowObserveOnceRequest, ResearchCandidateShadowObserveOnceResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
+    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
+    ResearchExperimentPlan, ResearchExperimentPlanRunRequest, ResearchExperimentPlanRunResult,
+    ResearchHypothesis, ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
+    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
+    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
+    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
+    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
+    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
+    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
+    ResearchStaleRunRecoveryRequest, ResearchStaleRunRecoveryResult, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
+    ScheduledResearchBootstrapSafeRequest, ScheduledResearchBootstrapSafeResult,
     ScheduledResearchJob, ScheduledResearchJobControlRequest, ScheduledResearchJobRequest,
     ScheduledResearchJobRun, StrategyCandidateObservationResult, StrategyComparisonSummary,
     StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
@@ -1205,6 +1208,33 @@ impl ApiClient {
         candidate_id: Uuid,
     ) -> Result<ResearchCandidateResponse, ApiClientError> {
         self.get(&format!("/research/candidates/{candidate_id}"), &[])
+            .await
+    }
+
+    pub async fn export_research_candidate_bundle(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateExportBundleResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/export-bundle"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn preview_research_candidate_import_bundle(
+        &self,
+        request: &ResearchCandidateImportBundlePreviewRequest,
+    ) -> Result<ResearchCandidateImportBundlePreviewResponse, ApiClientError> {
+        self.post("/research/candidates/import-bundle/preview", request)
+            .await
+    }
+
+    pub async fn import_research_candidate_bundle(
+        &self,
+        request: &ResearchCandidateImportBundleRequest,
+    ) -> Result<ResearchCandidateImportBundleResultResponse, ApiClientError> {
+        self.post("/research/candidates/import-bundle", request)
             .await
     }
 
@@ -3208,6 +3238,30 @@ pub struct ResearchCandidatesResponse {
 pub struct ResearchCandidateResponse {
     pub candidate: ResearchCandidate,
     pub walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateExportBundleResponse {
+    pub bundle: ResearchCandidateEvidenceBundle,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateImportBundlePreviewResponse {
+    pub preview: ResearchCandidateImportBundlePreview,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateImportBundleResultResponse {
+    pub result: ResearchCandidateImportBundleResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -19,10 +19,12 @@ use accounting::{
 use aegis_core::{
     aggregate_closed_1m_candles, candle_aggregation_status,
     expected_research_candidate_accept_shadow_confirmation,
+    expected_research_candidate_import_confirmation,
     expected_research_candidate_shadow_promotion_confirmation,
     expected_strategy_research_promotion_confirmation, expected_testnet_pipeline_confirmation,
     expected_testnet_shadow_promotion_confirmation,
     is_valid_research_candidate_accept_shadow_confirmation,
+    is_valid_research_candidate_import_confirmation,
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
@@ -56,7 +58,12 @@ use aegis_core::{
     ResearchCandidateAcceptForShadowPreviewInput, ResearchCandidateAcceptForShadowPreviewResult,
     ResearchCandidateCreationGateResult, ResearchCandidateCreationInput,
     ResearchCandidateCreationPolicy, ResearchCandidateDecision, ResearchCandidateDecisionRejection,
-    ResearchCandidateDecisionRequest, ResearchCandidateFailureInput,
+    ResearchCandidateDecisionRequest, ResearchCandidateEvidenceBundle,
+    ResearchCandidateEvidenceBundleCandidate, ResearchCandidateEvidenceBundleIntegrity,
+    ResearchCandidateEvidenceProvenance, ResearchCandidateExecutionBoundary,
+    ResearchCandidateFailureInput, ResearchCandidateImportBundlePreview,
+    ResearchCandidateImportBundlePreviewRequest, ResearchCandidateImportBundleRequest,
+    ResearchCandidateImportBundleResult, ResearchCandidateImportProposedActions,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidatePromotionReadiness, ResearchCandidateProposal,
@@ -156,6 +163,7 @@ use db::{
     candle_backfill_result_from_record, check_health, complete_market_data_repair_run,
     complete_research_batch_step, connect_pool, count_users, create_paper_order,
     create_research_candidate, decide_research_hypothesis, ensure_system_state,
+    find_research_candidate_id_by_import_or_proposal_config,
     get_active_strategy_research_candidate_promotion,
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
@@ -166,7 +174,9 @@ use db::{
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
-    get_research_candidate_proposal, get_research_candidate_qualification_evaluation_by_id,
+    get_research_candidate_import_by_bundle_fingerprint,
+    get_research_candidate_import_by_source_config, get_research_candidate_proposal,
+    get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
     get_research_experiment_plan, get_research_hypothesis, get_research_regime_calibration,
     get_research_regime_dataset, get_research_regime_discovery, get_risk_config,
@@ -245,9 +255,9 @@ use db::{
     update_scheduled_research_job_definition, update_scheduled_research_job_status,
     update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
     upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
-    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
-    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    upsert_research_candidate_import, upsert_risk_config, upsert_strategy_config, user_from_record,
+    BacktestEquityPointRecord, BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord,
+    CreateOrderError, DbConfig, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
@@ -1671,6 +1681,30 @@ struct ResearchCandidatesResponse {
 struct ResearchCandidateResponse {
     candidate: ResearchCandidate,
     walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateExportBundleResponse {
+    bundle: ResearchCandidateEvidenceBundle,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateImportBundlePreviewResponse {
+    preview: ResearchCandidateImportBundlePreview,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateImportBundleResultResponse {
+    result: ResearchCandidateImportBundleResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3388,6 +3422,14 @@ async fn main() {
             get(get_research_candidate_watchlist_handler),
         )
         .route(
+            "/research/candidates/import-bundle/preview",
+            post(preview_research_candidate_import_bundle_handler),
+        )
+        .route(
+            "/research/candidates/import-bundle",
+            post(apply_research_candidate_import_bundle_handler),
+        )
+        .route(
             "/research/candidate-proposals",
             get(list_research_candidate_proposals_handler),
         )
@@ -3402,6 +3444,10 @@ async fn main() {
         .route(
             "/research/candidates/:id",
             get(get_research_candidate_handler),
+        )
+        .route(
+            "/research/candidates/:id/export-bundle",
+            get(export_research_candidate_bundle_handler),
         )
         .route(
             "/research/candidates/:id/events",
@@ -3916,6 +3962,9 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
         return RouteAccess::Authenticated;
     }
     if method == axum::http::Method::POST && path == "/research/stale-runs/recover-preview" {
+        return RouteAccess::Authenticated;
+    }
+    if method == axum::http::Method::POST && path == "/research/candidates/import-bundle/preview" {
         return RouteAccess::Authenticated;
     }
     if method == axum::http::Method::POST && path == "/research/stale-runs/recover" {
@@ -16642,6 +16691,51 @@ async fn build_research_state_snapshot(
         })
         .collect::<Vec<_>>();
 
+    let imported_candidate_rows = sqlx::query(
+        r#"
+        SELECT
+            imported.id AS import_id,
+            imported.candidate_id,
+            imported.bundle_fingerprint,
+            imported.config_fingerprint,
+            imported.source_candidate_id,
+            imported.source_environment,
+            imported.imported_status,
+            imported.imported_at,
+            candidate.strategy_id,
+            candidate.symbol,
+            candidate.timeframe,
+            candidate.status
+        FROM research_candidate_imports imported
+        INNER JOIN research_candidates candidate ON candidate.id = imported.candidate_id
+        ORDER BY imported.imported_at DESC, imported.id DESC
+        LIMIT 50
+        "#,
+    )
+    .fetch_all(&state.db_pool)
+    .await?;
+    let imported_candidates = imported_candidate_rows
+        .iter()
+        .map(|row| {
+            json!({
+                "import_id": row.get::<Uuid, _>("import_id"),
+                "candidate_id": row.get::<Uuid, _>("candidate_id"),
+                "source_candidate_id": row.get::<Uuid, _>("source_candidate_id"),
+                "source_environment": row.get::<Option<String>, _>("source_environment"),
+                "strategy": row.get::<String, _>("strategy_id"),
+                "symbol": row.get::<String, _>("symbol"),
+                "timeframe": row.get::<String, _>("timeframe"),
+                "candidate_status": row.get::<String, _>("status"),
+                "imported_status_policy": row.get::<String, _>("imported_status"),
+                "bundle_fingerprint": row.get::<String, _>("bundle_fingerprint"),
+                "config_fingerprint": row.get::<String, _>("config_fingerprint"),
+                "warning": "Imported evidence is provenance-only until validated locally.",
+                "recommended_next_action": "RUN_LOCAL_VALIDATION_OR_OBSERVATION",
+                "imported_at": row.get::<DateTime<Utc>, _>("imported_at"),
+            })
+        })
+        .collect::<Vec<_>>();
+
     let latest_operator_report =
         match operator_reports::list_operator_reports(&state.db_pool, 1).await {
             Ok(mut reports) => reports.pop().map(|item| {
@@ -16676,6 +16770,8 @@ async fn build_research_state_snapshot(
             "latest_operator_report": latest_operator_report,
         },
         "active_research_candidates": active_candidates.clone(),
+        "imported_research_candidates": imported_candidates,
+        "imported_research_candidate_warning": "Imported evidence is provenance-only until validated locally.",
         "shadow_observed_candidates": active_candidates.iter()
             .filter(|candidate| candidate["evidence_progress"]["total_shadow_runs"].as_i64().unwrap_or(0) > 0)
             .cloned()
@@ -24377,6 +24473,238 @@ async fn get_research_candidate_handler(
     }
 }
 
+async fn export_research_candidate_bundle_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only VIEWER, OPERATOR, or OWNER can export research bundles."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    match build_research_candidate_evidence_bundle(&state, candidate_id, now).await {
+        Ok(bundle) => (
+            StatusCode::OK,
+            Json(ResearchCandidateExportBundleResponse {
+                bundle,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) if err.to_string().contains("not found") => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_candidate_not_found",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_export_research_candidate_bundle",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn preview_research_candidate_import_bundle_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCandidateImportBundlePreviewRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only VIEWER, OPERATOR, or OWNER can preview research imports."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    match build_research_candidate_import_preview(&state, &payload.bundle).await {
+        Ok(preview) => (
+            StatusCode::OK,
+            Json(ResearchCandidateImportBundlePreviewResponse {
+                preview,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_research_candidate_import_bundle",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn apply_research_candidate_import_bundle_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCandidateImportBundleRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can import research bundles.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let preview = match build_research_candidate_import_preview(&state, &payload.bundle).await {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_research_candidate_import_bundle",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    if !preview.blockers.is_empty() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "research_candidate_import_blocked",
+                message: preview.blockers.join(", "),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    if !is_valid_research_candidate_import_confirmation(
+        &payload.bundle.candidate.config_fingerprint,
+        &payload.confirm,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_confirmation",
+                message: format!(
+                    "Confirmation must be exactly: {}",
+                    expected_research_candidate_import_confirmation(
+                        &payload.bundle.candidate.config_fingerprint
+                    )
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    match apply_research_candidate_import_bundle(
+        &state,
+        payload.bundle,
+        preview,
+        actor.user_id,
+        now,
+    )
+    .await
+    {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(ResearchCandidateImportBundleResultResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_import_research_candidate_bundle",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn list_research_candidate_events_handler(
     State(state): State<AppState>,
     Path(candidate_id): Path<Uuid>,
@@ -24423,6 +24751,406 @@ async fn list_research_candidate_events_handler(
         )
             .into_response(),
     }
+}
+
+async fn build_research_candidate_evidence_bundle(
+    state: &AppState,
+    candidate_id: Uuid,
+    exported_at: DateTime<Utc>,
+) -> anyhow::Result<ResearchCandidateEvidenceBundle> {
+    let record = get_research_candidate(&state.db_pool, candidate_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("research candidate not found"))?;
+    let candidate = research_candidate_from_record(&record)?;
+    let config_fingerprint = strategy_evidence_config_fingerprint(&candidate.config)?;
+
+    let proposal = sqlx::query(
+        r#"
+        SELECT
+            id,
+            source_batch_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
+            source_robustness_status,
+            evidence_status_summary,
+            config_fingerprint
+        FROM research_candidate_proposals
+        WHERE promoted_candidate_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(candidate.id)
+    .fetch_optional(&state.db_pool)
+    .await?;
+
+    let latest_qualification =
+        get_latest_research_candidate_qualification_evaluation(&state.db_pool, candidate.id)
+            .await?;
+    let shadow_performance = get_research_candidate_shadow_performance(
+        &state.db_pool,
+        &candidate,
+        &ResearchCandidateShadowPerformanceWindow {
+            start_time: candidate.updated_at,
+            end_time: exported_at,
+        },
+        false,
+        exported_at,
+    )
+    .await?;
+    let latest_walk_forward =
+        get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id).await?;
+
+    let provenance = ResearchCandidateEvidenceProvenance {
+        source_experiment_run_id: proposal
+            .as_ref()
+            .and_then(|row| row.get::<Option<Uuid>, _>("source_experiment_run_id"))
+            .or(candidate.experiment_run_id),
+        source_walk_forward_run_id: proposal
+            .as_ref()
+            .and_then(|row| row.get::<Option<Uuid>, _>("source_walk_forward_run_id"))
+            .or_else(|| {
+                latest_walk_forward
+                    .as_ref()
+                    .map(|item| item.walk_forward_run_id)
+            }),
+        source_robustness_matrix_run_id: proposal
+            .as_ref()
+            .and_then(|row| row.get::<Option<Uuid>, _>("source_robustness_matrix_run_id")),
+        source_proposal_id: proposal.as_ref().map(|row| row.get::<Uuid, _>("id")),
+        source_batch_id: proposal
+            .as_ref()
+            .and_then(|row| row.get::<Option<Uuid>, _>("source_batch_id")),
+        campaign_id: None,
+    };
+
+    let warnings = vec![
+        "ETH-only evidence".to_string(),
+        "BTC/generalization not proven".to_string(),
+        "2025+ robustness weakened".to_string(),
+        "not paper/testnet-ready".to_string(),
+        "shadow evidence incomplete".to_string(),
+    ];
+    let evidence_summary = json!({
+        "experiment_metrics": {
+            "score": candidate.score,
+            "pnl_pct": candidate.pnl_pct,
+            "max_drawdown_pct": candidate.max_drawdown_pct,
+            "trade_count": candidate.trade_count,
+            "win_rate": candidate.win_rate,
+            "fee_drag": candidate.fee_drag,
+        },
+        "walk_forward": latest_walk_forward,
+        "robustness": {
+            "status": proposal.as_ref().and_then(|row| row.get::<Option<String>, _>("source_robustness_status")),
+        },
+        "data_quality_summary": proposal.as_ref().and_then(|row| row.get::<Option<Value>, _>("evidence_status_summary")),
+        "shadow_performance_summary": shadow_performance,
+        "qualification_status": latest_qualification.as_ref().map(|item| item.status.clone()),
+        "dossier_status": if latest_qualification
+            .as_ref()
+            .map(|item| item.status.as_str() == "QUALIFIED")
+            .unwrap_or(false)
+        {
+            "NEEDS_OPERATOR_REVIEW"
+        } else {
+            "BLOCKED"
+        },
+    });
+
+    let mut bundle = ResearchCandidateEvidenceBundle {
+        schema_version: "research_candidate_evidence_bundle.v1".to_string(),
+        exported_at,
+        source_environment: Some(state.config.environment.clone()),
+        candidate: ResearchCandidateEvidenceBundleCandidate {
+            candidate_id: candidate.id,
+            strategy_id: candidate.strategy_id,
+            symbol: candidate.symbol,
+            timeframe: candidate.timeframe,
+            status: candidate.status,
+            config: candidate.config,
+            config_fingerprint,
+        },
+        evidence_provenance: provenance,
+        evidence_summary,
+        warnings,
+        execution_boundary: ResearchCandidateExecutionBoundary {
+            no_paper_testnet_live: true,
+            import_does_not_authorize_execution: true,
+            paper_testnet_live_boundary_crossed: false,
+        },
+        integrity: ResearchCandidateEvidenceBundleIntegrity {
+            bundle_fingerprint: String::new(),
+            algorithm: "sha256:canonical-json-without-integrity".to_string(),
+        },
+    };
+    bundle.integrity.bundle_fingerprint =
+        aegis_core::research_candidate_bundle_fingerprint(&bundle)?;
+    Ok(bundle)
+}
+
+async fn build_research_candidate_import_preview(
+    state: &AppState,
+    bundle: &ResearchCandidateEvidenceBundle,
+) -> anyhow::Result<ResearchCandidateImportBundlePreview> {
+    let mut blockers = Vec::new();
+    let mut warnings = bundle.warnings.clone();
+    if bundle.schema_version != "research_candidate_evidence_bundle.v1" {
+        blockers.push(format!(
+            "unsupported_schema_version: {}",
+            bundle.schema_version
+        ));
+    }
+    if !bundle.execution_boundary.no_paper_testnet_live
+        || !bundle
+            .execution_boundary
+            .import_does_not_authorize_execution
+        || bundle
+            .execution_boundary
+            .paper_testnet_live_boundary_crossed
+    {
+        blockers.push("execution_boundary_not_research_only".to_string());
+    }
+
+    let computed_config_fingerprint =
+        strategy_evidence_config_fingerprint(&bundle.candidate.config)?;
+    if computed_config_fingerprint != bundle.candidate.config_fingerprint {
+        blockers.push("config_fingerprint_mismatch".to_string());
+    }
+    let computed_bundle_fingerprint = aegis_core::research_candidate_bundle_fingerprint(bundle)?;
+    if computed_bundle_fingerprint != bundle.integrity.bundle_fingerprint {
+        blockers.push("bundle_fingerprint_mismatch".to_string());
+    }
+
+    let candidate_exists = get_research_candidate(&state.db_pool, bundle.candidate.candidate_id)
+        .await?
+        .is_some();
+    let import_by_bundle = get_research_candidate_import_by_bundle_fingerprint(
+        &state.db_pool,
+        &bundle.integrity.bundle_fingerprint,
+    )
+    .await?;
+    let import_by_source_config = get_research_candidate_import_by_source_config(
+        &state.db_pool,
+        bundle.candidate.candidate_id,
+        &bundle.candidate.config_fingerprint,
+    )
+    .await?;
+    let config_match = find_research_candidate_id_by_import_or_proposal_config(
+        &state.db_pool,
+        &bundle.candidate.strategy_id,
+        &bundle.candidate.symbol,
+        &bundle.candidate.timeframe,
+        &bundle.candidate.config_fingerprint,
+    )
+    .await?;
+    let candidate_id = import_by_bundle
+        .as_ref()
+        .map(|item| item.candidate_id)
+        .or_else(|| {
+            import_by_source_config
+                .as_ref()
+                .map(|item| item.candidate_id)
+        })
+        .or(config_match)
+        .or_else(|| candidate_exists.then_some(bundle.candidate.candidate_id));
+    let import_exists = import_by_bundle.is_some() || import_by_source_config.is_some();
+    let config_exists = config_match.is_some();
+
+    let missing_source_ids = missing_research_candidate_bundle_source_ids(state, bundle).await?;
+    if !missing_source_ids.is_empty() {
+        warnings.push("source evidence IDs are not present locally".to_string());
+    }
+    warnings.push(
+        "Imported evidence is external/provenance-only unless raw artifacts are also present."
+            .to_string(),
+    );
+    warnings
+        .push("Import does not create shadow runs, runner config, or scheduled jobs.".to_string());
+    warnings.sort();
+    warnings.dedup();
+
+    let create_candidate = candidate_id.is_none();
+    Ok(ResearchCandidateImportBundlePreview {
+        bundle_fingerprint: bundle.integrity.bundle_fingerprint.clone(),
+        config_fingerprint: bundle.candidate.config_fingerprint.clone(),
+        source_candidate_id: bundle.candidate.candidate_id,
+        candidate_id,
+        candidate_exists,
+        config_exists,
+        import_exists,
+        proposed_actions: ResearchCandidateImportProposedActions {
+            create_candidate,
+            create_proposal: false,
+            attach_evidence_summary: true,
+            preserve_imported_status: false,
+            imported_candidate_status: ResearchCandidateStatus::Discovered,
+        },
+        missing_source_ids,
+        warnings,
+        blockers,
+        confirmation_required: expected_research_candidate_import_confirmation(
+            &bundle.candidate.config_fingerprint,
+        ),
+        recommendation: if create_candidate {
+            "IMPORT_AS_DISCOVERED_PROVENANCE_ONLY".to_string()
+        } else {
+            "ATTACH_IMPORT_AUDIT_ONLY".to_string()
+        },
+    })
+}
+
+async fn missing_research_candidate_bundle_source_ids(
+    state: &AppState,
+    bundle: &ResearchCandidateEvidenceBundle,
+) -> anyhow::Result<Vec<String>> {
+    let mut missing = Vec::new();
+    if let Some(id) = bundle.evidence_provenance.source_experiment_run_id {
+        if get_strategy_experiment_run(&state.db_pool, id)
+            .await?
+            .is_none()
+        {
+            missing.push(format!("source_experiment_run_id:{id}"));
+        }
+    }
+    if let Some(id) = bundle.evidence_provenance.source_walk_forward_run_id {
+        if get_strategy_walk_forward_run(&state.db_pool, id)
+            .await?
+            .is_none()
+        {
+            missing.push(format!("source_walk_forward_run_id:{id}"));
+        }
+    }
+    if let Some(id) = bundle.evidence_provenance.source_robustness_matrix_run_id {
+        if get_strategy_robustness_matrix_run(&state.db_pool, id)
+            .await?
+            .is_none()
+        {
+            missing.push(format!("source_robustness_matrix_run_id:{id}"));
+        }
+    }
+    if let Some(id) = bundle.evidence_provenance.source_proposal_id {
+        if get_research_candidate_proposal(&state.db_pool, id)
+            .await?
+            .is_none()
+        {
+            missing.push(format!("source_proposal_id:{id}"));
+        }
+    }
+    if let Some(id) = bundle.evidence_provenance.source_batch_id {
+        if get_research_batch(&state.db_pool, id).await?.is_none() {
+            missing.push(format!("source_batch_id:{id}"));
+        }
+    }
+    if let Some(id) = bundle.evidence_provenance.campaign_id {
+        if get_research_campaign(&state.db_pool, id).await?.is_none() {
+            missing.push(format!("campaign_id:{id}"));
+        }
+    }
+    Ok(missing)
+}
+
+async fn apply_research_candidate_import_bundle(
+    state: &AppState,
+    bundle: ResearchCandidateEvidenceBundle,
+    preview: ResearchCandidateImportBundlePreview,
+    actor_id: Uuid,
+    now: DateTime<Utc>,
+) -> anyhow::Result<ResearchCandidateImportBundleResult> {
+    let candidate = if let Some(candidate_id) = preview.candidate_id {
+        let record = get_research_candidate(&state.db_pool, candidate_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("matched import candidate disappeared"))?;
+        research_candidate_from_record(&record)?
+    } else {
+        let candidate_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            format!(
+                "research-candidate-import:{}:{}",
+                bundle.candidate.candidate_id, bundle.candidate.config_fingerprint
+            )
+            .as_bytes(),
+        );
+        let candidate = ResearchCandidate {
+            id: candidate_id,
+            experiment_id: None,
+            experiment_run_id: None,
+            strategy_id: bundle.candidate.strategy_id.clone(),
+            symbol: bundle.candidate.symbol.trim().to_ascii_uppercase(),
+            timeframe: bundle.candidate.timeframe.clone(),
+            config: bundle.candidate.config.clone(),
+            score: None,
+            pnl_pct: None,
+            max_drawdown_pct: None,
+            trade_count: None,
+            win_rate: None,
+            fee_drag: None,
+            status: ResearchCandidateStatus::Discovered,
+            rejection_reason: None,
+            notes: Some(
+                "Imported research evidence bundle; provenance-only until locally validated."
+                    .to_string(),
+            ),
+            created_at: now,
+            updated_at: now,
+            correlation_id: None,
+        };
+        let (record, _) = create_research_candidate(
+            &state.db_pool,
+            &candidate,
+            Some(actor_id),
+            ResearchCandidateDecision::Reopen,
+            Some("imported_research_candidate_bundle"),
+            candidate.notes.as_deref(),
+            &json!({
+                "source": "research_candidate_evidence_bundle",
+                "bundle_fingerprint": bundle.integrity.bundle_fingerprint,
+                "source_candidate_id": bundle.candidate.candidate_id,
+                "source_environment": bundle.source_environment,
+                "imported_source_status": bundle.candidate.status,
+                "execution_boundary": bundle.execution_boundary,
+            }),
+        )
+        .await?;
+        research_candidate_from_record(&record)?
+    };
+
+    let existing_import = get_research_candidate_import_by_source_config(
+        &state.db_pool,
+        bundle.candidate.candidate_id,
+        &bundle.candidate.config_fingerprint,
+    )
+    .await?;
+    let import_record = if let Some(record) = existing_import {
+        record
+    } else {
+        upsert_research_candidate_import(
+            &state.db_pool,
+            Uuid::new_v4(),
+            candidate.id,
+            &bundle.integrity.bundle_fingerprint,
+            &bundle.candidate.config_fingerprint,
+            bundle.candidate.candidate_id,
+            bundle.source_environment.as_deref(),
+            ResearchCandidateStatus::Discovered,
+            &bundle.evidence_summary,
+            &json!(bundle.warnings),
+            now,
+            Some(actor_id),
+        )
+        .await?
+    };
+
+    let mut result_preview = preview;
+    result_preview.candidate_id = Some(candidate.id);
+    result_preview.import_exists = true;
+    Ok(ResearchCandidateImportBundleResult {
+        preview: result_preview,
+        candidate,
+        import_audit_id: import_record.id,
+        applied: true,
+    })
 }
 
 async fn list_research_candidate_reviews_handler(
@@ -31521,6 +32249,30 @@ mod tests {
                 false
             ),
             super::RouteAccess::Owner
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::GET,
+                "/research/candidates/123e4567-e89b-12d3-a456-426614174000/export-bundle",
+                false
+            ),
+            super::RouteAccess::Authenticated
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/research/candidates/import-bundle/preview",
+                false
+            ),
+            super::RouteAccess::Authenticated
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/research/candidates/import-bundle",
+                false
+            ),
+            super::RouteAccess::Operator
         ));
     }
 

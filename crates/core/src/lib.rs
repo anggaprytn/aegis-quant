@@ -8679,6 +8679,8 @@ pub enum CoreError {
     ResearchCandidateReviewRequiresQualified(String),
     #[error("research candidate review action {0} requires lost qualification, needs attention, or not qualified context")]
     ResearchCandidateReviewRequiresInvestigationContext(String),
+    #[error("invalid research candidate import bundle: {0}")]
+    InvalidResearchCandidateImportBundle(String),
     #[error("unsupported replay mode: {0}")]
     UnsupportedReplayMode(String),
     #[error("unsupported exchange environment: {0}")]
