@@ -2,7 +2,7 @@
 
 ## Current posture
 
-This repository scaffold intentionally avoids live trading and real exchange credentials. v0.1 also keeps authenticated exchange actions on Binance Spot Testnet only and does not enable any LLM execution path.
+This repository intentionally avoids live trading and real exchange credentials. The current milestone is a research control plane with safe VPS monitoring and local research/shadow evidence collection. Authenticated exchange actions remain isolated to explicit testnet paths; research and shadow observation do not submit orders. No LLM execution path is enabled.
 
 ## Safety boundary summary
 
@@ -10,6 +10,9 @@ This repository scaffold intentionally avoids live trading and real exchange cre
 - Binance production/private trading endpoints are intentionally unsupported.
 - Public market-data endpoints may be used for ingest, backfill, repair, and research.
 - Research actions do not mutate execution tables.
+- Research shadow rows are evidence records, not exchange, paper, or live execution rows.
+- Candidate shadow observation requires `SHADOW_OBSERVATION_ONLY=true`; missing or false guard state fails closed.
+- Candidate-specific scheduled shadow observation is observation-only and not part of bootstrap-safe.
 - Shadow and testnet paths are isolated from paper and live execution state.
 - Local development may use disposable YOLO validation: reset Docker volumes, recreate Postgres, bootstrap a new owner, reseed data, run migrations from scratch, and execute research/backtest/shadow smoke checks.
 - VPS or production-ish validation must be conservative: run migrations intentionally, back up before destructive changes, avoid local-volume reset assumptions, and prefer read-only checks unless a deployment task explicitly requires mutation.
@@ -27,6 +30,17 @@ Research-only smoke runs may create rows in research tables such as plan-run his
 
 If a VPS has read-only database roles or views such as `aegis_readonly` / `ai_read`, use them for validation queries, count checks, and evidence collection. Do not use write-capable credentials for exploratory inspection when read-only access is available.
 
+The current research-only VPS safety expectation is:
+
+```txt
+orders=0
+paper_positions=0
+paper_fills=0
+exchange_testnet_orders=0
+exchange_testnet_order_lifecycle_events=0
+testnet_shadow_promotions=0
+```
+
 ## Rules
 
 - Do not commit real API keys or secrets
@@ -42,6 +56,9 @@ If a VPS has read-only database roles or views such as `aegis_readonly` / `ai_re
 - Historical backfill uses Binance public REST market data only and does not use API keys or private exchange endpoints
 - Research experiment plan preview persists only plan-run audit/history and does not create experiments, batches, campaigns, matrices, walk-forward runs, candidates, or execution rows
 - Research experiment plan run creates only the explicit research artifact for the selected plan type and must not mutate execution tables
+- Candidate proposal, candidate creation gate, candidate lifecycle decisions, candidate observation, and shadow config promotion are research controls only and must not submit orders
+- Unique-candle candidate shadow observation may create at most one independent observation per new closed candle and must not create paper, testnet, or live execution rows
+- `NO_SIGNAL` is valid shadow evidence but does not qualify a candidate; `WOULD_SUBMIT` is qualifying evidence; stale-feed skips are infrastructure skips
 - Paper accounting is simulated only and never submits exchange orders
 - Binance Spot Testnet credentials, when configured, are backend-only and never exposed to the dashboard or CLI
 - Passwords are hashed with Argon2id; plaintext passwords are never stored or returned
@@ -56,6 +73,7 @@ If a VPS has read-only database roles or views such as `aegis_readonly` / `ai_re
 - Testnet direct submit/cancel require typed confirmation `TESTNET ORDER`, owner authorization, persisted audit logs, and system events
 - Testnet pipeline preview requires operator-or-owner auth, an approved persisted `risk_decision_id`, an inactive kill switch, and fresh local stored pricing; it must not submit exchange orders or persist isolated order lifecycle state
 - Testnet shadow mode requires operator-or-owner auth, an inactive kill switch, enabled strategy config, persisted risk evaluation, and fresh local stored pricing; it persists only `testnet_shadow_runs` and never submits exchange orders
+- Research candidate shadow observation uses the no-submit shadow path for evidence only and does not authorize testnet shadow promotion submit
 - Testnet shadow promotion preview requires operator-or-owner auth, a persisted `WOULD_SUBMIT` shadow run, an approved persisted `risk_decision_id`, an inactive kill switch, an enabled strategy config, and fresh local stored pricing; it persists only `testnet_shadow_promotions` and never auto-submits or creates isolated lifecycle state
 - Testnet shadow promotion submit requires owner authorization, exact typed confirmation `PROMOTE TESTNET <SYMBOL>`, a non-expired `PREVIEWED` promotion, an inactive kill switch, and a still-approved persisted `risk_decision_id`; it submits only the promotion's persisted would-submit payload
 - Testnet shadow runner status/config are inspectable by VIEWER, manual `RUN_ONCE`/`PAUSE`/`RESUME` are operator-or-owner only, and `START`/`STOP`/config update remain owner-gated
@@ -64,6 +82,7 @@ If a VPS has read-only database roles or views such as `aegis_readonly` / `ai_re
 - Testnet shadow mode must not create `exchange_testnet_orders`, must not append lifecycle events, and must not mutate paper/backtest/live execution tables
 - Testnet shadow promotions must not auto-submit, must not touch production Binance endpoints, and must not mutate paper orders, paper positions, paper PnL, backtest tables, or live execution tables
 - Testnet shadow runner must never submit automatically, must never touch production Binance endpoints, and may persist only `testnet_shadow_runs`, `testnet_shadow_runner_config`, and `testnet_shadow_runner_state`
+- Scheduled `CANDIDATE_SHADOW_OBSERVE_ONCE` jobs must never create `orders`, `paper_positions`, `paper_fills`, `exchange_testnet_orders`, `exchange_testnet_order_lifecycle_events`, `testnet_shadow_promotions`, or live execution rows
 - Testnet execution is isolated in `exchange_testnet_orders` and must not mutate paper accounting or live execution tables
 - Testnet lifecycle history is isolated in `exchange_testnet_order_lifecycle_events` and must not mutate paper accounting, backtest, or live execution tables
 - Testnet promotion funnel analytics is read-only: it may read `testnet_shadow_runs`, `testnet_shadow_promotions`, `exchange_testnet_orders`, and `exchange_testnet_order_lifecycle_events`, but it must never trigger preview, submit, repair, reconciliation, paper, backtest, or live execution paths
@@ -78,6 +97,8 @@ If a VPS has read-only database roles or views such as `aegis_readonly` / `ai_re
 - Binance private REST support is testnet-only, signs requests with HMAC SHA256, and does not log API secrets
 - Production Binance private-trading env vars and withdrawal endpoints are intentionally absent
 - No live execution path is enabled in this repository; Binance production private trading endpoints remain intentionally unsupported
+- VPS read-only validation must use `aegis_readonly` and `ai_read` views when available. The validator must not print secrets and must not run sync, migrations, POST research actions, scheduler mutations, paper actions, testnet submits, or live execution actions.
+- Prefer `aegislogin` and the CLI token file for VPS auth. If `AEGIS_ACCESS_TOKEN` is stale, unset it before validation so the CLI token file or `--auto-login` flow can refresh safely.
 
 ## TODO boundaries
 

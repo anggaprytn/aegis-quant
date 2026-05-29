@@ -173,6 +173,25 @@ bash scripts/validate-vps-readonly.sh --auto-login
 - Default mode is read-only and does not run login automatically.
 - Token values are never printed.
 
+Current healthy VPS scheduled-monitoring result:
+
+```txt
+OK=28
+WARN=0
+FAIL=0
+```
+
+Current execution safety counts for the research-only VPS should remain zero:
+
+```txt
+orders=0
+paper_positions=0
+paper_fills=0
+exchange_testnet_orders=0
+exchange_testnet_order_lifecycle_events=0
+testnet_shadow_promotions=0
+```
+
 ## Fix stale validator token
 
 If authenticated checks return `401`, use the manual token refresh flow:
@@ -291,6 +310,8 @@ The safe bootstrap creates only:
 - `market-data-quality-<SYMBOL>-<INTERVAL>` every 30 minutes for configured symbols and `1m,5m,15m,1h`
 - `operator-report-daily` every 24 hours
 
+These jobs are safe-only monitoring jobs. They do not create candidates, run research campaigns, create paper orders, submit testnet orders, or touch live execution.
+
 Candidate-specific shadow observation jobs are not part of safe bootstrap. Create them manually only
 after the candidate is `PROMOTED_TO_SHADOW_CONFIG`, the shadow-runner config covers the candidate,
 and `SHADOW_OBSERVATION_ONLY=true`:
@@ -311,7 +332,19 @@ reports `SKIPPED_NO_NEW_CANDLE`. When a newer closed candle exists, it records e
 It must not create paper positions, paper fills, exchange testnet orders, lifecycle events, or live
 orders.
 
-Jobs are created disabled unless `--enable` is passed. The normal VPS path is:
+The host CLI equivalent may be used on the VPS after `/usr/local/bin/aegis` is installed:
+
+```bash
+aegis research scheduled-jobs create \
+  --name eth-fbr-shadow-observe \
+  --kind CANDIDATE_SHADOW_OBSERVE_ONCE \
+  --interval-seconds 300 \
+  --request-json '{"candidate_id":"70867792-93df-494c-9a8b-d961c73107e4"}'
+```
+
+Do not add candidate-specific shadow jobs to bootstrap-safe. Create them only after human review for a specific candidate.
+
+Jobs created with `scheduled-jobs create` are disabled unless `--enabled` is passed. The safe bootstrap uses `--enable` to enable bootstrap-managed jobs. The normal VPS path is:
 
 ```bash
 cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
@@ -337,6 +370,50 @@ cargo run -p cli -- research scheduled-jobs runs <job-id> --limit 20
 cargo run -p cli -- research scheduled-jobs reset-failures <job-id>
 ```
 
+## Research Recovery and Safety Checks
+
+Preview stale research recovery before applying it:
+
+```bash
+cargo run -p cli -- research stale-runs recover-preview
+cargo run -p cli -- research stale-runs recover --confirm "RECOVER STALE RESEARCH RUNS"
+```
+
+If the host CLI supports the same command on VPS, prefer:
+
+```bash
+aegis research stale-runs recover-preview
+aegis research stale-runs recover --confirm "RECOVER STALE RESEARCH RUNS"
+```
+
+Run recovery only for research artifacts. It must not be treated as approval for paper, testnet, or live execution.
+
+Check execution safety counts through the read-only validator or direct `ai_read` view:
+
+```bash
+docker exec -i aegis-quant-postgres psql -U aegis_readonly -d aegis_quant \
+  -c "SELECT * FROM ai_read.execution_safety_counts;"
+```
+
+All of these should be zero on the current research-only VPS:
+
+- `orders`
+- `paper_positions`
+- `paper_fills`
+- `exchange_testnet_orders`
+- `exchange_testnet_order_lifecycle_events`
+- `testnet_shadow_promotions`
+
+## Safe Scheduler Refresh
+
+To refresh scheduled runner code without enabling/disabling jobs or touching other services:
+
+```bash
+./scripts/refresh-vps-scheduled-runner.sh
+```
+
+This rebuilds and recreates only `scheduled-research-runner`. It does not run VPS sync, migrations, job creation, job execution, or scheduler enable/disable actions.
+
 ## Common Failures
 
 Missing migrations:
@@ -361,4 +438,4 @@ Dashboard hydration extension warning:
 
 ## Safety
 
-No live trading is implemented. Testnet submit paths require owner auth and typed confirmation. Research smoke checks are read-only by default; `scripts/verify-research-loop.sh --with-research-run` requires an existing plan ID and verifies execution table counts before/after.
+No live trading is implemented. Testnet submit paths require owner auth and typed confirmation. Research and candidate shadow observation are observation-only and must not create paper/testnet/live orders. Research smoke checks are read-only by default; `scripts/verify-research-loop.sh --with-research-run` requires an existing plan ID and verifies execution table counts before/after.

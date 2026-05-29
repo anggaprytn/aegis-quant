@@ -2,13 +2,15 @@
 
 ## Intent
 
-Aegis Quant is deterministic execution infrastructure, not an AI trading bot. The control flow is explicit:
+Aegis Quant is currently a research control plane backed by deterministic execution infrastructure. It is not an AI trading bot. The execution control flow remains explicit:
 
 ```txt
 market event -> signal -> risk decision -> order intent -> execution state
 ```
 
-No LLM-driven execution path is enabled in v0.1. Any future LLM component remains advisory-only and does not have execution authority.
+No LLM-driven execution path is enabled. Any future LLM component remains advisory-only and does not have execution authority.
+
+The current milestone is research/shadow observation only: safe VPS monitoring is live, research evidence generation is mature, and one ETH-specific candidate is under observation. Research and candidate shadow observation do not submit paper, testnet, or live orders.
 
 ## Initial components
 
@@ -232,6 +234,8 @@ public market data ingest
 -> explicit research artifact
    strategy experiment | batch | campaign | robustness matrix | walk-forward
 -> research candidate
+-> shadow config coverage
+-> unique-candle shadow observation
 -> shadow-run linkage / performance attribution
 -> qualification evaluation
 -> testnet review dossier
@@ -245,7 +249,56 @@ Research-loop invariants:
 - Campaigns, failure attribution, hypotheses, experiment plans, robustness matrices, candidates, shadow tracking, qualifications, dossiers, and reports are research/inspection surfaces.
 - Research actions do not mutate `orders`, `paper_positions`, `paper_fills`, `exchange_testnet_orders`, `exchange_testnet_order_lifecycle_events`, or `testnet_shadow_promotions`.
 - Research candidate lifecycle decisions do not submit anything and do not bypass the strategy -> risk -> order-intent -> execution-state boundary.
+- Candidate-specific observation is guarded by `SHADOW_OBSERVATION_ONLY`; false or missing guard state fails closed.
+- Unique-candle shadow observation records at most one independent observation per new closed candle. Duplicate same-candle checks are operational duplicates, not independent evidence.
+- Qualification and dossier outputs are read-only decision support. They can block testnet review and do not auto-promote anything.
 - LLM components remain absent from the execution path.
+
+Current research/shadow flow:
+
+```txt
+public Binance market data
+-> stored 1m candles
+-> 5m / 15m / 1h candle aggregation
+-> data quality checks and repair
+-> research experiment / campaign / batch
+-> walk-forward + robustness matrix
+-> failure / opportunity / attribution analysis
+-> candidate proposal
+-> candidate creation gate
+-> candidate lifecycle decision
+-> shadow config promotion with exact confirmation
+-> SHADOW_OBSERVATION_ONLY guard
+-> POST /research/candidates/:id/shadow-observe-once
+-> one observation per new closed candle
+-> qualification thresholds
+-> testnet review dossier
+```
+
+Scheduled safe monitoring flow:
+
+```txt
+scheduled-research-runner
+-> provider-health-binance
+-> aggregation-status
+-> market-data-quality for BTCUSDT/ETHUSDT on 1m/5m/15m/1h
+-> operator-report-daily
+-> read-only or research-only monitoring artifacts
+```
+
+Candidate-specific scheduled observation flow:
+
+```txt
+manual CANDIDATE_SHADOW_OBSERVE_ONCE job
+-> candidate_id request payload
+-> verify PROMOTED_TO_SHADOW_CONFIG + runner config coverage
+-> require SHADOW_OBSERVATION_ONLY=true
+-> inspect newest closed candle
+-> SKIPPED_NO_NEW_CANDLE or one no-submit shadow observation
+-> candidate-linked evidence
+```
+
+This job kind is excluded from `scheduled-jobs bootstrap-safe` because it is candidate-specific.
 
 ## Strategy analytics read model
 

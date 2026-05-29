@@ -1,17 +1,29 @@
 # Aegis Quant
 
-Deterministic execution infrastructure for risk-gated autonomous market systems.
+Research control plane and deterministic execution infrastructure for risk-gated market systems.
+
+## Current milestone
+
+Aegis is currently operating as a research control plane, not a live trading bot.
+
+- VPS safe scheduled monitoring is live and read-only validation is clean: `OK=28`, `WARN=0`, `FAIL=0`.
+- The research pipeline is mature enough to ingest market data, build and repair candle datasets, run campaigns, validate candidates, and produce shadow evidence.
+- The first real candidate family is `failed_breakdown_reclaim_v1`, with one ETH-specific `ETHUSDT 1h` candidate promoted to shadow configuration.
+- Current candidate status: `70867792-93df-494c-9a8b-d961c73107e4`, `PROMOTED_TO_SHADOW_CONFIG`, `3/30` independent shadow observations, `0/3` `WOULD_SUBMIT`, `NOT_QUALIFIED`, dossier `BLOCKED`.
+- There is no paper execution, testnet order submission, or live trading from research or shadow observation.
 
 ## v0.1 disclaimer
 
 - Not an AI trading bot
 - Not financial advice
-- No live trading support in v0.1
-- Testnet-only exchange execution
+- No live trading support
+- No paper execution from research or shadow observation
+- No testnet order submission from research or shadow observation
+- Testnet execution paths, where present, remain isolated, owner-gated, and outside the current research milestone
 
 ## Why it exists
 
-Aegis Quant is a Rust-first execution stack for operators who care about deterministic state machines, explicit risk gates, replay and backtest, paper accounting, shadow mode, isolated testnet lifecycle and reconciliation, operational dashboard and CLI surfaces, and readiness-driven reporting.
+Aegis Quant is a Rust-first stack for operators who care about deterministic market data, auditable research evidence, explicit risk gates, replay and backtest, paper accounting boundaries, observation-only shadow mode, isolated testnet lifecycle primitives, operational dashboard and CLI surfaces, and readiness-driven reporting.
 
 ## Quick architecture
 
@@ -22,40 +34,49 @@ Public Market Data
      Candles  <----- historical backfill / deterministic candle builder
         |
         v
-     Strategy
+     Research / Strategy
         |
         v
-       Risk
+   Evidence Gates
         |
         v
   +-----+-------------------+------------------------+-------------------+
   |                         |                        |                   |
   v                         v                        v                   v
-Paper Pipeline         Shadow Runner         Testnet Promotion      Analytics /
-(simulated only)       (does not submit)     (isolated testnet)     Reports /
-  |                         |                        |                Readiness
+Research Candidates    Shadow Observation    Testnet Review         Analytics /
+(proposal/gate)        (does not submit)     Dossier (blocked       Reports /
+                                             until qualified)       Readiness
   +-------------------------+------------------------+-------------------+
 
 Live Trading: not implemented
+Current milestone: research/shadow observation only
 ```
 
-## What works in v0.1
+## What works now
 
 - [x] Auth-gated operational API
 - [x] Binance public market ingest
 - [x] Historical candle backfill
-- [x] Deterministic candle builder
+- [x] Deterministic 1m candle builder
+- [x] Higher-timeframe candle aggregation: 1m -> 5m / 15m / 1h
+- [x] Candle quality checks and repair
+- [x] Provider diagnostics and fallback handling
 - [x] Strategy config validation
 - [x] Risk config validation
-- [x] Paper pipeline
-- [x] Paper PnL/accounting
 - [x] Replay/backtest
-- [x] Shadow runner
-- [x] Testnet order lifecycle
-- [x] Testnet reconciliation
-- [x] Private stream skeleton
-- [x] Promotion gate
-- [x] Readiness gate
+- [x] Research batches and campaigns
+- [x] Regime calibration, regime discovery, and regime datasets
+- [x] Robustness matrix and walk-forward validation
+- [x] Failure attribution, opportunity analysis, replay/opportunity consistency, exit attribution, and signal-feature attribution
+- [x] Hypothesis generation and experiment planning
+- [x] Explicit research plan preview/run
+- [x] Candidate creation gate and candidate proposal flow
+- [x] Stale research run recovery
+- [x] Observation-only shadow mode
+- [x] Unique-candle shadow observation workflow
+- [x] Scheduled safe monitoring jobs on VPS
+- [x] Candidate-specific scheduled shadow observation job kind
+- [x] Readiness, qualification, and dossier decision support
 - [x] Operator report
 - [x] CLI/dashboard/Prometheus
 
@@ -64,6 +85,7 @@ Live Trading: not implemented
 - No live trading
 - No production Binance trading endpoint
 - No real-money execution
+- No paper/testnet/live order path from research or shadow observation
 - No LLM decision-maker
 - No auto-submit from strategy
 - No HFT
@@ -83,8 +105,9 @@ make verify
 - Execution flow remains `market event -> signal -> risk decision -> order intent -> execution state`.
 - Strategy logic cannot submit orders directly.
 - Kill switch state is persistent.
-- Paper is simulated only.
-- Shadow mode persists would-submit state and does not submit.
+- Paper is simulated only and is not part of the current research/shadow milestone.
+- Shadow observation persists evidence and does not submit.
+- `SHADOW_OBSERVATION_ONLY=false` fails closed for candidate shadow observation; `SHADOW_OBSERVATION_ONLY=true` permits observation-only rows.
 - Testnet execution is isolated from paper and uses testnet-only authenticated exchange actions.
 - Live trading is not implemented.
 - Readiness, analytics, and reports are read-only decision support.
@@ -93,6 +116,7 @@ make verify
 - Research experiment plan run creates the explicit research artifact after exact confirmation and still must not mutate execution tables.
 - Baseline research strategies such as `trend_filter_momentum_v1`, `trend_filter_momentum_v2`, and `volatility_breakout_v2` are deterministic candle-only comparators for experiments and candidate review. They are not financial advice, do not promise profit, and do not bypass risk, paper, shadow, testnet, or live execution boundaries.
 - Research candidate lifecycle operations are review-only controls; candidate creation, observation, decisions, and archival append auditable lifecycle events and do not execute trades or auto-submit anything.
+- Candidate-specific scheduled shadow observation jobs are manual per candidate, excluded from safe bootstrap, and observation-only.
 - Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
 
 ## Repository layout
@@ -110,6 +134,8 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 - [Release notes](./RELEASE_NOTES.md)
 - [Documentation index](./docs/README.md)
 - [Architecture overview](./docs/ARCHITECTURE_OVERVIEW.md)
+- [Research workflow](./docs/RESEARCH.md)
+- [Research milestone report](./docs/RESEARCH_MILESTONE.md)
 - [Runbook](./docs/RUNBOOK.md)
 - [Operator checklist](./docs/OPERATOR_CHECKLIST.md)
 - [Security checklist](./docs/SECURITY_CHECKLIST.md)
@@ -125,7 +151,8 @@ scripts/          Local helper scripts, including the v0.1 demo flow
 7. Re-run observation if runner configuration or readiness context changed.
 8. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
 9. Preview and, with explicit typed confirmation, apply shadow-runner config promotion for an `ACCEPTED_FOR_SHADOW` candidate.
-10. Review candidate qualification to confirm shadow evidence is sufficient for testnet promotion consideration before any owner action.
+10. Collect unique-candle shadow observations until evidence thresholds are met.
+11. Review candidate qualification and dossier before any testnet promotion consideration.
 
 This workflow does not enable live trading, does not execute trades during candidate lifecycle operations, and does not auto-submit orders. Observation and candidate decisions do not mutate paper or testnet execution state.
 `ACCEPT_FOR_SHADOW` requires the latest persisted observation to be fresh. The default freshness window is 15 minutes.
@@ -135,6 +162,8 @@ After promotion, linked shadow runs can be inspected through candidate shadow-pe
 Candidate qualification checks are stateless and read-only decision support. They gate whether a candidate is ready for testnet promotion consideration, do not auto-promote anything, do not submit orders, and do not mutate paper/testnet/live execution tables. Default qualification thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
 
 Persisted qualification evaluations are separate research snapshots. `POST /research/candidates/:id/qualification/evaluate` stores the current qualification result, the watchlist tracks how candidate health changes over time, and the history endpoints remain research-only with no execution side effects.
+
+The current ETH candidate remains below threshold: `3/30` independent observations, `0/3` `WOULD_SUBMIT`, `NOT_QUALIFIED`, dossier `BLOCKED`, recommendation `KEEP_OBSERVING`.
 
 Experiment plan runner semantics:
 `run-preview` records plan-run history for auditability and returns the proposed artifact shape. It does not create downstream research artifacts.

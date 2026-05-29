@@ -15,7 +15,17 @@
 11. Deterministic replay/backtest MVP on stored candles and persisted strategy configs
 12. Minimal operational dashboard shell for paper-only inspection and control
 
-## Current status
+## Current phase: Research Control Plane v0.1
+
+- Aegis is currently a research control plane, not a live trading bot.
+- VPS safe scheduled monitoring is operational.
+- The research pipeline supports data ingestion, public Binance backfill, 1m -> 5m/15m/1h aggregation, candle quality and repair, provider fallback diagnostics, research campaigns, regime work, robustness matrix, walk-forward validation, attribution/opportunity analysis, candidate gating, stale recovery, and shadow observation-only evidence collection.
+- The first real candidate family is `failed_breakdown_reclaim_v1`.
+- Current candidate: `70867792-93df-494c-9a8b-d961c73107e4`, `ETHUSDT 1h`, `PROMOTED_TO_SHADOW_CONFIG`, `3/30` independent observations, `0/3` `WOULD_SUBMIT`, `NOT_QUALIFIED`, dossier `BLOCKED`.
+- Paper/testnet promotion is gated by evidence thresholds, dossier review, and human review.
+- Live trading is not on the near-term roadmap.
+
+## Completed foundation
 
 - Completed: persistent kill switch, deterministic risk evaluation, Binance public ingest, deterministic candle building, strategy signal generation, paper-only order lifecycle, replay/backtest MVP, DB-backed integration harness, and minimal dashboard shell
 - Completed: Binance public REST historical candle backfill with persisted run tracking, CLI/API entrypoints, and dashboard inspection
@@ -41,21 +51,26 @@
 - Completed: read-only operator daily reports across health, feed freshness, strategy/risk behavior, paper PnL, shadow outcomes, promotion funnel, and isolated testnet execution with optional persisted exports
 - Completed: deterministic execution readiness gate with API/CLI/dashboard inspection, optional readiness snapshots, and bounded telemetry across paper/testnet shadow promotion boundaries
 - Completed: conservative candle-only research baselines, including trend-filter momentum and volume-confirmed breakout, exposed through diagnostics, backtests, experiments, CLI/API, and dashboard selection without changing execution authority
-- Current focus: use stronger baseline strategy evidence to raise experiment and walk-forward reliability while continuing deterministic multi-timeframe comparison, global ranking across parameter sweeps, skipped-window visibility, readiness heuristics, and promotion-readiness workflows before any live execution surface area
+- Completed: scheduled safe monitoring jobs for provider health, aggregation status, market-data quality, and daily operator report
+- Completed: candidate-specific scheduled shadow observation job kind, excluded from bootstrap-safe and manual per candidate
+- Current focus: accumulate independent shadow evidence for the ETH-specific candidate while keeping all research, qualification, and dossier work non-executing
 
 ## Next implementation steps
 
-1. Add paper trading reconciliation on top of the close/exit lifecycle
-2. Add richer risk rules using data freshness, open position state, and paper account drawdown
-3. Add monitoring polish and alerting guidance on top of the telemetry surface
-4. Add strategy scheduling and bounded automation around the existing pipeline
-5. Extend replay/backtest with richer sizing, short/flat state, and research workflows
+1. Accumulate at least 30 independent unique-candle shadow observations for the ETH candidate.
+2. Accumulate at least 3 `WOULD_SUBMIT` observations.
+3. Keep skipped/error rates low enough for qualification thresholds.
+4. Re-run qualification evaluation and dossier review after evidence thresholds are met.
+5. Record manual `MARK_READY_FOR_TESTNET_REVIEW` only after evidence and review justify it.
+6. Keep paper/testnet disabled for this candidate until the dossier is unblocked by human review.
 
 ## Explicitly deferred
 
 - Live trading
+- Near-term live trading roadmap
 - Production exchange order execution
 - Production private exchange streams and API keys
+- Automatic paper/testnet promotion from research
 - Multi-exchange support
 - Complex dashboard UI or heavy charting
 - Complex terminal UI

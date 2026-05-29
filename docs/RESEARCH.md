@@ -1,8 +1,18 @@
 # Research Workflows
 
-## Current Research Loop
+## Current Research Milestone
 
-The research platform is an evidence factory around stored public market data. It does not own order submission.
+Aegis is currently a research control plane and evidence factory around stored public market data. It does not own order submission and is not a live trading bot.
+
+Current state:
+
+- Market data ingestion, public Binance backfill, 1m candle storage, 5m/15m/1h aggregation, candle quality checks, repair, provider diagnostics, and fallback handling are available.
+- Research batches, campaigns, regime calibration/discovery/datasets, robustness matrix, walk-forward validation, failure attribution, opportunity analysis, replay/opportunity consistency, exit attribution, signal-feature attribution, hypothesis generation, experiment planning, and explicit plan preview/run are available.
+- Candidate creation gate, proposal flow, stale research run recovery, shadow observation-only mode, unique-candle shadow observation, and scheduled safe monitoring jobs are available.
+- VPS safe scheduled monitoring is live. The latest read-only validator result is `OK=28`, `WARN=0`, `FAIL=0`.
+- No paper, testnet, or live order path should be used from research or shadow observation.
+
+## Current Research Lifecycle
 
 ```txt
 public market ingest
@@ -10,16 +20,23 @@ public market ingest
 -> data quality / repair
 -> higher-timeframe aggregation
 -> research dataset build
--> campaigns
+-> experiment / batch / campaign
+-> walk-forward validation
+-> robustness matrix
 -> failure attribution
+-> opportunity / replay consistency / exit / signal-feature attribution
 -> hypothesis generation
 -> operator review
 -> experiment plan
 -> plan preview / run
 -> explicit artifact:
    strategy experiment | research batch | research campaign | robustness matrix | walk-forward
--> research candidates
--> shadow tracking
+-> candidate proposal
+-> candidate creation gate
+-> research candidate
+-> observation
+-> accepted shadow config coverage
+-> unique-candle shadow observation
 -> qualification
 -> testnet review dossier
 -> operator report
@@ -33,6 +50,97 @@ Boundaries:
 - Research workflows must not create paper orders, paper fills, paper positions, isolated testnet orders, testnet lifecycle events, testnet shadow promotions, or live execution state.
 - Candidate promotion to shadow configuration is a review/config coverage step; it does not submit orders.
 - No live trading path is enabled.
+
+## Current Alpha Status
+
+Most tested families are not actionable:
+
+- `trend_filter_momentum_v1`: fee drag and overtrade.
+- `trend_filter_momentum_v2`: sample-specific and not robust.
+- `range_reversion_v1`: weak with too few trades.
+- `volatility_breakout_v2`: weak.
+- `volatility_compression_breakout_v1`: interesting but fragile and false-breakout prone.
+- `trend_pullback_continuation_v1`: too restrictive by default; loosened versions remain weak or overfit.
+
+The first real candidate family is `failed_breakdown_reclaim_v1`:
+
+- Deterministic, candle-only, long-only.
+- Best evidence is ETH-specific, not BTC-generalized.
+- BTC failed or remained mixed with overfit risk.
+- ETH evidence is the strongest found so far, but it is not production-ready.
+
+Current ETH candidate:
+
+- `candidate_id`: `70867792-93df-494c-9a8b-d961c73107e4`
+- `strategy`: `failed_breakdown_reclaim_v1`
+- `symbol`: `ETHUSDT`
+- `timeframe`: `1h`
+- `status`: `PROMOTED_TO_SHADOW_CONFIG`
+- `source_experiment_run_id`: `cdd3fbef-9e39-49e3-8e16-e23f19611cf0`
+- `source_walk_forward_run_id`: `1279f5b3-9ffb-4534-babe-2e07f94a8180`
+- `source_robustness_matrix_run_id`: `cebc28cd-36c3-4877-a6f0-172e4dcc2d80`
+- `config_fingerprint`: `399c3e554330ffb1bfbeafe1f1b090e32ba51e985eb383d242527137833750da`
+
+Candidate evidence:
+
+- ETH-only.
+- Data quality `GOOD`.
+- Experiment PnL about `+77.27%`.
+- Walk-forward `ROBUST`.
+- `7/7` profitable walk-forward windows.
+- Worst walk-forward window about `+0.4045%`.
+- Robustness matrix `ROBUST`.
+- Candidate gate `ACTIONABLE`.
+- Accepted for shadow manually with warning acknowledgement.
+- Promoted to shadow config manually through exact-confirmation flow.
+- Runner config is aligned locally for `failed_breakdown_reclaim_v1 ETHUSDT 1h`.
+- No paper, testnet, or live execution.
+
+Current threshold state:
+
+- `independent_shadow_observation_count`: `3 / 30`
+- `would_submit_count`: `0 / 3`
+- `qualification`: `NOT_QUALIFIED`
+- `dossier`: `BLOCKED`
+- `recommendation`: `KEEP_OBSERVING`
+
+Why there is no paper/testnet/live step yet:
+
+- Candidate evidence is ETH-only and not BTC-generalized.
+- 2025+ final holdout is limited or unavailable in local evidence.
+- Shadow evidence is still insufficient.
+- `WOULD_SUBMIT` evidence is still `0`.
+- Qualification remains `NOT_QUALIFIED`.
+- Testnet review dossier remains `BLOCKED`.
+- No `MARK_READY_FOR_TESTNET_REVIEW` action is recorded.
+
+## Candidate Proposal and Creation Gate
+
+Candidate proposals are research review packages. They describe evidence that may justify a candidate, but they are not candidates and do not alter execution surfaces.
+
+Candidate creation requires the candidate gate to classify the evidence as actionable enough for review. Creation appends auditable research lifecycle records only. It does not create signals, risk decisions, paper orders, paper fills, paper positions, testnet shadow promotions, isolated testnet orders, lifecycle events, or live execution state.
+
+The gate is intentionally conservative. It can allow a candidate into observation while preserving warnings such as ETH-only evidence, limited holdout, or generalization failure. Those warnings must remain visible through acceptance, shadow-config promotion, qualification, and dossier review.
+
+## Stale Run Recovery
+
+Stale research run recovery exists for incomplete or abandoned research artifacts. Preview/apply flows must be explicit and auditable.
+
+Recovery may close or mark stale research runs according to the recovery action. It must not mutate execution tables or imply that any candidate is ready for paper, testnet, or live execution.
+
+## Shadow Evidence Semantics
+
+Shadow observation is observation-only:
+
+- `SHADOW_OBSERVATION_ONLY=false` fails closed for candidate shadow observation.
+- `SHADOW_OBSERVATION_ONLY=true` allows observation-only shadow rows.
+- `POST /research/candidates/:id/shadow-observe-once` creates at most one independent observation for the newest closed candle.
+- CLI equivalent: `aegis research candidates shadow-observe-once <candidate_id>`.
+- Duplicate same-candle observations are duplicate operational checks, not independent evidence.
+- `NO_SIGNAL` is a valid observation, but it is not qualifying evidence.
+- `WOULD_SUBMIT` is qualifying evidence.
+- Skipped stale feed is an infrastructure skip, not alpha evidence.
+- Shadow observation does not create paper, testnet, or live orders.
 
 ## Shadow Runner Promotion Config Policy
 
