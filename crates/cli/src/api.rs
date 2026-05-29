@@ -4457,6 +4457,13 @@ pub fn build_strategy_experiment_request(
         holding_candles_candidates: args.holding_candles.clone(),
         stop_loss_pct_candidates: args.stop_loss_pct.clone(),
         take_profit_pct_candidates: args.take_profit_pct.clone(),
+        confirmation_candles_candidates: args.confirmation_candles.clone(),
+        require_confirmation_close_above_lookback_low_candidates: args
+            .require_confirmation_close_above_lookback_low
+            .then_some(vec![true]),
+        require_confirmation_low_above_breakdown_low_candidates: args
+            .require_confirmation_low_above_breakdown_low
+            .then_some(vec![true]),
         max_signal_age_ms: args.max_signal_age_ms,
         max_runs: args.max_runs,
         correlation_id: args.correlation_id,
@@ -4510,6 +4517,13 @@ pub fn build_multi_timeframe_strategy_experiment_request(
         holding_candles_candidates: args.holding_candles.clone(),
         stop_loss_pct_candidates: args.stop_loss_pct.clone(),
         take_profit_pct_candidates: args.take_profit_pct.clone(),
+        confirmation_candles_candidates: args.confirmation_candles.clone(),
+        require_confirmation_close_above_lookback_low_candidates: args
+            .require_confirmation_close_above_lookback_low
+            .then_some(vec![true]),
+        require_confirmation_low_above_breakdown_low_candidates: args
+            .require_confirmation_low_above_breakdown_low
+            .then_some(vec![true]),
         max_signal_age_ms: args.max_signal_age_ms,
         max_runs: args.max_runs,
         correlation_id: args.correlation_id,
@@ -4569,6 +4583,13 @@ pub fn build_strategy_walk_forward_request(
             holding_candles: args.holding_candles,
             stop_loss_pct: args.stop_loss_pct,
             take_profit_pct: args.take_profit_pct,
+            confirmation_candles: args.confirmation_candles,
+            require_confirmation_close_above_lookback_low: args
+                .require_confirmation_close_above_lookback_low
+                .then_some(true),
+            require_confirmation_low_above_breakdown_low: args
+                .require_confirmation_low_above_breakdown_low
+                .then_some(true),
             max_signal_age_ms: args.max_signal_age_ms,
         },
         min_required_test_windows: args.min_required_test_windows,
@@ -4894,6 +4915,9 @@ pub fn build_strategy_config_request(
         stop_loss_pct: args.stop_loss_pct,
         take_profit_pct: args.take_profit_pct,
         holding_candles: args.holding_candles,
+        confirmation_candles: 0,
+        require_confirmation_close_above_lookback_low: false,
+        require_confirmation_low_above_breakdown_low: false,
         notes: args.notes.clone(),
     })
 }
@@ -5203,6 +5227,9 @@ mod tests {
             holding_candles: Some(vec![3, 5]),
             stop_loss_pct: None,
             take_profit_pct: None,
+            confirmation_candles: None,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             max_signal_age_ms: Some(180_000),
             max_runs: Some(4),
             correlation_id: None,

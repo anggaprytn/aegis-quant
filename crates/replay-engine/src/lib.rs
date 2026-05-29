@@ -845,6 +845,13 @@ fn strategy_walk_forward_candidate_from_experiment(
         holding_candles: candidate.holding_candles,
         stop_loss_pct: candidate.stop_loss_pct,
         take_profit_pct: candidate.take_profit_pct,
+        confirmation_candles: Some(candidate.confirmation_candles),
+        require_confirmation_close_above_lookback_low: Some(
+            candidate.require_confirmation_close_above_lookback_low,
+        ),
+        require_confirmation_low_above_breakdown_low: Some(
+            candidate.require_confirmation_low_above_breakdown_low,
+        ),
         max_signal_age_ms: candidate.max_signal_age_ms,
     }
 }
@@ -929,10 +936,20 @@ pub fn simulate_backtest(
                 record_suppression(&mut state, ReplaySuppressionReason::CooldownActive);
             } else if state.position.is_some() {
                 record_suppression(&mut state, ReplaySuppressionReason::PositionAlreadyOpen);
-            } else if index + 1 >= candles.len() {
-                record_suppression(&mut state, ReplaySuppressionReason::InsufficientForwardData);
             } else {
-                let next_candle = &candles[index + 1];
+                let Some(entry_index) = confirmed_entry_index(strategy_config, &candles, index)
+                else {
+                    record_suppression(&mut state, ReplaySuppressionReason::InvalidSignal);
+                    continue;
+                };
+                if entry_index >= candles.len() {
+                    record_suppression(
+                        &mut state,
+                        ReplaySuppressionReason::InsufficientForwardData,
+                    );
+                    continue;
+                }
+                let next_candle = &candles[entry_index];
                 state.position = maybe_open_position(
                     &backtest_config,
                     strategy_config,
@@ -993,6 +1010,48 @@ pub fn simulate_backtest(
         trades: state.trades,
         equity_curve: state.equity_curve,
     })
+}
+
+fn confirmed_entry_index(
+    strategy_config: &StrategyConfig,
+    candles: &[Candle],
+    signal_index: usize,
+) -> Option<usize> {
+    if strategy_config.strategy_id != StrategyId::FailedBreakdownReclaimV1 {
+        return Some(signal_index + 1);
+    }
+    let confirmation_candles = strategy_config.confirmation_candles as usize;
+    if confirmation_candles == 0 {
+        return Some(signal_index + 1);
+    }
+    let signal_candle = candles.get(signal_index)?;
+    let lookback = strategy_config.lookback_candles as usize;
+    if signal_index < lookback {
+        return None;
+    }
+    let lookback_low = candles[signal_index - lookback..signal_index]
+        .iter()
+        .map(|candle| candle.low)
+        .min()
+        .unwrap_or(signal_candle.low);
+    let breakdown_low = signal_candle.low;
+    let confirmation_end_index = signal_index + confirmation_candles;
+    let confirmation_window = candles.get(signal_index + 1..=confirmation_end_index)?;
+    if strategy_config.require_confirmation_close_above_lookback_low
+        && confirmation_window
+            .iter()
+            .any(|candle| candle.close < lookback_low)
+    {
+        return None;
+    }
+    if strategy_config.require_confirmation_low_above_breakdown_low
+        && confirmation_window
+            .iter()
+            .any(|candle| candle.low < breakdown_low)
+    {
+        return None;
+    }
+    Some(confirmation_end_index + 1)
 }
 
 pub fn calculate_exit_attribution(
@@ -1061,7 +1120,12 @@ pub fn calculate_exit_attribution(
                 .or_insert(0) += 1;
             continue;
         }
-        let entry_index = index + 1;
+        let Some(entry_index) = confirmed_entry_index(strategy_config, &candles, index) else {
+            *suppression_counts
+                .entry(ReplaySuppressionReason::InvalidSignal)
+                .or_insert(0) += 1;
+            continue;
+        };
         let Some(entry) = candles.get(entry_index) else {
             *suppression_counts
                 .entry(ReplaySuppressionReason::InsufficientForwardData)
@@ -3153,6 +3217,11 @@ fn strategy_config_update_from_candidate(
         stop_loss_pct: candidate.stop_loss_pct.or(base_config.stop_loss_pct),
         take_profit_pct: candidate.take_profit_pct.or(base_config.take_profit_pct),
         holding_candles: candidate.holding_candles.or(base_config.holding_candles),
+        confirmation_candles: candidate.confirmation_candles,
+        require_confirmation_close_above_lookback_low: candidate
+            .require_confirmation_close_above_lookback_low,
+        require_confirmation_low_above_breakdown_low: candidate
+            .require_confirmation_low_above_breakdown_low,
         notes: base_config.notes.clone(),
     }
 }
@@ -3758,6 +3827,15 @@ fn walk_forward_strategy_override(
             .candidate_config
             .holding_candles
             .or(base_config.holding_candles),
+        confirmation_candles: request.candidate_config.confirmation_candles.unwrap_or(0),
+        require_confirmation_close_above_lookback_low: request
+            .candidate_config
+            .require_confirmation_close_above_lookback_low
+            .unwrap_or(false),
+        require_confirmation_low_above_breakdown_low: request
+            .candidate_config
+            .require_confirmation_low_above_breakdown_low
+            .unwrap_or(false),
         notes: base_config.notes.clone(),
     }
 }
@@ -3774,6 +3852,10 @@ fn strategy_walk_forward_candidate_from_config(
     let read_i64 = |keys: &[&str]| -> Option<i64> {
         keys.iter()
             .find_map(|key| params.get(*key).and_then(|value| value.as_i64()))
+    };
+    let read_bool = |keys: &[&str]| -> Option<bool> {
+        keys.iter()
+            .find_map(|key| params.get(*key).and_then(|value| value.as_bool()))
     };
     let read_decimal = |keys: &[&str]| -> Result<Option<Decimal>> {
         keys.iter()
@@ -3842,6 +3924,13 @@ fn strategy_walk_forward_candidate_from_config(
         holding_candles: read_u32(&["holding_candles", "holding"]),
         stop_loss_pct: read_decimal(&["stop_loss_pct"])?,
         take_profit_pct: read_decimal(&["take_profit_pct"])?,
+        confirmation_candles: read_u32(&["confirmation_candles"]),
+        require_confirmation_close_above_lookback_low: read_bool(&[
+            "require_confirmation_close_above_lookback_low",
+        ]),
+        require_confirmation_low_above_breakdown_low: read_bool(&[
+            "require_confirmation_low_above_breakdown_low",
+        ]),
         max_signal_age_ms: read_i64(&["max_signal_age_ms"]),
     })
 }
@@ -4785,7 +4874,7 @@ fn maybe_open_position(
             .map(|pct| entry_price * (Decimal::ONE - pct)),
         take_profit_price: strategy_config
             .take_profit_pct
-            .map(|pct| entry_price * (Decimal::ONE + pct)),
+            .map(|pct| entry_price * (Decimal::ONE + (pct / Decimal::new(100, 0)))),
     }))
 }
 
@@ -5237,6 +5326,9 @@ mod tests {
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: None,
         }
     }
@@ -5275,6 +5367,9 @@ mod tests {
             holding_candles: Some(20),
             stop_loss_pct: None,
             take_profit_pct: None,
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             max_signal_age_ms: None,
         };
 
@@ -5620,6 +5715,9 @@ mod tests {
             holding_candles_candidates: Some(vec![3, 5]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
+            confirmation_candles_candidates: None,
+            require_confirmation_close_above_lookback_low_candidates: None,
+            require_confirmation_low_above_breakdown_low_candidates: None,
             max_signal_age_ms: Some(180_000),
             max_runs: Some(3),
             correlation_id: None,
@@ -5668,6 +5766,9 @@ mod tests {
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: None,
         }
     }
@@ -5714,6 +5815,9 @@ mod tests {
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: None,
         }
     }
@@ -5760,6 +5864,9 @@ mod tests {
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: None,
         }
     }
@@ -5819,6 +5926,9 @@ mod tests {
             holding_candles_candidates: Some(vec![3]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
+            confirmation_candles_candidates: None,
+            require_confirmation_close_above_lookback_low_candidates: None,
+            require_confirmation_low_above_breakdown_low_candidates: None,
             max_signal_age_ms: Some(2_700_000),
             max_runs: None,
             correlation_id: None,
@@ -5917,6 +6027,9 @@ mod tests {
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
+                confirmation_candles: 0,
+                require_confirmation_close_above_lookback_low: false,
+                require_confirmation_low_above_breakdown_low: false,
                 max_signal_age_ms: Some(180_000),
             },
             final_equity: Decimal::new(1_000_000 + pnl_pct * 10_000, 0),
@@ -5991,6 +6104,9 @@ mod tests {
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
+                confirmation_candles: None,
+                require_confirmation_close_above_lookback_low: None,
+                require_confirmation_low_above_breakdown_low: None,
                 max_signal_age_ms: Some(180_000),
             },
             min_required_test_windows: Some(2),
@@ -6581,6 +6697,9 @@ mod tests {
             holding_candles: Some(5),
             stop_loss_pct: Some(Decimal::new(2, 0)),
             take_profit_pct: Some(Decimal::new(4, 0)),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             max_signal_age_ms: Some(240_000),
         };
 

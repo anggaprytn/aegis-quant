@@ -2012,6 +2012,12 @@ pub struct StrategyExperimentRunArgs {
     pub stop_loss_pct: Option<Vec<rust_decimal::Decimal>>,
     #[arg(long = "take-profit-pct", value_delimiter = ',')]
     pub take_profit_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "confirmation-candles", value_delimiter = ',')]
+    pub confirmation_candles: Option<Vec<u32>>,
+    #[arg(long = "require-confirmation-close-above-lookback-low")]
+    pub require_confirmation_close_above_lookback_low: bool,
+    #[arg(long = "require-confirmation-low-above-breakdown-low")]
+    pub require_confirmation_low_above_breakdown_low: bool,
     #[arg(long = "max-signal-age-ms")]
     pub max_signal_age_ms: Option<i64>,
     #[arg(long = "max-runs")]
@@ -2058,6 +2064,12 @@ pub struct StrategyMultiTimeframeExperimentRunArgs {
     pub stop_loss_pct: Option<Vec<rust_decimal::Decimal>>,
     #[arg(long = "take-profit-pct", value_delimiter = ',')]
     pub take_profit_pct: Option<Vec<rust_decimal::Decimal>>,
+    #[arg(long = "confirmation-candles", value_delimiter = ',')]
+    pub confirmation_candles: Option<Vec<u32>>,
+    #[arg(long = "require-confirmation-close-above-lookback-low")]
+    pub require_confirmation_close_above_lookback_low: bool,
+    #[arg(long = "require-confirmation-low-above-breakdown-low")]
+    pub require_confirmation_low_above_breakdown_low: bool,
     #[arg(long = "max-signal-age-ms")]
     pub max_signal_age_ms: Option<i64>,
     #[arg(long = "max-runs")]
@@ -2112,6 +2124,12 @@ pub struct StrategyWalkForwardRunArgs {
     pub stop_loss_pct: Option<rust_decimal::Decimal>,
     #[arg(long = "take-profit-pct")]
     pub take_profit_pct: Option<rust_decimal::Decimal>,
+    #[arg(long = "confirmation-candles")]
+    pub confirmation_candles: Option<u32>,
+    #[arg(long = "require-confirmation-close-above-lookback-low")]
+    pub require_confirmation_close_above_lookback_low: bool,
+    #[arg(long = "require-confirmation-low-above-breakdown-low")]
+    pub require_confirmation_low_above_breakdown_low: bool,
     #[arg(long = "max-signal-age-ms")]
     pub max_signal_age_ms: Option<i64>,
     #[arg(long = "min-required-test-windows", alias = "min-windows")]

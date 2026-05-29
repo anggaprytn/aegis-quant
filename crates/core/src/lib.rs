@@ -1797,6 +1797,12 @@ pub struct StrategyConfig {
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
     pub holding_candles: Option<u32>,
+    #[serde(default)]
+    pub confirmation_candles: u32,
+    #[serde(default)]
+    pub require_confirmation_close_above_lookback_low: bool,
+    #[serde(default)]
+    pub require_confirmation_low_above_breakdown_low: bool,
     pub notes: Option<String>,
 }
 
@@ -1862,6 +1868,12 @@ pub struct StrategyConfigUpdateRequest {
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
     pub holding_candles: Option<u32>,
+    #[serde(default)]
+    pub confirmation_candles: u32,
+    #[serde(default)]
+    pub require_confirmation_close_above_lookback_low: bool,
+    #[serde(default)]
+    pub require_confirmation_low_above_breakdown_low: bool,
     pub notes: Option<String>,
 }
 
@@ -3298,6 +3310,12 @@ pub struct StrategyExperimentCandidate {
     pub holding_candles: Option<u32>,
     pub stop_loss_pct: Option<Decimal>,
     pub take_profit_pct: Option<Decimal>,
+    #[serde(default)]
+    pub confirmation_candles: u32,
+    #[serde(default)]
+    pub require_confirmation_close_above_lookback_low: bool,
+    #[serde(default)]
+    pub require_confirmation_low_above_breakdown_low: bool,
     pub max_signal_age_ms: Option<i64>,
 }
 
@@ -3348,6 +3366,9 @@ pub struct StrategyExperimentRequest {
     pub holding_candles_candidates: Option<Vec<u32>>,
     pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
     pub take_profit_pct_candidates: Option<Vec<Decimal>>,
+    pub confirmation_candles_candidates: Option<Vec<u32>>,
+    pub require_confirmation_close_above_lookback_low_candidates: Option<Vec<bool>>,
+    pub require_confirmation_low_above_breakdown_low_candidates: Option<Vec<bool>>,
     pub max_signal_age_ms: Option<i64>,
     pub max_runs: Option<u32>,
     pub correlation_id: Option<Uuid>,
@@ -3457,6 +3478,12 @@ pub struct StrategyWalkForwardCandidate {
     #[serde(default)]
     pub take_profit_pct: Option<Decimal>,
     #[serde(default)]
+    pub confirmation_candles: Option<u32>,
+    #[serde(default)]
+    pub require_confirmation_close_above_lookback_low: Option<bool>,
+    #[serde(default)]
+    pub require_confirmation_low_above_breakdown_low: Option<bool>,
+    #[serde(default)]
     pub max_signal_age_ms: Option<i64>,
 }
 
@@ -3493,6 +3520,9 @@ fn default_strategy_walk_forward_candidate() -> StrategyWalkForwardCandidate {
         holding_candles: None,
         stop_loss_pct: None,
         take_profit_pct: None,
+        confirmation_candles: None,
+        require_confirmation_close_above_lookback_low: None,
+        require_confirmation_low_above_breakdown_low: None,
         max_signal_age_ms: None,
     }
 }
@@ -3831,6 +3861,18 @@ impl StrategyExperimentRequest {
         let stop_losses = non_empty_or(self.stop_loss_pct_candidates.clone(), vec![Decimal::ZERO]);
         let take_profits =
             non_empty_or(self.take_profit_pct_candidates.clone(), vec![Decimal::ZERO]);
+        let confirmation_candles =
+            non_empty_or(self.confirmation_candles_candidates.clone(), vec![0]);
+        let confirmation_close_flags = non_empty_or(
+            self.require_confirmation_close_above_lookback_low_candidates
+                .clone(),
+            vec![false],
+        );
+        let confirmation_low_flags = non_empty_or(
+            self.require_confirmation_low_above_breakdown_low_candidates
+                .clone(),
+            vec![false],
+        );
         let trend_lookbacks = non_empty_or(
             self.trend_lookback_candidates.clone(),
             self.lookback_candidates.clone(),
@@ -3912,45 +3954,64 @@ impl StrategyExperimentRequest {
                         for min_lower_wick_pct in &min_lower_wicks {
                             for min_volume_ratio in &min_volumes {
                                 for holding_candles in &holdings {
-                                    candidates.push(StrategyExperimentCandidate {
-                                        lookback_candles: *lookback_candles,
-                                        trend_lookback_candles: None,
-                                        momentum_lookback_candles: None,
-                                        compression_lookback_candles: None,
-                                        breakout_lookback_candles: None,
-                                        pullback_lookback_candles: None,
-                                        pullback_sma_lookback_candles: None,
-                                        compression_percentile_threshold: None,
-                                        min_breakout_pct: None,
-                                        max_breakout_extension_pct: None,
-                                        min_volume_expansion_ratio: None,
-                                        lower_band_pct: None,
-                                        upper_band_pct: None,
-                                        min_range_width_pct: None,
-                                        max_range_width_pct: None,
-                                        min_close_above_sma_pct: None,
-                                        max_close_above_sma_pct: None,
-                                        min_momentum_return_pct: None,
-                                        min_trend_return_pct: None,
-                                        min_trend_slope_pct: None,
-                                        min_pullback_depth_pct: None,
-                                        max_pullback_depth_pct: None,
-                                        min_reclaim_pct: None,
-                                        min_breakdown_pct: Some(*min_breakdown_pct),
-                                        min_reclaim_close_pct: Some(*min_reclaim_close_pct),
-                                        min_lower_wick_pct: Some(*min_lower_wick_pct),
-                                        min_volume_ratio: Some(*min_volume_ratio),
-                                        max_choppiness: None,
-                                        holding_candles: (*holding_candles != 0)
-                                            .then_some(*holding_candles),
-                                        stop_loss_pct: None,
-                                        take_profit_pct: None,
-                                        max_signal_age_ms: self.max_signal_age_ms,
-                                    });
-                                    if self.max_runs.is_some_and(|max_runs| {
-                                        candidates.len() >= max_runs as usize
-                                    }) {
-                                        return candidates;
+                                    for take_profit_pct in &take_profits {
+                                        for confirmation_candles in &confirmation_candles {
+                                            for require_confirmation_close_above_lookback_low in
+                                                &confirmation_close_flags
+                                            {
+                                                for require_confirmation_low_above_breakdown_low in
+                                                    &confirmation_low_flags
+                                                {
+                                                    candidates.push(StrategyExperimentCandidate {
+                                                        lookback_candles: *lookback_candles,
+                                                        trend_lookback_candles: None,
+                                                        momentum_lookback_candles: None,
+                                                        compression_lookback_candles: None,
+                                                        breakout_lookback_candles: None,
+                                                        pullback_lookback_candles: None,
+                                                        pullback_sma_lookback_candles: None,
+                                                        compression_percentile_threshold: None,
+                                                        min_breakout_pct: None,
+                                                        max_breakout_extension_pct: None,
+                                                        min_volume_expansion_ratio: None,
+                                                        lower_band_pct: None,
+                                                        upper_band_pct: None,
+                                                        min_range_width_pct: None,
+                                                        max_range_width_pct: None,
+                                                        min_close_above_sma_pct: None,
+                                                        max_close_above_sma_pct: None,
+                                                        min_momentum_return_pct: None,
+                                                        min_trend_return_pct: None,
+                                                        min_trend_slope_pct: None,
+                                                        min_pullback_depth_pct: None,
+                                                        max_pullback_depth_pct: None,
+                                                        min_reclaim_pct: None,
+                                                        min_breakdown_pct: Some(*min_breakdown_pct),
+                                                        min_reclaim_close_pct: Some(*min_reclaim_close_pct),
+                                                        min_lower_wick_pct: Some(*min_lower_wick_pct),
+                                                        min_volume_ratio: Some(*min_volume_ratio),
+                                                        max_choppiness: None,
+                                                        holding_candles: (*holding_candles != 0)
+                                                            .then_some(*holding_candles),
+                                                        stop_loss_pct: None,
+                                                        take_profit_pct: (*take_profit_pct
+                                                            != Decimal::ZERO)
+                                                            .then_some(*take_profit_pct),
+                                                        confirmation_candles: *confirmation_candles,
+                                                        require_confirmation_close_above_lookback_low:
+                                                            *require_confirmation_close_above_lookback_low,
+                                                        require_confirmation_low_above_breakdown_low:
+                                                            *require_confirmation_low_above_breakdown_low,
+                                                        max_signal_age_ms: self.max_signal_age_ms,
+                                                    });
+                                                    if self.max_runs.is_some_and(|max_runs| {
+                                                        candidates.len() >= max_runs as usize
+                                                    }) {
+                                                        return candidates;
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -4069,6 +4130,9 @@ impl StrategyExperimentRequest {
                                                                     .then_some(*holding_candles),
                                                                 stop_loss_pct: None,
                                                                 take_profit_pct: None,
+                                                                confirmation_candles: 0,
+                                                                require_confirmation_close_above_lookback_low: false,
+                                                                require_confirmation_low_above_breakdown_low: false,
                                                                 max_signal_age_ms: self
                                                                     .max_signal_age_ms,
                                                             });
@@ -4163,6 +4227,9 @@ impl StrategyExperimentRequest {
                                                                                         holding_candles: (*holding_candles != 0).then_some(*holding_candles),
                                                                                         stop_loss_pct: (*stop_loss_pct != Decimal::ZERO).then_some(*stop_loss_pct),
                                                                                         take_profit_pct: (*take_profit_pct != Decimal::ZERO).then_some(*take_profit_pct),
+                                                                                        confirmation_candles: 0,
+                                                                                        require_confirmation_close_above_lookback_low: false,
+                                                                                        require_confirmation_low_above_breakdown_low: false,
                                                                                         max_signal_age_ms: self.max_signal_age_ms,
                                                                                     });
                                                                                 }
@@ -4240,6 +4307,9 @@ pub struct StrategyMultiTimeframeExperimentRequest {
     pub holding_candles_candidates: Option<Vec<u32>>,
     pub stop_loss_pct_candidates: Option<Vec<Decimal>>,
     pub take_profit_pct_candidates: Option<Vec<Decimal>>,
+    pub confirmation_candles_candidates: Option<Vec<u32>>,
+    pub require_confirmation_close_above_lookback_low_candidates: Option<Vec<bool>>,
+    pub require_confirmation_low_above_breakdown_low_candidates: Option<Vec<bool>>,
     pub max_signal_age_ms: Option<i64>,
     pub max_runs: Option<u32>,
     pub correlation_id: Option<Uuid>,
@@ -4309,6 +4379,13 @@ impl StrategyMultiTimeframeExperimentRequest {
             holding_candles_candidates: self.holding_candles_candidates.clone(),
             stop_loss_pct_candidates: self.stop_loss_pct_candidates.clone(),
             take_profit_pct_candidates: self.take_profit_pct_candidates.clone(),
+            confirmation_candles_candidates: self.confirmation_candles_candidates.clone(),
+            require_confirmation_close_above_lookback_low_candidates: self
+                .require_confirmation_close_above_lookback_low_candidates
+                .clone(),
+            require_confirmation_low_above_breakdown_low_candidates: self
+                .require_confirmation_low_above_breakdown_low_candidates
+                .clone(),
             max_signal_age_ms: self.max_signal_age_ms,
             max_runs: self.max_runs,
             correlation_id: self.correlation_id,
@@ -8946,6 +9023,9 @@ mod tests {
             holding_candles_candidates: Some(vec![10, 20]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
+            confirmation_candles_candidates: None,
+            require_confirmation_close_above_lookback_low_candidates: None,
+            require_confirmation_low_above_breakdown_low_candidates: None,
             max_signal_age_ms: Some(7_200_000),
             max_runs: Some(3),
             correlation_id: None,
@@ -9007,6 +9087,9 @@ mod tests {
             holding_candles_candidates: Some(vec![5]),
             stop_loss_pct_candidates: None,
             take_profit_pct_candidates: None,
+            confirmation_candles_candidates: None,
+            require_confirmation_close_above_lookback_low_candidates: None,
+            require_confirmation_low_above_breakdown_low_candidates: None,
             max_signal_age_ms: Some(7_200_000),
             max_runs: None,
             correlation_id: None,

@@ -4604,6 +4604,9 @@ fn strategy_update_request_from_config(config: &StrategyConfig) -> StrategyConfi
         stop_loss_pct: config.stop_loss_pct,
         take_profit_pct: config.take_profit_pct,
         holding_candles: config.holding_candles,
+        confirmation_candles: 0,
+        require_confirmation_close_above_lookback_low: false,
+        require_confirmation_low_above_breakdown_low: false,
         notes: config.notes.clone(),
     }
 }
@@ -16710,6 +16713,11 @@ fn strategy_config_request_with_candidate_overrides(
         stop_loss_pct,
         take_profit_pct,
         holding_candles,
+        confirmation_candles: base.confirmation_candles,
+        require_confirmation_close_above_lookback_low: base
+            .require_confirmation_close_above_lookback_low,
+        require_confirmation_low_above_breakdown_low: base
+            .require_confirmation_low_above_breakdown_low,
         notes: base.notes.clone(),
     }
 }
@@ -17159,6 +17167,9 @@ async fn execute_research_batch(
                 holding_candles_candidates: payload.holding_candles_candidates.clone(),
                 stop_loss_pct_candidates: None,
                 take_profit_pct_candidates: None,
+                confirmation_candles_candidates: None,
+                require_confirmation_close_above_lookback_low_candidates: None,
+                require_confirmation_low_above_breakdown_low_candidates: None,
                 max_signal_age_ms: None,
                 max_runs: None,
                 correlation_id: Some(correlation_id),
@@ -17275,6 +17286,9 @@ async fn execute_research_batch(
                     holding_candles: experiment_run.candidate.holding_candles,
                     stop_loss_pct: experiment_run.candidate.stop_loss_pct,
                     take_profit_pct: experiment_run.candidate.take_profit_pct,
+                    confirmation_candles: None,
+                    require_confirmation_close_above_lookback_low: None,
+                    require_confirmation_low_above_breakdown_low: None,
                     max_signal_age_ms: experiment_run.candidate.max_signal_age_ms,
                 },
                 min_required_test_windows: Some(1),
@@ -21251,6 +21265,9 @@ async fn strategy_experiment_request_from_plan(
         holding_candles_candidates: batch.holding_candles_candidates,
         stop_loss_pct_candidates: None,
         take_profit_pct_candidates: None,
+        confirmation_candles_candidates: None,
+        require_confirmation_close_above_lookback_low_candidates: None,
+        require_confirmation_low_above_breakdown_low_candidates: None,
         max_signal_age_ms: None,
         max_runs: Some(10),
         correlation_id: Some(correlation_id),
@@ -21332,6 +21349,9 @@ async fn strategy_walk_forward_request_from_plan(
             holding_candles: None,
             stop_loss_pct: None,
             take_profit_pct: None,
+            confirmation_candles: None,
+            require_confirmation_close_above_lookback_low: None,
+            require_confirmation_low_above_breakdown_low: None,
             max_signal_age_ms: None,
         },
         min_required_test_windows: Some(1),
@@ -32140,6 +32160,9 @@ mod tests {
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("research fixture".to_string()),
         }
     }
@@ -32255,6 +32278,9 @@ mod tests {
                 holding_candles: Some(3),
                 stop_loss_pct: None,
                 take_profit_pct: None,
+                confirmation_candles: 0,
+                require_confirmation_close_above_lookback_low: false,
+                require_confirmation_low_above_breakdown_low: false,
                 max_signal_age_ms: Some(180_000),
             },
             final_equity: Decimal::new(1_045_000, 0),
@@ -33514,6 +33540,9 @@ mod tests {
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("shadow test".to_string()),
         }
     }
@@ -33560,6 +33589,9 @@ mod tests {
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(20),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("failed breakdown shadow test".to_string()),
         }
     }

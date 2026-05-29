@@ -617,6 +617,38 @@ pub fn validate_strategy_config(
         }
     }
 
+    if strategy_id == StrategyId::FailedBreakdownReclaimV1 {
+        if request.confirmation_candles > 100 {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Error,
+                "invalid_confirmation_candles",
+                "confirmation_candles",
+                "confirmation_candles must be between 0 and 100",
+            ));
+        }
+        if request.confirmation_candles == 0
+            && (request.require_confirmation_close_above_lookback_low
+                || request.require_confirmation_low_above_breakdown_low)
+        {
+            issues.push(issue(
+                StrategyConfigValidationSeverity::Warn,
+                "confirmation_flags_without_confirmation_candles",
+                "confirmation_candles",
+                "confirmation flags have no effect when confirmation_candles is 0",
+            ));
+        }
+    } else if request.confirmation_candles > 0
+        || request.require_confirmation_close_above_lookback_low
+        || request.require_confirmation_low_above_breakdown_low
+    {
+        issues.push(issue(
+            StrategyConfigValidationSeverity::Warn,
+            "confirmation_ignored_for_strategy",
+            "confirmation_candles",
+            "entry confirmation is only used by failed_breakdown_reclaim_v1 research replay",
+        ));
+    }
+
     if let Some(confidence_floor) = request.confidence_floor {
         if !(Decimal::ZERO..=Decimal::ONE).contains(&confidence_floor) {
             issues.push(issue(
@@ -765,6 +797,17 @@ pub fn validate_strategy_config(
             stop_loss_pct: request.stop_loss_pct,
             take_profit_pct: request.take_profit_pct,
             holding_candles: request.holding_candles,
+            confirmation_candles: if strategy_id == StrategyId::FailedBreakdownReclaimV1 {
+                request.confirmation_candles
+            } else {
+                0
+            },
+            require_confirmation_close_above_lookback_low: strategy_id
+                == StrategyId::FailedBreakdownReclaimV1
+                && request.require_confirmation_close_above_lookback_low,
+            require_confirmation_low_above_breakdown_low: strategy_id
+                == StrategyId::FailedBreakdownReclaimV1
+                && request.require_confirmation_low_above_breakdown_low,
             notes: normalize_notes(request.notes.clone()),
         })
     };
@@ -4463,6 +4506,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Default momentum paper config".to_string()),
         },
         StrategyConfig {
@@ -4506,6 +4552,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Default breakout paper config".to_string()),
         },
         StrategyConfig {
@@ -4549,6 +4598,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Research baseline trend-filter momentum config".to_string()),
         },
         StrategyConfig {
@@ -4592,6 +4644,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Research baseline feature-filtered trend momentum config".to_string()),
         },
         StrategyConfig {
@@ -4635,6 +4690,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Research baseline volume-confirmed breakout config".to_string()),
         },
         StrategyConfig {
@@ -4678,6 +4736,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(5),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Research baseline volatility compression breakout config".to_string()),
         },
         StrategyConfig {
@@ -4721,6 +4782,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(5),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Research baseline range-reversion config".to_string()),
         },
         StrategyConfig {
@@ -4764,6 +4828,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(20),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Research baseline trend pullback continuation config".to_string()),
         },
         StrategyConfig {
@@ -4807,6 +4874,9 @@ pub fn build_default_strategy_configs(
             stop_loss_pct: None,
             take_profit_pct: None,
             holding_candles: Some(5),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("Research baseline failed breakdown reclaim config".to_string()),
         },
     ]
@@ -5238,6 +5308,9 @@ mod tests {
             stop_loss_pct: Some(Decimal::new(5, 0)),
             take_profit_pct: Some(Decimal::new(10, 0)),
             holding_candles: Some(3),
+            confirmation_candles: 0,
+            require_confirmation_close_above_lookback_low: false,
+            require_confirmation_low_above_breakdown_low: false,
             notes: Some("test".to_string()),
         }
     }

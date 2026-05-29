@@ -88,6 +88,9 @@ fn strategy_config() -> StrategyConfig {
         stop_loss_pct: None,
         take_profit_pct: None,
         holding_candles: Some(3),
+        confirmation_candles: 0,
+        require_confirmation_close_above_lookback_low: false,
+        require_confirmation_low_above_breakdown_low: false,
         notes: None,
     }
 }

@@ -9731,6 +9731,9 @@ pub fn strategy_config_from_record(record: &StrategyConfigRecord) -> Result<Stra
         stop_loss_pct: record.stop_loss_pct,
         take_profit_pct: record.take_profit_pct,
         holding_candles: record.holding_candles.map(|value| value as u32),
+        confirmation_candles: 0,
+        require_confirmation_close_above_lookback_low: false,
+        require_confirmation_low_above_breakdown_low: false,
         notes: record.notes.clone(),
     };
     config.validate()?;
