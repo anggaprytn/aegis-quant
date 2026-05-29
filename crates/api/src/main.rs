@@ -30160,9 +30160,9 @@ mod tests {
         StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus,
         StrategyWalkForwardWindow, StrategyWalkForwardWindowResult, Symbol, TestnetExecutionState,
         TestnetRepairAction, TestnetShadowDecision, TestnetShadowPromotionStatus,
-        TestnetShadowPromotionSubmitRequest, TestnetShadowRunnerConfig,
-        TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState, TestnetShadowRunnerStatus,
-        UserRole, UserStatus,
+        TestnetShadowPromotionSubmitRequest, TestnetShadowRejectionReason,
+        TestnetShadowRunnerConfig, TestnetShadowRunnerStaleFeedPolicy, TestnetShadowRunnerState,
+        TestnetShadowRunnerStatus, UserRole, UserStatus,
     };
     use axum::{
         body::Body,
@@ -32839,6 +32839,52 @@ mod tests {
         }
     }
 
+    fn failed_breakdown_shadow_strategy_config(symbol: &str) -> StrategyConfig {
+        StrategyConfig {
+            strategy_id: StrategyId::FailedBreakdownReclaimV1,
+            enabled: true,
+            mode: StrategyMode::Shadow,
+            symbols: vec![Symbol::new(symbol).expect("symbol")],
+            timeframe: CandleInterval::OneHour,
+            suggested_notional: Decimal::new(100_000, 0),
+            max_signal_age_ms: 7_200_000,
+            cooldown_seconds: 14_400,
+            lookback_candles: 3,
+            trend_lookback_candles: None,
+            momentum_lookback_candles: None,
+            compression_lookback_candles: None,
+            breakout_lookback_candles: None,
+            pullback_lookback_candles: None,
+            pullback_sma_lookback_candles: None,
+            compression_percentile_threshold: None,
+            min_breakout_pct: None,
+            max_breakout_extension_pct: None,
+            min_volume_expansion_ratio: None,
+            lower_band_pct: None,
+            upper_band_pct: None,
+            min_range_width_pct: None,
+            max_range_width_pct: None,
+            min_close_above_sma_pct: None,
+            max_close_above_sma_pct: None,
+            min_momentum_return_pct: None,
+            min_trend_return_pct: None,
+            min_trend_slope_pct: None,
+            min_pullback_depth_pct: None,
+            max_pullback_depth_pct: None,
+            min_reclaim_pct: None,
+            min_breakdown_pct: Some(Decimal::new(5, 2)),
+            min_reclaim_close_pct: Some(Decimal::ZERO),
+            min_lower_wick_pct: Some(Decimal::new(1, 0)),
+            min_volume_ratio: Some(Decimal::ZERO),
+            max_choppiness: None,
+            confidence_floor: None,
+            stop_loss_pct: None,
+            take_profit_pct: None,
+            holding_candles: Some(20),
+            notes: Some("failed breakdown shadow test".to_string()),
+        }
+    }
+
     fn shadow_runner_config(
         strategies: Vec<&str>,
         symbols: Vec<&str>,
@@ -32898,6 +32944,41 @@ mod tests {
                 is_closed: true,
                 created_at: open_time + chrono::Duration::seconds(59),
                 updated_at: open_time + chrono::Duration::seconds(59),
+            };
+            upsert_candle(pool, &candle).await.expect("shadow candle");
+        }
+    }
+
+    async fn seed_shadow_candles_for_interval(
+        pool: &PgPool,
+        symbol: &str,
+        interval: CandleInterval,
+        closes: &[i64],
+        latest_close_age: chrono::Duration,
+    ) {
+        let duration = interval.duration();
+        let latest_close = Utc::now() - latest_close_age;
+        let latest_open = latest_close - duration;
+        let base_open = latest_open - duration * ((closes.len() - 1) as i32);
+        for (index, close) in closes.iter().enumerate() {
+            let open_time = base_open + duration * (index as i32);
+            let candle = Candle {
+                id: Uuid::new_v4(),
+                exchange: MarketDataSource::Binance,
+                symbol: Symbol::new(symbol).expect("symbol"),
+                interval,
+                open_time,
+                close_time: open_time + duration,
+                open: Decimal::new(*close - 10, 0),
+                high: Decimal::new(*close + 10, 0),
+                low: Decimal::new(*close - 20, 0),
+                close: Decimal::new(*close, 0),
+                volume: Decimal::ONE,
+                quote_volume: Some(Decimal::new(*close, 0)),
+                trade_count: 1,
+                is_closed: true,
+                created_at: open_time + duration,
+                updated_at: open_time + duration,
             };
             upsert_candle(pool, &candle).await.expect("shadow candle");
         }
@@ -33567,6 +33648,154 @@ mod tests {
             count_exchange_testnet_lifecycle_events(&test_db.pool).await,
             0
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn candle_only_shadow_run_with_fresh_candles_and_missing_feed_persists_no_signal_and_links_candidate(
+    ) {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let strategy = failed_breakdown_shadow_strategy_config("ETHUSDT");
+        upsert_strategy_config(&test_db.pool, &strategy)
+            .await
+            .expect("strategy config");
+        seed_shadow_candles_for_interval(
+            &test_db.pool,
+            "ETHUSDT",
+            CandleInterval::OneHour,
+            &[2_000, 2_010, 2_020, 2_030],
+            chrono::Duration::minutes(10),
+        )
+        .await;
+        let mut candidate = sample_research_candidate(
+            &strategy,
+            Uuid::new_v4(),
+            StrategyResearchCandidateSource::WalkForward,
+        );
+        candidate.status = StrategyResearchCandidateStatus::PromotedToShadowConfig;
+        candidate.promoted_at = Some(Utc::now());
+        insert_strategy_research_candidate(&test_db.pool, &candidate, None)
+            .await
+            .expect("candidate should persist");
+        let before_testnet_orders = count_exchange_testnet_orders(&test_db.pool).await;
+        let before_lifecycle = count_exchange_testnet_lifecycle_events(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "failed_breakdown_reclaim_v1",
+                    "symbol": "ETHUSDT",
+                    "timeframe": "1h"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<TestnetShadowRunResponse>(response).await;
+        assert_eq!(payload.run.decision, TestnetShadowDecision::NoSignal);
+        assert!(payload
+            .run
+            .reasons
+            .contains(&TestnetShadowRejectionReason::MarketFeedUnavailable));
+        assert_eq!(count_testnet_shadow_runs(&test_db.pool).await, 1);
+        let linked_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM research_candidate_shadow_runs")
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("candidate shadow link count");
+        assert_eq!(linked_count, 1);
+        assert_eq!(
+            count_exchange_testnet_orders(&test_db.pool).await,
+            before_testnet_orders
+        );
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before_lifecycle
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn candle_only_shadow_run_with_stale_candles_returns_candle_data_stale() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = shadow_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        let strategy = failed_breakdown_shadow_strategy_config("ETHUSDT");
+        upsert_strategy_config(&test_db.pool, &strategy)
+            .await
+            .expect("strategy config");
+        seed_shadow_candles_for_interval(
+            &test_db.pool,
+            "ETHUSDT",
+            CandleInterval::OneHour,
+            &[2_000, 2_010, 2_020, 2_030],
+            chrono::Duration::hours(3),
+        )
+        .await;
+        let before_testnet_orders = count_exchange_testnet_orders(&test_db.pool).await;
+        let before_lifecycle = count_exchange_testnet_lifecycle_events(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "operator@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                "/exchange/testnet/shadow/run",
+                &operator_login.access_token,
+                json!({
+                    "strategy_id": "failed_breakdown_reclaim_v1",
+                    "symbol": "ETHUSDT",
+                    "timeframe": "1h"
+                }),
+            ))
+            .await
+            .expect("shadow response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<TestnetShadowRunResponse>(response).await;
+        assert_eq!(payload.run.decision, TestnetShadowDecision::CandleDataStale);
+        assert_eq!(
+            payload.run.reasons,
+            vec![TestnetShadowRejectionReason::CandleDataStale]
+        );
+        assert_eq!(
+            count_exchange_testnet_orders(&test_db.pool).await,
+            before_testnet_orders
+        );
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before_lifecycle
+        );
+        assert_no_paper_or_backtest_mutation(&test_db.pool).await;
     }
 
     #[tokio::test]

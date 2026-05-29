@@ -1,9 +1,10 @@
 use crate::{ensure_strategy_config, reason_code, AppState};
 use aegis_core::{
-    CandleInterval, DataFreshnessStatus, EventEnvelope, ExchangeEnvironment, ExchangeName,
-    ExchangeOrderSide, ExchangeOrderType, RiskCheckContext, RiskEvaluationDecision,
-    RiskRejectionReason, Side, SignalReason, StrategyEvaluationContext, StrategySignal, Symbol,
-    TestnetShadowDecision, TestnetShadowIntent, TestnetShadowModeConfig,
+    summarize_candle_continuity, Candle, CandleInterval, DataFreshnessStatus, EventEnvelope,
+    ExchangeEnvironment, ExchangeName, ExchangeOrderSide, ExchangeOrderType,
+    MarketDataQualityRequest, MarketDataQualityStatus, RiskCheckContext, RiskEvaluationDecision,
+    RiskRejectionReason, Side, SignalReason, StrategyConfig, StrategyEvaluationContext, StrategyId,
+    StrategySignal, Symbol, TestnetShadowDecision, TestnetShadowIntent, TestnetShadowModeConfig,
     TestnetShadowRejectionReason, TestnetShadowRunRequest, TestnetShadowRunResult,
     TestnetShadowStatus,
 };
@@ -48,7 +49,9 @@ struct ShadowOutcomePlan {
 struct ShadowEvaluationInput {
     kill_switch_active: bool,
     strategy_enabled: bool,
-    feed_block: Option<TestnetShadowRejectionReason>,
+    required_feed_block: Option<TestnetShadowRejectionReason>,
+    feed_warning: Option<TestnetShadowRejectionReason>,
+    candle_block: Option<TestnetShadowRejectionReason>,
     timeframe_matches: bool,
     signal: Option<StrategySignal>,
     signal_reason: SignalReason,
@@ -57,6 +60,12 @@ struct ShadowEvaluationInput {
     risk_reasons: Vec<RiskRejectionReason>,
     price: Option<ResolvedPrice>,
     approved_notional: Option<Decimal>,
+}
+
+#[derive(Debug, Clone)]
+struct ShadowCandleReadiness {
+    candles: Vec<Candle>,
+    block_reason: Option<TestnetShadowRejectionReason>,
 }
 
 #[derive(Debug)]
@@ -181,8 +190,6 @@ pub async fn run_testnet_shadow_once(
     let config = ensure_strategy_config(state, strategy_id)
         .await
         .context("failed to load strategy config")?;
-    let feed_block = shadow_feed_block_reason(state, &symbol).await?;
-
     let risk_config = get_risk_config(&state.db_pool)
         .await
         .context("failed to load persisted risk config")?
@@ -191,8 +198,16 @@ pub async fn run_testnet_shadow_once(
         .context("persisted risk config is invalid")?
         .unwrap_or_default();
     let mode_config = TestnetShadowModeConfig {
-        stale_price_threshold_seconds: risk_config.stale_feed_threshold_seconds,
+        stale_price_threshold_seconds: shadow_price_threshold_seconds(&config, &risk_config),
     };
+    let feed_status_block = shadow_feed_block_reason(state, &symbol).await?;
+    let (required_feed_block, feed_warning) = if strategy_requires_live_market_feed(strategy_id) {
+        (feed_status_block, None)
+    } else {
+        (None, feed_status_block.map(optional_market_feed_warning))
+    };
+    let candle_readiness =
+        load_shadow_candle_readiness(state, &symbol, timeframe, &config, created_at).await?;
 
     let mut signal = None;
     let mut signal_reason = SignalReason::ConditionsNotMet;
@@ -205,19 +220,15 @@ pub async fn run_testnet_shadow_once(
     if !system_state.kill_switch_enabled
         && config.enabled
         && config.timeframe == timeframe
-        && feed_block.is_none()
+        && required_feed_block.is_none()
+        && candle_readiness.block_reason.is_none()
     {
-        let required_candles = required_candle_count(&config);
-        let candles =
-            get_recent_closed_candles(&state.db_pool, &symbol, timeframe, required_candles)
-                .await
-                .context("failed to query closed candles")?;
         let evaluation = evaluate_strategy(StrategyEvaluationContext {
             correlation_id,
             strategy_id,
             symbol: symbol.clone(),
             config: config.clone(),
-            candles: candles.clone(),
+            candles: candle_readiness.candles.clone(),
             evaluated_at: created_at,
         })
         .context("failed to evaluate strategy")?;
@@ -301,7 +312,9 @@ pub async fn run_testnet_shadow_once(
     let plan = evaluate_shadow_outcome(ShadowEvaluationInput {
         kill_switch_active: system_state.kill_switch_enabled,
         strategy_enabled: config.enabled,
-        feed_block,
+        required_feed_block,
+        feed_warning,
+        candle_block: candle_readiness.block_reason,
         timeframe_matches: config.timeframe == timeframe,
         signal,
         signal_reason,
@@ -324,6 +337,122 @@ pub async fn run_testnet_shadow_once(
     .await?;
 
     Ok(result)
+}
+
+fn strategy_requires_live_market_feed(_strategy_id: StrategyId) -> bool {
+    false
+}
+
+fn shadow_price_threshold_seconds(
+    config: &StrategyConfig,
+    risk_config: &aegis_core::RiskConfig,
+) -> u32 {
+    let strategy_threshold_seconds = config
+        .max_signal_age_ms
+        .checked_div(1_000)
+        .unwrap_or(0)
+        .max(1);
+    i64::from(risk_config.stale_feed_threshold_seconds)
+        .max(strategy_threshold_seconds)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+fn optional_market_feed_warning(
+    reason: TestnetShadowRejectionReason,
+) -> TestnetShadowRejectionReason {
+    match reason {
+        TestnetShadowRejectionReason::StaleFeed
+        | TestnetShadowRejectionReason::MarketFeedDegraded => {
+            TestnetShadowRejectionReason::MarketFeedStaleWarning
+        }
+        other => other,
+    }
+}
+
+async fn load_shadow_candle_readiness(
+    state: &AppState,
+    symbol: &Symbol,
+    timeframe: CandleInterval,
+    config: &StrategyConfig,
+    evaluated_at: chrono::DateTime<Utc>,
+) -> Result<ShadowCandleReadiness> {
+    let required_candles = required_candle_count(config);
+    let candles = get_recent_closed_candles(&state.db_pool, symbol, timeframe, required_candles)
+        .await
+        .context("failed to query closed candles")?;
+
+    let block_reason = shadow_candle_block_reason(
+        state.market_config.exchange,
+        symbol,
+        timeframe,
+        config,
+        evaluated_at,
+        &candles,
+    )?;
+
+    Ok(ShadowCandleReadiness {
+        candles,
+        block_reason,
+    })
+}
+
+fn shadow_candle_block_reason(
+    exchange: aegis_core::MarketDataSource,
+    symbol: &Symbol,
+    timeframe: CandleInterval,
+    config: &StrategyConfig,
+    evaluated_at: chrono::DateTime<Utc>,
+    candles: &[Candle],
+) -> Result<Option<TestnetShadowRejectionReason>> {
+    let required_candles = required_candle_count(config);
+    if i64::try_from(candles.len()).unwrap_or(i64::MAX) < required_candles {
+        return Ok(Some(TestnetShadowRejectionReason::InsufficientHistory));
+    }
+
+    let Some(first) = candles.first() else {
+        return Ok(Some(TestnetShadowRejectionReason::InsufficientHistory));
+    };
+    let Some(latest) = candles.last() else {
+        return Ok(Some(TestnetShadowRejectionReason::InsufficientHistory));
+    };
+
+    let max_age_ms = shadow_candle_max_age_ms(config, timeframe);
+    let latest_age_ms = evaluated_at
+        .signed_duration_since(latest.close_time)
+        .num_milliseconds();
+    if latest_age_ms > max_age_ms {
+        return Ok(Some(TestnetShadowRejectionReason::CandleDataStale));
+    }
+
+    let quality_request = MarketDataQualityRequest {
+        exchange,
+        symbol: symbol.as_str().to_string(),
+        interval: timeframe.as_str().to_string(),
+        start_time: first.open_time,
+        end_time: latest.open_time + timeframe.duration(),
+        expected_interval_seconds: Some(timeframe.duration().num_seconds()),
+        max_allowed_gap_count: Some(0),
+        max_allowed_gap_pct: Some(Decimal::ZERO),
+    };
+    let quality = summarize_candle_continuity(&quality_request, candles, 5)
+        .context("failed to summarize shadow candle continuity")?;
+    if matches!(
+        quality.status,
+        MarketDataQualityStatus::Bad
+            | MarketDataQualityStatus::Degraded
+            | MarketDataQualityStatus::InsufficientData
+    ) {
+        return Ok(Some(TestnetShadowRejectionReason::DataStale));
+    }
+
+    Ok(None)
+}
+
+fn shadow_candle_max_age_ms(config: &StrategyConfig, timeframe: CandleInterval) -> i64 {
+    config
+        .max_signal_age_ms
+        .max(timeframe.duration().num_milliseconds())
 }
 
 async fn persist_shadow_result(
@@ -665,7 +794,7 @@ fn evaluate_shadow_outcome(input: ShadowEvaluationInput) -> Result<ShadowOutcome
         });
     }
 
-    if let Some(reason) = input.feed_block {
+    if let Some(reason) = input.required_feed_block {
         return Ok(ShadowOutcomePlan {
             decision: TestnetShadowDecision::SkippedStaleFeed,
             status: TestnetShadowStatus::Rejected,
@@ -678,14 +807,38 @@ fn evaluate_shadow_outcome(input: ShadowEvaluationInput) -> Result<ShadowOutcome
         });
     }
 
+    if let Some(reason) = input.candle_block {
+        return Ok(ShadowOutcomePlan {
+            decision: match reason {
+                TestnetShadowRejectionReason::CandleDataStale
+                | TestnetShadowRejectionReason::DataStale
+                | TestnetShadowRejectionReason::InsufficientHistory => {
+                    TestnetShadowDecision::CandleDataStale
+                }
+                _ => TestnetShadowDecision::Error,
+            },
+            status: TestnetShadowStatus::Rejected,
+            signal_id: None,
+            risk_decision_id: None,
+            would_submit_order: None,
+            reasons: vec![reason],
+            price_source: None,
+            resolved_price: None,
+        });
+    }
+
     let Some(signal) = input.signal else {
+        let mut reasons = signal_reason_to_shadow_reasons(input.signal_reason);
+        if let Some(warning) = input.feed_warning {
+            reasons.push(warning);
+        }
         return Ok(ShadowOutcomePlan {
             decision: TestnetShadowDecision::NoSignal,
             status: TestnetShadowStatus::Completed,
             signal_id: None,
             risk_decision_id: None,
             would_submit_order: None,
-            reasons: signal_reason_to_shadow_reasons(input.signal_reason),
+            reasons,
             price_source: None,
             resolved_price: None,
         });
@@ -755,6 +908,10 @@ fn evaluate_shadow_outcome(input: ShadowEvaluationInput) -> Result<ShadowOutcome
         limit_price: None,
         risk_decision_id: input.risk_decision_id,
     };
+    let mut reasons = Vec::new();
+    if let Some(warning) = input.feed_warning {
+        reasons.push(warning);
+    }
 
     Ok(ShadowOutcomePlan {
         decision: TestnetShadowDecision::WouldSubmit,
@@ -762,7 +919,7 @@ fn evaluate_shadow_outcome(input: ShadowEvaluationInput) -> Result<ShadowOutcome
         signal_id: Some(signal.signal_id),
         risk_decision_id: input.risk_decision_id,
         would_submit_order: Some(would_submit_order),
-        reasons: Vec::new(),
+        reasons,
         price_source: Some(price.source),
         resolved_price: Some(price.price),
     })
@@ -846,7 +1003,9 @@ mod tests {
         ShadowEvaluationInput {
             kill_switch_active: false,
             strategy_enabled: true,
-            feed_block: None,
+            required_feed_block: None,
+            feed_warning: None,
+            candle_block: None,
             timeframe_matches: true,
             signal: Some(sample_signal()),
             signal_reason: SignalReason::ThreeConsecutiveHigherCloses,
@@ -887,6 +1046,55 @@ mod tests {
         input.signal_reason = SignalReason::ConditionsNotMet;
         let result = evaluate_shadow_outcome(input).unwrap();
         assert_eq!(result.decision, TestnetShadowDecision::NoSignal);
+    }
+
+    #[test]
+    fn candle_only_missing_market_feed_warning_still_allows_no_signal() {
+        let mut input = base_input();
+        input.signal = None;
+        input.signal_reason = SignalReason::ConditionsNotMet;
+        input.feed_warning = Some(aegis_core::TestnetShadowRejectionReason::MarketFeedUnavailable);
+        let result = evaluate_shadow_outcome(input).unwrap();
+        assert_eq!(result.decision, TestnetShadowDecision::NoSignal);
+        assert!(result
+            .reasons
+            .contains(&aegis_core::TestnetShadowRejectionReason::MarketFeedUnavailable));
+    }
+
+    #[test]
+    fn candle_only_missing_market_feed_warning_still_allows_would_submit() {
+        let mut input = base_input();
+        input.feed_warning = Some(aegis_core::TestnetShadowRejectionReason::MarketFeedUnavailable);
+        let result = evaluate_shadow_outcome(input).unwrap();
+        assert_eq!(result.decision, TestnetShadowDecision::WouldSubmit);
+        assert!(result.would_submit_order.is_some());
+        assert!(result
+            .reasons
+            .contains(&aegis_core::TestnetShadowRejectionReason::MarketFeedUnavailable));
+    }
+
+    #[test]
+    fn stale_candle_data_returns_candle_data_stale() {
+        let mut input = base_input();
+        input.candle_block = Some(aegis_core::TestnetShadowRejectionReason::CandleDataStale);
+        let result = evaluate_shadow_outcome(input).unwrap();
+        assert_eq!(result.decision, TestnetShadowDecision::CandleDataStale);
+        assert_eq!(
+            result.reasons,
+            vec![aegis_core::TestnetShadowRejectionReason::CandleDataStale]
+        );
+    }
+
+    #[test]
+    fn required_feed_block_still_blocks_feed_dependent_path() {
+        let mut input = base_input();
+        input.required_feed_block = Some(aegis_core::TestnetShadowRejectionReason::StaleFeed);
+        let result = evaluate_shadow_outcome(input).unwrap();
+        assert_eq!(result.decision, TestnetShadowDecision::SkippedStaleFeed);
+        assert_eq!(
+            result.reasons,
+            vec![aegis_core::TestnetShadowRejectionReason::StaleFeed]
+        );
     }
 
     #[test]

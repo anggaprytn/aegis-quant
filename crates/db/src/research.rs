@@ -6109,7 +6109,10 @@ pub async fn get_research_candidate_shadow_performance(
             COUNT(*) FILTER (WHERE run.decision = 'WOULD_SUBMIT')::BIGINT AS would_submit_count,
             COUNT(*) FILTER (WHERE run.decision = 'NO_SIGNAL')::BIGINT AS no_signal_count,
             COUNT(*) FILTER (WHERE run.decision = 'RISK_REJECTED')::BIGINT AS risk_rejected_count,
-            COUNT(*) FILTER (WHERE run.decision LIKE 'SKIPPED_%')::BIGINT AS skipped_count,
+            COUNT(*) FILTER (
+                WHERE run.decision LIKE 'SKIPPED_%'
+                   OR run.decision = 'CANDLE_DATA_STALE'
+            )::BIGINT AS skipped_count,
             COUNT(*) FILTER (WHERE run.decision = 'ERROR' OR run.status = 'ERROR')::BIGINT AS error_count,
             MAX(run.created_at) AS last_shadow_run_at
         FROM research_candidate_shadow_runs link

@@ -148,7 +148,10 @@ pub async fn evaluate_candidate_observation(
         .count() as i64;
     let skipped_count = shadow_runs
         .iter()
-        .filter(|run| run.decision.starts_with("SKIPPED_"))
+        .filter(|run| {
+            run.decision.starts_with("SKIPPED_")
+                || run.decision == TestnetShadowDecision::CandleDataStale.as_str()
+        })
         .count() as i64;
 
     let readiness = compute_execution_readiness(

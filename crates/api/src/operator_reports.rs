@@ -984,6 +984,7 @@ async fn load_shadow_snapshot(
                     'SKIPPED_KILL_SWITCH',
                     'SKIPPED_STALE_PRICE',
                     'SKIPPED_STALE_FEED',
+                    'CANDLE_DATA_STALE',
                     'ERROR'
                 )
             ) AS skipped_count

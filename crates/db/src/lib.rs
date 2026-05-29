@@ -8315,6 +8315,7 @@ pub async fn get_strategy_shadow_decision_breakdown(
             COUNT(*) FILTER (WHERE decision = 'RISK_REJECTED')::BIGINT AS risk_rejected_count,
             COUNT(*) FILTER (
                 WHERE decision LIKE 'SKIPPED_%'
+                   OR decision = 'CANDLE_DATA_STALE'
             )::BIGINT AS skipped_count,
             COUNT(*) FILTER (WHERE decision = 'ERROR')::BIGINT AS error_count
         FROM testnet_shadow_runs
