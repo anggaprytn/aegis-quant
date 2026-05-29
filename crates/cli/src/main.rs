@@ -637,6 +637,14 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Research(command) => match command {
+            ResearchCommands::StateSnapshot => {
+                let response = client.get_research_state_snapshot().await?;
+                if cli.json {
+                    output::print_json(&response)?;
+                } else {
+                    output::print_research_state_snapshot(&response);
+                }
+            }
             ResearchCommands::Data(command) => match command {
                 ResearchDataCommands::Coverage(args) => {
                     let query = build_research_data_coverage_query(&args);

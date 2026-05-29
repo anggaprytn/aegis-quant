@@ -861,6 +861,8 @@ pub enum MarketCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum ResearchCommands {
+    #[command(name = "state-snapshot")]
+    StateSnapshot,
     #[command(subcommand)]
     Data(ResearchDataCommands),
     #[command(name = "regime-datasets", subcommand)]

@@ -211,6 +211,10 @@ impl ApiClient {
             .await
     }
 
+    pub async fn get_research_state_snapshot(&self) -> Result<Value, ApiClientError> {
+        self.get("/research/state-snapshot", &[]).await
+    }
+
     pub async fn post<T, B>(&self, endpoint: &str, body: &B) -> Result<T, ApiClientError>
     where
         T: for<'de> Deserialize<'de>,

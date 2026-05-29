@@ -58,6 +58,85 @@ pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn print_research_state_snapshot(response: &serde_json::Value) {
+    let snapshot = &response["snapshot"];
+    println!("Research State Snapshot");
+    println!(
+        "Generated: {}",
+        snapshot["generated_at"].as_str().unwrap_or("unknown")
+    );
+    println!(
+        "Execution authority: {}",
+        snapshot["platform_state"]["research_execution_authority"]
+            .as_str()
+            .unwrap_or("NONE")
+    );
+    println!(
+        "Shadow observation only: {}",
+        snapshot["platform_state"]["shadow_observation_only"]
+            .as_bool()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+
+    println!("\nActive candidates:");
+    if let Some(candidates) = snapshot["active_research_candidates"].as_array() {
+        if candidates.is_empty() {
+            println!("  none");
+        }
+        for candidate in candidates {
+            let progress = &candidate["evidence_progress"];
+            println!(
+                "  {} {} {} {} status={} shadow={}/{} would_submit={}/{} qualification={} dossier={} next={}",
+                candidate["candidate_id"].as_str().unwrap_or("unknown"),
+                candidate["strategy"].as_str().unwrap_or("unknown"),
+                candidate["symbol"].as_str().unwrap_or("unknown"),
+                candidate["timeframe"].as_str().unwrap_or("unknown"),
+                candidate["status"].as_str().unwrap_or("unknown"),
+                progress["independent_shadow_observation_count"].as_i64().unwrap_or(0),
+                progress["independent_shadow_observation_threshold"].as_i64().unwrap_or(0),
+                progress["would_submit_count"].as_i64().unwrap_or(0),
+                progress["would_submit_threshold"].as_i64().unwrap_or(0),
+                candidate["qualification"].as_str().unwrap_or("unknown"),
+                candidate["dossier"].as_str().unwrap_or("unknown"),
+                candidate["recommended_next_action"].as_str().unwrap_or("unknown")
+            );
+        }
+    }
+
+    println!("\nExecution safety counts:");
+    let counts = &snapshot["execution_safety_counts"];
+    for key in [
+        "orders",
+        "paper_positions",
+        "paper_fills",
+        "exchange_testnet_orders",
+        "exchange_testnet_order_lifecycle_events",
+        "testnet_shadow_promotions",
+    ] {
+        println!("  {key}: {}", counts[key].as_i64().unwrap_or(0));
+    }
+
+    println!("\nRejected/blocked decisions:");
+    if let Some(decisions) = snapshot["decision_ledger"].as_array() {
+        for decision in decisions {
+            println!(
+                "  {}: {} ({})",
+                decision["family"].as_str().unwrap_or("unknown"),
+                decision["decision"].as_str().unwrap_or("unknown"),
+                decision["confidence"].as_str().unwrap_or("unknown")
+            );
+        }
+    }
+
+    println!("\nNext actions:");
+    if let Some(actions) = snapshot["recommended_next_actions"].as_array() {
+        for action in actions {
+            println!("  - {}", action.as_str().unwrap_or(""));
+        }
+    }
+}
+
 pub fn print_research_batch(batch: &ResearchBatchResult) {
     println!("Batch: {}", batch.batch_id);
     println!("Status: {}", batch.status.as_str());

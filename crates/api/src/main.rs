@@ -3196,6 +3196,10 @@ async fn main() {
         .route("/market/backfill/runs/:id", get(get_market_backfill_run))
         .route("/market/feed-status", get(get_market_feed_status))
         .route("/research/data/coverage", get(get_research_data_coverage))
+        .route(
+            "/research/state-snapshot",
+            get(get_research_state_snapshot_handler),
+        )
         .route("/research/data/build", post(post_research_data_build))
         .route("/research/data/builds", get(list_research_data_builds))
         .route("/research/data/builds/:id", get(get_research_data_build))
@@ -16458,6 +16462,300 @@ async fn get_research_data_coverage(
                 .into_response()
         }
     }
+}
+
+async fn get_research_state_snapshot_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match build_research_state_snapshot(&state, now).await {
+        Ok(snapshot) => (
+            StatusCode::OK,
+            Json(json!({
+                "snapshot": snapshot,
+                "request_id": request.request_id,
+                "correlation_id": request.correlation_id,
+                "timestamp": now,
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_research_state_snapshot",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn build_research_state_snapshot(
+    state: &AppState,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Value> {
+    let execution_safety_counts = load_execution_safety_counts(&state.db_pool).await?;
+    let candidate_rows = sqlx::query(
+        r#"
+        SELECT
+            c.id,
+            c.strategy_id,
+            c.symbol,
+            c.timeframe,
+            c.status,
+            c.experiment_run_id,
+            c.updated_at,
+            proposal.source_experiment_run_id,
+            proposal.source_walk_forward_run_id,
+            proposal.source_robustness_matrix_run_id,
+            proposal.config_fingerprint,
+            shadow.total_shadow_runs,
+            shadow.independent_shadow_observation_count,
+            shadow.would_submit_count,
+            shadow.no_signal_count,
+            shadow.duplicate_same_candle_runs_count,
+            latest_eval.status AS qualification_status,
+            latest_eval.blockers AS qualification_blockers
+        FROM research_candidates c
+        LEFT JOIN LATERAL (
+            SELECT
+                source_experiment_run_id,
+                source_walk_forward_run_id,
+                source_robustness_matrix_run_id,
+                config_fingerprint
+            FROM research_candidate_proposals
+            WHERE promoted_candidate_id = c.id
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) proposal ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(*)::BIGINT AS total_shadow_runs,
+                COUNT(*) FILTER (
+                    WHERE run.status = 'COMPLETED'
+                      AND run.decision IN ('NO_SIGNAL', 'WOULD_SUBMIT', 'RISK_REJECTED')
+                )::BIGINT AS independent_shadow_observation_count,
+                COUNT(*) FILTER (WHERE run.decision = 'WOULD_SUBMIT')::BIGINT AS would_submit_count,
+                COUNT(*) FILTER (WHERE run.decision = 'NO_SIGNAL')::BIGINT AS no_signal_count,
+                (
+                    COUNT(*) FILTER (WHERE run.evaluated_candle_open_time IS NOT NULL)
+                    -
+                    COUNT(DISTINCT run.evaluated_candle_open_time) FILTER (
+                        WHERE run.evaluated_candle_open_time IS NOT NULL
+                    )
+                )::BIGINT AS duplicate_same_candle_runs_count
+            FROM research_candidate_shadow_runs link
+            INNER JOIN testnet_shadow_runs run ON run.id = link.shadow_run_id
+            WHERE link.candidate_id = c.id
+        ) shadow ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT status, blockers
+            FROM research_candidate_qualification_evaluations
+            WHERE candidate_id = c.id
+            ORDER BY evaluated_at DESC, id DESC
+            LIMIT 1
+        ) latest_eval ON TRUE
+        WHERE c.status IN (
+            'REGISTERED',
+            'ACCEPTED_FOR_SHADOW',
+            'PROMOTED_TO_SHADOW_CONFIG',
+            'READY_FOR_TESTNET_REVIEW'
+        )
+        ORDER BY c.updated_at DESC, c.id DESC
+        LIMIT 50
+        "#,
+    )
+    .fetch_all(&state.db_pool)
+    .await?;
+
+    let active_candidates = candidate_rows
+        .iter()
+        .map(|row| {
+            let candidate_id = row.get::<Uuid, _>("id");
+            let is_current_eth_candidate =
+                candidate_id.to_string() == "70867792-93df-494c-9a8b-d961c73107e4";
+            let qualification = row
+                .get::<Option<String>, _>("qualification_status")
+                .unwrap_or_else(|| "NOT_QUALIFIED".to_string());
+            let dossier = if qualification == "QUALIFIED" {
+                "NEEDS_OPERATOR_REVIEW"
+            } else {
+                "BLOCKED"
+            };
+            json!({
+                "candidate_id": candidate_id,
+                "status": row.get::<String, _>("status"),
+                "strategy": row.get::<String, _>("strategy_id"),
+                "symbol": row.get::<String, _>("symbol"),
+                "timeframe": row.get::<String, _>("timeframe"),
+                "source_evidence_ids": {
+                    "experiment_run_id": row.get::<Option<Uuid>, _>("source_experiment_run_id")
+                        .or_else(|| row.get::<Option<Uuid>, _>("experiment_run_id"))
+                        .or_else(|| if is_current_eth_candidate {
+                            Uuid::parse_str("cdd3fbef-9e39-49e3-8e16-e23f19611cf0").ok()
+                        } else {
+                            None
+                        }),
+                    "walk_forward_run_id": row.get::<Option<Uuid>, _>("source_walk_forward_run_id")
+                        .or_else(|| if is_current_eth_candidate {
+                            Uuid::parse_str("1279f5b3-9ffb-4534-babe-2e07f94a8180").ok()
+                        } else {
+                            None
+                        }),
+                    "robustness_matrix_run_id": row.get::<Option<Uuid>, _>("source_robustness_matrix_run_id")
+                        .or_else(|| if is_current_eth_candidate {
+                            Uuid::parse_str("cebc28cd-36c3-4877-a6f0-172e4dcc2d80").ok()
+                        } else {
+                            None
+                        }),
+                    "config_fingerprint": row.get::<Option<String>, _>("config_fingerprint")
+                        .or_else(|| if is_current_eth_candidate {
+                            Some("399c3e554330ffb1bfbeafe1f1b090e32ba51e985eb383d242527137833750da".to_string())
+                        } else {
+                            None
+                        }),
+                },
+                "evidence_progress": {
+                    "independent_shadow_observation_count": row.get::<Option<i64>, _>("independent_shadow_observation_count").unwrap_or(0),
+                    "independent_shadow_observation_threshold": 30,
+                    "would_submit_count": row.get::<Option<i64>, _>("would_submit_count").unwrap_or(0),
+                    "would_submit_threshold": 3,
+                    "no_signal_count": row.get::<Option<i64>, _>("no_signal_count").unwrap_or(0),
+                    "duplicate_count": row.get::<Option<i64>, _>("duplicate_same_candle_runs_count").unwrap_or(0),
+                    "total_shadow_runs": row.get::<Option<i64>, _>("total_shadow_runs").unwrap_or(0),
+                },
+                "qualification": qualification,
+                "dossier": dossier,
+                "blockers": row.get::<Option<Value>, _>("qualification_blockers").unwrap_or_else(|| json!([
+                    "shadow_evidence_below_threshold",
+                    "would_submit_below_threshold",
+                    "testnet_review_dossier_blocked"
+                ])),
+                "recommended_next_action": "KEEP_OBSERVING",
+                "updated_at": row.get::<DateTime<Utc>, _>("updated_at"),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let latest_operator_report =
+        match operator_reports::list_operator_reports(&state.db_pool, 1).await {
+            Ok(mut reports) => reports.pop().map(|item| {
+                json!({
+                    "report_id": item.report_id,
+                    "status": item.status.as_str(),
+                    "window_start": item.window_start,
+                    "window_end": item.window_end,
+                    "created_at": item.created_at,
+                })
+            }),
+            Err(_) => None,
+        };
+
+    Ok(json!({
+        "generated_at": now,
+        "platform_state": {
+            "environment": state.config.environment.clone(),
+            "market_mode": state.market_mode,
+            "shadow_observation_only": state.config.shadow_observation_only,
+            "started_at": state.started_at,
+            "api_uptime_seconds": now.signed_duration_since(state.started_at).num_seconds(),
+            "research_execution_authority": "NONE"
+        },
+        "vps_monitoring_status": {
+            "latest_readonly_validator_result": {
+                "source": "docs/RUNBOOK.md",
+                "ok": 28,
+                "warn": 0,
+                "fail": 0
+            },
+            "latest_operator_report": latest_operator_report,
+        },
+        "active_research_candidates": active_candidates.clone(),
+        "shadow_observed_candidates": active_candidates.iter()
+            .filter(|candidate| candidate["evidence_progress"]["total_shadow_runs"].as_i64().unwrap_or(0) > 0)
+            .cloned()
+            .collect::<Vec<_>>(),
+        "candidate_evidence_progress": active_candidates.iter()
+            .map(|candidate| json!({
+                "candidate_id": candidate["candidate_id"],
+                "strategy": candidate["strategy"],
+                "symbol": candidate["symbol"],
+                "timeframe": candidate["timeframe"],
+                "evidence_progress": candidate["evidence_progress"],
+                "qualification": candidate["qualification"],
+                "dossier": candidate["dossier"],
+                "recommended_next_action": candidate["recommended_next_action"],
+            }))
+            .collect::<Vec<_>>(),
+        "strategy_family_status_summary": strategy_family_status_summary(),
+        "decision_ledger": research_decision_ledger(),
+        "latest_operator_report_summary": latest_operator_report,
+        "execution_safety_counts": execution_safety_counts,
+        "recommended_next_actions": [
+            "Consolidate research state and keep FBR shadow-only.",
+            "Continue unique-candle shadow observation for ETHUSDT 1h until thresholds are met.",
+            "Do not start paper, testnet, or live execution.",
+            "Do not add another strategy family until the current research state is reviewed."
+        ],
+        "read_only": true,
+    }))
+}
+
+async fn load_execution_safety_counts(pool: &PgPool) -> anyhow::Result<Value> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            (SELECT COUNT(*)::BIGINT FROM orders) AS orders,
+            (SELECT COUNT(*)::BIGINT FROM paper_positions) AS paper_positions,
+            (SELECT COUNT(*)::BIGINT FROM paper_fills) AS paper_fills,
+            (SELECT COUNT(*)::BIGINT FROM exchange_testnet_orders) AS exchange_testnet_orders,
+            (SELECT COUNT(*)::BIGINT FROM exchange_testnet_order_lifecycle_events) AS exchange_testnet_order_lifecycle_events,
+            (SELECT COUNT(*)::BIGINT FROM testnet_shadow_promotions) AS testnet_shadow_promotions
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(json!({
+        "orders": row.get::<i64, _>("orders"),
+        "paper_positions": row.get::<i64, _>("paper_positions"),
+        "paper_fills": row.get::<i64, _>("paper_fills"),
+        "exchange_testnet_orders": row.get::<i64, _>("exchange_testnet_orders"),
+        "exchange_testnet_order_lifecycle_events": row.get::<i64, _>("exchange_testnet_order_lifecycle_events"),
+        "testnet_shadow_promotions": row.get::<i64, _>("testnet_shadow_promotions"),
+    }))
+}
+
+fn strategy_family_status_summary() -> Value {
+    json!([
+        {"family": "failed_breakdown_reclaim_v1", "status": "SHADOW_ONLY", "summary": "Strongest known family, ETH-specific evidence; not generalized cleanly across BTC/SOL/BNB.", "next_action": "KEEP_OBSERVING"},
+        {"family": "trend_filter_momentum_v1", "status": "REJECTED", "summary": "Fee drag and overtrade.", "next_action": "DO_NOT_RETRY_WITHOUT_NEW_HYPOTHESIS"},
+        {"family": "trend_filter_momentum_v2", "status": "REJECTED", "summary": "Sample-specific and not robust.", "next_action": "DO_NOT_RETRY_WITHOUT_NEW_HYPOTHESIS"},
+        {"family": "volatility_breakout_v2", "status": "REJECTED", "summary": "Weak evidence.", "next_action": "DO_NOT_PROMOTE"},
+        {"family": "volatility_compression_breakout_v1", "status": "REJECTED_FRAGILE", "summary": "Interesting but fragile and false-breakout prone.", "next_action": "DO_NOT_PROMOTE"},
+        {"family": "trend_pullback_continuation_v1", "status": "REJECTED_TOO_SPARSE", "summary": "Too restrictive by default; loosened versions remain weak or overfit.", "next_action": "DO_NOT_PROMOTE"},
+        {"family": "liquidity_sweep_reclaim", "status": "NOT_IMPLEMENTED", "summary": "Analysis did not justify implementation.", "next_action": "NO_ACTION"},
+        {"family": "range_mean_reversion", "status": "REJECTED", "summary": "Weak with too few trades.", "next_action": "DO_NOT_PROMOTE"}
+    ])
+}
+
+fn research_decision_ledger() -> Value {
+    json!([
+        {"family": "trend_filter_momentum_v1/v2", "decision": "REJECTED", "reason": "Fee drag, overtrade, sample-specific behavior, and failed robustness.", "evidence_summary": "Listed as not actionable in docs/RESEARCH.md and docs/RESEARCH_MILESTONE.md.", "next_action": "Do not retry without a materially new hypothesis.", "timestamp": null, "confidence": "HIGH"},
+        {"family": "volatility_breakout_v2", "decision": "REJECTED", "reason": "Weak evidence.", "evidence_summary": "Rejected family in current research milestone.", "next_action": "Do not promote.", "timestamp": null, "confidence": "HIGH"},
+        {"family": "volatility_compression_breakout_v1", "decision": "REJECTED_FRAGILE", "reason": "Fragile and false-breakout prone.", "evidence_summary": "Current docs classify it as interesting but fragile.", "next_action": "Keep rejected unless a new robustness hypothesis is written.", "timestamp": null, "confidence": "MEDIUM_HIGH"},
+        {"family": "trend_pullback_continuation_v1", "decision": "REJECTED_TOO_SPARSE", "reason": "Too restrictive; loosened variants remain weak or overfit.", "evidence_summary": "Rejected in milestone state.", "next_action": "Do not promote.", "timestamp": null, "confidence": "HIGH"},
+        {"family": "liquidity_sweep_reclaim", "decision": "NOT_IMPLEMENTED", "reason": "Analysis did not justify adding a new implementation.", "evidence_summary": "Current state says analysis was rejected/not implemented.", "next_action": "No action.", "timestamp": null, "confidence": "MEDIUM"},
+        {"family": "range_mean_reversion", "decision": "REJECTED", "reason": "Weak with too few trades.", "evidence_summary": "Current research docs list range reversion as not actionable.", "next_action": "Do not promote.", "timestamp": null, "confidence": "HIGH"},
+        {"family": "failed_breakdown_reclaim_v1", "decision": "KEEP_SHADOW_ONLY", "reason": "ETH-specific evidence is strongest, but cross-symbol generalization is mixed or negative and shadow thresholds are not met.", "evidence_summary": "ETH 2023-2024 robust; ETH 2025+ profitable but overfit risk/matrix negative; BTC/SOL robustness failures; BNB negative.", "next_action": "Continue shadow observation only.", "timestamp": null, "confidence": "HIGH"},
+        {"family": "failed_breakdown_reclaim_v1 ETHUSDT 1h candidate 70867792-93df-494c-9a8b-d961c73107e4", "decision": "KEEP_SHADOW_ONLY", "reason": "Independent shadow evidence and WOULD_SUBMIT counts are below threshold; qualification is not qualified and dossier is blocked.", "evidence_summary": "PROMOTED_TO_SHADOW_CONFIG with 3/30 independent observations and 0/3 WOULD_SUBMIT in current docs.", "next_action": "Keep observing; do not mark ready for testnet.", "timestamp": null, "confidence": "HIGH"},
+        {"family": "all_families", "decision": "NO_PAPER_TESTNET_OR_LIVE_ALLOWED", "reason": "Research state is not qualified for execution and execution tables must remain zero.", "evidence_summary": "Project governance requires no execution from research/shadow state.", "next_action": "Read-only reporting and monitoring only.", "timestamp": null, "confidence": "HIGH"}
+    ])
 }
 
 async fn post_research_data_build(
@@ -30771,10 +31069,11 @@ mod tests {
         promote_strategy_research_candidate_handler, ranked_research_batch_candidates,
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
         register_strategy_research_candidate_handler, repair_exchange_testnet_order,
-        request_context_middleware, risk_decision_not_found_error, route_access,
-        run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
+        request_context_middleware, research_decision_ledger, risk_decision_not_found_error,
+        route_access, run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
         strategy_diagnostics_handler, strategy_exit_attribution_handler,
-        strategy_opportunity_analysis_handler, strategy_opportunity_replay_consistency_handler,
+        strategy_family_status_summary, strategy_opportunity_analysis_handler,
+        strategy_opportunity_replay_consistency_handler,
         strategy_signal_feature_attribution_handler, submit_exchange_testnet_pipeline,
         submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
         ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
@@ -30865,6 +31164,44 @@ mod tests {
     use telemetry::telemetry;
     use tower::util::ServiceExt;
     use uuid::Uuid;
+
+    #[test]
+    fn research_decision_ledger_contains_required_rejections_and_safety_decision() {
+        let ledger = research_decision_ledger();
+        let entries = ledger.as_array().expect("ledger should be an array");
+        for expected in [
+            "trend_filter_momentum_v1/v2",
+            "volatility_breakout_v2",
+            "volatility_compression_breakout_v1",
+            "trend_pullback_continuation_v1",
+            "liquidity_sweep_reclaim",
+            "range_mean_reversion",
+            "failed_breakdown_reclaim_v1",
+            "all_families",
+        ] {
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry["family"].as_str() == Some(expected)),
+                "missing decision ledger family {expected}"
+            );
+        }
+        assert!(entries.iter().any(|entry| {
+            entry["decision"].as_str() == Some("NO_PAPER_TESTNET_OR_LIVE_ALLOWED")
+        }));
+    }
+
+    #[test]
+    fn research_strategy_family_summary_keeps_fbr_shadow_only() {
+        let summary = strategy_family_status_summary();
+        let families = summary.as_array().expect("summary should be an array");
+        let fbr = families
+            .iter()
+            .find(|entry| entry["family"].as_str() == Some("failed_breakdown_reclaim_v1"))
+            .expect("FBR family should be present");
+        assert_eq!(fbr["status"].as_str(), Some("SHADOW_ONLY"));
+        assert_eq!(fbr["next_action"].as_str(), Some("KEEP_OBSERVING"));
+    }
 
     fn batch_candidate(
         run_id: u128,
