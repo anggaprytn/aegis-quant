@@ -12,28 +12,28 @@ use aegis_core::{
     ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
     ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
     ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
-    ResearchCandidateDecisionRequest, ResearchCandidateLifecycleEvent,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewRequest, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
-    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
-    ResearchDataCoverageResult, ResearchDatasetBuildRequest, ResearchDatasetBuildResult,
-    ResearchExperimentPlan, ResearchExperimentPlanRunRequest, ResearchExperimentPlanRunResult,
-    ResearchHypothesis, ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
-    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
-    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
-    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
-    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult, ResearchRegimeLabel,
-    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionResult,
-    ResearchStaleRunRecoveryRequest, ResearchStaleRunRecoveryResult, RiskConfig,
-    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion,
-    ScheduledResearchBootstrapSafeRequest, ScheduledResearchBootstrapSafeResult,
+    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
+    ResearchCandidateLifecycleEvent, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewRequest,
+    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWatchlistEntry, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
+    ResearchDatasetBuildResult, ResearchExperimentPlan, ResearchExperimentPlanRunRequest,
+    ResearchExperimentPlanRunResult, ResearchHypothesis, ResearchHypothesisGenerationRequest,
+    ResearchHypothesisGenerationResult, ResearchHypothesisStatus,
+    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
+    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
+    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeLabel, ResearchRegimeStrategyLeaderboard,
+    ResearchRegimeWindow, ResearchShadowPnlAttributionResult, ResearchStaleRunRecoveryRequest,
+    ResearchStaleRunRecoveryResult, RiskConfig, RiskConfigAuditEntry, RiskConfigValidationResult,
+    RiskConfigVersion, ScheduledResearchBootstrapSafeRequest, ScheduledResearchBootstrapSafeResult,
     ScheduledResearchJob, ScheduledResearchJobControlRequest, ScheduledResearchJobRequest,
     ScheduledResearchJobRun, StrategyCandidateObservationResult, StrategyComparisonSummary,
     StrategyConfigAuditEntry, StrategyConfigUpdateRequest, StrategyConfigValidationResult,
@@ -1342,6 +1342,17 @@ impl ApiClient {
     ) -> Result<ResearchCandidateTestnetReviewDossierResponse, ApiClientError> {
         self.get(
             &format!("/research/candidates/{candidate_id}/testnet-review-dossier"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_research_candidate_accept_shadow_preview(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<ResearchCandidateAcceptForShadowPreviewResponse, ApiClientError> {
+        self.get(
+            &format!("/research/candidates/{candidate_id}/accept-shadow/preview"),
             &[],
         )
         .await
@@ -3268,6 +3279,14 @@ pub struct ResearchCandidateShadowPnlAttributionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateTestnetReviewDossierResponse {
     pub dossier: ResearchCandidateTestnetReviewDossier,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateAcceptForShadowPreviewResponse {
+    pub preview: ResearchCandidateAcceptForShadowPreviewResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

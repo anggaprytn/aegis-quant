@@ -78,6 +78,7 @@ import type {
   ResearchCandidateQualificationEvaluation,
   ResearchCandidateReview,
   ResearchCandidateReviewAction,
+  ResearchCandidateAcceptForShadowPreview,
   ResearchCandidateTestnetReviewDossier,
   ResearchCandidateShadowPromotionPreview,
   ResearchCandidateShadowPromotionResult,
@@ -1554,6 +1555,12 @@ function AuthenticatedDashboard({
     enabled: Boolean(selectedResearchCandidateId),
     refetchInterval: 15_000,
   });
+  const selectedResearchCandidateAcceptShadowPreviewQuery = useQuery({
+    queryKey: ["research-candidate-accept-shadow-preview", selectedResearchCandidateId],
+    queryFn: () => api.getResearchCandidateAcceptShadowPreview(selectedResearchCandidateId ?? ""),
+    enabled: Boolean(selectedResearchCandidateId),
+    refetchInterval: 15_000,
+  });
   const selectedResearchCandidateWalkForwardQuery = useQuery({
     queryKey: ["research-candidate-walk-forward", selectedResearchCandidateId],
     queryFn: () => api.getResearchCandidateWalkForward(selectedResearchCandidateId ?? ""),
@@ -2585,6 +2592,9 @@ function AuthenticatedDashboard({
         queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-accept-shadow-preview", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
         queryKey: ["research-candidate-walk-forward", selectedResearchCandidateId],
       });
       setResearchCandidateDecisionReason("");
@@ -2622,6 +2632,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-accept-shadow-preview", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({ queryKey: ["operator-reports"] });
       setResearchCandidateReviewReason("");
@@ -2662,6 +2675,9 @@ function AuthenticatedDashboard({
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-accept-shadow-preview", selectedResearchCandidateId],
+      });
     },
   });
   const evaluateResearchCandidateQualificationMutation = useMutation({
@@ -2680,6 +2696,9 @@ function AuthenticatedDashboard({
       });
       await queryClient.invalidateQueries({
         queryKey: ["research-candidate-testnet-review-dossier", selectedResearchCandidateId],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ["research-candidate-accept-shadow-preview", selectedResearchCandidateId],
       });
       await queryClient.invalidateQueries({ queryKey: ["research-candidate-watchlist"] });
     },
@@ -3242,6 +3261,8 @@ function AuthenticatedDashboard({
     selectedResearchCandidateQualificationHistoryQuery.data?.history ?? null;
   const researchCandidateTestnetReviewDossier: ResearchCandidateTestnetReviewDossier | null =
     selectedResearchCandidateTestnetReviewDossierQuery.data?.dossier ?? null;
+  const researchCandidateAcceptShadowPreview: ResearchCandidateAcceptForShadowPreview | null =
+    selectedResearchCandidateAcceptShadowPreviewQuery.data?.preview ?? null;
   const researchCandidateWalkForwardEvidence =
     selectedResearchCandidateWalkForwardQuery.data?.latest ??
     selectedResearchCandidateQuery.data?.walk_forward_evidence ??
@@ -8250,6 +8271,145 @@ function AuthenticatedDashboard({
                             : undefined
                         }
                       />
+                    </div>
+                    <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="font-semibold text-slate-100">
+                            Accept-for-Shadow Preview
+                          </div>
+                          <div className="mt-1 text-muted">
+                            Preview only. This does not accept or promote the candidate.
+                          </div>
+                        </div>
+                        <ActionButton
+                          label="Refresh Preview"
+                          onClick={() => selectedResearchCandidateAcceptShadowPreviewQuery.refetch()}
+                          busy={selectedResearchCandidateAcceptShadowPreviewQuery.isFetching}
+                          disabled={!selectedResearchCandidate}
+                        />
+                      </div>
+                      <InlineStatus
+                        error={getErrorMessage(selectedResearchCandidateAcceptShadowPreviewQuery.error)}
+                        success={researchCandidateAcceptShadowPreview?.status}
+                      />
+                      {researchCandidateAcceptShadowPreview ? (
+                        <>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                            <HeaderStat
+                              tone="neutral"
+                              label="Status"
+                              value={researchCandidateAcceptShadowPreview.status}
+                            />
+                            <HeaderStat
+                              tone="neutral"
+                              label="Recommended Action"
+                              value={researchCandidateAcceptShadowPreview.recommended_action}
+                            />
+                            <HeaderStat
+                              tone="neutral"
+                              label="Runner"
+                              value={
+                                researchCandidateAcceptShadowPreview.runner_alignment
+                                  .strategy_config_matches_runner
+                                  ? "ALIGNED"
+                                  : "NOT ALIGNED"
+                              }
+                            />
+                          </div>
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <div className="rounded-xl border border-border/70 bg-surface/30 p-3">
+                              <div className="text-[11px] uppercase tracking-[0.2em] text-muted">
+                                Blockers
+                              </div>
+                              {researchCandidateAcceptShadowPreview.blockers.length > 0 ? (
+                                <ul className="mt-2 space-y-1 text-amber-100/90">
+                                  {researchCandidateAcceptShadowPreview.blockers.map((blocker) => (
+                                    <li key={blocker}>{blocker}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className="mt-2 text-slate-300">None</div>
+                              )}
+                            </div>
+                            <div className="rounded-xl border border-border/70 bg-surface/30 p-3">
+                              <div className="text-[11px] uppercase tracking-[0.2em] text-muted">
+                                Warnings
+                              </div>
+                              {researchCandidateAcceptShadowPreview.warnings.length > 0 ? (
+                                <ul className="mt-2 space-y-1 text-amber-100/90">
+                                  {researchCandidateAcceptShadowPreview.warnings.map((warning) => (
+                                    <li key={warning}>{warning}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className="mt-2 text-slate-300">None</div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="mt-3 rounded-xl border border-border/70 bg-surface/30 p-3">
+                            <div className="text-[11px] uppercase tracking-[0.2em] text-muted">
+                              Required Runner Config Changes
+                            </div>
+                            {researchCandidateAcceptShadowPreview.required_runner_config_change
+                              .length > 0 ? (
+                              <ul className="mt-2 space-y-1 text-slate-200">
+                                {researchCandidateAcceptShadowPreview.required_runner_config_change.map(
+                                  (change) => (
+                                    <li key={change}>{change}</li>
+                                  ),
+                                )}
+                              </ul>
+                            ) : (
+                              <div className="mt-2 text-slate-300">None</div>
+                            )}
+                            {researchCandidateAcceptShadowPreview.runner_alignment
+                              .mismatch_reasons.length > 0 ? (
+                              <div className="mt-3 space-y-1 text-amber-100/90">
+                                {researchCandidateAcceptShadowPreview.runner_alignment.mismatch_reasons.map(
+                                  (reason) => (
+                                    <div key={reason}>{reason}</div>
+                                  ),
+                                )}
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <HeaderStat
+                              tone="neutral"
+                              label="Data Quality"
+                              value={
+                                researchCandidateAcceptShadowPreview.evidence_summary
+                                  .data_quality_status ?? "UNKNOWN"
+                              }
+                            />
+                            <HeaderStat
+                              tone="neutral"
+                              label="Walk Forward"
+                              value={
+                                researchCandidateAcceptShadowPreview.evidence_summary
+                                  .walk_forward_status ?? "UNKNOWN"
+                              }
+                            />
+                            <HeaderStat
+                              tone="neutral"
+                              label="Robustness Matrix"
+                              value={
+                                researchCandidateAcceptShadowPreview.evidence_summary
+                                  .robustness_matrix_status ?? "UNKNOWN"
+                              }
+                            />
+                            <HeaderStat
+                              tone="neutral"
+                              label="Shadow Runs"
+                              value={String(
+                                researchCandidateAcceptShadowPreview.evidence_summary
+                                  .shadow_run_count,
+                              )}
+                            />
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                     <div className="mt-4 rounded-xl border border-border/70 bg-black/10 p-3 text-xs text-slate-200">
                       <div className="flex flex-wrap items-center justify-between gap-3">

@@ -2892,6 +2892,70 @@ export type ResearchCandidateTestnetReviewDossierResponse = {
   timestamp: string;
 };
 
+export type ResearchCandidateAcceptForShadowPreviewStatus =
+  | "READY_FOR_HUMAN_ACCEPTANCE"
+  | "BLOCKED"
+  | "NEEDS_MORE_DATA"
+  | "WARNING_REVIEW_REQUIRED";
+
+export type ResearchCandidateAcceptForShadowCheck = {
+  code: string;
+  name: string;
+  passed: boolean;
+  blocking: boolean;
+  summary: string;
+  details: Record<string, unknown> | null;
+};
+
+export type ResearchCandidateAcceptForShadowEvidenceSummary = {
+  candidate_score: string | null;
+  candidate_pnl_pct: string | null;
+  candidate_max_drawdown_pct: string | null;
+  candidate_trade_count: number | null;
+  candidate_win_rate: string | null;
+  candidate_fee_drag: string | null;
+  source_experiment_id: string | null;
+  source_experiment_run_id: string | null;
+  source_walk_forward_run_id: string | null;
+  source_robustness_matrix_run_id: string | null;
+  config_fingerprint: string | null;
+  data_quality_status: MarketDataQualityStatus | null;
+  evaluated_start_time: string | null;
+  evaluated_end_time: string | null;
+  walk_forward_status: StrategyWalkForwardRobustnessStatus | null;
+  walk_forward_total_windows: number | null;
+  walk_forward_profitable_windows: number | null;
+  walk_forward_losing_windows: number | null;
+  walk_forward_worst_pnl_pct: string | null;
+  robustness_matrix_status: StrategyRobustnessMatrixStatus | null;
+  shadow_run_count: number;
+};
+
+export type ResearchCandidateAcceptForShadowPreview = {
+  candidate_id: string;
+  current_status: ResearchCandidateStatus;
+  strategy_id: string;
+  symbol: string;
+  timeframe: string;
+  evidence_summary: ResearchCandidateAcceptForShadowEvidenceSummary;
+  checks: ResearchCandidateAcceptForShadowCheck[];
+  blockers: string[];
+  warnings: string[];
+  recommended_action: string;
+  runner_alignment: StrategyCandidateRunnerAlignment;
+  required_runner_config_change: string[];
+  status: ResearchCandidateAcceptForShadowPreviewStatus;
+  no_mutation: boolean;
+  generated_at: string;
+};
+
+export type ResearchCandidateAcceptForShadowPreviewResponse = {
+  preview: ResearchCandidateAcceptForShadowPreview;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
 export type ResearchCandidateWatchlistResponse = {
   watchlist: ResearchCandidateWatchlistEntry[];
   request_id: string;

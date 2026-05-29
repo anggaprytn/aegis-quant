@@ -3,15 +3,16 @@ use aegis_core::{
     MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
     ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
     ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
-    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
-    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry, ResearchExperimentPlan,
-    ResearchExperimentPlanRunResult, ResearchHypothesis, ResearchHypothesisGenerationResult,
+    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
+    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWatchlistEntry, ResearchExperimentPlan, ResearchExperimentPlanRunResult,
+    ResearchHypothesis, ResearchHypothesisGenerationResult,
     ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
@@ -4010,6 +4011,100 @@ pub fn print_research_candidate_shadow_promotion_preview(
             preview.reasons.join(" | ")
         }
     );
+}
+
+pub fn print_research_candidate_accept_shadow_preview(
+    preview: &ResearchCandidateAcceptForShadowPreviewResult,
+) {
+    println!("Candidate ID: {}", preview.candidate_id);
+    println!(
+        "Target: {} {} {}",
+        preview.strategy_id, preview.symbol, preview.timeframe
+    );
+    println!("Current status: {}", preview.current_status.as_str());
+    println!("Preview status: {}", preview.status.as_str());
+    println!("Recommended action: {}", preview.recommended_action);
+    println!("No mutation: {}", preview.no_mutation);
+    println!(
+        "Evidence: pnl_pct={} score={} trades={} data_quality={} walk_forward={} robustness_matrix={}",
+        preview
+            .evidence_summary
+            .candidate_pnl_pct
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "N/A".to_string()),
+        preview
+            .evidence_summary
+            .candidate_score
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "N/A".to_string()),
+        preview
+            .evidence_summary
+            .candidate_trade_count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "N/A".to_string()),
+        preview
+            .evidence_summary
+            .data_quality_status
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "N/A".to_string()),
+        preview
+            .evidence_summary
+            .walk_forward_status
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "N/A".to_string()),
+        preview
+            .evidence_summary
+            .robustness_matrix_status
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!(
+        "Runner alignment: {}",
+        if preview.runner_alignment.strategy_config_matches_runner {
+            "aligned"
+        } else {
+            "not aligned"
+        }
+    );
+    if !preview.runner_alignment.mismatch_reasons.is_empty() {
+        println!(
+            "Runner mismatch: {}",
+            preview.runner_alignment.mismatch_reasons.join(" | ")
+        );
+    }
+    println!(
+        "Required runner config changes: {}",
+        if preview.required_runner_config_change.is_empty() {
+            "none".to_string()
+        } else {
+            preview.required_runner_config_change.join(" | ")
+        }
+    );
+    println!(
+        "Blockers: {}",
+        if preview.blockers.is_empty() {
+            "none".to_string()
+        } else {
+            preview.blockers.join(" | ")
+        }
+    );
+    println!(
+        "Warnings: {}",
+        if preview.warnings.is_empty() {
+            "none".to_string()
+        } else {
+            preview.warnings.join(" | ")
+        }
+    );
+    if !preview.checks.is_empty() {
+        println!("Checks:");
+        for check in &preview.checks {
+            println!(
+                "  {} passed={} blocking={} summary={}",
+                check.code, check.passed, check.blocking, check.summary
+            );
+        }
+    }
 }
 
 pub fn print_research_candidate_shadow_promotion_result(

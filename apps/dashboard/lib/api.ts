@@ -113,6 +113,7 @@ import type {
   ResearchCandidateReviewsResponse,
   ResearchCandidateShadowPerformanceResponse,
   ResearchShadowPnlAttributionResponse,
+  ResearchCandidateAcceptForShadowPreviewResponse,
   ResearchCandidateTestnetReviewDossierResponse,
   CreateResearchCandidateFromExperimentRunRequest,
   CreateResearchCandidateRequest,
@@ -693,6 +694,10 @@ export const api = {
   getResearchCandidateTestnetReviewDossier: (id: string) =>
     request<ResearchCandidateTestnetReviewDossierResponse>(
       `/research/candidates/${id}/testnet-review-dossier`,
+    ),
+  getResearchCandidateAcceptShadowPreview: (id: string) =>
+    request<ResearchCandidateAcceptForShadowPreviewResponse>(
+      `/research/candidates/${id}/accept-shadow/preview`,
     ),
   getResearchCandidateWalkForward: (id: string) =>
     request<ResearchCandidateWalkForwardEvidenceResponse>(

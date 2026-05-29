@@ -1105,6 +1105,16 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_testnet_review_dossier(&response.dossier);
                     }
                 }
+                ResearchCandidateCommands::AcceptShadowPreview { candidate_id } => {
+                    let response = client
+                        .get_research_candidate_accept_shadow_preview(candidate_id)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_accept_shadow_preview(&response.preview);
+                    }
+                }
                 ResearchCandidateCommands::WalkForward { candidate_id } => {
                     let response = client
                         .get_research_candidate_walk_forward(candidate_id)

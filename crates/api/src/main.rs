@@ -48,21 +48,23 @@ use aegis_core::{
     ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
     ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
     ResearchCampaignResult, ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate,
-    ResearchCandidateCreationGateResult, ResearchCandidateCreationInput,
-    ResearchCandidateCreationPolicy, ResearchCandidateDecision, ResearchCandidateDecisionRejection,
-    ResearchCandidateDecisionRequest, ResearchCandidateFailureInput,
-    ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidatePromotionReadiness, ResearchCandidateProposal,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationRequest,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
-    ResearchCandidateReviewContext, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
-    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateAcceptForShadowEvidenceSummary, ResearchCandidateAcceptForShadowPreviewInput,
+    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateCreationGateResult,
+    ResearchCandidateCreationInput, ResearchCandidateCreationPolicy, ResearchCandidateDecision,
+    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
+    ResearchCandidateFailureInput, ResearchCandidateLifecycleEvent,
+    ResearchCandidateObservationFreshnessStatus, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidatePromotionReadiness,
+    ResearchCandidateProposal, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewContext,
+    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
+    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -2165,6 +2167,14 @@ struct ResearchCandidateTestnetReviewDossierResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchCandidateAcceptForShadowPreviewResponse {
+    preview: ResearchCandidateAcceptForShadowPreviewResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct BacktestRunsResponse {
     runs: Vec<aegis_core::BacktestResult>,
     request_id: String,
@@ -3408,6 +3418,10 @@ async fn main() {
             get(get_research_candidate_testnet_review_dossier_handler),
         )
         .route(
+            "/research/candidates/:id/accept-shadow/preview",
+            get(get_research_candidate_accept_shadow_preview_handler),
+        )
+        .route(
             "/research/candidates/:id/walk-forward",
             get(get_research_candidate_walk_forward_handler),
         )
@@ -4204,6 +4218,42 @@ fn candidate_runner_alignment_detail(
         runner_strategies: config.strategies.clone(),
         mismatch_reasons,
     }
+}
+
+fn required_runner_config_changes_for_candidate(
+    candidate: &ResearchCandidate,
+    config: &TestnetShadowRunnerConfig,
+) -> Vec<String> {
+    let mut changes = Vec::new();
+    if !config
+        .timeframe
+        .trim()
+        .eq_ignore_ascii_case(&candidate.timeframe)
+    {
+        changes.push(format!(
+            "set timeframe from {} to {}",
+            config.timeframe, candidate.timeframe
+        ));
+    }
+    if !config
+        .symbols
+        .iter()
+        .any(|value| value.trim().eq_ignore_ascii_case(&candidate.symbol))
+    {
+        changes.push(format!("add symbol {}", candidate.symbol));
+    }
+    if !config
+        .strategies
+        .iter()
+        .any(|value| value.trim().eq_ignore_ascii_case(&candidate.strategy_id))
+    {
+        changes.push(format!("add strategy {}", candidate.strategy_id));
+    }
+    if !config.enabled {
+        changes
+            .push("enable shadow runner when human-approved shadow observation begins".to_string());
+    }
+    changes
 }
 
 fn bounded_risk_decisions_limit(limit: Option<i64>) -> i64 {
@@ -22402,6 +22452,270 @@ async fn build_research_candidate_testnet_review_dossier(
     )
 }
 
+fn source_batch_id_from_candidate_events(
+    events: &[ResearchCandidateLifecycleEvent],
+) -> Option<Uuid> {
+    events.iter().find_map(|event| {
+        event
+            .payload
+            .get("batch_id")
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+    })
+}
+
+fn gate_decision_value_for_candidate(
+    batch_summary: &Value,
+    candidate: &ResearchCandidate,
+) -> Option<Value> {
+    batch_summary
+        .get("gate_decisions")
+        .and_then(Value::as_array)
+        .and_then(|decisions| {
+            decisions
+                .iter()
+                .find(|decision| {
+                    decision
+                        .get("experiment_run_id")
+                        .and_then(Value::as_str)
+                        .and_then(|value| Uuid::parse_str(value).ok())
+                        == candidate.experiment_run_id
+                })
+                .or_else(|| decisions.first())
+        })
+        .cloned()
+}
+
+async fn has_post_2025_holdout_candles(
+    state: &AppState,
+    candidate: &ResearchCandidate,
+    evaluated_end_time: Option<DateTime<Utc>>,
+) -> anyhow::Result<bool> {
+    let holdout_start = evaluated_end_time
+        .unwrap_or_else(|| {
+            Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid holdout start")
+        })
+        .max(
+            Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+                .single()
+                .expect("valid holdout start"),
+        );
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM candles
+        WHERE exchange = $1
+          AND symbol = $2
+          AND interval = $3
+          AND open_time >= $4
+          AND is_closed = TRUE
+        "#,
+    )
+    .bind(MarketDataSource::Binance.as_str())
+    .bind(candidate.symbol.trim().to_ascii_uppercase())
+    .bind(candidate.timeframe.trim())
+    .bind(holdout_start)
+    .fetch_one(&state.db_pool)
+    .await?;
+    Ok(count > 0)
+}
+
+async fn same_strategy_btc_candidate_exists(
+    state: &AppState,
+    candidate: &ResearchCandidate,
+) -> anyhow::Result<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)::BIGINT
+        FROM research_candidates
+        WHERE strategy_id = $1
+          AND symbol = 'BTCUSDT'
+          AND status IN ('DISCOVERED', 'OBSERVING', 'ACCEPTED_FOR_SHADOW', 'PROMOTED_TO_SHADOW_CONFIG')
+        "#,
+    )
+    .bind(&candidate.strategy_id)
+    .fetch_one(&state.db_pool)
+    .await?;
+    Ok(count > 0)
+}
+
+async fn build_research_candidate_accept_for_shadow_preview(
+    state: &AppState,
+    candidate: &ResearchCandidate,
+    now: DateTime<Utc>,
+) -> anyhow::Result<ResearchCandidateAcceptForShadowPreviewResult> {
+    let event_records = list_research_candidate_events(&state.db_pool, candidate.id).await?;
+    let events = event_records
+        .iter()
+        .map(research_candidate_event_from_record)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let source_batch = match source_batch_id_from_candidate_events(&events) {
+        Some(batch_id) => get_research_batch(&state.db_pool, batch_id).await?,
+        None => None,
+    };
+    let gate_decision = source_batch
+        .as_ref()
+        .and_then(|batch| gate_decision_value_for_candidate(&batch.summary, candidate));
+    let source_robustness_matrix_run_id = gate_decision
+        .as_ref()
+        .and_then(|decision| decision.get("source_robustness_matrix_run_id"))
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let config_fingerprint = gate_decision
+        .as_ref()
+        .and_then(|decision| decision.get("config_fingerprint"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+
+    let source_experiment_run = match candidate.experiment_run_id {
+        Some(run_id) => get_strategy_experiment_run(&state.db_pool, run_id).await?,
+        None => None,
+    };
+    let source_experiment = match source_experiment_run.as_ref() {
+        Some(run) => get_strategy_experiment(&state.db_pool, run.experiment_id).await?,
+        None => match candidate.experiment_id {
+            Some(experiment_id) => get_strategy_experiment(&state.db_pool, experiment_id).await?,
+            None => None,
+        },
+    };
+    let source_experiment_exists = source_experiment.is_some() && source_experiment_run.is_some();
+
+    let walk_forward_evidence =
+        get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id).await?;
+    let source_walk_forward_exists = walk_forward_evidence.is_some();
+
+    let robustness_matrix_record = match source_robustness_matrix_run_id {
+        Some(run_id) => get_strategy_robustness_matrix_run(&state.db_pool, run_id).await?,
+        None => None,
+    };
+    let robustness_matrix_status = robustness_matrix_record
+        .as_ref()
+        .and_then(|record| record.status.parse().ok());
+    let source_robustness_matrix_exists = robustness_matrix_record.is_some();
+
+    let data_quality = match source_experiment.as_ref() {
+        Some(experiment) => summarize_candle_continuity_report(
+            &state.db_pool,
+            &MarketDataQualityRequest {
+                exchange: MarketDataSource::Binance,
+                symbol: candidate.symbol.clone(),
+                interval: candidate.timeframe.clone(),
+                start_time: experiment.start_time,
+                end_time: experiment.end_time,
+                expected_interval_seconds: None,
+                max_allowed_gap_count: Some(0),
+                max_allowed_gap_pct: Some(Decimal::ZERO),
+            },
+        )
+        .await
+        .ok(),
+        None => None,
+    };
+
+    let latest_observation =
+        get_latest_strategy_candidate_observation(&state.db_pool, candidate.id)
+            .await?
+            .map(|record| strategy_candidate_observation_result_from_record(&record))
+            .transpose()?;
+    let fresh_observation = latest_observation
+        .as_ref()
+        .map(|observation| {
+            observation_freshness_status(observation, now)
+                == ResearchCandidateObservationFreshnessStatus::Fresh
+        })
+        .unwrap_or(false);
+
+    let shadow_snapshot = load_testnet_shadow_runner_snapshot(&shadow_runtime_state(state)).await?;
+    let runner_alignment = candidate_runner_alignment_detail(
+        candidate,
+        &shadow_snapshot.config,
+        shadow_snapshot.state.status.as_str(),
+    );
+    let required_runner_config_change =
+        required_runner_config_changes_for_candidate(candidate, &shadow_snapshot.config);
+
+    let shadow_runs = list_research_candidate_shadow_runs(
+        &state.db_pool,
+        candidate.id,
+        &ResearchCandidateShadowRunsQuery {
+            start_time: Utc
+                .timestamp_opt(0, 0)
+                .single()
+                .expect("unix epoch is valid"),
+            end_time: now,
+            limit: 500,
+        },
+    )
+    .await?;
+    let evaluated_start_time = source_experiment
+        .as_ref()
+        .map(|experiment| experiment.start_time);
+    let evaluated_end_time = source_experiment
+        .as_ref()
+        .map(|experiment| experiment.end_time);
+    let holdout_2025_available =
+        has_post_2025_holdout_candles(state, candidate, evaluated_end_time).await?;
+    let btc_generalization_failed = !candidate.symbol.eq_ignore_ascii_case("BTCUSDT")
+        && !same_strategy_btc_candidate_exists(state, candidate).await?;
+
+    let evidence_summary = ResearchCandidateAcceptForShadowEvidenceSummary {
+        candidate_score: candidate.score,
+        candidate_pnl_pct: candidate.pnl_pct,
+        candidate_max_drawdown_pct: candidate.max_drawdown_pct,
+        candidate_trade_count: candidate.trade_count,
+        candidate_win_rate: candidate.win_rate,
+        candidate_fee_drag: candidate.fee_drag,
+        source_experiment_id: source_experiment.as_ref().map(|experiment| experiment.id),
+        source_experiment_run_id: candidate.experiment_run_id,
+        source_walk_forward_run_id: walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.walk_forward_run_id),
+        source_robustness_matrix_run_id,
+        config_fingerprint,
+        data_quality_status: data_quality.as_ref().map(|quality| quality.status),
+        evaluated_start_time,
+        evaluated_end_time,
+        walk_forward_status: walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.robustness_status),
+        walk_forward_total_windows: walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.total_windows),
+        walk_forward_profitable_windows: walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.profitable_windows),
+        walk_forward_losing_windows: walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.losing_windows),
+        walk_forward_worst_pnl_pct: walk_forward_evidence
+            .as_ref()
+            .map(|evidence| evidence.worst_pnl_pct),
+        robustness_matrix_status,
+        shadow_run_count: shadow_runs.len() as i64,
+    };
+
+    Ok(
+        aegis_core::evaluate_research_candidate_accept_for_shadow_preview(
+            ResearchCandidateAcceptForShadowPreviewInput {
+                candidate: candidate.clone(),
+                evidence_summary,
+                source_experiment_exists,
+                source_walk_forward_exists,
+                source_robustness_matrix_exists,
+                fresh_observation,
+                require_fresh_observation: true,
+                runner_alignment,
+                required_runner_config_change,
+                holdout_2025_available,
+                btc_generalization_failed,
+                generated_at: now,
+            },
+        ),
+    )
+}
+
 fn watchlist_entry_from_row(
     row: ResearchCandidateWatchlistRow,
     previous: Option<&ResearchCandidateQualificationEvaluation>,
@@ -25515,6 +25829,107 @@ async fn get_research_candidate_testnet_review_dossier_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_build_research_candidate_testnet_review_dossier",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_research_candidate_accept_shadow_preview_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message:
+                        "Only VIEWER, OPERATOR, or OWNER can preview accept-for-shadow readiness."
+                            .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let candidate = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match build_research_candidate_accept_for_shadow_preview(&state, &candidate, now).await {
+        Ok(preview) => (
+            StatusCode::OK,
+            Json(ResearchCandidateAcceptForShadowPreviewResponse {
+                preview,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_accept_shadow_preview",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
@@ -29112,6 +29527,7 @@ mod tests {
         generate_operator_report_handler, generate_testnet_client_order_id,
         get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
         get_execution_readiness_snapshot_handler,
+        get_research_candidate_accept_shadow_preview_handler,
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
         get_research_candidate_shadow_performance_handler,
@@ -30213,6 +30629,10 @@ mod tests {
             .route(
                 "/research/candidates/:id/testnet-review-dossier",
                 get(get_research_candidate_testnet_review_dossier_handler),
+            )
+            .route(
+                "/research/candidates/:id/accept-shadow/preview",
+                get(get_research_candidate_accept_shadow_preview_handler),
             )
             .route(
                 "/research/candidates/:id/shadow-runs",
@@ -36882,6 +37302,98 @@ mod tests {
             .get::<i64, _>("count"),
             stale_events_before
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_accept_shadow_preview_is_read_only() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        let viewer_email = "research-accept-shadow-preview@example.com";
+        insert_test_user(
+            &test_db.pool,
+            viewer_email,
+            "replace-with-a-12-char-min-password",
+            UserRole::Viewer,
+        )
+        .await;
+        let candidate = sample_lifecycle_research_candidate(
+            &research_strategy_config(CandleInterval::FifteenMinutes, "ETHUSDT"),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::Discovered,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &candidate,
+            None,
+            ResearchCandidateDecision::Reopen,
+            Some("fixture"),
+            Some("discovered fixture"),
+            &json!({"fixture": true}),
+        )
+        .await
+        .expect("candidate should persist");
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::OneMinute,
+            ),
+        )
+        .await
+        .expect("runner config");
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let before_events = count_research_candidate_events(&test_db.pool).await;
+        let before_status = get_research_candidate(&test_db.pool, candidate.id)
+            .await
+            .expect("candidate query")
+            .expect("candidate should exist")
+            .status;
+        let (viewer_login, _) =
+            login_cli(&app, viewer_email, "replace-with-a-12-char-min-password").await;
+
+        let response = app
+            .oneshot(bearer_request(
+                "GET",
+                &format!(
+                    "/research/candidates/{}/accept-shadow/preview",
+                    candidate.id
+                ),
+                &viewer_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("preview response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["preview"]["candidate_id"], candidate.id.to_string());
+        assert_eq!(payload["preview"]["current_status"], "DISCOVERED");
+        assert_eq!(payload["preview"]["no_mutation"], true);
+        assert_eq!(payload["preview"]["status"], "BLOCKED");
+        assert!(payload["preview"]["checks"]
+            .as_array()
+            .expect("checks array")
+            .iter()
+            .any(|check| check["code"] == "source_experiment_exists"));
+        assert!(payload["preview"]["runner_alignment"]["mismatch_reasons"]
+            .as_array()
+            .expect("mismatch reasons")
+            .iter()
+            .any(|reason| reason.as_str().unwrap_or_default().contains("ETHUSDT")));
+
+        let after_status = get_research_candidate(&test_db.pool, candidate.id)
+            .await
+            .expect("candidate query")
+            .expect("candidate should exist")
+            .status;
+        assert_eq!(after_status, before_status);
+        assert_eq!(
+            count_research_candidate_events(&test_db.pool).await,
+            before_events
+        );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
     }
 
     #[tokio::test]

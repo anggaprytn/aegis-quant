@@ -1378,6 +1378,7 @@ pub enum ResearchCandidateCommands {
     QualificationEvaluate(ResearchCandidateQualificationArgs),
     QualificationHistory(ResearchCandidateQualificationHistoryArgs),
     TestnetReviewDossier { candidate_id: Uuid },
+    AcceptShadowPreview { candidate_id: Uuid },
     WalkForward { candidate_id: Uuid },
     LinkWalkForward(ResearchCandidateLinkWalkForwardArgs),
     ShadowPerformance(ResearchCandidateShadowWindowArgs),

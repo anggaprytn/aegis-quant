@@ -7772,6 +7772,106 @@ pub struct ResearchCandidateWalkForwardEvidence {
     pub linked_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateAcceptForShadowPreviewRequest {
+    pub candidate_id: Uuid,
+    #[serde(default = "default_true")]
+    pub require_fresh_observation: bool,
+    #[serde(default)]
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateAcceptForShadowPreviewStatus {
+    ReadyForHumanAcceptance,
+    Blocked,
+    NeedsMoreData,
+    WarningReviewRequired,
+}
+
+impl ResearchCandidateAcceptForShadowPreviewStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadyForHumanAcceptance => "READY_FOR_HUMAN_ACCEPTANCE",
+            Self::Blocked => "BLOCKED",
+            Self::NeedsMoreData => "NEEDS_MORE_DATA",
+            Self::WarningReviewRequired => "WARNING_REVIEW_REQUIRED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateAcceptForShadowCheck {
+    pub code: String,
+    pub name: String,
+    pub passed: bool,
+    pub blocking: bool,
+    pub summary: String,
+    #[serde(default)]
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateAcceptForShadowEvidenceSummary {
+    pub candidate_score: Option<Decimal>,
+    pub candidate_pnl_pct: Option<Decimal>,
+    pub candidate_max_drawdown_pct: Option<Decimal>,
+    pub candidate_trade_count: Option<i32>,
+    pub candidate_win_rate: Option<Decimal>,
+    pub candidate_fee_drag: Option<Decimal>,
+    pub source_experiment_id: Option<Uuid>,
+    pub source_experiment_run_id: Option<Uuid>,
+    pub source_walk_forward_run_id: Option<Uuid>,
+    pub source_robustness_matrix_run_id: Option<Uuid>,
+    pub config_fingerprint: Option<String>,
+    pub data_quality_status: Option<MarketDataQualityStatus>,
+    pub evaluated_start_time: Option<DateTime<Utc>>,
+    pub evaluated_end_time: Option<DateTime<Utc>>,
+    pub walk_forward_status: Option<StrategyWalkForwardRobustnessStatus>,
+    pub walk_forward_total_windows: Option<i32>,
+    pub walk_forward_profitable_windows: Option<i32>,
+    pub walk_forward_losing_windows: Option<i32>,
+    pub walk_forward_worst_pnl_pct: Option<Decimal>,
+    pub robustness_matrix_status: Option<StrategyRobustnessMatrixStatus>,
+    pub shadow_run_count: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResearchCandidateAcceptForShadowPreviewInput {
+    pub candidate: ResearchCandidate,
+    pub evidence_summary: ResearchCandidateAcceptForShadowEvidenceSummary,
+    pub source_experiment_exists: bool,
+    pub source_walk_forward_exists: bool,
+    pub source_robustness_matrix_exists: bool,
+    pub fresh_observation: bool,
+    pub require_fresh_observation: bool,
+    pub runner_alignment: StrategyCandidateRunnerAlignment,
+    pub required_runner_config_change: Vec<String>,
+    pub holdout_2025_available: bool,
+    pub btc_generalization_failed: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateAcceptForShadowPreviewResult {
+    pub candidate_id: Uuid,
+    pub current_status: ResearchCandidateStatus,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub evidence_summary: ResearchCandidateAcceptForShadowEvidenceSummary,
+    pub checks: Vec<ResearchCandidateAcceptForShadowCheck>,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub recommended_action: String,
+    pub runner_alignment: StrategyCandidateRunnerAlignment,
+    pub required_runner_config_change: Vec<String>,
+    pub status: ResearchCandidateAcceptForShadowPreviewStatus,
+    pub no_mutation: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateReviewAction {
@@ -9694,6 +9794,284 @@ fn checklist_summary(passed: bool, success: &'static str, failure: &'static str)
         success.to_string()
     } else {
         failure.to_string()
+    }
+}
+
+fn accept_shadow_check(
+    code: &str,
+    name: &str,
+    passed: bool,
+    blocking: bool,
+    summary: impl Into<String>,
+    details: Option<Value>,
+) -> ResearchCandidateAcceptForShadowCheck {
+    ResearchCandidateAcceptForShadowCheck {
+        code: code.to_string(),
+        name: name.to_string(),
+        passed,
+        blocking,
+        summary: summary.into(),
+        details,
+    }
+}
+
+pub fn evaluate_research_candidate_accept_for_shadow_preview(
+    input: ResearchCandidateAcceptForShadowPreviewInput,
+) -> ResearchCandidateAcceptForShadowPreviewResult {
+    let candidate = input.candidate;
+    let mut checks = Vec::new();
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
+
+    let status_eligible = matches!(
+        candidate.status,
+        ResearchCandidateStatus::Discovered | ResearchCandidateStatus::Observing
+    );
+    checks.push(accept_shadow_check(
+        "candidate_pre_acceptance_status",
+        "Candidate is in a pre-acceptance state",
+        status_eligible,
+        true,
+        if status_eligible {
+            "Candidate is eligible for accept-for-shadow preview."
+        } else {
+            "Candidate is already accepted, promoted, rejected, archived, or otherwise not eligible for pre-acceptance."
+        },
+        Some(json!({ "current_status": candidate.status.as_str() })),
+    ));
+    if !status_eligible {
+        blockers.push(format!(
+            "Candidate status {} is not eligible for accept-for-shadow preview.",
+            candidate.status.as_str()
+        ));
+    }
+
+    checks.push(accept_shadow_check(
+        "source_experiment_exists",
+        "Source experiment exists",
+        input.source_experiment_exists,
+        true,
+        if input.source_experiment_exists {
+            "Source experiment provenance is present."
+        } else {
+            "Source experiment provenance is missing."
+        },
+        Some(json!({
+            "experiment_id": input.evidence_summary.source_experiment_id,
+            "experiment_run_id": input.evidence_summary.source_experiment_run_id
+        })),
+    ));
+    if !input.source_experiment_exists {
+        blockers.push("Source experiment provenance is missing.".to_string());
+    }
+
+    let walk_forward_robust = input.evidence_summary.walk_forward_status
+        == Some(StrategyWalkForwardRobustnessStatus::Robust);
+    checks.push(accept_shadow_check(
+        "source_walk_forward_robust",
+        "Source walk-forward exists and is ROBUST",
+        input.source_walk_forward_exists && walk_forward_robust,
+        true,
+        if input.source_walk_forward_exists && walk_forward_robust {
+            "Source walk-forward evidence is ROBUST."
+        } else if input.source_walk_forward_exists {
+            "Source walk-forward evidence is not ROBUST."
+        } else {
+            "Source walk-forward evidence is missing."
+        },
+        Some(json!({
+            "walk_forward_run_id": input.evidence_summary.source_walk_forward_run_id,
+            "walk_forward_status": input.evidence_summary.walk_forward_status
+        })),
+    ));
+    if !input.source_walk_forward_exists {
+        blockers.push("Source walk-forward evidence is missing.".to_string());
+    } else if !walk_forward_robust {
+        blockers.push("Source walk-forward evidence is not ROBUST.".to_string());
+    }
+
+    let robustness_matrix_robust = input.evidence_summary.robustness_matrix_status
+        == Some(StrategyRobustnessMatrixStatus::Robust);
+    checks.push(accept_shadow_check(
+        "source_robustness_matrix_robust",
+        "Source robustness matrix exists and is ROBUST",
+        input.source_robustness_matrix_exists && robustness_matrix_robust,
+        true,
+        if input.source_robustness_matrix_exists && robustness_matrix_robust {
+            "Source robustness matrix evidence is ROBUST."
+        } else if input.source_robustness_matrix_exists {
+            "Source robustness matrix evidence is not ROBUST."
+        } else {
+            "Source robustness matrix evidence is missing."
+        },
+        Some(json!({
+            "robustness_matrix_run_id": input.evidence_summary.source_robustness_matrix_run_id,
+            "robustness_matrix_status": input.evidence_summary.robustness_matrix_status
+        })),
+    ));
+    if !input.source_robustness_matrix_exists {
+        blockers.push("Source robustness matrix evidence is missing.".to_string());
+    } else if !robustness_matrix_robust {
+        blockers.push("Source robustness matrix evidence is not ROBUST.".to_string());
+    }
+
+    let data_quality_good =
+        input.evidence_summary.data_quality_status == Some(MarketDataQualityStatus::Good);
+    checks.push(accept_shadow_check(
+        "data_quality_good",
+        "Data quality is GOOD",
+        data_quality_good,
+        true,
+        if data_quality_good {
+            "Data quality is GOOD for the evaluated window."
+        } else {
+            "Data quality is not GOOD for the evaluated window."
+        },
+        Some(json!({ "data_quality_status": input.evidence_summary.data_quality_status })),
+    ));
+    if !data_quality_good {
+        blockers.push("Data quality is not GOOD for the evaluated window.".to_string());
+    }
+
+    checks.push(accept_shadow_check(
+        "fresh_observation_exists",
+        "Fresh observation exists",
+        !input.require_fresh_observation || input.fresh_observation,
+        input.require_fresh_observation,
+        if input.fresh_observation {
+            "A fresh persisted observation exists."
+        } else if input.require_fresh_observation {
+            "A fresh persisted observation is required but missing."
+        } else {
+            "Fresh observation is not required by this preview request."
+        },
+        None,
+    ));
+    if input.require_fresh_observation && !input.fresh_observation {
+        warnings.push("Fresh persisted observation is missing.".to_string());
+    }
+
+    checks.push(accept_shadow_check(
+        "candidate_not_already_terminal_or_accepted",
+        "Candidate is not already accepted/promoted/rejected/archived",
+        status_eligible,
+        true,
+        if status_eligible {
+            "Candidate has not already moved beyond pre-acceptance review."
+        } else {
+            "Candidate has already moved beyond pre-acceptance review."
+        },
+        Some(json!({ "current_status": candidate.status.as_str() })),
+    ));
+
+    let runner_aligned = input.runner_alignment.strategy_config_matches_runner;
+    checks.push(accept_shadow_check(
+        "runner_alignment",
+        "Runner alignment status",
+        runner_aligned,
+        false,
+        if runner_aligned {
+            "Current shadow runner config already covers the candidate."
+        } else {
+            "Current shadow runner config does not cover the candidate."
+        },
+        Some(json!({
+            "mismatch_reasons": input.runner_alignment.mismatch_reasons.clone(),
+            "required_runner_config_change": input.required_runner_config_change.clone()
+        })),
+    ));
+    if !runner_aligned {
+        warnings.push("Current shadow runner config does not cover the candidate.".to_string());
+    }
+
+    checks.push(accept_shadow_check(
+        "symbol_specific_generalization",
+        "Evidence is symbol-specific",
+        true,
+        false,
+        "Preview treats this as symbol-specific evidence only.",
+        Some(json!({
+            "symbol": candidate.symbol.clone(),
+            "btc_generalization_failed": input.btc_generalization_failed
+        })),
+    ));
+    if input.btc_generalization_failed {
+        warnings.push(
+            "BTC/generalization evidence is failed or unavailable; candidate is ETH-specific only."
+                .to_string(),
+        );
+    }
+
+    checks.push(accept_shadow_check(
+        "holdout_2025_available",
+        "2025+ holdout data is available",
+        input.holdout_2025_available,
+        false,
+        if input.holdout_2025_available {
+            "2025+ holdout candles are available for later validation."
+        } else {
+            "2025+ holdout evidence is unavailable."
+        },
+        None,
+    ));
+    if !input.holdout_2025_available {
+        warnings.push("2025+ holdout evidence is unavailable.".to_string());
+    }
+
+    checks.push(accept_shadow_check(
+        "no_shadow_runs_yet",
+        "No shadow runs yet",
+        input.evidence_summary.shadow_run_count > 0,
+        false,
+        if input.evidence_summary.shadow_run_count > 0 {
+            "Linked shadow runs exist."
+        } else {
+            "No linked shadow runs exist yet."
+        },
+        Some(json!({ "shadow_run_count": input.evidence_summary.shadow_run_count })),
+    ));
+    if input.evidence_summary.shadow_run_count == 0 {
+        warnings.push("No linked shadow runs exist yet.".to_string());
+    }
+
+    let status = if !blockers.is_empty() {
+        ResearchCandidateAcceptForShadowPreviewStatus::Blocked
+    } else if input.require_fresh_observation && !input.fresh_observation {
+        ResearchCandidateAcceptForShadowPreviewStatus::NeedsMoreData
+    } else if !warnings.is_empty() {
+        ResearchCandidateAcceptForShadowPreviewStatus::WarningReviewRequired
+    } else {
+        ResearchCandidateAcceptForShadowPreviewStatus::ReadyForHumanAcceptance
+    };
+
+    let recommended_action = match status {
+        ResearchCandidateAcceptForShadowPreviewStatus::ReadyForHumanAcceptance => {
+            "HUMAN_ACCEPT_FOR_SHADOW_REVIEW"
+        }
+        ResearchCandidateAcceptForShadowPreviewStatus::NeedsMoreData => "RUN_CANDIDATE_OBSERVATION",
+        ResearchCandidateAcceptForShadowPreviewStatus::WarningReviewRequired => {
+            "HUMAN_REVIEW_WARNINGS_BEFORE_ACCEPTANCE"
+        }
+        ResearchCandidateAcceptForShadowPreviewStatus::Blocked => "KEEP_DISCOVERED",
+    }
+    .to_string();
+
+    ResearchCandidateAcceptForShadowPreviewResult {
+        candidate_id: candidate.id,
+        current_status: candidate.status,
+        strategy_id: candidate.strategy_id.clone(),
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        evidence_summary: input.evidence_summary,
+        checks,
+        blockers,
+        warnings,
+        recommended_action,
+        runner_alignment: input.runner_alignment,
+        required_runner_config_change: input.required_runner_config_change,
+        status,
+        no_mutation: true,
+        generated_at: input.generated_at,
     }
 }
 
@@ -12947,6 +13325,45 @@ mod tests {
         }
     }
 
+    fn sample_accept_shadow_preview_input() -> ResearchCandidateAcceptForShadowPreviewInput {
+        ResearchCandidateAcceptForShadowPreviewInput {
+            candidate: sample_research_candidate(ResearchCandidateStatus::Discovered),
+            evidence_summary: ResearchCandidateAcceptForShadowEvidenceSummary {
+                candidate_score: Some(Decimal::new(87, 0)),
+                candidate_pnl_pct: Some(Decimal::new(1245, 2)),
+                candidate_max_drawdown_pct: Some(Decimal::new(315, 2)),
+                candidate_trade_count: Some(32),
+                candidate_win_rate: Some(Decimal::new(55, 0)),
+                candidate_fee_drag: Some(Decimal::new(25, 2)),
+                source_experiment_id: Some(Uuid::from_u128(0x101)),
+                source_experiment_run_id: Some(Uuid::from_u128(0x102)),
+                source_walk_forward_run_id: Some(Uuid::from_u128(0x301)),
+                source_robustness_matrix_run_id: Some(Uuid::from_u128(0x401)),
+                config_fingerprint: Some("fingerprint".to_string()),
+                data_quality_status: Some(MarketDataQualityStatus::Good),
+                evaluated_start_time: Some(ts(0, 0, 0)),
+                evaluated_end_time: Some(ts(1, 0, 0)),
+                walk_forward_status: Some(StrategyWalkForwardRobustnessStatus::Robust),
+                walk_forward_total_windows: Some(7),
+                walk_forward_profitable_windows: Some(7),
+                walk_forward_losing_windows: Some(0),
+                walk_forward_worst_pnl_pct: Some(Decimal::new(40, 2)),
+                robustness_matrix_status: Some(StrategyRobustnessMatrixStatus::Robust),
+                shadow_run_count: 1,
+            },
+            source_experiment_exists: true,
+            source_walk_forward_exists: true,
+            source_robustness_matrix_exists: true,
+            fresh_observation: true,
+            require_fresh_observation: true,
+            runner_alignment: aligned_runner_alignment(),
+            required_runner_config_change: Vec::new(),
+            btc_generalization_failed: false,
+            holdout_2025_available: true,
+            generated_at: ts(1, 0, 0),
+        }
+    }
+
     fn sample_observation(
         readiness_status: ExecutionReadinessStatus,
     ) -> StrategyCandidateObservationResult {
@@ -13693,6 +14110,111 @@ mod tests {
             .findings
             .iter()
             .any(|finding| finding.code == "shadow_runner_config_mismatch"));
+    }
+
+    #[test]
+    fn accept_shadow_preview_missing_observation_needs_more_data() {
+        let mut input = sample_accept_shadow_preview_input();
+        input.fresh_observation = false;
+        input.evidence_summary.shadow_run_count = 0;
+
+        let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+        assert_eq!(
+            preview.status,
+            ResearchCandidateAcceptForShadowPreviewStatus::NeedsMoreData
+        );
+        assert_eq!(preview.recommended_action, "RUN_CANDIDATE_OBSERVATION");
+        assert!(preview
+            .warnings
+            .contains(&"Fresh persisted observation is missing.".to_string()));
+        assert!(preview.no_mutation);
+    }
+
+    #[test]
+    fn accept_shadow_preview_runner_mismatch_requires_warning_review() {
+        let mut input = sample_accept_shadow_preview_input();
+        input.runner_alignment = StrategyCandidateRunnerAlignment {
+            strategy_config_matches_runner: false,
+            runner_enabled: false,
+            runner_status: "STOPPED".to_string(),
+            runner_timeframe: "1m".to_string(),
+            runner_symbols: vec!["BTCUSDT".to_string()],
+            runner_strategies: vec!["momentum_v1".to_string()],
+            mismatch_reasons: vec![
+                "runner timeframe 1m does not include candidate timeframe 15m".to_string(),
+            ],
+        };
+        input.required_runner_config_change = vec!["set timeframe from 1m to 15m".to_string()];
+
+        let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+        assert_eq!(
+            preview.status,
+            ResearchCandidateAcceptForShadowPreviewStatus::WarningReviewRequired
+        );
+        assert!(preview
+            .warnings
+            .contains(&"Current shadow runner config does not cover the candidate.".to_string()));
+        assert_eq!(
+            preview.required_runner_config_change,
+            vec!["set timeframe from 1m to 15m"]
+        );
+    }
+
+    #[test]
+    fn accept_shadow_preview_non_robust_walk_forward_blocks() {
+        let mut input = sample_accept_shadow_preview_input();
+        input.evidence_summary.walk_forward_status =
+            Some(StrategyWalkForwardRobustnessStatus::Weak);
+
+        let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+        assert_eq!(
+            preview.status,
+            ResearchCandidateAcceptForShadowPreviewStatus::Blocked
+        );
+        assert!(preview
+            .blockers
+            .contains(&"Source walk-forward evidence is not ROBUST.".to_string()));
+    }
+
+    #[test]
+    fn accept_shadow_preview_rejected_and_archived_candidates_block() {
+        for status in [
+            ResearchCandidateStatus::Rejected,
+            ResearchCandidateStatus::Archived,
+        ] {
+            let mut input = sample_accept_shadow_preview_input();
+            input.candidate.status = status;
+
+            let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+            assert_eq!(
+                preview.status,
+                ResearchCandidateAcceptForShadowPreviewStatus::Blocked
+            );
+            assert_eq!(preview.current_status, status);
+            assert!(preview
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("not eligible")));
+        }
+    }
+
+    #[test]
+    fn accept_shadow_preview_does_not_mutate_candidate_status_or_emit_events() {
+        let input = sample_accept_shadow_preview_input();
+        let candidate_status = input.candidate.status;
+
+        let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+        assert_eq!(preview.current_status, candidate_status);
+        assert_eq!(
+            preview.status,
+            ResearchCandidateAcceptForShadowPreviewStatus::ReadyForHumanAcceptance
+        );
+        assert!(preview.no_mutation);
     }
 
     #[test]
