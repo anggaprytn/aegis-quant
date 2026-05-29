@@ -2,15 +2,16 @@ use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
 use aegis_core::{
+    expected_research_candidate_accept_shadow_confirmation,
     expected_research_candidate_shadow_promotion_confirmation,
     expected_testnet_pipeline_confirmation, ExecutionReadinessRequest, ExecutionReadinessTarget,
-    OperatorReportFormat, OperatorReportRequest, ResearchCandidateDecision,
-    ResearchCandidateQualificationThresholds, ResearchCandidateReviewAction,
-    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
-    ResearchStaleRunRecoveryTargetType, ScheduledResearchBootstrapSafeRequest,
-    ScheduledResearchJobKind, ScheduledResearchJobRequest, TestnetShadowPromotionRequest,
-    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
-    RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
+    OperatorReportFormat, OperatorReportRequest, ResearchCandidateAcceptForShadowApplyRequest,
+    ResearchCandidateDecision, ResearchCandidateQualificationThresholds,
+    ResearchCandidateReviewAction, ResearchCandidateShadowPromotionMode,
+    ResearchCandidateShadowPromotionRequest, ResearchStaleRunRecoveryTargetType,
+    ScheduledResearchBootstrapSafeRequest, ScheduledResearchJobKind, ScheduledResearchJobRequest,
+    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
+    TestnetShadowRunnerStaleFeedPolicy, RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -42,6 +43,16 @@ impl Cli {
             }
         }
         if let Commands::Research(ResearchCommands::Candidates(command)) = &self.command {
+            if let ResearchCandidateCommands::AcceptShadowApply(args) = command {
+                let expected =
+                    expected_research_candidate_accept_shadow_confirmation(args.candidate_id);
+                if args.confirm.as_deref() != Some(expected.as_str()) {
+                    anyhow::bail!(
+                        "research candidates accept-shadow-apply requires --confirm {:?} exactly",
+                        expected
+                    );
+                }
+            }
             if let ResearchCandidateCommands::PromoteShadowApply(args) = command {
                 let expected =
                     expected_research_candidate_shadow_promotion_confirmation(args.candidate_id);
@@ -1379,6 +1390,7 @@ pub enum ResearchCandidateCommands {
     QualificationHistory(ResearchCandidateQualificationHistoryArgs),
     TestnetReviewDossier { candidate_id: Uuid },
     AcceptShadowPreview { candidate_id: Uuid },
+    AcceptShadowApply(ResearchCandidateAcceptShadowApplyArgs),
     WalkForward { candidate_id: Uuid },
     LinkWalkForward(ResearchCandidateLinkWalkForwardArgs),
     ShadowPerformance(ResearchCandidateShadowWindowArgs),
@@ -1470,6 +1482,19 @@ pub struct ResearchCandidatePromoteShadowPreviewArgs {
     pub candidate_id: Uuid,
     #[arg(long, default_value_t = false)]
     pub allow_missing_runner_alignment: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateAcceptShadowApplyArgs {
+    pub candidate_id: Uuid,
+    #[arg(long)]
+    pub confirm: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub acknowledge_warnings: bool,
+    #[arg(long = "acknowledged-warning-code")]
+    pub acknowledged_warning_codes: Vec<String>,
+    #[arg(long = "note")]
+    pub operator_note: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1576,6 +1601,20 @@ impl From<&ResearchCandidatePromoteShadowApplyArgs> for ResearchCandidateShadowP
             mode: ResearchCandidateShadowPromotionMode::Apply,
             allow_missing_runner_alignment: value.allow_missing_runner_alignment,
             confirmation_text: value.confirm.clone(),
+            correlation_id: None,
+        }
+    }
+}
+
+impl From<&ResearchCandidateAcceptShadowApplyArgs>
+    for ResearchCandidateAcceptForShadowApplyRequest
+{
+    fn from(value: &ResearchCandidateAcceptShadowApplyArgs) -> Self {
+        Self {
+            confirm: value.confirm.clone().unwrap_or_default(),
+            acknowledge_warnings: value.acknowledge_warnings,
+            acknowledged_warning_codes: value.acknowledged_warning_codes.clone(),
+            operator_note: value.operator_note.clone(),
             correlation_id: None,
         }
     }

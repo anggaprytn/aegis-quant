@@ -7872,6 +7872,57 @@ pub struct ResearchCandidateAcceptForShadowPreviewResult {
     pub generated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateAcceptForShadowApplyRequest {
+    pub confirm: String,
+    #[serde(default)]
+    pub acknowledge_warnings: bool,
+    #[serde(default)]
+    pub acknowledged_warning_codes: Vec<String>,
+    pub operator_note: Option<String>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateAcceptForShadowApplyResult {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub previous_status: ResearchCandidateStatus,
+    pub new_status: ResearchCandidateStatus,
+    pub warnings_acknowledged: bool,
+    pub acknowledged_warning_codes: Vec<String>,
+    pub warnings: Vec<String>,
+    pub lifecycle_event_id: Uuid,
+    pub runner_config_unchanged: bool,
+    pub shadow_runs_created: i64,
+    pub execution_tables_mutated: bool,
+    pub recommended_next_action: String,
+    pub applied_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResearchCandidateAcceptForShadowApplyRejection {
+    InvalidConfirmation,
+    CandidateNotEligible,
+    PreviewBlocked,
+    PreviewNotReady,
+    WarningAcknowledgementRequired,
+}
+
+impl ResearchCandidateAcceptForShadowApplyRejection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidConfirmation => "invalid_confirmation",
+            Self::CandidateNotEligible => "candidate_not_eligible",
+            Self::PreviewBlocked => "preview_blocked",
+            Self::PreviewNotReady => "preview_not_ready",
+            Self::WarningAcknowledgementRequired => "warning_acknowledgement_required",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateReviewAction {
@@ -10052,6 +10103,11 @@ pub fn evaluate_research_candidate_accept_for_shadow_preview(
         ResearchCandidateAcceptForShadowPreviewStatus::WarningReviewRequired => {
             "HUMAN_REVIEW_WARNINGS_BEFORE_ACCEPTANCE"
         }
+        ResearchCandidateAcceptForShadowPreviewStatus::Blocked
+            if candidate.status == ResearchCandidateStatus::AcceptedForShadow =>
+        {
+            "PREVIEW_SHADOW_RUNNER_PROMOTION"
+        }
         ResearchCandidateAcceptForShadowPreviewStatus::Blocked => "KEEP_DISCOVERED",
     }
     .to_string();
@@ -10073,6 +10129,37 @@ pub fn evaluate_research_candidate_accept_for_shadow_preview(
         no_mutation: true,
         generated_at: input.generated_at,
     }
+}
+
+pub fn validate_research_candidate_accept_for_shadow_apply(
+    candidate_id: Uuid,
+    preview: &ResearchCandidateAcceptForShadowPreviewResult,
+    confirm: &str,
+    acknowledge_warnings: bool,
+) -> Result<(), ResearchCandidateAcceptForShadowApplyRejection> {
+    if !is_valid_research_candidate_accept_shadow_confirmation(candidate_id, confirm) {
+        return Err(ResearchCandidateAcceptForShadowApplyRejection::InvalidConfirmation);
+    }
+    if !matches!(
+        preview.current_status,
+        ResearchCandidateStatus::Discovered | ResearchCandidateStatus::Observing
+    ) {
+        return Err(ResearchCandidateAcceptForShadowApplyRejection::CandidateNotEligible);
+    }
+    if !preview.blockers.is_empty() {
+        return Err(ResearchCandidateAcceptForShadowApplyRejection::PreviewBlocked);
+    }
+    if !matches!(
+        preview.status,
+        ResearchCandidateAcceptForShadowPreviewStatus::ReadyForHumanAcceptance
+            | ResearchCandidateAcceptForShadowPreviewStatus::WarningReviewRequired
+    ) {
+        return Err(ResearchCandidateAcceptForShadowApplyRejection::PreviewNotReady);
+    }
+    if !preview.warnings.is_empty() && !acknowledge_warnings {
+        return Err(ResearchCandidateAcceptForShadowApplyRejection::WarningAcknowledgementRequired);
+    }
+    Ok(())
 }
 
 fn provenance_label(candidate: Option<&ResearchCandidate>) -> String {
@@ -12089,6 +12176,17 @@ pub fn expected_strategy_research_promotion_confirmation(strategy_id: &str) -> S
 
 pub fn expected_research_candidate_shadow_promotion_confirmation(candidate_id: Uuid) -> String {
     format!("PROMOTE CANDIDATE {candidate_id} TO SHADOW")
+}
+
+pub fn expected_research_candidate_accept_shadow_confirmation(candidate_id: Uuid) -> String {
+    format!("ACCEPT CANDIDATE {candidate_id} FOR SHADOW")
+}
+
+pub fn is_valid_research_candidate_accept_shadow_confirmation(
+    candidate_id: Uuid,
+    confirmation_text: &str,
+) -> bool {
+    confirmation_text == expected_research_candidate_accept_shadow_confirmation(candidate_id)
 }
 
 pub fn is_valid_research_candidate_shadow_promotion_confirmation(
@@ -14203,6 +14301,23 @@ mod tests {
     }
 
     #[test]
+    fn accept_shadow_preview_accepted_candidate_points_to_shadow_promotion_preview() {
+        let mut input = sample_accept_shadow_preview_input();
+        input.candidate.status = ResearchCandidateStatus::AcceptedForShadow;
+
+        let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+        assert_eq!(
+            preview.status,
+            ResearchCandidateAcceptForShadowPreviewStatus::Blocked
+        );
+        assert_eq!(
+            preview.recommended_action,
+            "PREVIEW_SHADOW_RUNNER_PROMOTION"
+        );
+    }
+
+    #[test]
     fn accept_shadow_preview_does_not_mutate_candidate_status_or_emit_events() {
         let input = sample_accept_shadow_preview_input();
         let candidate_status = input.candidate.status;
@@ -14215,6 +14330,102 @@ mod tests {
             ResearchCandidateAcceptForShadowPreviewStatus::ReadyForHumanAcceptance
         );
         assert!(preview.no_mutation);
+    }
+
+    #[test]
+    fn accept_shadow_apply_requires_exact_confirmation() {
+        let input = sample_accept_shadow_preview_input();
+        let candidate_id = input.candidate.id;
+        let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+        let rejection = validate_research_candidate_accept_for_shadow_apply(
+            candidate_id,
+            &preview,
+            "ACCEPT CANDIDATE wrong FOR SHADOW",
+            true,
+        )
+        .expect_err("bad confirmation should reject");
+
+        assert_eq!(
+            rejection,
+            ResearchCandidateAcceptForShadowApplyRejection::InvalidConfirmation
+        );
+    }
+
+    #[test]
+    fn accept_shadow_apply_requires_warning_acknowledgement() {
+        let mut input = sample_accept_shadow_preview_input();
+        let candidate_id = input.candidate.id;
+        input.runner_alignment = StrategyCandidateRunnerAlignment {
+            strategy_config_matches_runner: false,
+            runner_enabled: false,
+            runner_status: "STOPPED".to_string(),
+            runner_timeframe: "1m".to_string(),
+            runner_symbols: vec!["BTCUSDT".to_string()],
+            runner_strategies: vec!["momentum_v1".to_string()],
+            mismatch_reasons: vec![
+                "runner timeframe 1m does not include candidate timeframe 15m".to_string(),
+            ],
+        };
+        let preview = evaluate_research_candidate_accept_for_shadow_preview(input);
+
+        let rejection = validate_research_candidate_accept_for_shadow_apply(
+            candidate_id,
+            &preview,
+            &expected_research_candidate_accept_shadow_confirmation(candidate_id),
+            false,
+        )
+        .expect_err("unacknowledged warnings should reject");
+
+        assert_eq!(
+            rejection,
+            ResearchCandidateAcceptForShadowApplyRejection::WarningAcknowledgementRequired
+        );
+        validate_research_candidate_accept_for_shadow_apply(
+            candidate_id,
+            &preview,
+            &expected_research_candidate_accept_shadow_confirmation(candidate_id),
+            true,
+        )
+        .expect("acknowledged warnings should pass");
+    }
+
+    #[test]
+    fn accept_shadow_apply_rejects_blockers_and_already_accepted_candidates() {
+        let mut blocked_input = sample_accept_shadow_preview_input();
+        let blocked_candidate_id = blocked_input.candidate.id;
+        blocked_input.source_walk_forward_exists = false;
+        let blocked_preview = evaluate_research_candidate_accept_for_shadow_preview(blocked_input);
+
+        let blocked = validate_research_candidate_accept_for_shadow_apply(
+            blocked_candidate_id,
+            &blocked_preview,
+            &expected_research_candidate_accept_shadow_confirmation(blocked_candidate_id),
+            true,
+        )
+        .expect_err("blockers should reject");
+        assert_eq!(
+            blocked,
+            ResearchCandidateAcceptForShadowApplyRejection::PreviewBlocked
+        );
+
+        let mut accepted_input = sample_accept_shadow_preview_input();
+        accepted_input.candidate.status = ResearchCandidateStatus::AcceptedForShadow;
+        let accepted_candidate_id = accepted_input.candidate.id;
+        let accepted_preview =
+            evaluate_research_candidate_accept_for_shadow_preview(accepted_input);
+
+        let accepted = validate_research_candidate_accept_for_shadow_apply(
+            accepted_candidate_id,
+            &accepted_preview,
+            &expected_research_candidate_accept_shadow_confirmation(accepted_candidate_id),
+            true,
+        )
+        .expect_err("already accepted should reject");
+        assert_eq!(
+            accepted,
+            ResearchCandidateAcceptForShadowApplyRejection::CandidateNotEligible
+        );
     }
 
     #[test]
@@ -14742,6 +14953,26 @@ mod tests {
         assert!(!is_valid_research_candidate_shadow_promotion_confirmation(
             candidate_id,
             "PROMOTE CANDIDATE 1a5e9b4b-0a5a-4bb4-907d-49f2648b2b6f TO TESTNET"
+        ));
+    }
+
+    #[test]
+    fn research_candidate_accept_shadow_confirmation_must_match_exact_candidate_id() {
+        let candidate_id =
+            Uuid::parse_str("70867792-93df-494c-9a8b-d961c73107e4").expect("valid uuid");
+        let expected = expected_research_candidate_accept_shadow_confirmation(candidate_id);
+
+        assert_eq!(
+            expected,
+            "ACCEPT CANDIDATE 70867792-93df-494c-9a8b-d961c73107e4 FOR SHADOW"
+        );
+        assert!(is_valid_research_candidate_accept_shadow_confirmation(
+            candidate_id,
+            &expected
+        ));
+        assert!(!is_valid_research_candidate_accept_shadow_confirmation(
+            candidate_id,
+            "accept candidate 70867792-93df-494c-9a8b-d961c73107e4 for shadow"
         ));
     }
 

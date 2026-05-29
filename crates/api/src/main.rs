@@ -18,23 +18,26 @@ use accounting::{
 };
 use aegis_core::{
     aggregate_closed_1m_candles, candle_aggregation_status,
+    expected_research_candidate_accept_shadow_confirmation,
     expected_research_candidate_shadow_promotion_confirmation,
     expected_strategy_research_promotion_confirmation, expected_testnet_pipeline_confirmation,
     expected_testnet_shadow_promotion_confirmation,
+    is_valid_research_candidate_accept_shadow_confirmation,
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
     research_candidate_next_status, score_strategy_research_candidate,
-    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
-    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
-    CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
-    CandleBackfillRequest, CandleBackfillResult, CandleInterval, EventEnvelope, ExchangeBalance,
-    ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
-    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
-    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
-    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
-    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
-    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    validate_research_candidate_accept_for_shadow_apply, validate_testnet_repair_transition,
+    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
+    AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
+    CandleAggregationStatusRow, CandleBackfillRequest, CandleBackfillResult, CandleInterval,
+    EventEnvelope, ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment,
+    ExchangeName, ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide,
+    ExchangeOrderTimeInForce, ExchangeOrderType, ExchangePrivateStreamSource,
+    ExchangePrivateStreamState, ExchangePrivateStreamStatus, ExchangeRateLimitState,
+    ExchangeReconciliationMismatch, ExchangeReconciliationRequest, ExchangeReconciliationResult,
+    ExchangeReconciliationRun, ExchangeRequestMode, ExchangeSymbolInfo,
+    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
     ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
     ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
     MarketDataQualityReport, MarketDataQualityRequest, MarketDataRepairPlan,
@@ -48,23 +51,24 @@ use aegis_core::{
     ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
     ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
     ResearchCampaignResult, ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate,
-    ResearchCandidateAcceptForShadowEvidenceSummary, ResearchCandidateAcceptForShadowPreviewInput,
-    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateCreationGateResult,
-    ResearchCandidateCreationInput, ResearchCandidateCreationPolicy, ResearchCandidateDecision,
-    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateFailureInput, ResearchCandidateLifecycleEvent,
-    ResearchCandidateObservationFreshnessStatus, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidatePromotionReadiness,
-    ResearchCandidateProposal, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationRequest, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationThresholds, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewAction, ResearchCandidateReviewContext,
-    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
-    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
-    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowRunLink,
-    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateAcceptForShadowApplyRejection, ResearchCandidateAcceptForShadowApplyRequest,
+    ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowEvidenceSummary,
+    ResearchCandidateAcceptForShadowPreviewInput, ResearchCandidateAcceptForShadowPreviewResult,
+    ResearchCandidateCreationGateResult, ResearchCandidateCreationInput,
+    ResearchCandidateCreationPolicy, ResearchCandidateDecision, ResearchCandidateDecisionRejection,
+    ResearchCandidateDecisionRequest, ResearchCandidateFailureInput,
+    ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidatePromotionReadiness, ResearchCandidateProposal,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationRequest,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
+    ResearchCandidateReviewContext, ResearchCandidateReviewResult,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
+    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
+    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -269,6 +273,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use sqlx::Row;
 use strategy_engine::{
     analyze_opportunity, build_default_strategy_configs, diagnose as diagnose_strategy,
     evaluate as evaluate_strategy, required_candle_count, validate_strategy_config,
@@ -2175,6 +2180,14 @@ struct ResearchCandidateAcceptForShadowPreviewResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchCandidateAcceptForShadowApplyResponse {
+    result: ResearchCandidateAcceptForShadowApplyResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct BacktestRunsResponse {
     runs: Vec<aegis_core::BacktestResult>,
     request_id: String,
@@ -3422,6 +3435,10 @@ async fn main() {
             get(get_research_candidate_accept_shadow_preview_handler),
         )
         .route(
+            "/research/candidates/:id/accept-shadow/apply",
+            post(apply_research_candidate_accept_shadow_handler),
+        )
+        .route(
             "/research/candidates/:id/walk-forward",
             get(get_research_candidate_walk_forward_handler),
         )
@@ -3869,6 +3886,12 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
             || path.starts_with("/market/candles/repair/runs/"))
     {
         return RouteAccess::Authenticated;
+    }
+    if method == axum::http::Method::POST
+        && path.starts_with("/research/candidates/")
+        && path.ends_with("/accept-shadow/apply")
+    {
+        return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST
         && path.starts_with("/research/candidates/")
@@ -25940,6 +25963,435 @@ async fn get_research_candidate_accept_shadow_preview_handler(
     }
 }
 
+async fn research_governance_execution_counts(
+    pool: &PgPool,
+) -> anyhow::Result<BTreeMap<String, i64>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT 'orders' AS name, COUNT(*)::BIGINT AS count FROM orders
+        UNION ALL SELECT 'paper_positions', COUNT(*)::BIGINT FROM paper_positions
+        UNION ALL SELECT 'paper_fills', COUNT(*)::BIGINT FROM paper_fills
+        UNION ALL SELECT 'exchange_testnet_orders', COUNT(*)::BIGINT FROM exchange_testnet_orders
+        UNION ALL SELECT 'exchange_testnet_order_lifecycle_events', COUNT(*)::BIGINT FROM exchange_testnet_order_lifecycle_events
+        UNION ALL SELECT 'testnet_shadow_promotions', COUNT(*)::BIGINT FROM testnet_shadow_promotions
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.get::<String, _>("name"), row.get::<i64, _>("count")))
+        .collect())
+}
+
+async fn research_candidate_shadow_link_count(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> anyhow::Result<i64> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*)::BIGINT FROM research_candidate_shadow_runs WHERE candidate_id = $1",
+    )
+    .bind(candidate_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
+async fn apply_research_candidate_accept_shadow_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCandidateAcceptForShadowApplyRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can apply accept-for-shadow.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+
+    if !is_valid_research_candidate_accept_shadow_confirmation(candidate_id, &payload.confirm) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_confirmation",
+                message: format!(
+                    "Accept-for-shadow requires confirm exactly equal to {:?}.",
+                    expected_research_candidate_accept_shadow_confirmation(candidate_id)
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let candidate = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let next_status = match research_candidate_next_status(
+        candidate.status,
+        ResearchCandidateDecision::AcceptForShadow,
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: "candidate_not_eligible_for_accept_shadow",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let preview =
+        match build_research_candidate_accept_for_shadow_preview(&state, &candidate, Utc::now())
+            .await
+        {
+            Ok(preview) => preview,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_build_accept_shadow_preview",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    if let Err(rejection) = validate_research_candidate_accept_for_shadow_apply(
+        candidate.id,
+        &preview,
+        &payload.confirm,
+        payload.acknowledge_warnings,
+    ) {
+        let (status, error, message) = match rejection {
+            ResearchCandidateAcceptForShadowApplyRejection::InvalidConfirmation => (
+                StatusCode::BAD_REQUEST,
+                "invalid_confirmation",
+                format!(
+                    "Accept-for-shadow requires confirm exactly equal to {:?}.",
+                    expected_research_candidate_accept_shadow_confirmation(candidate.id)
+                ),
+            ),
+            ResearchCandidateAcceptForShadowApplyRejection::CandidateNotEligible => (
+                StatusCode::CONFLICT,
+                "candidate_not_eligible_for_accept_shadow",
+                format!(
+                    "Candidate status {} is not eligible for accept-for-shadow.",
+                    preview.current_status.as_str()
+                ),
+            ),
+            ResearchCandidateAcceptForShadowApplyRejection::PreviewBlocked => (
+                StatusCode::CONFLICT,
+                "accept_shadow_blocked",
+                format!(
+                    "Accept-for-shadow preview has blockers: {}",
+                    preview.blockers.join(" | ")
+                ),
+            ),
+            ResearchCandidateAcceptForShadowApplyRejection::PreviewNotReady => (
+                StatusCode::CONFLICT,
+                "accept_shadow_not_ready",
+                format!(
+                    "Accept-for-shadow preview status {} is not applyable.",
+                    preview.status.as_str()
+                ),
+            ),
+            ResearchCandidateAcceptForShadowApplyRejection::WarningAcknowledgementRequired => (
+                StatusCode::BAD_REQUEST,
+                "warning_acknowledgement_required",
+                "Accept-for-shadow preview has warnings; acknowledge_warnings must be true."
+                    .to_string(),
+            ),
+        };
+        return (
+            status,
+            Json(ErrorResponse {
+                error,
+                message,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let runner_config_before =
+        match load_testnet_shadow_runner_snapshot(&shadow_runtime_state(&state)).await {
+            Ok(snapshot) => match serde_json::to_value(&snapshot.config) {
+                Ok(value) => value,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_snapshot_runner_config",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: Utc::now(),
+                        }),
+                    )
+                        .into_response()
+                }
+            },
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_load_runner_config",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+    let execution_counts_before = match research_governance_execution_counts(&state.db_pool).await {
+        Ok(counts) => counts,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_count_execution_tables",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let shadow_links_before =
+        match research_candidate_shadow_link_count(&state.db_pool, candidate.id).await {
+            Ok(count) => count,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_count_shadow_runs",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let applied_at = Utc::now();
+    match update_research_candidate_status(
+        &state.db_pool,
+        candidate.id,
+        next_status,
+        None,
+        payload.operator_note.as_deref(),
+        applied_at,
+        Some(correlation_id),
+    )
+    .await
+    {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_update_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let lifecycle_event_id = Uuid::new_v4();
+    let event_payload = json!({
+        "decision": ResearchCandidateDecision::AcceptForShadow.as_str(),
+        "confirm": payload.confirm.clone(),
+        "acknowledge_warnings": payload.acknowledge_warnings,
+        "acknowledged_warning_codes": payload.acknowledged_warning_codes.clone(),
+        "warnings": preview.warnings.clone(),
+        "blockers": preview.blockers.clone(),
+        "preview_status": preview.status.as_str(),
+        "preview_recommended_action": preview.recommended_action.clone(),
+        "operator_note": payload.operator_note.clone(),
+        "runner_config_unchanged": true,
+        "shadow_runs_created": 0,
+        "execution_tables_mutated": false,
+    });
+    if let Err(err) = append_research_candidate_event(
+        &state.db_pool,
+        &ResearchCandidateLifecycleEvent {
+            id: lifecycle_event_id,
+            candidate_id: candidate.id,
+            previous_status: Some(candidate.status),
+            next_status,
+            decision: ResearchCandidateDecision::AcceptForShadow,
+            reason: Some("accepted_for_shadow_observation_review".to_string()),
+            notes: payload.operator_note.clone(),
+            actor_id: Some(actor.user_id),
+            payload: event_payload,
+            created_at: applied_at,
+            correlation_id: Some(correlation_id),
+        },
+    )
+    .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_append_research_candidate_event",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+
+    let runner_config_after = load_testnet_shadow_runner_snapshot(&shadow_runtime_state(&state))
+        .await
+        .ok()
+        .and_then(|snapshot| serde_json::to_value(&snapshot.config).ok());
+    let runner_config_unchanged = runner_config_after
+        .as_ref()
+        .map(|after| after == &runner_config_before)
+        .unwrap_or(false);
+    let execution_tables_mutated = research_governance_execution_counts(&state.db_pool)
+        .await
+        .map(|after| after != execution_counts_before)
+        .unwrap_or(true);
+    let shadow_runs_created = research_candidate_shadow_link_count(&state.db_pool, candidate.id)
+        .await
+        .map(|after| after - shadow_links_before)
+        .unwrap_or(0);
+
+    let result = ResearchCandidateAcceptForShadowApplyResult {
+        candidate_id: candidate.id,
+        strategy_id: candidate.strategy_id,
+        symbol: candidate.symbol,
+        timeframe: candidate.timeframe,
+        previous_status: candidate.status,
+        new_status: next_status,
+        warnings_acknowledged: payload.acknowledge_warnings,
+        acknowledged_warning_codes: payload.acknowledged_warning_codes,
+        warnings: preview.warnings,
+        lifecycle_event_id,
+        runner_config_unchanged,
+        shadow_runs_created,
+        execution_tables_mutated,
+        recommended_next_action: "PREVIEW_SHADOW_RUNNER_PROMOTION".to_string(),
+        applied_at,
+    };
+    telemetry()
+        .inc_research_candidate_decision(ResearchCandidateDecision::AcceptForShadow.as_str());
+    telemetry().adjust_research_candidate_total(candidate.status.as_str(), -1);
+    telemetry().adjust_research_candidate_total(next_status.as_str(), 1);
+
+    (
+        StatusCode::OK,
+        Json(ResearchCandidateAcceptForShadowApplyResponse {
+            result,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
 async fn get_research_candidate_walk_forward_handler(
     State(state): State<AppState>,
     Path(candidate_id): Path<Uuid>,
@@ -29519,14 +29971,14 @@ async fn evaluate_strategy_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_walk_forward_window_hours, bootstrap_owner, bounded_recent_events_limit,
-        bounded_risk_decisions_limit, build_cors_layer,
-        build_shadow_promotion_proposed_runner_config, cancel_exchange_testnet_order,
-        candidate_promotion_readiness, check_execution_readiness_handler,
-        compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
-        generate_operator_report_handler, generate_testnet_client_order_id,
-        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
-        get_execution_readiness_snapshot_handler,
+        apply_research_candidate_accept_shadow_handler, batch_walk_forward_window_hours,
+        bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
+        build_cors_layer, build_shadow_promotion_proposed_runner_config,
+        cancel_exchange_testnet_order, candidate_promotion_readiness,
+        check_execution_readiness_handler, compression_breakout_refinement_handler,
+        evaluate_strategy_candidate_observation_handler, generate_operator_report_handler,
+        generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
+        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
         get_research_candidate_accept_shadow_preview_handler,
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
@@ -29563,6 +30015,7 @@ mod tests {
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
     use aegis_core::{
+        expected_research_candidate_accept_shadow_confirmation,
         expected_research_candidate_shadow_promotion_confirmation,
         expected_strategy_research_promotion_confirmation, expected_testnet_pipeline_confirmation,
         expected_testnet_shadow_promotion_confirmation, AuthLoginResponse, AuthLogoutResponse,
@@ -29926,6 +30379,14 @@ mod tests {
 
     #[test]
     fn research_shadow_promotion_route_access_matches_role_expectations() {
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
+                "/research/candidates/123e4567-e89b-12d3-a456-426614174000/accept-shadow/apply",
+                false
+            ),
+            super::RouteAccess::Operator
+        ));
         assert!(matches!(
             route_access(
                 &axum::http::Method::POST,
@@ -30633,6 +31094,10 @@ mod tests {
             .route(
                 "/research/candidates/:id/accept-shadow/preview",
                 get(get_research_candidate_accept_shadow_preview_handler),
+            )
+            .route(
+                "/research/candidates/:id/accept-shadow/apply",
+                post(apply_research_candidate_accept_shadow_handler),
             )
             .route(
                 "/research/candidates/:id/shadow-runs",

@@ -12,6 +12,7 @@ use aegis_core::{
     ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
     ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
     ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationHistoryItem,
     ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
@@ -1354,6 +1355,18 @@ impl ApiClient {
         self.get(
             &format!("/research/candidates/{candidate_id}/accept-shadow/preview"),
             &[],
+        )
+        .await
+    }
+
+    pub async fn apply_research_candidate_accept_shadow(
+        &self,
+        candidate_id: Uuid,
+        request: &ResearchCandidateAcceptForShadowApplyRequest,
+    ) -> Result<ResearchCandidateAcceptForShadowApplyResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidates/{candidate_id}/accept-shadow/apply"),
+            request,
         )
         .await
     }
@@ -3287,6 +3300,14 @@ pub struct ResearchCandidateTestnetReviewDossierResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateAcceptForShadowPreviewResponse {
     pub preview: ResearchCandidateAcceptForShadowPreviewResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateAcceptForShadowApplyResponse {
+    pub result: ResearchCandidateAcceptForShadowApplyResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

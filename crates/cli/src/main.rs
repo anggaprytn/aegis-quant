@@ -1115,6 +1115,17 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_accept_shadow_preview(&response.preview);
                     }
                 }
+                ResearchCandidateCommands::AcceptShadowApply(args) => {
+                    let request = (&args).into();
+                    let response = client
+                        .apply_research_candidate_accept_shadow(args.candidate_id, &request)
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_accept_shadow_apply(&response.result);
+                    }
+                }
                 ResearchCandidateCommands::WalkForward { candidate_id } => {
                     let response = client
                         .get_research_candidate_walk_forward(candidate_id)

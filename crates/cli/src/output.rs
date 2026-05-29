@@ -3,16 +3,16 @@ use aegis_core::{
     MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
     ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
     ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
-    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionPreview,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
-    ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
-    ResearchCandidateWatchlistEntry, ResearchExperimentPlan, ResearchExperimentPlanRunResult,
-    ResearchHypothesis, ResearchHypothesisGenerationResult,
+    ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowPreviewResult,
+    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry, ResearchExperimentPlan,
+    ResearchExperimentPlanRunResult, ResearchHypothesis, ResearchHypothesisGenerationResult,
     ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationResult,
     ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
     ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
@@ -4104,6 +4104,36 @@ pub fn print_research_candidate_accept_shadow_preview(
                 check.code, check.passed, check.blocking, check.summary
             );
         }
+    }
+}
+
+pub fn print_research_candidate_accept_shadow_apply(
+    result: &ResearchCandidateAcceptForShadowApplyResult,
+) {
+    println!("Candidate ID: {}", result.candidate_id);
+    println!(
+        "Target: {} {} {}",
+        result.strategy_id, result.symbol, result.timeframe
+    );
+    println!("Previous status: {}", result.previous_status.as_str());
+    println!("New status: {}", result.new_status.as_str());
+    println!("Warnings acknowledged: {}", result.warnings_acknowledged);
+    println!("Lifecycle event ID: {}", result.lifecycle_event_id);
+    println!(
+        "Runner config unchanged: {}",
+        result.runner_config_unchanged
+    );
+    println!("Shadow runs created: {}", result.shadow_runs_created);
+    println!(
+        "Execution tables mutated: {}",
+        result.execution_tables_mutated
+    );
+    println!(
+        "Recommended next action: {}",
+        result.recommended_next_action
+    );
+    if !result.warnings.is_empty() {
+        println!("Warnings: {}", result.warnings.join(" | "));
     }
 }
 
