@@ -6772,6 +6772,7 @@ pub struct TestnetShadowRunResult {
     pub price_source: Option<String>,
     pub resolved_price: Option<Decimal>,
     pub status: TestnetShadowStatus,
+    pub evaluated_candle_open_time: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Uuid,
 }

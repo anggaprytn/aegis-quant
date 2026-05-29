@@ -5426,6 +5426,7 @@ pub async fn list_testnet_shadow_runs_in_window(
             resolved_price,
             reasons,
             status,
+            evaluated_candle_open_time,
             created_at,
             correlation_id
         FROM testnet_shadow_runs
@@ -5460,6 +5461,7 @@ pub async fn list_testnet_shadow_runs_in_window(
             resolved_price: row.get("resolved_price"),
             reasons: serde_json::from_value(row.get("reasons")).unwrap_or_default(),
             status: row.get("status"),
+            evaluated_candle_open_time: row.try_get("evaluated_candle_open_time").ok(),
             created_at: row.get("created_at"),
             correlation_id: row.get("correlation_id"),
         })
@@ -6119,6 +6121,32 @@ pub async fn get_research_candidate_shadow_performance(
                 WHERE run.status = 'COMPLETED'
                   AND run.decision IN ('NO_SIGNAL', 'WOULD_SUBMIT', 'RISK_REJECTED')
             )::BIGINT AS completed_shadow_runs,
+            (
+                COUNT(DISTINCT run.evaluated_candle_open_time) FILTER (
+                    WHERE run.status = 'COMPLETED'
+                      AND run.decision IN ('NO_SIGNAL', 'WOULD_SUBMIT', 'RISK_REJECTED')
+                      AND run.evaluated_candle_open_time IS NOT NULL
+                )
+                +
+                COUNT(*) FILTER (
+                    WHERE run.status = 'COMPLETED'
+                      AND run.decision IN ('NO_SIGNAL', 'WOULD_SUBMIT', 'RISK_REJECTED')
+                      AND run.evaluated_candle_open_time IS NULL
+                )
+            )::BIGINT AS independent_shadow_observation_count,
+            COUNT(DISTINCT run.evaluated_candle_open_time) FILTER (
+                WHERE run.evaluated_candle_open_time IS NOT NULL
+            )::BIGINT AS unique_evaluated_candle_count,
+            (
+                COUNT(*) FILTER (
+                    WHERE run.evaluated_candle_open_time IS NOT NULL
+                )
+                -
+                COUNT(DISTINCT run.evaluated_candle_open_time) FILTER (
+                    WHERE run.evaluated_candle_open_time IS NOT NULL
+                )
+            )::BIGINT AS duplicate_same_candle_runs_count,
+            MAX(run.evaluated_candle_open_time) AS latest_evaluated_candle_open_time,
             MAX(run.created_at) FILTER (
                 WHERE run.status <> 'ERROR'
                   AND run.decision IN ('NO_SIGNAL', 'WOULD_SUBMIT', 'RISK_REJECTED')
@@ -6149,6 +6177,10 @@ pub async fn get_research_candidate_shadow_performance(
     let error_count: i64 = row.get("error_count");
     let last_shadow_run_at = row.get("last_shadow_run_at");
     let completed_shadow_runs: i64 = row.get("completed_shadow_runs");
+    let independent_shadow_observation_count: i64 = row.get("independent_shadow_observation_count");
+    let unique_evaluated_candle_count: i64 = row.get("unique_evaluated_candle_count");
+    let duplicate_same_candle_runs_count: i64 = row.get("duplicate_same_candle_runs_count");
+    let latest_evaluated_candle_open_time = row.get("latest_evaluated_candle_open_time");
     let latest_valid_shadow_run_at = row.get("latest_valid_shadow_run_at");
     let latest_skipped_shadow_run_at = row.get("latest_skipped_shadow_run_at");
 
@@ -6168,6 +6200,10 @@ pub async fn get_research_candidate_shadow_performance(
         error_count,
         last_shadow_run_at,
         completed_shadow_runs,
+        independent_shadow_observation_count,
+        unique_evaluated_candle_count,
+        duplicate_same_candle_runs_count,
+        latest_evaluated_candle_open_time,
         latest_valid_shadow_run_at,
         latest_skipped_shadow_run_at,
         runner_alignment_current,

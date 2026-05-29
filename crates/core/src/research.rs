@@ -8901,6 +8901,10 @@ impl std::str::FromStr for ResearchCandidateShadowPerformanceRecommendation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchCandidateShadowOutcomeBreakdown {
     pub total_shadow_runs: i64,
+    pub completed_shadow_runs: i64,
+    pub independent_shadow_observation_count: i64,
+    pub unique_evaluated_candle_count: i64,
+    pub duplicate_same_candle_runs_count: i64,
     pub would_submit_count: i64,
     pub no_signal_count: i64,
     pub risk_rejected_count: i64,
@@ -8928,6 +8932,10 @@ pub struct ResearchCandidateShadowPerformance {
     pub risk_rejection_rate_pct: Decimal,
     pub last_shadow_run_at: Option<DateTime<Utc>>,
     pub completed_shadow_runs: i64,
+    pub independent_shadow_observation_count: i64,
+    pub unique_evaluated_candle_count: i64,
+    pub duplicate_same_candle_runs_count: i64,
+    pub latest_evaluated_candle_open_time: Option<DateTime<Utc>>,
     pub latest_valid_shadow_run_at: Option<DateTime<Utc>>,
     pub latest_skipped_shadow_run_at: Option<DateTime<Utc>>,
     pub runner_alignment_current: bool,
@@ -10310,6 +10318,13 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
         .map(|value| value.total_shadow_runs)
         .or_else(|| latest_qualification.map(|value| value.total_shadow_runs))
         .unwrap_or(0);
+    let independent_shadow_observation_count = shadow_performance
+        .map(|value| value.independent_shadow_observation_count)
+        .or_else(|| latest_qualification.map(|value| value.total_shadow_runs))
+        .unwrap_or(0);
+    let duplicate_same_candle_runs_count = shadow_performance
+        .map(|value| value.duplicate_same_candle_runs_count)
+        .unwrap_or(0);
     let valid_shadow_runs = shadow_performance
         .map(|value| value.completed_shadow_runs + value.risk_rejected_count)
         .unwrap_or(0);
@@ -10603,15 +10618,18 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
             true,
         ));
         recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
-    } else if total_shadow_runs < default_thresholds.min_shadow_runs {
+    } else if independent_shadow_observation_count < default_thresholds.min_shadow_runs {
         findings.push(testnet_review_finding(
             ResearchCandidateTestnetReviewSection::ShadowPerformance,
             "shadow_runs_below_default",
             format!(
-                "Linked shadow runs {} are below the default minimum {}.",
-                total_shadow_runs, default_thresholds.min_shadow_runs
+                "Independent linked shadow observations {} are below the default minimum {}.",
+                independent_shadow_observation_count, default_thresholds.min_shadow_runs
             ),
-            None,
+            Some(format!(
+                "total_linked_shadow_runs={} duplicate_same_candle_runs={}",
+                total_shadow_runs, duplicate_same_candle_runs_count
+            )),
             true,
         ));
         recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
@@ -11119,6 +11137,14 @@ pub fn evaluate_research_candidate_qualification(
         .as_ref()
         .map(|value| value.total_shadow_runs)
         .unwrap_or(0);
+    let independent_shadow_observation_count = shadow_performance
+        .as_ref()
+        .map(|value| value.independent_shadow_observation_count)
+        .unwrap_or(0);
+    let duplicate_same_candle_runs_count = shadow_performance
+        .as_ref()
+        .map(|value| value.duplicate_same_candle_runs_count)
+        .unwrap_or(0);
     let linked_shadow_completed_count = shadow_performance
         .as_ref()
         .map(|value| value.completed_shadow_runs)
@@ -11456,23 +11482,33 @@ pub fn evaluate_research_candidate_qualification(
     let skipped_or_error_rate_pct =
         calculate_percentage_rate(skipped_or_error_count, total_shadow_runs);
 
-    let enough_shadow_runs = total_shadow_runs >= thresholds.min_shadow_runs;
+    let enough_shadow_runs = independent_shadow_observation_count >= thresholds.min_shadow_runs;
     checks.push(qualification_check(
         "enough_linked_shadow_runs",
-        "Enough linked shadow runs exist",
+        "Enough independent linked shadow observations exist",
         enough_shadow_runs,
         false,
         ResearchCandidateQualificationSeverity::Medium,
         if enough_shadow_runs {
-            "Linked shadow run count meets threshold.".to_string()
+            "Independent linked shadow observation count meets threshold.".to_string()
         } else {
             format!(
-                "Linked shadow runs {} are below min {}.",
-                total_shadow_runs, thresholds.min_shadow_runs
+                "Independent linked shadow observations {} are below min {}.",
+                independent_shadow_observation_count, thresholds.min_shadow_runs
             )
         },
         Some(serde_json::json!({
             "total_shadow_runs": total_shadow_runs,
+            "completed_shadow_runs": linked_shadow_completed_count,
+            "independent_shadow_observation_count": independent_shadow_observation_count,
+            "unique_evaluated_candle_count": shadow_performance
+                .as_ref()
+                .map(|value| value.unique_evaluated_candle_count)
+                .unwrap_or(0),
+            "duplicate_same_candle_runs_count": duplicate_same_candle_runs_count,
+            "latest_evaluated_candle_open_time": shadow_performance
+                .as_ref()
+                .and_then(|value| value.latest_evaluated_candle_open_time),
             "min_shadow_runs": thresholds.min_shadow_runs,
         })),
     ));
@@ -11482,6 +11518,26 @@ pub fn evaluate_research_candidate_qualification(
             "Linked shadow runs are below the configured threshold, so qualification lost 20 points."
         ));
         recommendations.insert(ResearchCandidateQualificationRecommendation::GatherMoreShadowRuns);
+    }
+    if duplicate_same_candle_runs_count > 0 {
+        let warning = format!(
+            "{} duplicate same-candle shadow runs were treated as operational checks, not independent strategy evidence.",
+            duplicate_same_candle_runs_count
+        );
+        checks.push(qualification_check(
+            "duplicate_same_candle_shadow_runs",
+            "Duplicate same-candle shadow runs are not counted as independent evidence",
+            false,
+            false,
+            ResearchCandidateQualificationSeverity::Low,
+            &warning,
+            Some(serde_json::json!({
+                "duplicate_same_candle_runs_count": duplicate_same_candle_runs_count,
+                "independent_shadow_observation_count": independent_shadow_observation_count,
+            })),
+        ));
+        score -= 5;
+        score_explanation.push(format!("{warning} (-5 points)"));
     }
 
     let enough_would_submit = would_submit_count >= thresholds.min_would_submit_count;
@@ -11817,6 +11873,10 @@ pub fn evaluate_research_candidate_shadow_performance(
     error_count: i64,
     last_shadow_run_at: Option<DateTime<Utc>>,
     completed_shadow_runs: i64,
+    independent_shadow_observation_count: i64,
+    unique_evaluated_candle_count: i64,
+    duplicate_same_candle_runs_count: i64,
+    latest_evaluated_candle_open_time: Option<DateTime<Utc>>,
     latest_valid_shadow_run_at: Option<DateTime<Utc>>,
     latest_skipped_shadow_run_at: Option<DateTime<Utc>>,
     runner_alignment_current: bool,
@@ -11827,6 +11887,9 @@ pub fn evaluate_research_candidate_shadow_performance(
     let skipped_or_error_count = skipped_count + error_count;
     let skipped_or_error_rate_pct =
         calculate_percentage_rate(skipped_or_error_count, total_shadow_runs);
+    let independent_shadow_observation_count = independent_shadow_observation_count.max(0);
+    let unique_evaluated_candle_count = unique_evaluated_candle_count.max(0);
+    let duplicate_same_candle_runs_count = duplicate_same_candle_runs_count.max(0);
 
     let (status, recommendation) =
         if candidate_status != ResearchCandidateStatus::PromotedToShadowConfig {
@@ -11873,6 +11936,10 @@ pub fn evaluate_research_candidate_shadow_performance(
     let timeframe = timeframe.into();
     let outcome_breakdown = ResearchCandidateShadowOutcomeBreakdown {
         total_shadow_runs,
+        completed_shadow_runs,
+        independent_shadow_observation_count,
+        unique_evaluated_candle_count,
+        duplicate_same_candle_runs_count,
         would_submit_count,
         no_signal_count,
         risk_rejected_count,
@@ -11899,6 +11966,10 @@ pub fn evaluate_research_candidate_shadow_performance(
         risk_rejection_rate_pct,
         last_shadow_run_at,
         completed_shadow_runs,
+        independent_shadow_observation_count,
+        unique_evaluated_candle_count,
+        duplicate_same_candle_runs_count,
+        latest_evaluated_candle_open_time,
         latest_valid_shadow_run_at,
         latest_skipped_shadow_run_at,
         runner_alignment_current,
@@ -13464,6 +13535,10 @@ mod tests {
             0,
             None,
             0,
+            0,
+            0,
+            0,
+            None,
             None,
             None,
             true,
@@ -13498,6 +13573,10 @@ mod tests {
             0,
             None,
             0,
+            0,
+            0,
+            0,
+            None,
             None,
             None,
             true,
@@ -13537,6 +13616,10 @@ mod tests {
             0,
             Some(ts(0, 1, 0)),
             19,
+            19,
+            19,
+            0,
+            Some(ts(0, 1, 0)),
             Some(ts(0, 1, 0)),
             Some(ts(0, 0, 30)),
             true,
@@ -13564,6 +13647,10 @@ mod tests {
             0,
             Some(ts(1, 0, 0)),
             20,
+            20,
+            20,
+            0,
+            Some(ts(1, 0, 0)),
             Some(ts(1, 0, 0)),
             Some(ts(0, 30, 0)),
             true,
@@ -13889,6 +13976,10 @@ mod tests {
             error_count,
             Some(ts(1, 0, 0)),
             total_shadow_runs - skipped_count - error_count,
+            total_shadow_runs - skipped_count - error_count,
+            total_shadow_runs - skipped_count - error_count,
+            0,
+            Some(ts(1, 0, 0)),
             Some(ts(1, 0, 0)),
             if skipped_count > 0 {
                 Some(ts(0, 30, 0))
@@ -13916,6 +14007,49 @@ mod tests {
     }
 
     #[test]
+    fn qualification_counts_duplicate_same_candle_runs_as_non_independent() {
+        let performance = evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
+            "momentum_v1",
+            "BTCUSDT",
+            "1h",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            5,
+            3,
+            2,
+            0,
+            0,
+            0,
+            Some(ts(1, 0, 0)),
+            5,
+            1,
+            1,
+            4,
+            Some(ts(0, 0, 0)),
+            Some(ts(1, 0, 0)),
+            None,
+            true,
+            ts(1, 0, 0),
+        );
+        let mut request = qualification_request(Some(performance));
+        request.thresholds.min_shadow_runs = 5;
+        request.thresholds.min_would_submit_count = 1;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.code == "duplicate_same_candle_shadow_runs"));
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.code == "enough_linked_shadow_runs" && !check.passed));
+    }
+
+    #[test]
     fn qualification_treats_completed_no_signal_as_valid_but_not_qualifying_evidence() {
         let performance = evaluate_research_candidate_shadow_performance(
             Uuid::nil(),
@@ -13933,6 +14067,10 @@ mod tests {
             0,
             Some(ts(1, 0, 0)),
             1,
+            1,
+            1,
+            0,
+            Some(ts(1, 0, 0)),
             Some(ts(1, 0, 0)),
             Some(ts(0, 30, 0)),
             true,
@@ -15182,6 +15320,10 @@ mod tests {
             0,
             Some(ts(1, 0, 0)),
             1,
+            1,
+            1,
+            0,
+            Some(ts(1, 0, 0)),
             Some(ts(1, 0, 0)),
             Some(ts(0, 30, 0)),
             true,
@@ -15215,7 +15357,7 @@ mod tests {
         assert!(dossier
             .blockers
             .iter()
-            .any(|item| item.contains("Linked shadow runs 2")));
+            .any(|item| item.contains("Independent linked shadow observations 1")));
         assert_eq!(
             dossier
                 .evidence

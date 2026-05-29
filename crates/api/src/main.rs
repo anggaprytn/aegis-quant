@@ -347,6 +347,7 @@ struct AppConfig {
     bind_addr: SocketAddr,
     database_url: String,
     database_max_connections: u32,
+    shadow_observation_only: bool,
     research_candidate_observation_max_age_seconds: i64,
     cors_allowed_origins: Vec<HeaderValue>,
 }
@@ -424,6 +425,7 @@ impl AppConfig {
             })
             .transpose()?
             .unwrap_or(5);
+        let shadow_observation_only = parse_bool_env("SHADOW_OBSERVATION_ONLY")?.unwrap_or(false);
         let research_candidate_observation_max_age_seconds =
             env::var("RESEARCH_CANDIDATE_OBSERVATION_MAX_AGE_SECONDS")
                 .ok()
@@ -443,6 +445,7 @@ impl AppConfig {
             bind_addr,
             database_url,
             database_max_connections,
+            shadow_observation_only,
             research_candidate_observation_max_age_seconds,
             cors_allowed_origins,
         })
@@ -486,6 +489,17 @@ fn parse_cors_allowed_origins(value: Option<&str>) -> Result<Vec<HeaderValue>, S
     }
 
     Ok(origins)
+}
+
+fn parse_bool_env(name: &str) -> Result<Option<bool>, String> {
+    env::var(name)
+        .ok()
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            other => Err(format!("invalid {name}: expected boolean, got {other:?}")),
+        })
+        .transpose()
 }
 
 fn build_cors_layer(config: &AppConfig) -> CorsLayer {
@@ -717,6 +731,7 @@ fn shadow_runtime_state(state: &AppState) -> ShadowAppState {
             bind_addr: state.config.bind_addr,
             database_url: state.config.database_url.clone(),
             database_max_connections: state.config.database_max_connections,
+            shadow_observation_only: state.config.shadow_observation_only,
         },
         db_pool: state.db_pool.clone(),
         started_at: state.started_at,
@@ -30579,6 +30594,7 @@ mod tests {
                 bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
                 database_url: "postgres://unused".to_string(),
                 database_max_connections: 5,
+                shadow_observation_only: true,
                 research_candidate_observation_max_age_seconds:
                     DEFAULT_RESEARCH_CANDIDATE_OBSERVATION_MAX_AGE_SECONDS,
                 cors_allowed_origins: parse_cors_allowed_origins(None).expect("origins"),
@@ -31245,6 +31261,7 @@ mod tests {
                 bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
                 database_url: "postgres://unused".to_string(),
                 database_max_connections: 5,
+                shadow_observation_only: true,
                 research_candidate_observation_max_age_seconds:
                     DEFAULT_RESEARCH_CANDIDATE_OBSERVATION_MAX_AGE_SECONDS,
                 cors_allowed_origins: parse_cors_allowed_origins(None).expect("origins"),
@@ -33014,6 +33031,7 @@ mod tests {
             resolved_price: Some(Decimal::new(103_000, 0)),
             reasons: vec!["shadow coverage".to_string()],
             status: "COMPLETED".to_string(),
+            evaluated_candle_open_time: None,
             created_at,
             correlation_id: Some(Uuid::new_v4()),
         }
@@ -36322,6 +36340,7 @@ mod tests {
             resolved_price: Some(Decimal::new(100_000, 0)),
             reasons: Vec::new(),
             status: "COMPLETED".to_string(),
+            evaluated_candle_open_time: None,
             created_at: Utc::now() - chrono::Duration::minutes(20),
             correlation_id: Some(Uuid::new_v4()),
         };
@@ -36338,6 +36357,7 @@ mod tests {
             resolved_price: Some(Decimal::new(100_000, 0)),
             reasons: vec!["risk_rejected".to_string()],
             status: "REJECTED".to_string(),
+            evaluated_candle_open_time: None,
             created_at: Utc::now() - chrono::Duration::minutes(10),
             correlation_id: Some(Uuid::new_v4()),
         };
@@ -36649,6 +36669,7 @@ mod tests {
                 resolved_price: Some(Decimal::new(100_000, 0)),
                 reasons: Vec::new(),
                 status: "COMPLETED".to_string(),
+                evaluated_candle_open_time: None,
                 created_at: Utc::now() - chrono::Duration::minutes(20 - index),
                 correlation_id: Some(Uuid::new_v4()),
             };
@@ -36722,6 +36743,7 @@ mod tests {
                 resolved_price: Some(Decimal::new(100_000, 0)),
                 reasons: Vec::new(),
                 status: status.to_string(),
+                evaluated_candle_open_time: None,
                 created_at: Utc::now() - chrono::Duration::minutes(20 - index),
                 correlation_id: Some(Uuid::new_v4()),
             };
@@ -36895,6 +36917,7 @@ mod tests {
                 resolved_price: Some(Decimal::new(100_000, 0)),
                 reasons: Vec::new(),
                 status: "COMPLETED".to_string(),
+                evaluated_candle_open_time: None,
                 created_at: Utc::now() - chrono::Duration::minutes(20 - index),
                 correlation_id: Some(Uuid::new_v4()),
             };
@@ -36978,6 +37001,7 @@ mod tests {
                 resolved_price: Some(Decimal::new(100_000, 0)),
                 reasons: Vec::new(),
                 status: "COMPLETED".to_string(),
+                evaluated_candle_open_time: None,
                 created_at: Utc::now() + chrono::Duration::minutes(index + 1),
                 correlation_id: Some(Uuid::new_v4()),
             };
@@ -37152,6 +37176,7 @@ mod tests {
                 resolved_price: Some(Decimal::new(100_000, 0)),
                 reasons: Vec::new(),
                 status: "COMPLETED".to_string(),
+                evaluated_candle_open_time: None,
                 created_at: Utc::now() - chrono::Duration::minutes(35 - index),
                 correlation_id: Some(Uuid::new_v4()),
             };
@@ -37383,6 +37408,7 @@ mod tests {
                 resolved_price: Some(Decimal::new(100_000, 0)),
                 reasons: Vec::new(),
                 status: "COMPLETED".to_string(),
+                evaluated_candle_open_time: None,
                 created_at: Utc::now() - chrono::Duration::minutes(35 - index),
                 correlation_id: Some(Uuid::new_v4()),
             };
@@ -37650,6 +37676,7 @@ mod tests {
                 resolved_price: Some(Decimal::new(100_000, 0)),
                 reasons: Vec::new(),
                 status: "COMPLETED".to_string(),
+                evaluated_candle_open_time: None,
                 created_at: Utc::now() - chrono::Duration::minutes(35 - index),
                 correlation_id: Some(Uuid::new_v4()),
             };
@@ -40875,6 +40902,7 @@ mod tests {
                 bind_addr: "127.0.0.1:0".parse().expect("socket addr"),
                 database_url: "postgres://postgres:postgres@127.0.0.1:5432/aegis".to_string(),
                 database_max_connections: 1,
+                shadow_observation_only: true,
                 research_candidate_observation_max_age_seconds:
                     DEFAULT_RESEARCH_CANDIDATE_OBSERVATION_MAX_AGE_SECONDS,
                 cors_allowed_origins: parse_cors_allowed_origins(None).expect("origins"),

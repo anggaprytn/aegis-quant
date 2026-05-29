@@ -99,6 +99,7 @@ fn app_state(pool: db::PgPool) -> AppState {
                 .expect("valid bind addr"),
             database_url: "postgres://unused".to_string(),
             database_max_connections: 5,
+            shadow_observation_only: true,
         },
         db_pool: pool,
         started_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),

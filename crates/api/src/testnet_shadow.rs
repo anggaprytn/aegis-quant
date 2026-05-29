@@ -148,6 +148,8 @@ pub async fn run_testnet_shadow_once(
     actor: Option<&StateActor>,
     request: TestnetShadowRunRequest,
 ) -> Result<TestnetShadowRunResult> {
+    ensure_shadow_observation_only(state)?;
+
     let strategy_id = request.strategy_id.parse().map_err(|_| {
         TestnetShadowRunApiError::invalid_request(
             "invalid_strategy_id",
@@ -208,6 +210,10 @@ pub async fn run_testnet_shadow_once(
     };
     let candle_readiness =
         load_shadow_candle_readiness(state, &symbol, timeframe, &config, created_at).await?;
+    let evaluated_candle_open_time = candle_readiness
+        .candles
+        .last()
+        .map(|candle| candle.open_time);
 
     let mut signal = None;
     let mut signal_reason = SignalReason::ConditionsNotMet;
@@ -333,10 +339,27 @@ pub async fn run_testnet_shadow_once(
         created_at,
         plan,
         shadow_signal.as_ref(),
+        evaluated_candle_open_time,
     )
     .await?;
 
     Ok(result)
+}
+
+fn ensure_shadow_observation_only(state: &AppState) -> Result<()> {
+    if state.config.shadow_observation_only {
+        Ok(())
+    } else {
+        Err(TestnetShadowRunApiError::Validation {
+            code: "shadow_observation_only_required",
+            message:
+                "SHADOW_OBSERVATION_ONLY=true is required before recording shadow observations."
+                    .to_string(),
+            reason: "observation_only_not_enabled",
+            candidate_linking_result: "not_evaluated",
+        }
+        .into())
+    }
 }
 
 fn strategy_requires_live_market_feed(_strategy_id: StrategyId) -> bool {
@@ -463,6 +486,7 @@ async fn persist_shadow_result(
     created_at: chrono::DateTime<Utc>,
     plan: ShadowOutcomePlan,
     signal: Option<&StrategySignal>,
+    evaluated_candle_open_time: Option<chrono::DateTime<Utc>>,
 ) -> Result<TestnetShadowRunResult> {
     let candidate_match = resolve_promoted_research_candidate_for_shadow_run(
         &state.db_pool,
@@ -503,6 +527,7 @@ async fn persist_shadow_result(
             .map(|value| value.as_str().to_string())
             .collect(),
         status: plan.status.as_str().to_string(),
+        evaluated_candle_open_time,
         created_at,
         correlation_id: Some(correlation_id),
     };

@@ -98,6 +98,7 @@ pub struct AppConfig {
     pub bind_addr: SocketAddr,
     pub database_url: String,
     pub database_max_connections: u32,
+    pub shadow_observation_only: bool,
 }
 
 impl AppConfig {
@@ -119,6 +120,7 @@ impl AppConfig {
             })
             .transpose()?
             .unwrap_or(5);
+        let shadow_observation_only = parse_bool_env("SHADOW_OBSERVATION_ONLY")?.unwrap_or(false);
 
         Ok(Self {
             app_name,
@@ -126,8 +128,20 @@ impl AppConfig {
             bind_addr,
             database_url,
             database_max_connections,
+            shadow_observation_only,
         })
     }
+}
+
+fn parse_bool_env(name: &str) -> Result<Option<bool>, String> {
+    env::var(name)
+        .ok()
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            other => Err(format!("invalid {name}: expected boolean, got {other:?}")),
+        })
+        .transpose()
 }
 
 #[derive(Clone)]

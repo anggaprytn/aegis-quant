@@ -307,6 +307,7 @@ pub struct TestnetShadowRunRecord {
     pub resolved_price: Option<Decimal>,
     pub reasons: Vec<String>,
     pub status: String,
+    pub evaluated_candle_open_time: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub correlation_id: Option<Uuid>,
 }
@@ -2365,10 +2366,11 @@ pub async fn insert_testnet_shadow_run(
             resolved_price,
             reasons,
             status,
+            evaluated_candle_open_time,
             created_at,
             correlation_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING
             id,
             strategy_id,
@@ -2382,6 +2384,7 @@ pub async fn insert_testnet_shadow_run(
             resolved_price,
             reasons,
             status,
+            evaluated_candle_open_time,
             created_at,
             correlation_id
         "#,
@@ -2398,6 +2401,7 @@ pub async fn insert_testnet_shadow_run(
     .bind(run.resolved_price)
     .bind(reasons)
     .bind(&run.status)
+    .bind(run.evaluated_candle_open_time)
     .bind(run.created_at)
     .bind(run.correlation_id)
     .fetch_one(pool)
@@ -2425,6 +2429,7 @@ pub async fn list_testnet_shadow_runs(
             resolved_price,
             reasons,
             status,
+            evaluated_candle_open_time,
             created_at,
             correlation_id
         FROM testnet_shadow_runs
@@ -2458,6 +2463,7 @@ pub async fn get_testnet_shadow_run_by_id(
             resolved_price,
             reasons,
             status,
+            evaluated_candle_open_time,
             created_at,
             correlation_id
         FROM testnet_shadow_runs
@@ -11214,6 +11220,7 @@ pub fn testnet_shadow_run_result_from_record(
         price_source: record.price_source.clone(),
         resolved_price: record.resolved_price,
         status: record.status.parse::<TestnetShadowStatus>()?,
+        evaluated_candle_open_time: record.evaluated_candle_open_time,
         created_at: record.created_at,
         correlation_id: record.correlation_id.unwrap_or(record.id),
     })
@@ -11688,6 +11695,7 @@ fn map_testnet_shadow_run(row: &sqlx::postgres::PgRow) -> TestnetShadowRunRecord
         resolved_price: row.get("resolved_price"),
         reasons,
         status: row.get("status"),
+        evaluated_candle_open_time: row.try_get("evaluated_candle_open_time").ok(),
         created_at: row.get("created_at"),
         correlation_id: row.get("correlation_id"),
     }
