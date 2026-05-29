@@ -25070,20 +25070,6 @@ async fn build_research_candidate_evidence_bundle(
     .fetch_optional(&state.db_pool)
     .await?;
 
-    let latest_qualification =
-        get_latest_research_candidate_qualification_evaluation(&state.db_pool, candidate.id)
-            .await?;
-    let shadow_performance = get_research_candidate_shadow_performance(
-        &state.db_pool,
-        &candidate,
-        &ResearchCandidateShadowPerformanceWindow {
-            start_time: candidate.updated_at,
-            end_time: exported_at,
-        },
-        false,
-        exported_at,
-    )
-    .await?;
     let latest_walk_forward =
         get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id).await?;
 
@@ -25126,6 +25112,25 @@ async fn build_research_candidate_evidence_bundle(
         Some(run) => list_strategy_walk_forward_windows(&state.db_pool, run.id).await?,
         None => Vec::new(),
     };
+    let evidence_snapshot_at = experiment
+        .as_ref()
+        .map(|item| item.end_time)
+        .or_else(|| walk_forward_run.as_ref().and_then(|item| item.end_time))
+        .unwrap_or(candidate.updated_at);
+    let latest_qualification =
+        get_latest_research_candidate_qualification_evaluation(&state.db_pool, candidate.id)
+            .await?;
+    let shadow_performance = get_research_candidate_shadow_performance(
+        &state.db_pool,
+        &candidate,
+        &ResearchCandidateShadowPerformanceWindow {
+            start_time: candidate.updated_at,
+            end_time: evidence_snapshot_at,
+        },
+        false,
+        evidence_snapshot_at,
+    )
+    .await?;
 
     let data_window_start = experiment
         .as_ref()
@@ -25136,7 +25141,7 @@ async fn build_research_candidate_evidence_bundle(
         .as_ref()
         .map(|item| item.end_time)
         .or_else(|| walk_forward_run.as_ref().and_then(|item| item.end_time))
-        .unwrap_or(exported_at);
+        .unwrap_or(evidence_snapshot_at);
     let fee_bps = experiment
         .as_ref()
         .map(|item| item.fee_bps)

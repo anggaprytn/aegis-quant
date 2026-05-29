@@ -7996,7 +7996,6 @@ pub fn research_candidate_bundle_fingerprint_payload(
 ) -> Value {
     json!({
         "schema_version": bundle.schema_version,
-        "exported_at": bundle.exported_at,
         "source_environment": bundle.source_environment,
         "candidate": bundle.candidate,
         "evidence_provenance": bundle.evidence_provenance,
@@ -18240,6 +18239,22 @@ mod tests {
             research_candidate_bundle_fingerprint(&second).unwrap();
 
         assert_ne!(
+            first.integrity.bundle_fingerprint,
+            second.integrity.bundle_fingerprint
+        );
+    }
+
+    #[test]
+    fn research_candidate_bundle_fingerprint_ignores_export_time() {
+        let mut first = sample_research_candidate_bundle_v2(json!({"holding_candles": 20}));
+        let mut second = first.clone();
+        first.exported_at = ts(1, 0, 0);
+        second.exported_at = ts(1, 0, 1);
+        first.integrity.bundle_fingerprint = research_candidate_bundle_fingerprint(&first).unwrap();
+        second.integrity.bundle_fingerprint =
+            research_candidate_bundle_fingerprint(&second).unwrap();
+
+        assert_eq!(
             first.integrity.bundle_fingerprint,
             second.integrity.bundle_fingerprint
         );
