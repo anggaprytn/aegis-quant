@@ -8786,6 +8786,8 @@ pub struct ResearchCandidateObservationSummaryView {
     pub candidate_id: Uuid,
     pub total_observations: i64,
     pub latest_observation_status: Option<StrategyCandidateObservationStatus>,
+    pub latest_formal_observation_at: Option<DateTime<Utc>>,
+    pub formal_observation_stale: bool,
     pub latest_runner_alignment: Option<StrategyCandidateRunnerAlignment>,
     pub latest_readiness_status: Option<ExecutionReadinessStatus>,
     pub latest_recommendations: Vec<String>,
@@ -8793,6 +8795,21 @@ pub struct ResearchCandidateObservationSummaryView {
     pub alignment_mismatch_count: i64,
     pub runner_config_drift_count: i64,
     pub last_observed_at: Option<DateTime<Utc>>,
+    pub latest_linked_shadow_run_id: Option<Uuid>,
+    pub latest_linked_shadow_decision: Option<String>,
+    pub latest_linked_shadow_status: Option<String>,
+    pub latest_linked_shadow_run_at: Option<DateTime<Utc>>,
+    pub latest_valid_shadow_run_id: Option<Uuid>,
+    pub latest_valid_shadow_decision: Option<String>,
+    pub latest_valid_shadow_status: Option<String>,
+    pub latest_valid_shadow_run_at: Option<DateTime<Utc>>,
+    pub latest_skipped_shadow_run_at: Option<DateTime<Utc>>,
+    pub linked_shadow_completed_count: i64,
+    pub linked_shadow_no_signal_count: i64,
+    pub linked_shadow_would_submit_count: i64,
+    pub linked_shadow_risk_rejected_count: i64,
+    pub linked_shadow_skipped_count: i64,
+    pub shadow_observation_status: Option<ResearchCandidateShadowPerformanceStatus>,
     pub current_accept_for_shadow_eligible: bool,
     pub current_accept_for_shadow_blockers: Vec<String>,
     pub computed_at: DateTime<Utc>,
@@ -8910,6 +8927,9 @@ pub struct ResearchCandidateShadowPerformance {
     pub would_submit_rate_pct: Decimal,
     pub risk_rejection_rate_pct: Decimal,
     pub last_shadow_run_at: Option<DateTime<Utc>>,
+    pub completed_shadow_runs: i64,
+    pub latest_valid_shadow_run_at: Option<DateTime<Utc>>,
+    pub latest_skipped_shadow_run_at: Option<DateTime<Utc>>,
     pub runner_alignment_current: bool,
     pub recommendation: ResearchCandidateShadowPerformanceRecommendation,
     pub status: ResearchCandidateShadowPerformanceStatus,
@@ -9404,6 +9424,8 @@ pub struct ResearchCandidateQualificationRequest {
     pub candidate_id: Uuid,
     pub candidate_status: Option<ResearchCandidateStatus>,
     pub fresh_observation: bool,
+    pub formal_observation_status: Option<StrategyCandidateObservationStatus>,
+    pub formal_observation_stale: bool,
     pub runner_alignment_valid: bool,
     pub shadow_runner_covers_candidate: bool,
     #[serde(default)]
@@ -9425,6 +9447,16 @@ pub struct ResearchCandidateQualificationResult {
     pub fresh_observation: bool,
     pub runner_alignment_valid: bool,
     pub latest_readiness_status: Option<ExecutionReadinessStatus>,
+    pub linked_shadow_completed_count: i64,
+    pub linked_shadow_no_signal_count: i64,
+    pub linked_shadow_would_submit_count: i64,
+    pub linked_shadow_risk_rejected_count: i64,
+    pub linked_shadow_skipped_count: i64,
+    pub latest_valid_shadow_run_at: Option<DateTime<Utc>>,
+    pub latest_skipped_shadow_run_at: Option<DateTime<Utc>>,
+    pub formal_observation_status: Option<StrategyCandidateObservationStatus>,
+    pub formal_observation_stale: bool,
+    pub evidence_interpretation: String,
     pub walk_forward_status: Option<StrategyWalkForwardRobustnessStatus>,
     pub walk_forward_run_id: Option<Uuid>,
     pub walk_forward_score: Option<Decimal>,
@@ -10278,6 +10310,20 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
         .map(|value| value.total_shadow_runs)
         .or_else(|| latest_qualification.map(|value| value.total_shadow_runs))
         .unwrap_or(0);
+    let valid_shadow_runs = shadow_performance
+        .map(|value| value.completed_shadow_runs + value.risk_rejected_count)
+        .unwrap_or(0);
+    let would_submit_count = shadow_performance
+        .map(|value| value.would_submit_count)
+        .or_else(|| latest_qualification.map(|value| value.would_submit_count))
+        .unwrap_or(0);
+    let skipped_shadow_runs = shadow_performance
+        .map(|value| value.skipped_count)
+        .unwrap_or(0);
+    let valid_shadow_evidence_available = valid_shadow_runs > 0
+        || shadow_performance
+            .and_then(|value| value.latest_valid_shadow_run_at)
+            .is_some();
     let current_status = candidate.map(|value| value.status);
     let accepted_for_shadow = matches!(
         current_status,
@@ -10360,11 +10406,22 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
         recommendations.insert(ResearchCandidateTestnetReviewRecommendation::FixRunnerAlignment);
     }
 
-    if !fresh_observation {
+    if !fresh_observation && valid_shadow_evidence_available {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::Observation,
+            "formal_observation_stale",
+            "Formal observation is stale or missing; valid linked shadow evidence is shown separately.",
+            latest_observation
+                .and_then(|value| value.observation_expires_at)
+                .map(|value| format!("formal observation expires at {}", value.to_rfc3339())),
+            false,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::RefreshObservation);
+    } else if !fresh_observation {
         findings.push(testnet_review_finding(
             ResearchCandidateTestnetReviewSection::Observation,
             "fresh_observation_missing",
-            "Fresh observation is missing or stale.",
+            "Fresh formal observation is missing or stale and no valid linked shadow evidence exists.",
             latest_observation
                 .and_then(|value| value.observation_expires_at)
                 .map(|value| format!("observation expires at {}", value.to_rfc3339())),
@@ -10555,6 +10612,47 @@ pub fn evaluate_research_candidate_testnet_review_dossier(
                 total_shadow_runs, default_thresholds.min_shadow_runs
             ),
             None,
+            true,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
+    }
+
+    if would_submit_count < default_thresholds.min_would_submit_count {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::ShadowPerformance,
+            "would_submit_evidence_insufficient",
+            format!(
+                "WOULD_SUBMIT evidence {} is below the default minimum {}.",
+                would_submit_count, default_thresholds.min_would_submit_count
+            ),
+            shadow_performance.map(|value| {
+                format!(
+                    "NO_SIGNAL={} RISK_REJECTED={} skipped={} latest_valid_shadow_run_at={}",
+                    value.no_signal_count,
+                    value.risk_rejected_count,
+                    value.skipped_count,
+                    value
+                        .latest_valid_shadow_run_at
+                        .map(|time| time.to_rfc3339())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            }),
+            true,
+        ));
+        recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
+    }
+
+    if skipped_shadow_runs > 0 {
+        findings.push(testnet_review_finding(
+            ResearchCandidateTestnetReviewSection::ShadowPerformance,
+            "shadow_skips_present",
+            format!(
+                "Skipped shadow runs are present and counted separately (skipped={}).",
+                skipped_shadow_runs
+            ),
+            shadow_performance
+                .and_then(|value| value.latest_skipped_shadow_run_at)
+                .map(|time| format!("latest skipped shadow run at {}", time.to_rfc3339())),
             false,
         ));
         recommendations.insert(ResearchCandidateTestnetReviewRecommendation::GatherMoreShadowData);
@@ -11016,6 +11114,42 @@ pub fn evaluate_research_candidate_qualification(
 
     let status_is_promoted =
         request.candidate_status == Some(ResearchCandidateStatus::PromotedToShadowConfig);
+    let shadow_performance = request.shadow_performance.clone();
+    let total_shadow_runs = shadow_performance
+        .as_ref()
+        .map(|value| value.total_shadow_runs)
+        .unwrap_or(0);
+    let linked_shadow_completed_count = shadow_performance
+        .as_ref()
+        .map(|value| value.completed_shadow_runs)
+        .unwrap_or(0);
+    let would_submit_count = shadow_performance
+        .as_ref()
+        .map(|value| value.would_submit_count)
+        .unwrap_or(0);
+    let no_signal_count = shadow_performance
+        .as_ref()
+        .map(|value| value.no_signal_count)
+        .unwrap_or(0);
+    let risk_rejected_count = shadow_performance
+        .as_ref()
+        .map(|value| value.risk_rejected_count)
+        .unwrap_or(0);
+    let linked_shadow_skipped_count = shadow_performance
+        .as_ref()
+        .map(|value| value.skipped_count)
+        .unwrap_or(0);
+    let latest_valid_shadow_run_at = shadow_performance
+        .as_ref()
+        .and_then(|value| value.latest_valid_shadow_run_at);
+    let latest_skipped_shadow_run_at = shadow_performance
+        .as_ref()
+        .and_then(|value| value.latest_skipped_shadow_run_at);
+    let valid_shadow_evidence_available = latest_valid_shadow_run_at.is_some()
+        || linked_shadow_completed_count > 0
+        || would_submit_count > 0
+        || no_signal_count > 0
+        || risk_rejected_count > 0;
     checks.push(qualification_check(
         "candidate_status_promoted_to_shadow_config",
         "Candidate status is PROMOTED_TO_SHADOW_CONFIG",
@@ -11043,26 +11177,55 @@ pub fn evaluate_research_candidate_qualification(
             .insert(ResearchCandidateQualificationRecommendation::ExpandShadowRunnerCoverage);
     }
 
-    let fresh_observation_passed =
+    let fresh_observation_requirement_satisfied = !thresholds.require_fresh_observation
+        || request.fresh_observation
+        || valid_shadow_evidence_available;
+    let fresh_observation_check_passed =
         !thresholds.require_fresh_observation || request.fresh_observation;
+    let fresh_observation_blocking =
+        thresholds.require_fresh_observation && !valid_shadow_evidence_available;
+    let fresh_observation_summary = if fresh_observation_check_passed {
+        if request.fresh_observation {
+            "Fresh formal observation is available.".to_string()
+        } else {
+            "Fresh formal observation is not required by the active thresholds.".to_string()
+        }
+    } else if fresh_observation_requirement_satisfied {
+        "Formal observation is stale or missing, but valid linked shadow evidence exists."
+            .to_string()
+    } else {
+        "Fresh formal observation is required and no valid linked shadow evidence exists."
+            .to_string()
+    };
     checks.push(qualification_check(
         "fresh_observation_required",
-        "Candidate has fresh observation",
-        fresh_observation_passed,
-        thresholds.require_fresh_observation,
+        "Candidate has fresh formal observation or valid linked shadow evidence",
+        fresh_observation_check_passed,
+        fresh_observation_blocking,
         ResearchCandidateQualificationSeverity::High,
-        if fresh_observation_passed {
-            "Fresh observation is available."
-        } else {
-            "Fresh observation is required but missing or stale."
-        },
-        None,
+        fresh_observation_summary,
+        Some(serde_json::json!({
+            "formal_observation_status": request
+                .formal_observation_status
+                .map(|status| status.as_str()),
+            "formal_observation_stale": request.formal_observation_stale,
+            "valid_linked_shadow_evidence_available": valid_shadow_evidence_available,
+            "latest_valid_shadow_run_at": latest_valid_shadow_run_at,
+        })),
     ));
-    if !fresh_observation_passed {
+    if thresholds.require_fresh_observation && !request.fresh_observation {
         score -= 25;
-        score_explanation.push(
-            "Fresh observation is missing or stale, so qualification lost 25 points.".to_string(),
-        );
+        if valid_shadow_evidence_available {
+            score_explanation.push(
+                "Formal observation is stale or missing, but valid linked shadow evidence exists; qualification lost 25 points as a warning."
+                    .to_string(),
+            );
+        } else {
+            score_explanation.push(
+                "Fresh formal observation is missing or stale and no valid linked shadow evidence exists, so qualification lost 25 points."
+                    .to_string(),
+            );
+        }
         recommendations
             .insert(ResearchCandidateQualificationRecommendation::RefreshCandidateObservation);
     }
@@ -11282,15 +11445,6 @@ pub fn evaluate_research_candidate_qualification(
         }
     }
 
-    let shadow_performance = request.shadow_performance.clone();
-    let total_shadow_runs = shadow_performance
-        .as_ref()
-        .map(|value| value.total_shadow_runs)
-        .unwrap_or(0);
-    let would_submit_count = shadow_performance
-        .as_ref()
-        .map(|value| value.would_submit_count)
-        .unwrap_or(0);
     let risk_rejection_rate_pct = shadow_performance
         .as_ref()
         .map(|value| value.risk_rejection_rate_pct)
@@ -11560,6 +11714,25 @@ pub fn evaluate_research_candidate_qualification(
         );
     }
 
+    let evidence_interpretation = if valid_shadow_evidence_available && would_submit_count <= 0 {
+        format!(
+            "Valid linked shadow observation exists (NO_SIGNAL={}, RISK_REJECTED={}, WOULD_SUBMIT=0); pipeline is observing the candidate, but actionable WOULD_SUBMIT evidence is insufficient for testnet readiness.",
+            no_signal_count, risk_rejected_count
+        )
+    } else if valid_shadow_evidence_available {
+        format!(
+            "Valid linked shadow observation exists (WOULD_SUBMIT={}, NO_SIGNAL={}, RISK_REJECTED={}); stale or skipped runs are tracked separately.",
+            would_submit_count, no_signal_count, risk_rejected_count
+        )
+    } else if linked_shadow_skipped_count > 0 {
+        format!(
+            "Only skipped shadow runs are linked (skipped={}); this is infrastructure/readiness evidence, not valid signal observation evidence.",
+            linked_shadow_skipped_count
+        )
+    } else {
+        "No valid linked shadow observation evidence is available.".to_string()
+    };
+
     ResearchCandidateQualificationResult {
         candidate_id: request.candidate_id,
         status,
@@ -11567,6 +11740,16 @@ pub fn evaluate_research_candidate_qualification(
         fresh_observation: request.fresh_observation,
         runner_alignment_valid: request.runner_alignment_valid,
         latest_readiness_status: readiness_status,
+        linked_shadow_completed_count,
+        linked_shadow_no_signal_count: no_signal_count,
+        linked_shadow_would_submit_count: would_submit_count,
+        linked_shadow_risk_rejected_count: risk_rejected_count,
+        linked_shadow_skipped_count,
+        latest_valid_shadow_run_at,
+        latest_skipped_shadow_run_at,
+        formal_observation_status: request.formal_observation_status,
+        formal_observation_stale: request.formal_observation_stale,
+        evidence_interpretation,
         walk_forward_status: walk_forward_evidence
             .as_ref()
             .map(|value| value.robustness_status),
@@ -11633,6 +11816,9 @@ pub fn evaluate_research_candidate_shadow_performance(
     skipped_count: i64,
     error_count: i64,
     last_shadow_run_at: Option<DateTime<Utc>>,
+    completed_shadow_runs: i64,
+    latest_valid_shadow_run_at: Option<DateTime<Utc>>,
+    latest_skipped_shadow_run_at: Option<DateTime<Utc>>,
     runner_alignment_current: bool,
     computed_at: DateTime<Utc>,
 ) -> ResearchCandidateShadowPerformance {
@@ -11712,6 +11898,9 @@ pub fn evaluate_research_candidate_shadow_performance(
         would_submit_rate_pct,
         risk_rejection_rate_pct,
         last_shadow_run_at,
+        completed_shadow_runs,
+        latest_valid_shadow_run_at,
+        latest_skipped_shadow_run_at,
         runner_alignment_current,
         recommendation,
         status,
@@ -13274,6 +13463,9 @@ mod tests {
             0,
             0,
             None,
+            0,
+            None,
+            None,
             true,
             ts(0, 1, 0),
         );
@@ -13304,6 +13496,9 @@ mod tests {
             0,
             0,
             0,
+            None,
+            0,
+            None,
             None,
             true,
             ts(0, 1, 0),
@@ -13341,6 +13536,9 @@ mod tests {
             1,
             0,
             Some(ts(0, 1, 0)),
+            19,
+            Some(ts(0, 1, 0)),
+            Some(ts(0, 0, 30)),
             true,
             ts(0, 1, 0),
         );
@@ -13365,6 +13563,9 @@ mod tests {
             4,
             0,
             Some(ts(1, 0, 0)),
+            20,
+            Some(ts(1, 0, 0)),
+            Some(ts(0, 30, 0)),
             true,
             ts(1, 0, 0),
         );
@@ -13386,6 +13587,8 @@ mod tests {
             candidate_id: Uuid::nil(),
             candidate_status: Some(ResearchCandidateStatus::PromotedToShadowConfig),
             fresh_observation: true,
+            formal_observation_status: Some(StrategyCandidateObservationStatus::ReadyForReview),
+            formal_observation_stale: false,
             runner_alignment_valid: true,
             shadow_runner_covers_candidate: true,
             runner_mismatch_count: 0,
@@ -13546,7 +13749,7 @@ mod tests {
     fn sample_testnet_review_request() -> ResearchCandidateTestnetReviewRequest {
         let candidate = sample_research_candidate(ResearchCandidateStatus::PromotedToShadowConfig);
         let observation = sample_observation(ExecutionReadinessStatus::Ready);
-        let performance = qualification_performance(35, 8, 3, 1, 0);
+        let performance = qualification_performance(35, 8, 3, 0, 0);
         let qualification = ResearchCandidateQualificationEvaluation {
             id: Uuid::from_u128(0x300),
             candidate_id: candidate.id,
@@ -13611,12 +13814,14 @@ mod tests {
             latest_qualification_evaluation: Some(qualification),
             qualification_trend: ResearchCandidateQualificationTrend::Stable,
             qualification_evaluation_recent: true,
-            shadow_performance_summary: Some(performance),
+            shadow_performance_summary: Some(performance.clone()),
             latest_observation: Some(observation.clone()),
             observation_summary: Some(ResearchCandidateObservationSummaryView {
                 candidate_id: Uuid::from_u128(0x100),
                 total_observations: 1,
                 latest_observation_status: Some(observation.status),
+                latest_formal_observation_at: Some(observation.evaluated_at),
+                formal_observation_stale: false,
                 latest_runner_alignment: Some(aligned_runner_alignment()),
                 latest_readiness_status: Some(ExecutionReadinessStatus::Ready),
                 latest_recommendations: vec!["Ready for review.".to_string()],
@@ -13624,6 +13829,21 @@ mod tests {
                 alignment_mismatch_count: 0,
                 runner_config_drift_count: 0,
                 last_observed_at: Some(observation.last_observed_at),
+                latest_linked_shadow_run_id: None,
+                latest_linked_shadow_decision: None,
+                latest_linked_shadow_status: None,
+                latest_linked_shadow_run_at: None,
+                latest_valid_shadow_run_id: None,
+                latest_valid_shadow_decision: None,
+                latest_valid_shadow_status: None,
+                latest_valid_shadow_run_at: Some(ts(1, 0, 0)),
+                latest_skipped_shadow_run_at: None,
+                linked_shadow_completed_count: performance.completed_shadow_runs,
+                linked_shadow_no_signal_count: performance.no_signal_count,
+                linked_shadow_would_submit_count: performance.would_submit_count,
+                linked_shadow_risk_rejected_count: performance.risk_rejected_count,
+                linked_shadow_skipped_count: performance.skipped_count,
+                shadow_observation_status: Some(performance.status),
                 current_accept_for_shadow_eligible: true,
                 current_accept_for_shadow_blockers: Vec::new(),
                 computed_at: ts(1, 0, 0),
@@ -13668,6 +13888,13 @@ mod tests {
             skipped_count,
             error_count,
             Some(ts(1, 0, 0)),
+            total_shadow_runs - skipped_count - error_count,
+            Some(ts(1, 0, 0)),
+            if skipped_count > 0 {
+                Some(ts(0, 30, 0))
+            } else {
+                None
+            },
             true,
             ts(1, 0, 0),
         )
@@ -13686,6 +13913,57 @@ mod tests {
         assert!(result
             .recommendations
             .contains(&ResearchCandidateQualificationRecommendation::GatherMoreShadowRuns));
+    }
+
+    #[test]
+    fn qualification_treats_completed_no_signal_as_valid_but_not_qualifying_evidence() {
+        let performance = evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            2,
+            0,
+            1,
+            0,
+            1,
+            0,
+            Some(ts(1, 0, 0)),
+            1,
+            Some(ts(1, 0, 0)),
+            Some(ts(0, 30, 0)),
+            true,
+            ts(1, 0, 0),
+        );
+        let mut request = qualification_request(Some(performance));
+        request.fresh_observation = false;
+        request.formal_observation_stale = true;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::NeedsMoreData
+        );
+        assert_eq!(result.linked_shadow_completed_count, 1);
+        assert_eq!(result.linked_shadow_no_signal_count, 1);
+        assert_eq!(result.linked_shadow_would_submit_count, 0);
+        assert_eq!(result.linked_shadow_skipped_count, 1);
+        assert_eq!(result.latest_valid_shadow_run_at, Some(ts(1, 0, 0)));
+        assert_eq!(result.latest_skipped_shadow_run_at, Some(ts(0, 30, 0)));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("valid linked shadow evidence")));
+        assert!(result
+            .evidence_interpretation
+            .contains("Valid linked shadow observation exists"));
+        assert!(result.recommendations.contains(
+            &ResearchCandidateQualificationRecommendation::GenerateMoreWouldSubmitEvidence
+        ));
     }
 
     #[test]
@@ -13718,9 +13996,29 @@ mod tests {
     }
 
     #[test]
-    fn qualification_not_qualified_without_fresh_observation() {
+    fn qualification_warns_without_fresh_observation_when_valid_shadow_evidence_exists() {
         let mut request = qualification_request(Some(qualification_performance(40, 6, 4, 0, 0)));
         request.fresh_observation = false;
+        request.formal_observation_stale = true;
+
+        let result = evaluate_research_candidate_qualification(&request);
+
+        assert_eq!(
+            result.status,
+            ResearchCandidateQualificationStatus::Qualified
+        );
+        assert!(result.formal_observation_stale);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("valid linked shadow evidence")));
+    }
+
+    #[test]
+    fn qualification_blocks_stale_formal_observation_without_valid_shadow_evidence() {
+        let mut request = qualification_request(None);
+        request.fresh_observation = false;
+        request.formal_observation_stale = true;
 
         let result = evaluate_research_candidate_qualification(&request);
 
@@ -13728,6 +14026,10 @@ mod tests {
             result.status,
             ResearchCandidateQualificationStatus::NotQualified
         );
+        assert!(result
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("no valid linked shadow evidence")));
     }
 
     #[test]
@@ -14820,7 +15122,7 @@ mod tests {
     }
 
     #[test]
-    fn testnet_review_dossier_without_observation_is_blocked() {
+    fn testnet_review_dossier_without_observation_uses_shadow_evidence_but_requires_review() {
         let mut request = sample_testnet_review_request();
         request.latest_observation = None;
         request.observation_summary = None;
@@ -14832,12 +15134,12 @@ mod tests {
 
         assert_eq!(
             dossier.status,
-            ResearchCandidateTestnetReviewStatus::Blocked
+            ResearchCandidateTestnetReviewStatus::NotReady
         );
         assert!(dossier
-            .blockers
+            .warnings
             .iter()
-            .any(|item| item.contains("Fresh observation")));
+            .any(|item| item.contains("valid linked shadow evidence")));
     }
 
     #[test]
@@ -14859,6 +15161,69 @@ mod tests {
             .blockers
             .iter()
             .any(|item| item.contains("No linked shadow runs")));
+    }
+
+    #[test]
+    fn testnet_review_dossier_blocks_no_signal_only_shadow_evidence_as_insufficient() {
+        let mut request = sample_testnet_review_request();
+        request.shadow_performance_summary = Some(evaluate_research_candidate_shadow_performance(
+            Uuid::nil(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
+            "momentum_v1",
+            "BTCUSDT",
+            "15m",
+            ts(0, 0, 0),
+            ts(1, 0, 0),
+            2,
+            0,
+            1,
+            0,
+            1,
+            0,
+            Some(ts(1, 0, 0)),
+            1,
+            Some(ts(1, 0, 0)),
+            Some(ts(0, 30, 0)),
+            true,
+            ts(1, 0, 0),
+        ));
+        if let Some(evaluation) = request.latest_qualification_evaluation.as_mut() {
+            evaluation.status = ResearchCandidateQualificationStatus::NotQualified;
+            evaluation.total_shadow_runs = 2;
+            evaluation.would_submit_count = 0;
+        }
+        request.observation_freshness = ResearchCandidateObservationFreshnessStatus::Stale;
+
+        let dossier = evaluate_research_candidate_testnet_review_dossier(&request);
+
+        assert_eq!(
+            dossier.status,
+            ResearchCandidateTestnetReviewStatus::Blocked
+        );
+        assert!(dossier
+            .warnings
+            .iter()
+            .any(|item| item.contains("Formal observation")));
+        assert!(dossier
+            .warnings
+            .iter()
+            .any(|item| item.contains("Skipped shadow runs")));
+        assert!(dossier
+            .blockers
+            .iter()
+            .any(|item| item.contains("WOULD_SUBMIT evidence 0")));
+        assert!(dossier
+            .blockers
+            .iter()
+            .any(|item| item.contains("Linked shadow runs 2")));
+        assert_eq!(
+            dossier
+                .evidence
+                .shadow_performance_summary
+                .as_ref()
+                .map(|summary| summary.no_signal_count),
+            Some(1)
+        );
     }
 
     #[test]

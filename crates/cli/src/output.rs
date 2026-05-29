@@ -3425,8 +3425,58 @@ pub fn print_research_candidate_observation_summary(
             .unwrap_or_else(|| "-".to_string())
     );
     println!(
-        "Counts: stale={} mismatch={} drift={}",
-        summary.stale_count, summary.alignment_mismatch_count, summary.runner_config_drift_count
+        "Latest formal observation: at={} stale={}",
+        summary
+            .latest_formal_observation_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string()),
+        summary.formal_observation_stale
+    );
+    println!(
+        "Latest linked shadow: id={} decision={} status={} at={}",
+        summary
+            .latest_linked_shadow_run_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        summary
+            .latest_linked_shadow_decision
+            .as_deref()
+            .unwrap_or("-"),
+        summary
+            .latest_linked_shadow_status
+            .as_deref()
+            .unwrap_or("-"),
+        summary
+            .latest_linked_shadow_run_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Latest valid shadow: id={} decision={} status={} at={}",
+        summary
+            .latest_valid_shadow_run_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        summary
+            .latest_valid_shadow_decision
+            .as_deref()
+            .unwrap_or("-"),
+        summary.latest_valid_shadow_status.as_deref().unwrap_or("-"),
+        summary
+            .latest_valid_shadow_run_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Counts: stale={} mismatch={} drift={} shadow_completed={} no_signal={} would_submit={} risk_rejected={} skipped={}",
+        summary.stale_count,
+        summary.alignment_mismatch_count,
+        summary.runner_config_drift_count,
+        summary.linked_shadow_completed_count,
+        summary.linked_shadow_no_signal_count,
+        summary.linked_shadow_would_submit_count,
+        summary.linked_shadow_risk_rejected_count,
+        summary.linked_shadow_skipped_count
     );
     println!(
         "Current accept_for_shadow eligibility: {}",
@@ -3640,6 +3690,34 @@ pub fn print_research_candidate_qualification(
         } else {
             "NO"
         }
+    );
+    println!(
+        "Formal observation: status={} stale={}",
+        qualification
+            .formal_observation_status
+            .map(|value| value.as_str())
+            .unwrap_or("MISSING"),
+        qualification.formal_observation_stale
+    );
+    println!(
+        "Linked shadow evidence: completed={} no_signal={} would_submit={} risk_rejected={} skipped={} latest_valid={} latest_skipped={}",
+        qualification.linked_shadow_completed_count,
+        qualification.linked_shadow_no_signal_count,
+        qualification.linked_shadow_would_submit_count,
+        qualification.linked_shadow_risk_rejected_count,
+        qualification.linked_shadow_skipped_count,
+        qualification
+            .latest_valid_shadow_run_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string()),
+        qualification
+            .latest_skipped_shadow_run_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Evidence interpretation: {}",
+        qualification.evidence_interpretation
     );
     if qualification.threshold_override_below_default {
         println!(

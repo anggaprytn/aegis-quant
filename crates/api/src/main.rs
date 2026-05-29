@@ -22068,6 +22068,9 @@ async fn current_runner_config_hash(state: &AppState) -> Option<String> {
 fn build_observation_summary(
     candidate_id: Uuid,
     history: &[ResearchCandidateObservationHistoryItem],
+    shadow_performance: Option<&ResearchCandidateShadowPerformance>,
+    latest_linked_shadow_run: Option<&ResearchCandidateShadowRunLink>,
+    latest_valid_shadow_run: Option<&ResearchCandidateShadowRunLink>,
     now: DateTime<Utc>,
 ) -> ResearchCandidateObservationSummaryView {
     let latest = history.first();
@@ -22098,6 +22101,10 @@ fn build_observation_summary(
         candidate_id,
         total_observations: history.len() as i64,
         latest_observation_status: latest.map(|item| item.observation.status),
+        latest_formal_observation_at: latest.map(|item| item.observation.evaluated_at),
+        formal_observation_stale: latest
+            .map(|item| item.freshness_status == ResearchCandidateObservationFreshnessStatus::Stale)
+            .unwrap_or(false),
         latest_runner_alignment: latest.map(|item| item.observation.runner_alignment.clone()),
         latest_readiness_status: latest
             .and_then(|item| item.observation.summary.latest_readiness_status),
@@ -22108,10 +22115,44 @@ fn build_observation_summary(
         alignment_mismatch_count,
         runner_config_drift_count,
         last_observed_at: latest.map(|item| item.observation.last_observed_at),
+        latest_linked_shadow_run_id: latest_linked_shadow_run.map(|run| run.shadow_run_id),
+        latest_linked_shadow_decision: latest_linked_shadow_run.map(|run| run.decision.clone()),
+        latest_linked_shadow_status: latest_linked_shadow_run.map(|run| run.status.clone()),
+        latest_linked_shadow_run_at: latest_linked_shadow_run.map(|run| run.shadow_created_at),
+        latest_valid_shadow_run_id: latest_valid_shadow_run.map(|run| run.shadow_run_id),
+        latest_valid_shadow_decision: latest_valid_shadow_run.map(|run| run.decision.clone()),
+        latest_valid_shadow_status: latest_valid_shadow_run.map(|run| run.status.clone()),
+        latest_valid_shadow_run_at: latest_valid_shadow_run.map(|run| run.shadow_created_at),
+        latest_skipped_shadow_run_at: shadow_performance
+            .and_then(|performance| performance.latest_skipped_shadow_run_at),
+        linked_shadow_completed_count: shadow_performance
+            .map(|performance| performance.completed_shadow_runs)
+            .unwrap_or(0),
+        linked_shadow_no_signal_count: shadow_performance
+            .map(|performance| performance.no_signal_count)
+            .unwrap_or(0),
+        linked_shadow_would_submit_count: shadow_performance
+            .map(|performance| performance.would_submit_count)
+            .unwrap_or(0),
+        linked_shadow_risk_rejected_count: shadow_performance
+            .map(|performance| performance.risk_rejected_count)
+            .unwrap_or(0),
+        linked_shadow_skipped_count: shadow_performance
+            .map(|performance| performance.skipped_count)
+            .unwrap_or(0),
+        shadow_observation_status: shadow_performance.map(|performance| performance.status),
         current_accept_for_shadow_eligible,
         current_accept_for_shadow_blockers,
         computed_at: now,
     }
+}
+
+fn is_valid_shadow_observation_link(run: &ResearchCandidateShadowRunLink) -> bool {
+    run.status != "ERROR"
+        && matches!(
+            run.decision.as_str(),
+            "NO_SIGNAL" | "WOULD_SUBMIT" | "RISK_REJECTED"
+        )
 }
 
 fn qualification_thresholds_from_query(
@@ -22185,6 +22226,38 @@ async fn build_research_candidate_qualification(
             .await?
             .map(|record| strategy_candidate_observation_result_from_record(&record))
             .transpose()?;
+    let formal_observation_fresh = latest_observation
+        .as_ref()
+        .map(|observation| {
+            observation_freshness_status(observation, now)
+                == ResearchCandidateObservationFreshnessStatus::Fresh
+        })
+        .unwrap_or(false);
+    let formal_observation_stale = latest_observation
+        .as_ref()
+        .map(|observation| {
+            observation_freshness_status(observation, now)
+                == ResearchCandidateObservationFreshnessStatus::Stale
+        })
+        .unwrap_or(false);
+    let current_readiness = readiness::compute_execution_readiness(
+        state,
+        &ExecutionReadinessRequest {
+            target: aegis_core::ExecutionReadinessTarget::TestnetShadow,
+            symbol: Some(candidate.symbol.clone()),
+            strategy_id: Some(candidate.strategy_id.clone()),
+            timeframe: Some(candidate.timeframe.clone()),
+            promotion_id: None,
+            risk_decision_id: None,
+            start_time: Some(candidate.updated_at),
+            end_time: Some(now),
+            persist: false,
+            correlation_id: None,
+        },
+        None,
+    )
+    .await
+    .ok();
     let runner_snapshot = load_testnet_shadow_runner_snapshot(&shadow_runtime_state(state)).await?;
     let runner_alignment_valid =
         candidate_runner_alignment_current(candidate, &runner_snapshot.config);
@@ -22224,19 +22297,22 @@ async fn build_research_candidate_qualification(
         &ResearchCandidateQualificationRequest {
             candidate_id: candidate.id,
             candidate_status: Some(candidate.status),
-            fresh_observation: latest_observation
+            fresh_observation: formal_observation_fresh,
+            formal_observation_status: latest_observation
                 .as_ref()
-                .map(|observation| {
-                    observation_freshness_status(observation, now)
-                        == ResearchCandidateObservationFreshnessStatus::Fresh
-                })
-                .unwrap_or(false),
+                .map(|observation| observation.status),
+            formal_observation_stale,
             runner_alignment_valid,
             shadow_runner_covers_candidate: runner_alignment_valid,
             runner_mismatch_count,
-            latest_readiness_status: latest_observation
+            latest_readiness_status: current_readiness
                 .as_ref()
-                .and_then(|observation| observation.summary.latest_readiness_status),
+                .map(|readiness| readiness.status)
+                .or_else(|| {
+                    latest_observation
+                        .as_ref()
+                        .and_then(|observation| observation.summary.latest_readiness_status)
+                }),
             walk_forward_evidence,
             shadow_performance: Some(shadow_performance),
             shadow_pnl_attribution,
@@ -22417,11 +22493,39 @@ async fn build_research_candidate_testnet_review_dossier(
             build_observation_history_item(observation, now, current_runner_hash.as_deref())
         })
         .collect::<Vec<_>>();
+    let shadow_links = list_research_candidate_shadow_runs(
+        &state.db_pool,
+        candidate.id,
+        &ResearchCandidateShadowRunsQuery {
+            start_time: candidate.updated_at,
+            end_time: now,
+            limit: 100,
+        },
+    )
+    .await?;
+    let latest_linked_shadow_run = shadow_links.first();
+    let latest_valid_shadow_run = shadow_links
+        .iter()
+        .find(|run| is_valid_shadow_observation_link(run));
     let latest_observation = history.first().map(|item| item.observation.clone());
     let observation_summary = if history.is_empty() {
-        None
+        Some(build_observation_summary(
+            candidate.id,
+            &history,
+            Some(&shadow_performance),
+            latest_linked_shadow_run,
+            latest_valid_shadow_run,
+            now,
+        ))
     } else {
-        Some(build_observation_summary(candidate.id, &history, now))
+        Some(build_observation_summary(
+            candidate.id,
+            &history,
+            Some(&shadow_performance),
+            latest_linked_shadow_run,
+            latest_valid_shadow_run,
+            now,
+        ))
     };
     let observation_freshness = history
         .first()
@@ -22430,9 +22534,40 @@ async fn build_research_candidate_testnet_review_dossier(
     let observation_age_seconds = history
         .first()
         .and_then(|item| item.observation_age_seconds);
-    let readiness_snapshot = latest_observation
+    let current_readiness = readiness::compute_execution_readiness(
+        state,
+        &ExecutionReadinessRequest {
+            target: aegis_core::ExecutionReadinessTarget::TestnetShadow,
+            symbol: Some(candidate.symbol.clone()),
+            strategy_id: Some(candidate.strategy_id.clone()),
+            timeframe: Some(candidate.timeframe.clone()),
+            promotion_id: None,
+            risk_decision_id: None,
+            start_time: Some(candidate.updated_at),
+            end_time: Some(now),
+            persist: false,
+            correlation_id: Some(correlation_id),
+        },
+        None,
+    )
+    .await
+    .ok();
+    let readiness_snapshot = current_readiness
         .as_ref()
-        .map(|value| candidate_promotion_readiness(candidate.id, value, now));
+        .map(|readiness| {
+            current_candidate_promotion_readiness(
+                candidate.id,
+                latest_observation.as_ref(),
+                &runner_alignment,
+                readiness,
+                now,
+            )
+        })
+        .or_else(|| {
+            latest_observation
+                .as_ref()
+                .map(|value| candidate_promotion_readiness(candidate.id, value, now))
+        });
     let walk_forward_evidence =
         get_latest_research_candidate_walk_forward_evidence(&state.db_pool, candidate.id).await?;
 
@@ -22904,6 +23039,44 @@ fn candidate_promotion_readiness(
         blockers: blockers.clone(),
         is_ready: blockers.is_empty(),
         evaluated_at: now,
+    }
+}
+
+fn current_candidate_promotion_readiness(
+    candidate_id: Uuid,
+    latest_observation: Option<&StrategyCandidateObservationResult>,
+    runner_alignment: &StrategyCandidateRunnerAlignment,
+    readiness: &ExecutionReadinessResult,
+    now: DateTime<Utc>,
+) -> ResearchCandidatePromotionReadiness {
+    let blockers = readiness
+        .checks
+        .iter()
+        .filter(|check| !check.passed && check.blocking)
+        .map(|check| check.summary.clone())
+        .collect::<Vec<_>>();
+
+    ResearchCandidatePromotionReadiness {
+        candidate_id,
+        target: "TESTNET_SHADOW".to_string(),
+        latest_observation_id: latest_observation.map(|observation| observation.observation_id),
+        latest_observation_decision: latest_observation.map(|observation| observation.decision),
+        last_observed_at: latest_observation.map(|observation| observation.last_observed_at),
+        observation_expires_at: latest_observation
+            .and_then(|observation| observation.observation_expires_at),
+        observation_age_seconds: latest_observation
+            .map(|observation| observation_age_seconds(observation, now)),
+        observation_max_age_seconds: latest_observation
+            .and_then(|observation| observation.observation_max_age_seconds),
+        observation_snapshot_hash: latest_observation
+            .and_then(|observation| observation.observation_snapshot_hash.clone()),
+        latest_recommendation: latest_observation.and_then(latest_recommendation),
+        readiness_status: Some(readiness.status),
+        readiness_score: Some(readiness.score),
+        runner_alignment: runner_alignment.clone(),
+        is_ready: blockers.is_empty(),
+        blockers,
+        evaluated_at: readiness.computed_at,
     }
 }
 
@@ -25275,10 +25448,63 @@ async fn get_research_candidate_observation_summary_handler(
                         )
                     })
                     .collect::<Vec<_>>();
+                let candidate = get_research_candidate(&state.db_pool, candidate_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|record| research_candidate_from_record(&record).ok());
+                let (shadow_performance, shadow_links) = if let Some(candidate) = candidate.as_ref()
+                {
+                    let runner_alignment_current =
+                        load_testnet_shadow_runner_snapshot(&shadow_runtime_state(&state))
+                            .await
+                            .map(|snapshot| {
+                                candidate_runner_alignment_current(candidate, &snapshot.config)
+                            })
+                            .unwrap_or(false);
+                    let window = ResearchCandidateShadowPerformanceWindow {
+                        start_time: candidate.updated_at,
+                        end_time: now,
+                    };
+                    let performance = get_research_candidate_shadow_performance(
+                        &state.db_pool,
+                        candidate,
+                        &window,
+                        runner_alignment_current,
+                        now,
+                    )
+                    .await
+                    .ok();
+                    let links = list_research_candidate_shadow_runs(
+                        &state.db_pool,
+                        candidate.id,
+                        &ResearchCandidateShadowRunsQuery {
+                            start_time: candidate.updated_at,
+                            end_time: now,
+                            limit: 100,
+                        },
+                    )
+                    .await
+                    .unwrap_or_default();
+                    (performance, links)
+                } else {
+                    (None, Vec::new())
+                };
+                let latest_linked_shadow_run = shadow_links.first();
+                let latest_valid_shadow_run = shadow_links
+                    .iter()
+                    .find(|run| is_valid_shadow_observation_link(run));
                 (
                     StatusCode::OK,
                     Json(ResearchCandidateObservationSummaryResponse {
-                        summary: build_observation_summary(candidate_id, &history, now),
+                        summary: build_observation_summary(
+                            candidate_id,
+                            &history,
+                            shadow_performance.as_ref(),
+                            latest_linked_shadow_run,
+                            latest_valid_shadow_run,
+                            now,
+                        ),
                         request_id: request.request_id,
                         correlation_id: request.correlation_id,
                         timestamp: now,

@@ -6114,7 +6114,19 @@ pub async fn get_research_candidate_shadow_performance(
                    OR run.decision = 'CANDLE_DATA_STALE'
             )::BIGINT AS skipped_count,
             COUNT(*) FILTER (WHERE run.decision = 'ERROR' OR run.status = 'ERROR')::BIGINT AS error_count,
-            MAX(run.created_at) AS last_shadow_run_at
+            MAX(run.created_at) AS last_shadow_run_at,
+            COUNT(*) FILTER (
+                WHERE run.status = 'COMPLETED'
+                  AND run.decision IN ('NO_SIGNAL', 'WOULD_SUBMIT', 'RISK_REJECTED')
+            )::BIGINT AS completed_shadow_runs,
+            MAX(run.created_at) FILTER (
+                WHERE run.status <> 'ERROR'
+                  AND run.decision IN ('NO_SIGNAL', 'WOULD_SUBMIT', 'RISK_REJECTED')
+            ) AS latest_valid_shadow_run_at,
+            MAX(run.created_at) FILTER (
+                WHERE run.decision LIKE 'SKIPPED_%'
+                   OR run.decision = 'CANDLE_DATA_STALE'
+            ) AS latest_skipped_shadow_run_at
         FROM research_candidate_shadow_runs link
         INNER JOIN testnet_shadow_runs run
             ON run.id = link.shadow_run_id
@@ -6136,6 +6148,9 @@ pub async fn get_research_candidate_shadow_performance(
     let skipped_count: i64 = row.get("skipped_count");
     let error_count: i64 = row.get("error_count");
     let last_shadow_run_at = row.get("last_shadow_run_at");
+    let completed_shadow_runs: i64 = row.get("completed_shadow_runs");
+    let latest_valid_shadow_run_at = row.get("latest_valid_shadow_run_at");
+    let latest_skipped_shadow_run_at = row.get("latest_skipped_shadow_run_at");
 
     Ok(evaluate_research_candidate_shadow_performance(
         candidate.id,
@@ -6152,6 +6167,9 @@ pub async fn get_research_candidate_shadow_performance(
         skipped_count,
         error_count,
         last_shadow_run_at,
+        completed_shadow_runs,
+        latest_valid_shadow_run_at,
+        latest_skipped_shadow_run_at,
         runner_alignment_current,
         computed_at,
     ))
