@@ -65,12 +65,13 @@ use aegis_core::{
     ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
     ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
     ResearchCandidateReviewContext, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionDiff,
-    ResearchCandidateShadowPromotionEnabledChange, ResearchCandidateShadowPromotionMode,
-    ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
-    ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
-    ResearchCandidateShadowPromotionTimeframeChange, ResearchCandidateShadowRunLink,
-    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateShadowObserveOnceDecision, ResearchCandidateShadowObserveOnceRequest,
+    ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateShadowPromotionDiff, ResearchCandidateShadowPromotionEnabledChange,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionPreview,
+    ResearchCandidateShadowPromotionRequest, ResearchCandidateShadowPromotionResult,
+    ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowPromotionTimeframeChange,
+    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -2130,6 +2131,14 @@ struct ResearchCandidateShadowPerformanceResponse {
 }
 
 #[derive(Serialize)]
+struct ResearchCandidateShadowObserveOnceResponse {
+    result: ResearchCandidateShadowObserveOnceResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateShadowPnlAttributionResponse {
     attribution: ResearchShadowPnlAttributionResult,
     request_id: String,
@@ -3428,6 +3437,10 @@ async fn main() {
             get(get_research_candidate_shadow_performance_handler),
         )
         .route(
+            "/research/candidates/:id/shadow-observe-once",
+            post(observe_research_candidate_shadow_once_handler),
+        )
+        .route(
             "/research/candidates/:id/shadow-pnl-attribution",
             get(get_research_candidate_shadow_pnl_attribution_handler),
         )
@@ -3854,6 +3867,12 @@ fn route_access(method: &axum::http::Method, path: &str, protect_metrics: bool) 
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/shadow/run" {
+        return RouteAccess::Operator;
+    }
+    if method == axum::http::Method::POST
+        && path.starts_with("/research/candidates/")
+        && path.ends_with("/shadow-observe-once")
+    {
         return RouteAccess::Operator;
     }
     if method == axum::http::Method::POST && path == "/exchange/testnet/shadow/promotions/preview" {
@@ -25649,6 +25668,378 @@ async fn get_research_candidate_shadow_performance_handler(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShadowObserveOncePlan {
+    should_run: bool,
+    duplicate_operational_check: bool,
+    skip_reason: Option<&'static str>,
+}
+
+fn plan_shadow_observe_once(
+    latest_evaluated: Option<DateTime<Utc>>,
+    latest_available: Option<DateTime<Utc>>,
+    allow_duplicate_operational_check: bool,
+) -> ShadowObserveOncePlan {
+    let no_new_candle = match (latest_evaluated, latest_available) {
+        (_, None) => true,
+        (Some(evaluated), Some(available)) => available <= evaluated,
+        (None, Some(_)) => false,
+    };
+
+    if no_new_candle && !allow_duplicate_operational_check {
+        return ShadowObserveOncePlan {
+            should_run: false,
+            duplicate_operational_check: false,
+            skip_reason: Some(if latest_available.is_none() {
+                "NO_AVAILABLE_CANDLE"
+            } else {
+                "NO_NEW_CANDLE"
+            }),
+        };
+    }
+
+    ShadowObserveOncePlan {
+        should_run: true,
+        duplicate_operational_check: no_new_candle,
+        skip_reason: None,
+    }
+}
+
+async fn observe_research_candidate_shadow_once_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCandidateShadowObserveOnceRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can run shadow observations.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let now = Utc::now();
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let shadow_state = shadow_runtime_state(&state);
+    if !shadow_state.config.shadow_observation_only {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "shadow_observation_only_required",
+                message:
+                    "SHADOW_OBSERVATION_ONLY=true is required before recording shadow observations."
+                        .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let candidate = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: "Research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    if candidate.status != ResearchCandidateStatus::PromotedToShadowConfig {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "candidate_not_promoted_to_shadow_config",
+                message: "Candidate must be PROMOTED_TO_SHADOW_CONFIG before shadow observation."
+                    .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let runner_snapshot = match load_testnet_shadow_runner_snapshot(&shadow_state).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_load_shadow_runner_config",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    if !candidate_runner_alignment_current(&candidate, &runner_snapshot.config) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "shadow_runner_not_aligned",
+                message: "Shadow runner config does not currently cover this candidate."
+                    .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let symbol = match Symbol::new(candidate.symbol.clone()) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse {
+                    error: "invalid_candidate_symbol",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let timeframe = match candidate.timeframe.parse::<CandleInterval>() {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse {
+                    error: "invalid_candidate_timeframe",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let window = ResearchCandidateShadowPerformanceWindow {
+        start_time: candidate_shadow_window_start(&candidate, None),
+        end_time: now,
+    };
+    let performance = match get_research_candidate_shadow_performance(
+        &state.db_pool,
+        &candidate,
+        &window,
+        true,
+        now,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_get_research_candidate_shadow_performance",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let latest_evaluated = performance.latest_evaluated_candle_open_time;
+    let latest_available =
+        match get_recent_closed_candles(&state.db_pool, &symbol, timeframe, 1).await {
+            Ok(candles) => candles.last().map(|candle| candle.open_time),
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_get_latest_available_candle",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let observation_plan = plan_shadow_observe_once(
+        latest_evaluated,
+        latest_available,
+        payload.allow_duplicate_operational_check,
+    );
+    if !observation_plan.should_run {
+        let result = ResearchCandidateShadowObserveOnceResult {
+            candidate_id: candidate.id,
+            strategy_id: candidate.strategy_id,
+            symbol: candidate.symbol,
+            timeframe: candidate.timeframe,
+            decision: ResearchCandidateShadowObserveOnceDecision::SkippedNoNewCandle,
+            reason: observation_plan.skip_reason.map(str::to_string),
+            latest_evaluated_candle_open_time: latest_evaluated,
+            latest_available_candle_open_time: latest_available,
+            independent_evidence_created: false,
+            shadow_run: None,
+        };
+        return (
+            StatusCode::OK,
+            Json(ResearchCandidateShadowObserveOnceResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let run_request = TestnetShadowRunRequest {
+        strategy_id: candidate.strategy_id.clone(),
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        correlation_id: Some(correlation_id),
+    };
+    match run_testnet_shadow_once(
+        &shadow_state,
+        Some(&state_actor_from_authenticated(&actor)),
+        run_request,
+    )
+    .await
+    {
+        Ok(run) => {
+            let valid_completed = run.status.as_str() == "COMPLETED"
+                && matches!(
+                    run.decision.as_str(),
+                    "NO_SIGNAL" | "WOULD_SUBMIT" | "RISK_REJECTED"
+                );
+            let independent_evidence_created = valid_completed
+                && match (latest_evaluated, run.evaluated_candle_open_time) {
+                    (Some(evaluated), Some(observed)) => observed > evaluated,
+                    (None, Some(_)) => !observation_plan.duplicate_operational_check,
+                    _ => false,
+                };
+            let result = ResearchCandidateShadowObserveOnceResult {
+                candidate_id: candidate.id,
+                strategy_id: candidate.strategy_id,
+                symbol: candidate.symbol,
+                timeframe: candidate.timeframe,
+                decision: if observation_plan.duplicate_operational_check {
+                    ResearchCandidateShadowObserveOnceDecision::OperationalDuplicateCheckRecorded
+                } else {
+                    ResearchCandidateShadowObserveOnceDecision::Observed
+                },
+                reason: if observation_plan.duplicate_operational_check {
+                    Some("DUPLICATE_CANDLE_OPERATIONAL_CHECK".to_string())
+                } else {
+                    None
+                },
+                latest_evaluated_candle_open_time: latest_evaluated,
+                latest_available_candle_open_time: latest_available,
+                independent_evidence_created,
+                shadow_run: Some(run),
+            };
+            (
+                StatusCode::OK,
+                Json(ResearchCandidateShadowObserveOnceResponse {
+                    result,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            if let Some(api_err) = err.downcast_ref::<TestnetShadowRunApiError>() {
+                let status = match api_err {
+                    TestnetShadowRunApiError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+                    TestnetShadowRunApiError::Conflict { .. } => StatusCode::CONFLICT,
+                };
+                return (
+                    status,
+                    Json(ErrorResponse {
+                        error: api_err.code(),
+                        message: api_err.message().to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_observe_research_candidate_shadow_once",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 fn parse_holding_windows_query(raw: Option<&str>) -> Vec<u32> {
     raw.map(|value| {
         value
@@ -30352,9 +30743,10 @@ mod tests {
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
         list_execution_readiness_snapshots_handler, list_research_candidate_shadow_runs_handler,
         list_strategy_candidate_observations_handler, list_strategy_research_candidates_handler,
-        login, logout, metrics, normalize_route_label, observation_rejection, order_view,
-        parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
-        parse_risk_check_context, preview_exchange_testnet_pipeline,
+        login, logout, metrics, normalize_route_label, observation_rejection,
+        observe_research_candidate_shadow_once_handler, order_view, parse_correlation_id_filter,
+        parse_cors_allowed_origins, parse_order_intent, parse_risk_check_context,
+        plan_shadow_observe_once, preview_exchange_testnet_pipeline,
         preview_exchange_testnet_shadow_promotion_handler,
         promote_strategy_research_candidate_handler, ranked_research_batch_candidates,
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
@@ -30421,7 +30813,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use db::{
         count_users, create_research_candidate, get_exchange_testnet_order_by_client_order_id,
-        get_research_candidate, get_session_by_id, get_user_by_email,
+        get_recent_closed_candles, get_research_candidate, get_session_by_id, get_user_by_email,
         insert_exchange_reconciliation_run, insert_exchange_testnet_order,
         insert_exchange_testnet_repair_action, insert_market_tick, insert_paper_account,
         insert_research_candidate_qualification_evaluation,
@@ -30760,11 +31152,50 @@ mod tests {
         assert!(matches!(
             route_access(
                 &axum::http::Method::POST,
+                "/research/candidates/123e4567-e89b-12d3-a456-426614174000/shadow-observe-once",
+                false
+            ),
+            super::RouteAccess::Operator
+        ));
+        assert!(matches!(
+            route_access(
+                &axum::http::Method::POST,
                 "/research/candidates/123e4567-e89b-12d3-a456-426614174000/promote-shadow/apply",
                 false
             ),
             super::RouteAccess::Owner
         ));
+    }
+
+    #[test]
+    fn shadow_observe_once_skips_when_no_new_candle() {
+        let evaluated = Utc.with_ymd_and_hms(2026, 5, 29, 10, 0, 0).unwrap();
+        let plan = plan_shadow_observe_once(Some(evaluated), Some(evaluated), false);
+
+        assert!(!plan.should_run);
+        assert!(!plan.duplicate_operational_check);
+        assert_eq!(plan.skip_reason, Some("NO_NEW_CANDLE"));
+    }
+
+    #[test]
+    fn shadow_observe_once_allows_newer_candle() {
+        let evaluated = Utc.with_ymd_and_hms(2026, 5, 29, 10, 0, 0).unwrap();
+        let available = Utc.with_ymd_and_hms(2026, 5, 29, 11, 0, 0).unwrap();
+        let plan = plan_shadow_observe_once(Some(evaluated), Some(available), false);
+
+        assert!(plan.should_run);
+        assert!(!plan.duplicate_operational_check);
+        assert!(plan.skip_reason.is_none());
+    }
+
+    #[test]
+    fn shadow_observe_once_allows_duplicate_only_as_operational_check() {
+        let evaluated = Utc.with_ymd_and_hms(2026, 5, 29, 10, 0, 0).unwrap();
+        let plan = plan_shadow_observe_once(Some(evaluated), Some(evaluated), true);
+
+        assert!(plan.should_run);
+        assert!(plan.duplicate_operational_check);
+        assert!(plan.skip_reason.is_none());
     }
 
     #[test]
@@ -31458,6 +31889,10 @@ mod tests {
             .route(
                 "/research/candidates/:id/shadow-performance",
                 get(get_research_candidate_shadow_performance_handler),
+            )
+            .route(
+                "/research/candidates/:id/shadow-observe-once",
+                post(observe_research_candidate_shadow_once_handler),
             )
             .route(
                 "/research/candidates/:id/shadow-pnl-attribution",
@@ -33299,6 +33734,167 @@ mod tests {
             .expect("preview response");
         assert_eq!(preview_response.status(), StatusCode::OK);
         response_json::<TestnetShadowPromotionResponse>(preview_response).await
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_shadow_observe_once_skips_duplicate_without_execution_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "research-shadow-once@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::OneMinute,
+            ),
+        )
+        .await
+        .expect("runner config");
+
+        let latest_candle = get_recent_closed_candles(
+            &test_db.pool,
+            &Symbol::new("BTCUSDT").expect("symbol"),
+            CandleInterval::OneMinute,
+            1,
+        )
+        .await
+        .expect("latest candle")
+        .pop()
+        .expect("seeded candle");
+        let candidate = sample_lifecycle_research_candidate(
+            &shadow_strategy_config(true),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &candidate,
+            None,
+            ResearchCandidateDecision::PromoteToShadowConfig,
+            Some("fixture"),
+            Some("promoted fixture"),
+            &json!({"fixture": true}),
+        )
+        .await
+        .expect("candidate should persist");
+        let mut run = sample_shadow_run_would_submit(Utc::now() - chrono::Duration::minutes(1));
+        run.evaluated_candle_open_time = Some(latest_candle.open_time);
+        insert_testnet_shadow_run(&test_db.pool, &run)
+            .await
+            .expect("shadow run should persist");
+        insert_research_candidate_shadow_run_link(&test_db.pool, candidate.id, run.id, Utc::now())
+            .await
+            .expect("shadow link should persist");
+
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let before_shadow_runs = count_testnet_shadow_runs(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "research-shadow-once@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/research/candidates/{}/shadow-observe-once", candidate.id),
+                &operator_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("shadow observe once response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["result"]["decision"], "SKIPPED_NO_NEW_CANDLE");
+        assert_eq!(payload["result"]["reason"], "NO_NEW_CANDLE");
+        assert_eq!(payload["result"]["independent_evidence_created"], false);
+        assert_eq!(
+            count_testnet_shadow_runs(&test_db.pool).await,
+            before_shadow_runs
+        );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+    async fn research_candidate_shadow_observe_once_allows_new_candle_without_execution_mutation() {
+        let test_db = TestDatabase::setup().await.expect("test db");
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let app = research_test_router(state);
+        insert_test_user(
+            &test_db.pool,
+            "research-shadow-once-new@example.com",
+            "replace-with-a-12-char-min-password",
+            UserRole::Operator,
+        )
+        .await;
+        setup_shadow_promotion_fixture(&test_db.pool).await;
+        upsert_testnet_shadow_runner_config(
+            &test_db.pool,
+            &shadow_runner_config(
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::OneMinute,
+            ),
+        )
+        .await
+        .expect("runner config");
+        let candidate = sample_lifecycle_research_candidate(
+            &shadow_strategy_config(true),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::PromotedToShadowConfig,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &candidate,
+            None,
+            ResearchCandidateDecision::PromoteToShadowConfig,
+            Some("fixture"),
+            Some("promoted fixture"),
+            &json!({"fixture": true}),
+        )
+        .await
+        .expect("candidate should persist");
+
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let before_shadow_runs = count_testnet_shadow_runs(&test_db.pool).await;
+        let (operator_login, _) = login_cli(
+            &app,
+            "research-shadow-once-new@example.com",
+            "replace-with-a-12-char-min-password",
+        )
+        .await;
+        let response = app
+            .oneshot(bearer_request(
+                "POST",
+                &format!("/research/candidates/{}/shadow-observe-once", candidate.id),
+                &operator_login.access_token,
+                json!({}),
+            ))
+            .await
+            .expect("shadow observe once response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(payload["result"]["decision"], "OBSERVED");
+        assert_eq!(payload["result"]["independent_evidence_created"], true);
+        assert!(payload["result"]["shadow_run"]["run_id"].is_string());
+        assert_eq!(
+            count_testnet_shadow_runs(&test_db.pool).await,
+            before_shadow_runs + 1
+        );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
     }
 
     async fn age_shadow_reference_price(pool: &PgPool, symbol: &str, age_seconds: i64) {

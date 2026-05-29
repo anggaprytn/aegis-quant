@@ -8,7 +8,8 @@ use aegis_core::{
     ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
     ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
     ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateReview, ResearchCandidateReviewResult,
+    ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry, ResearchExperimentPlan,
@@ -3540,6 +3541,46 @@ pub fn print_research_candidate_shadow_performance(
     );
     println!("Status: {}", performance.status.as_str());
     println!("Recommendation: {}", performance.recommendation.as_str());
+}
+
+pub fn print_research_candidate_shadow_observe_once(
+    result: &ResearchCandidateShadowObserveOnceResult,
+) {
+    println!("Candidate ID: {}", result.candidate_id);
+    println!("Strategy ID: {}", result.strategy_id);
+    println!("Symbol: {}", result.symbol);
+    println!("Timeframe: {}", result.timeframe);
+    println!("Decision: {}", result.decision.as_str());
+    println!("Reason: {}", result.reason.as_deref().unwrap_or("-"));
+    println!(
+        "Latest evaluated candle: {}",
+        result
+            .latest_evaluated_candle_open_time
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Latest available candle: {}",
+        result
+            .latest_available_candle_open_time
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "Independent evidence created: {}",
+        result.independent_evidence_created
+    );
+    if let Some(run) = &result.shadow_run {
+        println!("Shadow run ID: {}", run.run_id);
+        println!("Shadow decision: {}", run.decision.as_str());
+        println!("Shadow status: {}", run.status.as_str());
+        println!(
+            "Observed candle: {}",
+            run.evaluated_candle_open_time
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
 }
 
 pub fn print_research_candidate_shadow_pnl_attribution(

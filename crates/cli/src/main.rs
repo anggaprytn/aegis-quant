@@ -1246,6 +1246,23 @@ async fn main() -> anyhow::Result<()> {
                         output::print_research_candidate_observation(&response.observation);
                     }
                 }
+                ResearchCandidateCommands::ShadowObserveOnce(args) => {
+                    let response = client
+                        .shadow_observe_research_candidate_once(
+                            args.candidate_id,
+                            &aegis_core::ResearchCandidateShadowObserveOnceRequest {
+                                allow_duplicate_operational_check: args
+                                    .allow_duplicate_operational_check,
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_research_candidate_shadow_observe_once(&response.result);
+                    }
+                }
                 ResearchCandidateCommands::Review(args) => {
                     let response = client
                         .create_research_candidate_review(

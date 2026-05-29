@@ -19,7 +19,8 @@ use aegis_core::{
     ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
     ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
     ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewRequest,
-    ResearchCandidateReviewResult, ResearchCandidateShadowPerformance,
+    ResearchCandidateReviewResult, ResearchCandidateShadowObserveOnceRequest,
+    ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowRunLink,
     ResearchCandidateTestnetReviewDossier, ResearchCandidateWalkForwardEvidence,
@@ -1248,6 +1249,18 @@ impl ApiClient {
         self.post(
             &format!("/research/candidates/{candidate_id}/observe"),
             &serde_json::json!({}),
+        )
+        .await
+    }
+
+    pub async fn shadow_observe_research_candidate_once(
+        &self,
+        candidate_id: Uuid,
+        request: &ResearchCandidateShadowObserveOnceRequest,
+    ) -> Result<ResearchCandidateShadowObserveOnceResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidates/{candidate_id}/shadow-observe-once"),
+            request,
         )
         .await
     }
@@ -3324,6 +3337,14 @@ pub struct ResearchCandidateWatchlistResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateShadowPerformanceResponse {
     pub performance: ResearchCandidateShadowPerformance,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateShadowObserveOnceResponse {
+    pub result: ResearchCandidateShadowObserveOnceResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

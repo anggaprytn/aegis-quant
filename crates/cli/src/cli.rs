@@ -1399,6 +1399,7 @@ pub enum ResearchCandidateCommands {
     Create(ResearchCandidateCreateArgs),
     FromExperimentRun(ResearchCandidateFromExperimentRunArgs),
     Observe { candidate_id: Uuid },
+    ShadowObserveOnce(ResearchCandidateShadowObserveOnceArgs),
     Review(ResearchCandidateReviewArgs),
     Decide(ResearchCandidateDecideArgs),
     PromoteShadowPreview(ResearchCandidatePromoteShadowPreviewArgs),
@@ -1440,6 +1441,13 @@ pub struct ResearchCandidateFromExperimentRunArgs {
     pub walk_forward_run_id: Option<Uuid>,
     #[arg(long)]
     pub notes: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateShadowObserveOnceArgs {
+    pub candidate_id: Uuid,
+    #[arg(long = "allow-duplicate-operational-check", default_value_t = false)]
+    pub allow_duplicate_operational_check: bool,
 }
 
 #[derive(Debug, Args)]
@@ -2272,6 +2280,31 @@ mod tests {
         };
 
         assert_eq!(parsed_candidate_id, candidate_id);
+    }
+
+    #[test]
+    fn research_candidate_shadow_observe_once_parses_duplicate_flag() {
+        let candidate_id =
+            Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid");
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "candidates",
+            "shadow-observe-once",
+            &candidate_id.to_string(),
+            "--allow-duplicate-operational-check",
+        ])
+        .expect("cli parses");
+
+        let Commands::Research(super::ResearchCommands::Candidates(
+            super::ResearchCandidateCommands::ShadowObserveOnce(args),
+        )) = cli.command
+        else {
+            panic!("expected research shadow observe once command");
+        };
+
+        assert_eq!(args.candidate_id, candidate_id);
+        assert!(args.allow_duplicate_operational_check);
     }
 
     #[test]

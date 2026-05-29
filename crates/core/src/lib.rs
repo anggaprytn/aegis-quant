@@ -6777,6 +6777,45 @@ pub struct TestnetShadowRunResult {
     pub correlation_id: Uuid,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateShadowObserveOnceRequest {
+    #[serde(default)]
+    pub allow_duplicate_operational_check: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResearchCandidateShadowObserveOnceDecision {
+    Observed,
+    SkippedNoNewCandle,
+    OperationalDuplicateCheckRecorded,
+}
+
+impl ResearchCandidateShadowObserveOnceDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observed => "OBSERVED",
+            Self::SkippedNoNewCandle => "SKIPPED_NO_NEW_CANDLE",
+            Self::OperationalDuplicateCheckRecorded => "OPERATIONAL_DUPLICATE_CHECK_RECORDED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateShadowObserveOnceResult {
+    pub candidate_id: Uuid,
+    pub strategy_id: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub decision: ResearchCandidateShadowObserveOnceDecision,
+    pub reason: Option<String>,
+    pub latest_evaluated_candle_open_time: Option<DateTime<Utc>>,
+    pub latest_available_candle_open_time: Option<DateTime<Utc>>,
+    pub independent_evidence_created: bool,
+    pub shadow_run: Option<TestnetShadowRunResult>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TestnetShadowPromotionStatus {
