@@ -65,10 +65,12 @@ use aegis_core::{
     ResearchCandidateQualificationResult, ResearchCandidateQualificationThresholds,
     ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewAction,
     ResearchCandidateReviewContext, ResearchCandidateReviewResult,
-    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionMode,
+    ResearchCandidateShadowPerformance, ResearchCandidateShadowPromotionDiff,
+    ResearchCandidateShadowPromotionEnabledChange, ResearchCandidateShadowPromotionMode,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionRequest,
     ResearchCandidateShadowPromotionResult, ResearchCandidateShadowPromotionStatus,
-    ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
+    ResearchCandidateShadowPromotionTimeframeChange, ResearchCandidateShadowRunLink,
+    ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
     ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
     ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
@@ -22905,15 +22907,56 @@ fn candidate_promotion_readiness(
     }
 }
 
-fn append_unique_case_insensitive(values: &mut Vec<String>, candidate_value: &str) -> bool {
-    if values
+fn contains_case_insensitive(values: &[String], candidate_value: &str) -> bool {
+    values
         .iter()
         .any(|value| value.trim().eq_ignore_ascii_case(candidate_value))
-    {
-        false
-    } else {
-        values.push(candidate_value.to_string());
-        true
+}
+
+fn values_added_case_insensitive(current: &[String], proposed: &[String]) -> Vec<String> {
+    proposed
+        .iter()
+        .filter(|value| !contains_case_insensitive(current, value))
+        .cloned()
+        .collect()
+}
+
+fn values_removed_case_insensitive(current: &[String], proposed: &[String]) -> Vec<String> {
+    current
+        .iter()
+        .filter(|value| !contains_case_insensitive(proposed, value))
+        .cloned()
+        .collect()
+}
+
+fn build_shadow_runner_config_diff(
+    current: &TestnetShadowRunnerConfig,
+    proposed: &TestnetShadowRunnerConfig,
+) -> ResearchCandidateShadowPromotionDiff {
+    ResearchCandidateShadowPromotionDiff {
+        added_strategies: values_added_case_insensitive(&current.strategies, &proposed.strategies),
+        removed_strategies: values_removed_case_insensitive(
+            &current.strategies,
+            &proposed.strategies,
+        ),
+        added_symbols: values_added_case_insensitive(&current.symbols, &proposed.symbols),
+        removed_symbols: values_removed_case_insensitive(&current.symbols, &proposed.symbols),
+        timeframe_change: if current.timeframe.trim() != proposed.timeframe.trim() {
+            Some(ResearchCandidateShadowPromotionTimeframeChange {
+                from: current.timeframe.clone(),
+                to: proposed.timeframe.clone(),
+            })
+        } else {
+            None
+        },
+        enabled_change: if current.enabled != proposed.enabled {
+            Some(ResearchCandidateShadowPromotionEnabledChange {
+                from: current.enabled,
+                to: proposed.enabled,
+            })
+        } else {
+            None
+        },
     }
 }
 
@@ -22922,29 +22965,30 @@ fn describe_shadow_runner_config_changes(
     proposed: &TestnetShadowRunnerConfig,
 ) -> Vec<String> {
     let mut changes = Vec::new();
+    let diff = build_shadow_runner_config_diff(current, proposed);
 
-    for strategy in &proposed.strategies {
-        if !current
-            .strategies
-            .iter()
-            .any(|value| value.trim().eq_ignore_ascii_case(strategy))
-        {
-            changes.push(format!("add strategy {strategy}"));
-        }
+    for strategy in &diff.added_strategies {
+        changes.push(format!("add strategy {strategy}"));
     }
-    for symbol in &proposed.symbols {
-        if !current
-            .symbols
-            .iter()
-            .any(|value| value.trim().eq_ignore_ascii_case(symbol))
-        {
-            changes.push(format!("add symbol {symbol}"));
-        }
+    for strategy in &diff.removed_strategies {
+        changes.push(format!("remove strategy {strategy}"));
     }
-    if current.timeframe.trim() != proposed.timeframe.trim() {
+    for symbol in &diff.added_symbols {
+        changes.push(format!("add symbol {symbol}"));
+    }
+    for symbol in &diff.removed_symbols {
+        changes.push(format!("remove symbol {symbol}"));
+    }
+    if let Some(timeframe_change) = &diff.timeframe_change {
         changes.push(format!(
             "change timeframe {} -> {}",
-            current.timeframe, proposed.timeframe
+            timeframe_change.from, timeframe_change.to
+        ));
+    }
+    if let Some(enabled_change) = &diff.enabled_change {
+        changes.push(format!(
+            "change enabled {} -> {}",
+            enabled_change.from, enabled_change.to
         ));
     }
 
@@ -22954,22 +22998,50 @@ fn describe_shadow_runner_config_changes(
 fn build_shadow_promotion_proposed_runner_config(
     current: &TestnetShadowRunnerConfig,
     candidate: &ResearchCandidate,
-) -> (TestnetShadowRunnerConfig, Vec<String>, Vec<String>) {
+) -> (
+    TestnetShadowRunnerConfig,
+    ResearchCandidateShadowPromotionDiff,
+    Vec<String>,
+    Vec<String>,
+) {
     let mut proposed = current.clone();
-    let mut reasons = Vec::new();
+    proposed.strategies = vec![candidate.strategy_id.clone()];
+    proposed.symbols = vec![candidate.symbol.clone()];
+    proposed.timeframe = candidate.timeframe.clone();
 
-    if current.timeframe.trim() != candidate.timeframe.trim() {
-        reasons.push(format!(
-            "runner timeframe {} does not match candidate timeframe {}",
-            current.timeframe, candidate.timeframe
+    let diff = build_shadow_runner_config_diff(current, &proposed);
+    let changes = describe_shadow_runner_config_changes(current, &proposed);
+    let mut warnings = Vec::new();
+
+    if let Some(timeframe_change) = &diff.timeframe_change {
+        warnings.push(format!(
+            "Singleton shadow runner timeframe will change from {} to {}; existing shadow config entries are replaced with candidate-only coverage.",
+            timeframe_change.from, timeframe_change.to
         ));
-        return (proposed, Vec::new(), reasons);
+    }
+    if !diff.removed_strategies.is_empty() || !diff.removed_symbols.is_empty() {
+        warnings.push(format!(
+            "Candidate-only shadow promotion will remove existing runner entries: strategies=[{}], symbols=[{}].",
+            if diff.removed_strategies.is_empty() {
+                "none".to_string()
+            } else {
+                diff.removed_strategies.join(",")
+            },
+            if diff.removed_symbols.is_empty() {
+                "none".to_string()
+            } else {
+                diff.removed_symbols.join(",")
+            }
+        ));
+    }
+    if current.enabled {
+        warnings.push(
+            "Shadow runner is currently enabled; promotion preserves the enabled flag and only changes config coverage."
+                .to_string(),
+        );
     }
 
-    append_unique_case_insensitive(&mut proposed.strategies, &candidate.strategy_id);
-    append_unique_case_insensitive(&mut proposed.symbols, &candidate.symbol);
-    let changes = describe_shadow_runner_config_changes(current, &proposed);
-    (proposed, changes, reasons)
+    (proposed, diff, changes, warnings)
 }
 
 async fn build_research_candidate_shadow_promotion_preview(
@@ -22981,8 +23053,10 @@ async fn build_research_candidate_shadow_promotion_preview(
 ) -> Result<ResearchCandidateShadowPromotionPreview, anyhow::Error> {
     let shadow_state = shadow_runtime_state(state);
     let snapshot = load_testnet_shadow_runner_snapshot(&shadow_state).await?;
-    let mut reasons = Vec::new();
+    let mut blockers = Vec::new();
+    let mut warnings = Vec::new();
     let mut proposed_runner_config = snapshot.config.clone();
+    let mut diff = ResearchCandidateShadowPromotionDiff::default();
     let mut changes = Vec::new();
 
     if !matches!(
@@ -22990,7 +23064,7 @@ async fn build_research_candidate_shadow_promotion_preview(
         ResearchCandidateStatus::AcceptedForShadow
             | ResearchCandidateStatus::PromotedToShadowConfig
     ) {
-        reasons.push(format!(
+        blockers.push(format!(
             "candidate status {} is not ACCEPTED_FOR_SHADOW or PROMOTED_TO_SHADOW_CONFIG",
             candidate.status.as_str()
         ));
@@ -23009,18 +23083,33 @@ async fn build_research_candidate_shadow_promotion_preview(
     match latest_observation.as_ref() {
         Some(observation) => {
             let readiness = candidate_promotion_readiness(candidate.id, observation, now);
-            reasons.extend(readiness.blockers.iter().cloned().filter(|reason| {
+            for reason in &readiness.blockers {
                 if reason == "shadow_runner_mismatch" {
-                    return false;
+                    warnings.push(
+                        "Current shadow runner config does not cover the candidate; preview proposes candidate-only runner coverage."
+                            .to_string(),
+                    );
+                    continue;
                 }
                 if payload.allow_missing_runner_alignment
                     && !observation.runner_alignment.strategy_config_matches_runner
                     && reason.starts_with("observation_")
                 {
-                    return false;
+                    warnings.push(format!(
+                        "Latest observation decision was {}; runner mismatch is being treated as a config proposal warning for this promotion preview.",
+                        observation.decision.as_str()
+                    ));
+                    continue;
                 }
-                true
-            }));
+                if reason == "testnet_shadow_not_ready" {
+                    warnings.push(
+                        "Latest TESTNET_SHADOW readiness is NOT_READY; config promotion remains no-submit and may be required before useful shadow evidence can be collected."
+                            .to_string(),
+                    );
+                    continue;
+                }
+                blockers.push(reason.clone());
+            }
 
             if observation
                 .observation_snapshot_hash
@@ -23029,36 +23118,55 @@ async fn build_research_candidate_shadow_promotion_preview(
                 .map(|(observed, current)| observed != current)
                 .unwrap_or(false)
             {
-                reasons
-                    .push("runner configuration changed after the latest observation".to_string());
+                warnings.push(
+                    "Runner configuration changed after the latest observation; proposed config is based on the current persisted runner config."
+                        .to_string(),
+                );
             }
 
             if observation.runner_alignment.strategy_config_matches_runner {
                 proposed_runner_config = snapshot.config.clone();
+                diff = ResearchCandidateShadowPromotionDiff::default();
                 changes = Vec::new();
             } else if payload.allow_missing_runner_alignment {
-                let (proposed, proposed_changes, proposal_reasons) =
+                let (proposed, proposed_diff, proposed_changes, proposal_warnings) =
                     build_shadow_promotion_proposed_runner_config(&snapshot.config, candidate);
                 proposed_runner_config = proposed;
+                diff = proposed_diff;
                 changes = proposed_changes;
-                reasons.extend(proposal_reasons);
+                warnings.extend(proposal_warnings);
             } else {
-                reasons.push(
+                blockers.push(
                     "latest observation runner alignment does not match current shadow runner config"
                         .to_string(),
                 );
             }
         }
-        None => reasons.push("latest persisted observation is missing".to_string()),
+        None => blockers.push("latest persisted observation is missing".to_string()),
     }
 
-    let status = if !reasons.is_empty() {
+    warnings.sort();
+    warnings.dedup();
+
+    let status = if !blockers.is_empty() {
         ResearchCandidateShadowPromotionStatus::Blocked
+    } else if !warnings.is_empty() {
+        ResearchCandidateShadowPromotionStatus::WarningReviewRequired
     } else if changes.is_empty() {
         ResearchCandidateShadowPromotionStatus::NoChanges
     } else {
         ResearchCandidateShadowPromotionStatus::Ready
     };
+    let recommendation = match status {
+        ResearchCandidateShadowPromotionStatus::Ready => "CONFIRM_PROMOTION_TO_SHADOW_CONFIG",
+        ResearchCandidateShadowPromotionStatus::WarningReviewRequired => {
+            "REVIEW_WARNINGS_THEN_CONFIRM_PROMOTION"
+        }
+        ResearchCandidateShadowPromotionStatus::NoChanges => "CONFIRM_STATUS_PROMOTION_IF_NEEDED",
+        ResearchCandidateShadowPromotionStatus::Blocked => "RESOLVE_SHADOW_PROMOTION_BLOCKERS",
+        ResearchCandidateShadowPromotionStatus::Applied => "PROMOTION_ALREADY_APPLIED",
+    }
+    .to_string();
 
     Ok(ResearchCandidateShadowPromotionPreview {
         candidate_id: candidate.id,
@@ -23068,9 +23176,13 @@ async fn build_research_candidate_shadow_promotion_preview(
         timeframe: candidate.timeframe.clone(),
         current_runner_config: snapshot.config,
         proposed_runner_config,
+        diff,
         changes,
         status,
-        reasons,
+        reasons: blockers.clone(),
+        blockers,
+        warnings,
+        recommendation,
         confirmation_required: payload.mode == ResearchCandidateShadowPromotionMode::Apply,
         correlation_id,
         mode: payload.mode,
@@ -23091,9 +23203,13 @@ fn preview_to_shadow_promotion_result(
         timeframe: preview.timeframe,
         current_runner_config: preview.current_runner_config,
         proposed_runner_config: preview.proposed_runner_config,
+        diff: preview.diff,
         changes: preview.changes,
         status,
         reasons: preview.reasons,
+        blockers: preview.blockers,
+        warnings: preview.warnings,
+        recommendation: preview.recommendation,
         confirmation_required: preview.confirmation_required,
         correlation_id: preview.correlation_id,
         mode: preview.mode,
@@ -27170,8 +27286,12 @@ async fn apply_research_candidate_shadow_promotion_handler(
         "strategy_id": preview.strategy_id,
         "symbol": preview.symbol,
         "timeframe": preview.timeframe,
+        "diff": preview.diff,
         "changes": preview.changes,
         "reasons": preview.reasons,
+        "blockers": preview.blockers,
+        "warnings": preview.warnings,
+        "recommendation": preview.recommendation,
         "allow_missing_runner_alignment": preview.allow_missing_runner_alignment,
         "current_runner_config": preview.current_runner_config,
         "proposed_runner_config": preview.proposed_runner_config,
@@ -30027,14 +30147,14 @@ mod tests {
         ResearchCandidateDecision, ResearchCandidateQualificationEvaluation,
         ResearchCandidateQualificationRecommendation, ResearchCandidateQualificationStatus,
         ResearchCandidateQualificationThresholds, ResearchCandidateReview,
-        ResearchCandidateReviewAction, ResearchCandidateReviewStatus, ResearchCandidateStatus,
-        RiskConfig, Side, StrategyCandidateObservationDecision,
-        StrategyCandidateObservationRequirement, StrategyCandidateObservationResult,
-        StrategyCandidateObservationStatus, StrategyCandidateObservationSummary,
-        StrategyCandidateRunnerAlignment, StrategyConfig, StrategyExperimentCandidate,
-        StrategyExperimentComparison, StrategyExperimentMetric, StrategyExperimentResult,
-        StrategyExperimentRun, StrategyExperimentStatus, StrategyId, StrategyMode,
-        StrategyResearchCandidate, StrategyResearchCandidateEvidence,
+        ResearchCandidateReviewAction, ResearchCandidateReviewStatus,
+        ResearchCandidateShadowPromotionTimeframeChange, ResearchCandidateStatus, RiskConfig, Side,
+        StrategyCandidateObservationDecision, StrategyCandidateObservationRequirement,
+        StrategyCandidateObservationResult, StrategyCandidateObservationStatus,
+        StrategyCandidateObservationSummary, StrategyCandidateRunnerAlignment, StrategyConfig,
+        StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentMetric,
+        StrategyExperimentResult, StrategyExperimentRun, StrategyExperimentStatus, StrategyId,
+        StrategyMode, StrategyResearchCandidate, StrategyResearchCandidateEvidence,
         StrategyResearchCandidateScore, StrategyResearchCandidateSource,
         StrategyResearchCandidateStatus, StrategyWalkForwardCandidate, StrategyWalkForwardRequest,
         StrategyWalkForwardResult, StrategyWalkForwardRobustnessSummary, StrategyWalkForwardStatus,
@@ -30426,7 +30546,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_promotion_proposed_runner_config_preserves_existing_entries_and_appends_missing() {
+    fn shadow_promotion_proposed_runner_config_replaces_with_candidate_only_coverage() {
         let current = shadow_runner_config(
             vec!["mean_reversion_v1"],
             vec!["ETHUSDT"],
@@ -30454,23 +30574,31 @@ mod tests {
             correlation_id: None,
         };
 
-        let (proposed, changes, reasons) =
+        let (proposed, diff, changes, warnings) =
             build_shadow_promotion_proposed_runner_config(&current, &candidate);
 
-        assert!(reasons.is_empty());
-        assert_eq!(
-            proposed.strategies,
-            vec!["mean_reversion_v1", "momentum_v1"]
-        );
-        assert_eq!(proposed.symbols, vec!["ETHUSDT", "BTCUSDT"]);
+        assert_eq!(proposed.strategies, vec!["momentum_v1"]);
+        assert_eq!(proposed.symbols, vec!["BTCUSDT"]);
+        assert_eq!(diff.added_strategies, vec!["momentum_v1"]);
+        assert_eq!(diff.removed_strategies, vec!["mean_reversion_v1"]);
+        assert_eq!(diff.added_symbols, vec!["BTCUSDT"]);
+        assert_eq!(diff.removed_symbols, vec!["ETHUSDT"]);
+        assert!(diff.timeframe_change.is_none());
+        assert!(warnings.iter().any(|value| value
+            .contains("Candidate-only shadow promotion will remove existing runner entries")));
         assert_eq!(
             changes,
-            vec!["add strategy momentum_v1", "add symbol BTCUSDT"]
+            vec![
+                "add strategy momentum_v1",
+                "remove strategy mean_reversion_v1",
+                "add symbol BTCUSDT",
+                "remove symbol ETHUSDT"
+            ]
         );
     }
 
     #[test]
-    fn shadow_promotion_proposed_runner_config_blocks_timeframe_mismatch() {
+    fn shadow_promotion_proposed_runner_config_warns_on_timeframe_mismatch() {
         let current = shadow_runner_config(
             vec!["mean_reversion_v1"],
             vec!["ETHUSDT"],
@@ -30498,15 +30626,24 @@ mod tests {
             correlation_id: None,
         };
 
-        let (proposed, changes, reasons) =
+        let (proposed, diff, changes, warnings) =
             build_shadow_promotion_proposed_runner_config(&current, &candidate);
 
-        assert_eq!(proposed.timeframe, "1m");
-        assert!(changes.is_empty());
+        assert_eq!(proposed.timeframe, "15m");
         assert_eq!(
-            reasons,
-            vec!["runner timeframe 1m does not match candidate timeframe 15m"]
+            diff.timeframe_change,
+            Some(ResearchCandidateShadowPromotionTimeframeChange {
+                from: "1m".to_string(),
+                to: "15m".to_string(),
+            })
         );
+        assert!(changes.contains(&"change timeframe 1m -> 15m".to_string()));
+        assert!(warnings
+            .iter()
+            .any(|value| value
+                .contains("Singleton shadow runner timeframe will change from 1m to 15m")));
+        assert!(warnings.iter().any(|value| value
+            .contains("Candidate-only shadow promotion will remove existing runner entries")));
     }
 
     #[test]
@@ -37878,12 +38015,13 @@ mod tests {
         upsert_risk_config(&test_db.pool, &readiness_risk_config())
             .await
             .expect("risk config should persist");
-        seed_readiness_market(&test_db.pool, "BTCUSDT").await;
-        let candidate = sample_lifecycle_research_candidate(
-            &research_strategy_config(CandleInterval::FifteenMinutes, "BTCUSDT"),
+        seed_readiness_market(&test_db.pool, "ETHUSDT").await;
+        let mut candidate = sample_lifecycle_research_candidate(
+            &research_strategy_config(CandleInterval::OneHour, "ETHUSDT"),
             Uuid::new_v4(),
             ResearchCandidateStatus::AcceptedForShadow,
         );
+        candidate.strategy_id = "failed_breakdown_reclaim_v1".to_string();
         create_research_candidate(
             &test_db.pool,
             &candidate,
@@ -37898,9 +38036,9 @@ mod tests {
         upsert_testnet_shadow_runner_config(
             &test_db.pool,
             &shadow_runner_config(
-                vec!["mean_reversion_v1"],
-                vec!["ETHUSDT"],
-                CandleInterval::FifteenMinutes,
+                vec!["momentum_v1"],
+                vec!["BTCUSDT"],
+                CandleInterval::OneMinute,
             ),
         )
         .await
@@ -37949,18 +38087,51 @@ mod tests {
             .expect("preview response");
         assert_eq!(preview.status(), StatusCode::OK);
         let payload = response_json::<Value>(preview).await;
-        assert_eq!(payload["preview"]["status"], "READY");
+        assert_eq!(payload["preview"]["status"], "WARNING_REVIEW_REQUIRED");
+        assert_eq!(payload["preview"]["blockers"], json!([]));
         assert_eq!(
-            payload["preview"]["changes"],
-            json!(["add strategy momentum_v1", "add symbol BTCUSDT"])
+            payload["preview"]["diff"]["added_strategies"],
+            json!(["failed_breakdown_reclaim_v1"])
         );
         assert_eq!(
+            payload["preview"]["diff"]["removed_strategies"],
+            json!(["momentum_v1"])
+        );
+        assert_eq!(
+            payload["preview"]["diff"]["added_symbols"],
+            json!(["ETHUSDT"])
+        );
+        assert_eq!(
+            payload["preview"]["diff"]["removed_symbols"],
+            json!(["BTCUSDT"])
+        );
+        assert_eq!(
+            payload["preview"]["diff"]["timeframe_change"],
+            json!({"from": "1m", "to": "1h"})
+        );
+        assert!(payload["preview"]["warnings"]
+            .as_array()
+            .expect("warnings array")
+            .iter()
+            .any(|value| value
+                .as_str()
+                .unwrap_or_default()
+                .contains("Singleton shadow runner timeframe will change")));
+        assert_eq!(
             payload["preview"]["current_runner_config"]["strategies"],
-            json!(["mean_reversion_v1"])
+            json!(["momentum_v1"])
         );
         assert_eq!(
             payload["preview"]["proposed_runner_config"]["strategies"],
-            json!(["mean_reversion_v1", "momentum_v1"])
+            json!(["failed_breakdown_reclaim_v1"])
+        );
+        assert_eq!(
+            payload["preview"]["proposed_runner_config"]["symbols"],
+            json!(["ETHUSDT"])
+        );
+        assert_eq!(
+            payload["preview"]["proposed_runner_config"]["timeframe"],
+            json!("1h")
         );
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
 
@@ -38347,13 +38518,21 @@ mod tests {
             "PROMOTED_TO_SHADOW_CONFIG"
         );
         assert_eq!(
-            payload["result"]["current_runner_config"]["strategies"],
-            json!(["mean_reversion_v1"])
+            payload["result"]["proposed_runner_config"]["strategies"],
+            json!(["momentum_v1"])
         );
         assert_eq!(
-            payload["result"]["proposed_runner_config"]["strategies"],
-            json!(["mean_reversion_v1", "momentum_v1"])
+            payload["result"]["proposed_runner_config"]["symbols"],
+            json!(["BTCUSDT"])
         );
+        assert!(payload["result"]["warnings"]
+            .as_array()
+            .expect("warnings array")
+            .iter()
+            .any(|value| value
+                .as_str()
+                .unwrap_or_default()
+                .contains("Candidate-only shadow promotion will remove existing runner entries")));
 
         let runner_config = sqlx::query(
             "SELECT strategies, symbols, timeframe FROM testnet_shadow_runner_config WHERE id = $1",
@@ -38364,12 +38543,9 @@ mod tests {
         .expect("runner config row");
         assert_eq!(
             runner_config.get::<Value, _>("strategies"),
-            json!(["mean_reversion_v1", "momentum_v1"])
+            json!(["momentum_v1"])
         );
-        assert_eq!(
-            runner_config.get::<Value, _>("symbols"),
-            json!(["ETHUSDT", "BTCUSDT"])
-        );
+        assert_eq!(runner_config.get::<Value, _>("symbols"), json!(["BTCUSDT"]));
         assert_eq!(runner_config.get::<String, _>("timeframe"), "15m");
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
         assert_eq!(

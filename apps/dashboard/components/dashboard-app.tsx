@@ -2745,9 +2745,13 @@ function AuthenticatedDashboard({
         timeframe: response.result.timeframe,
         current_runner_config: response.result.current_runner_config,
         proposed_runner_config: response.result.proposed_runner_config,
+        diff: response.result.diff,
         changes: response.result.changes,
         status: response.result.status,
         reasons: response.result.reasons,
+        blockers: response.result.blockers,
+        warnings: response.result.warnings,
+        recommendation: response.result.recommendation,
         confirmation_required: response.result.confirmation_required,
         correlation_id: response.result.correlation_id,
         mode: response.result.mode,
@@ -3313,9 +3317,13 @@ function AuthenticatedDashboard({
           timeframe: researchCandidateShadowPromotionResult.timeframe,
           current_runner_config: researchCandidateShadowPromotionResult.current_runner_config,
           proposed_runner_config: researchCandidateShadowPromotionResult.proposed_runner_config,
+          diff: researchCandidateShadowPromotionResult.diff,
           changes: researchCandidateShadowPromotionResult.changes,
           status: researchCandidateShadowPromotionResult.status,
           reasons: researchCandidateShadowPromotionResult.reasons,
+          blockers: researchCandidateShadowPromotionResult.blockers,
+          warnings: researchCandidateShadowPromotionResult.warnings,
+          recommendation: researchCandidateShadowPromotionResult.recommendation,
           confirmation_required:
             researchCandidateShadowPromotionResult.confirmation_required,
           correlation_id: researchCandidateShadowPromotionResult.correlation_id,
@@ -3335,7 +3343,9 @@ function AuthenticatedDashboard({
     user.role === "OWNER" &&
     Boolean(selectedResearchCandidate) &&
     shadowPromotionPreview !== null &&
-    (shadowPromotionPreview.status === "READY" || shadowPromotionPreview.status === "NO_CHANGES") &&
+    (shadowPromotionPreview.status === "READY" ||
+      shadowPromotionPreview.status === "WARNING_REVIEW_REQUIRED" ||
+      shadowPromotionPreview.status === "NO_CHANGES") &&
     (selectedResearchCandidate?.status === "ACCEPTED_FOR_SHADOW" ||
       selectedResearchCandidate?.status === "PROMOTED_TO_SHADOW_CONFIG") &&
     researchCandidateObservationFreshness === "FRESH";
@@ -8434,7 +8444,7 @@ function AuthenticatedDashboard({
                             setResearchCandidateAllowMissingRunnerAlignment(event.target.checked)
                           }
                         />
-                        Allow adding missing strategy/symbol to the existing runner config
+                        Allow candidate-only runner config proposal when current coverage differs
                       </label>
                       <InlineStatus
                         error={getErrorMessage(previewResearchCandidateShadowPromotionMutation.error)}
@@ -8475,6 +8485,18 @@ function AuthenticatedDashboard({
                             Changes:{" "}
                             {shadowPromotionPreview.changes.length > 0
                               ? shadowPromotionPreview.changes.join(" | ")
+                              : "none"}
+                          </div>
+                          <div className="mt-2 text-[11px] text-slate-300">
+                            Warnings:{" "}
+                            {shadowPromotionPreview.warnings.length > 0
+                              ? shadowPromotionPreview.warnings.join(" | ")
+                              : "none"}
+                          </div>
+                          <div className="mt-2 text-[11px] text-slate-300">
+                            Blockers:{" "}
+                            {shadowPromotionPreview.blockers.length > 0
+                              ? shadowPromotionPreview.blockers.join(" | ")
                               : "none"}
                           </div>
                           <div className="mt-2 text-[11px] text-slate-300">

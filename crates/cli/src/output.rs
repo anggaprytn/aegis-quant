@@ -3972,6 +3972,7 @@ pub fn print_research_candidate_shadow_promotion_preview(
     println!("Candidate status: {}", preview.candidate_status.as_str());
     println!("Mode: {}", preview.mode.as_str());
     println!("Status: {}", preview.status.as_str());
+    println!("Recommendation: {}", preview.recommendation);
     println!(
         "Confirmation required: {}",
         if preview.confirmation_required {
@@ -4004,6 +4005,26 @@ pub fn print_research_candidate_shadow_promotion_preview(
         }
     );
     println!(
+        "Diff: {}",
+        serde_json::to_string_pretty(&preview.diff).unwrap_or_else(|_| "{}".to_string())
+    );
+    println!(
+        "Blockers: {}",
+        if preview.blockers.is_empty() {
+            "none".to_string()
+        } else {
+            preview.blockers.join(" | ")
+        }
+    );
+    println!(
+        "Warnings: {}",
+        if preview.warnings.is_empty() {
+            "none".to_string()
+        } else {
+            preview.warnings.join(" | ")
+        }
+    );
+    println!(
         "Reasons: {}",
         if preview.reasons.is_empty() {
             "none".to_string()
@@ -4011,6 +4032,7 @@ pub fn print_research_candidate_shadow_promotion_preview(
             preview.reasons.join(" | ")
         }
     );
+    println!("This does not start the runner or create orders.");
 }
 
 pub fn print_research_candidate_accept_shadow_preview(
@@ -4149,6 +4171,7 @@ pub fn print_research_candidate_shadow_promotion_result(
     println!("Mode: {}", result.mode.as_str());
     println!("Status: {}", result.status.as_str());
     println!("Applied: {}", result.applied);
+    println!("Recommendation: {}", result.recommendation);
     println!(
         "Current runner config: {}",
         serde_json::to_string_pretty(&result.current_runner_config)
@@ -4168,6 +4191,26 @@ pub fn print_research_candidate_shadow_promotion_result(
         }
     );
     println!(
+        "Diff: {}",
+        serde_json::to_string_pretty(&result.diff).unwrap_or_else(|_| "{}".to_string())
+    );
+    println!(
+        "Blockers: {}",
+        if result.blockers.is_empty() {
+            "none".to_string()
+        } else {
+            result.blockers.join(" | ")
+        }
+    );
+    println!(
+        "Warnings: {}",
+        if result.warnings.is_empty() {
+            "none".to_string()
+        } else {
+            result.warnings.join(" | ")
+        }
+    );
+    println!(
         "Reasons: {}",
         if result.reasons.is_empty() {
             "none".to_string()
@@ -4175,6 +4218,7 @@ pub fn print_research_candidate_shadow_promotion_result(
             result.reasons.join(" | ")
         }
     );
+    println!("This does not start the runner or create orders.");
 }
 
 pub fn print_research_candidate_decision_rejection(

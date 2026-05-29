@@ -34,6 +34,12 @@ Boundaries:
 - Candidate promotion to shadow configuration is a review/config coverage step; it does not submit orders.
 - No live trading path is enabled.
 
+## Shadow Runner Promotion Config Policy
+
+The MVP shadow runner stores one singleton `timeframe` for all configured strategy/symbol pairs. Because that cannot safely represent mixed coverage such as `BTCUSDT 1m` and `ETHUSDT 1h` at the same time, research candidate shadow promotion uses candidate-only replacement when the accepted candidate differs from the current runner config.
+
+Preview must show the current config, proposed config, structured diff, blockers, warnings, status, and recommendation. Timeframe mismatch is a proposed config change, not a hard blocker, when the candidate is already `ACCEPTED_FOR_SHADOW` and the operator allows missing runner alignment. Apply keeps the existing enabled flag, does not start the runner, does not create shadow runs, and does not create paper, testnet, or live execution rows.
+
 ## Experiment Plan Runner Semantics
 
 `POST /research/experiment-plans/:id/run-preview` is not a dry run in the sense of being invisible. It persists a plan-run history record so the operator has an audit trail of previews and blockers.

@@ -8251,6 +8251,7 @@ impl std::str::FromStr for ResearchCandidateShadowPromotionMode {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchCandidateShadowPromotionStatus {
     Ready,
+    WarningReviewRequired,
     Blocked,
     NoChanges,
     Applied,
@@ -8260,6 +8261,7 @@ impl ResearchCandidateShadowPromotionStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ready => "READY",
+            Self::WarningReviewRequired => "WARNING_REVIEW_REQUIRED",
             Self::Blocked => "BLOCKED",
             Self::NoChanges => "NO_CHANGES",
             Self::Applied => "APPLIED",
@@ -8277,6 +8279,28 @@ pub struct ResearchCandidateShadowPromotionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateShadowPromotionTimeframeChange {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResearchCandidateShadowPromotionEnabledChange {
+    pub from: bool,
+    pub to: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ResearchCandidateShadowPromotionDiff {
+    pub added_strategies: Vec<String>,
+    pub removed_strategies: Vec<String>,
+    pub added_symbols: Vec<String>,
+    pub removed_symbols: Vec<String>,
+    pub timeframe_change: Option<ResearchCandidateShadowPromotionTimeframeChange>,
+    pub enabled_change: Option<ResearchCandidateShadowPromotionEnabledChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResearchCandidateShadowPromotionPreview {
     pub candidate_id: Uuid,
     pub candidate_status: ResearchCandidateStatus,
@@ -8285,9 +8309,13 @@ pub struct ResearchCandidateShadowPromotionPreview {
     pub timeframe: String,
     pub current_runner_config: TestnetShadowRunnerConfig,
     pub proposed_runner_config: TestnetShadowRunnerConfig,
+    pub diff: ResearchCandidateShadowPromotionDiff,
     pub changes: Vec<String>,
     pub status: ResearchCandidateShadowPromotionStatus,
     pub reasons: Vec<String>,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub recommendation: String,
     pub confirmation_required: bool,
     pub correlation_id: Uuid,
     pub mode: ResearchCandidateShadowPromotionMode,
@@ -8303,9 +8331,13 @@ pub struct ResearchCandidateShadowPromotionResult {
     pub timeframe: String,
     pub current_runner_config: TestnetShadowRunnerConfig,
     pub proposed_runner_config: TestnetShadowRunnerConfig,
+    pub diff: ResearchCandidateShadowPromotionDiff,
     pub changes: Vec<String>,
     pub status: ResearchCandidateShadowPromotionStatus,
     pub reasons: Vec<String>,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub recommendation: String,
     pub confirmation_required: bool,
     pub correlation_id: Uuid,
     pub mode: ResearchCandidateShadowPromotionMode,

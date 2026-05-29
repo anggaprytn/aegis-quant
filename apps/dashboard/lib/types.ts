@@ -3022,6 +3022,7 @@ export type ResearchCandidateShadowPromotionMode = "PREVIEW_ONLY" | "APPLY";
 
 export type ResearchCandidateShadowPromotionStatus =
   | "READY"
+  | "WARNING_REVIEW_REQUIRED"
   | "BLOCKED"
   | "NO_CHANGES"
   | "APPLIED";
@@ -3033,6 +3034,15 @@ export type ResearchCandidateShadowPromotionRequest = {
   correlation_id?: string | null;
 };
 
+export type ResearchCandidateShadowPromotionDiff = {
+  added_strategies: string[];
+  removed_strategies: string[];
+  added_symbols: string[];
+  removed_symbols: string[];
+  timeframe_change?: { from: string; to: string } | null;
+  enabled_change?: { from: boolean; to: boolean } | null;
+};
+
 export type ResearchCandidateShadowPromotionPreview = {
   candidate_id: string;
   candidate_status: ResearchCandidateStatus;
@@ -3041,9 +3051,13 @@ export type ResearchCandidateShadowPromotionPreview = {
   timeframe: string;
   current_runner_config: TestnetShadowRunnerConfig;
   proposed_runner_config: TestnetShadowRunnerConfig;
+  diff: ResearchCandidateShadowPromotionDiff;
   changes: string[];
   status: ResearchCandidateShadowPromotionStatus;
   reasons: string[];
+  blockers: string[];
+  warnings: string[];
+  recommendation: string;
   confirmation_required: boolean;
   correlation_id: string;
   mode: ResearchCandidateShadowPromotionMode;
@@ -3058,9 +3072,13 @@ export type ResearchCandidateShadowPromotionResult = {
   timeframe: string;
   current_runner_config: TestnetShadowRunnerConfig;
   proposed_runner_config: TestnetShadowRunnerConfig;
+  diff: ResearchCandidateShadowPromotionDiff;
   changes: string[];
   status: ResearchCandidateShadowPromotionStatus;
   reasons: string[];
+  blockers: string[];
+  warnings: string[];
+  recommendation: string;
   confirmation_required: boolean;
   correlation_id: string;
   mode: ResearchCandidateShadowPromotionMode;
