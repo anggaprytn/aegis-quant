@@ -1,24 +1,33 @@
 use aegis_core::{
     candle_aggregation_status, scheduled_research_next_run_at, CandleInterval,
-    MarketDataQualityRequest, MarketDataSource, ScheduledResearchBootstrapSafePlanItem,
+    MarketDataQualityRequest, MarketDataSource, ResearchCandidateShadowObserveOnceDecision,
+    ResearchCandidateShadowObserveOnceRequest, ResearchCandidateShadowObserveOnceResult,
+    ResearchCandidateStatus, ScheduledResearchBootstrapSafePlanItem,
     ScheduledResearchBootstrapSafeRequest, ScheduledResearchJob, ScheduledResearchJobKind,
     ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobRunStatus,
-    ScheduledResearchJobStatus, Symbol,
+    ScheduledResearchJobStatus, Symbol, TestnetShadowRunRequest, TestnetShadowRunnerConfig,
 };
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use db::{
-    get_latest_candle_aggregation_run, get_latest_closed_candle_time, get_scheduled_research_job,
+    get_latest_candle_aggregation_run, get_latest_closed_candle_time, get_recent_closed_candles,
+    get_research_candidate, get_research_candidate_shadow_performance, get_scheduled_research_job,
     insert_scheduled_research_job_run, list_due_scheduled_research_jobs, list_market_feed_statuses,
-    mark_scheduled_research_job_after_run, scheduled_research_job_from_record,
-    scheduled_research_job_run_from_record, summarize_candle_continuity_report,
-    try_claim_scheduled_research_job,
+    mark_scheduled_research_job_after_run, research_candidate_from_record,
+    scheduled_research_job_from_record, scheduled_research_job_run_from_record,
+    summarize_candle_continuity_report, try_claim_scheduled_research_job,
+    ResearchCandidateShadowPerformanceWindow,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::{
+    testnet_shadow::run_testnet_shadow_once,
+    testnet_shadow_runner::load_testnet_shadow_runner_snapshot,
+};
 
 pub const DEFAULT_SCHEDULED_RESEARCH_RUNNER_INTERVAL_SECONDS: u64 = 60;
 pub const DEFAULT_SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS: u64 = 300;
@@ -56,6 +65,13 @@ struct ScheduledJobExecution {
     error: Option<String>,
     artifact_type: Option<String>,
     artifact_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CandidateShadowObserveOnceScheduledRequest {
+    candidate_id: Uuid,
+    #[serde(default)]
+    allow_duplicate_operational_check: bool,
 }
 
 pub fn build_safe_bootstrap_scheduled_research_jobs(
@@ -716,6 +732,27 @@ async fn execute_job_kind(
                 artifact_id: None,
             })
         }
+        ScheduledResearchJobKind::CandidateShadowObserveOnce => {
+            let result =
+                observe_candidate_shadow_once_for_scheduled_job(state, job, _correlation_id)
+                    .await
+                    .context("failed to run CANDIDATE_SHADOW_OBSERVE_ONCE job")?;
+            let decision = result.decision;
+            let artifact_id = result.shadow_run.as_ref().map(|run| run.run_id);
+            let status =
+                if decision == ResearchCandidateShadowObserveOnceDecision::SkippedNoNewCandle {
+                    ScheduledResearchJobRunStatus::Skipped
+                } else {
+                    ScheduledResearchJobRunStatus::Completed
+                };
+            Ok(ScheduledJobExecution {
+                status,
+                result: serde_json::to_value(result)?,
+                error: None,
+                artifact_type: artifact_id.map(|_| "testnet_shadow_run".to_string()),
+                artifact_id,
+            })
+        }
         ScheduledResearchJobKind::ResearchBatch
         | ScheduledResearchJobKind::ResearchCampaign
         | ScheduledResearchJobKind::RegimeDiscovery
@@ -734,6 +771,194 @@ async fn execute_job_kind(
             })
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateShadowObserveOncePlan {
+    should_run: bool,
+    duplicate_operational_check: bool,
+    skip_reason: Option<&'static str>,
+}
+
+fn plan_candidate_shadow_observe_once(
+    latest_evaluated: Option<DateTime<Utc>>,
+    latest_available: Option<DateTime<Utc>>,
+    allow_duplicate_operational_check: bool,
+) -> CandidateShadowObserveOncePlan {
+    let no_new_candle = match (latest_evaluated, latest_available) {
+        (_, None) => true,
+        (Some(evaluated), Some(available)) => available <= evaluated,
+        (None, Some(_)) => false,
+    };
+
+    if no_new_candle && !allow_duplicate_operational_check {
+        return CandidateShadowObserveOncePlan {
+            should_run: false,
+            duplicate_operational_check: false,
+            skip_reason: Some(if latest_available.is_none() {
+                "NO_AVAILABLE_CANDLE"
+            } else {
+                "NO_NEW_CANDLE"
+            }),
+        };
+    }
+
+    CandidateShadowObserveOncePlan {
+        should_run: true,
+        duplicate_operational_check: no_new_candle,
+        skip_reason: None,
+    }
+}
+
+fn candidate_shadow_window_start(candidate: &aegis_core::ResearchCandidate) -> DateTime<Utc> {
+    candidate.updated_at
+}
+
+fn candidate_runner_alignment_current(
+    candidate: &aegis_core::ResearchCandidate,
+    config: &TestnetShadowRunnerConfig,
+) -> bool {
+    config
+        .timeframe
+        .trim()
+        .eq_ignore_ascii_case(&candidate.timeframe)
+        && config
+            .symbols
+            .iter()
+            .any(|value| value.trim().eq_ignore_ascii_case(&candidate.symbol))
+        && config
+            .strategies
+            .iter()
+            .any(|value| value.trim().eq_ignore_ascii_case(&candidate.strategy_id))
+}
+
+async fn observe_candidate_shadow_once_for_scheduled_job(
+    state: &AppState,
+    job: &ScheduledResearchJob,
+    correlation_id: Uuid,
+) -> Result<ResearchCandidateShadowObserveOnceResult> {
+    if !state.config.shadow_observation_only {
+        anyhow::bail!(
+            "SHADOW_OBSERVATION_ONLY=true is required before recording shadow observations."
+        );
+    }
+
+    let scheduled_request: CandidateShadowObserveOnceScheduledRequest =
+        serde_json::from_value(job.request.clone())
+            .context("CANDIDATE_SHADOW_OBSERVE_ONCE request requires candidate_id")?;
+    let candidate_record = get_research_candidate(&state.db_pool, scheduled_request.candidate_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("research candidate was not found"))?;
+    let candidate = research_candidate_from_record(&candidate_record)
+        .context("failed to map research candidate")?;
+
+    if candidate.status != ResearchCandidateStatus::PromotedToShadowConfig {
+        anyhow::bail!("Candidate must be PROMOTED_TO_SHADOW_CONFIG before shadow observation.");
+    }
+
+    let runner_snapshot = load_testnet_shadow_runner_snapshot(state)
+        .await
+        .context("failed to load shadow runner config")?;
+    if !candidate_runner_alignment_current(&candidate, &runner_snapshot.config) {
+        anyhow::bail!("Shadow runner config does not currently cover this candidate.");
+    }
+
+    let symbol = Symbol::new(candidate.symbol.clone()).context("invalid candidate symbol")?;
+    let timeframe = candidate
+        .timeframe
+        .parse::<CandleInterval>()
+        .context("invalid candidate timeframe")?;
+    let now = Utc::now();
+    let runner_alignment_current = true;
+    let performance = get_research_candidate_shadow_performance(
+        &state.db_pool,
+        &candidate,
+        &ResearchCandidateShadowPerformanceWindow {
+            start_time: candidate_shadow_window_start(&candidate),
+            end_time: now,
+        },
+        runner_alignment_current,
+        now,
+    )
+    .await
+    .context("failed to get research candidate shadow performance")?;
+    let latest_evaluated = performance.latest_evaluated_candle_open_time;
+    let latest_available = get_recent_closed_candles(&state.db_pool, &symbol, timeframe, 1)
+        .await
+        .context("failed to get latest available candle")?
+        .last()
+        .map(|candle| candle.open_time);
+
+    let observation_plan = plan_candidate_shadow_observe_once(
+        latest_evaluated,
+        latest_available,
+        scheduled_request.allow_duplicate_operational_check,
+    );
+    if !observation_plan.should_run {
+        return Ok(ResearchCandidateShadowObserveOnceResult {
+            candidate_id: candidate.id,
+            strategy_id: candidate.strategy_id,
+            symbol: candidate.symbol,
+            timeframe: candidate.timeframe,
+            decision: ResearchCandidateShadowObserveOnceDecision::SkippedNoNewCandle,
+            reason: observation_plan.skip_reason.map(str::to_string),
+            latest_evaluated_candle_open_time: latest_evaluated,
+            latest_available_candle_open_time: latest_available,
+            independent_evidence_created: false,
+            shadow_run: None,
+        });
+    }
+
+    let allow_duplicate_operational_check = observation_plan.duplicate_operational_check;
+    let payload = ResearchCandidateShadowObserveOnceRequest {
+        allow_duplicate_operational_check: scheduled_request.allow_duplicate_operational_check,
+        correlation_id: Some(correlation_id),
+    };
+    let run = run_testnet_shadow_once(
+        state,
+        None,
+        TestnetShadowRunRequest {
+            strategy_id: candidate.strategy_id.clone(),
+            symbol: candidate.symbol.clone(),
+            timeframe: candidate.timeframe.clone(),
+            correlation_id: payload.correlation_id,
+        },
+    )
+    .await
+    .context("failed to record scheduled candidate shadow observation")?;
+
+    let valid_completed = run.status.as_str() == "COMPLETED"
+        && matches!(
+            run.decision.as_str(),
+            "NO_SIGNAL" | "WOULD_SUBMIT" | "RISK_REJECTED"
+        );
+    let independent_evidence_created = valid_completed
+        && match (latest_evaluated, run.evaluated_candle_open_time) {
+            (Some(evaluated), Some(observed)) => observed > evaluated,
+            (None, Some(_)) => !allow_duplicate_operational_check,
+            _ => false,
+        };
+
+    Ok(ResearchCandidateShadowObserveOnceResult {
+        candidate_id: candidate.id,
+        strategy_id: candidate.strategy_id,
+        symbol: candidate.symbol,
+        timeframe: candidate.timeframe,
+        decision: if allow_duplicate_operational_check {
+            ResearchCandidateShadowObserveOnceDecision::OperationalDuplicateCheckRecorded
+        } else {
+            ResearchCandidateShadowObserveOnceDecision::Observed
+        },
+        reason: if allow_duplicate_operational_check {
+            Some("DUPLICATE_CANDLE_OPERATIONAL_CHECK".to_string())
+        } else {
+            None
+        },
+        latest_evaluated_candle_open_time: latest_evaluated,
+        latest_available_candle_open_time: latest_available,
+        independent_evidence_created,
+        shadow_run: Some(run),
+    })
 }
 
 fn market_data_quality_request_from_scheduled_job(
@@ -917,6 +1142,7 @@ pub fn stale_scheduled_job_threshold() -> Duration {
 mod tests {
     use super::*;
     use aegis_core::ScheduledResearchJobKind;
+    use chrono::TimeZone;
 
     fn job(consecutive_failure_count: i32) -> ScheduledResearchJob {
         ScheduledResearchJob {
@@ -1121,6 +1347,41 @@ mod tests {
         assert_eq!(request.expected_interval_seconds, Some(900));
         assert_eq!(request.max_allowed_gap_count, Some(0));
         assert_eq!((request.end_time - request.start_time).num_minutes(), 90);
+    }
+
+    #[test]
+    fn candidate_shadow_observe_once_plan_skips_without_new_candle() {
+        let evaluated = Utc.with_ymd_and_hms(2026, 5, 29, 10, 0, 0).unwrap();
+        let plan = plan_candidate_shadow_observe_once(Some(evaluated), Some(evaluated), false);
+
+        assert!(!plan.should_run);
+        assert!(!plan.duplicate_operational_check);
+        assert_eq!(plan.skip_reason, Some("NO_NEW_CANDLE"));
+    }
+
+    #[test]
+    fn candidate_shadow_observe_once_plan_runs_on_newer_candle() {
+        let evaluated = Utc.with_ymd_and_hms(2026, 5, 29, 10, 0, 0).unwrap();
+        let available = Utc.with_ymd_and_hms(2026, 5, 29, 11, 0, 0).unwrap();
+        let plan = plan_candidate_shadow_observe_once(Some(evaluated), Some(available), false);
+
+        assert!(plan.should_run);
+        assert!(!plan.duplicate_operational_check);
+        assert!(plan.skip_reason.is_none());
+    }
+
+    #[test]
+    fn candidate_shadow_observe_once_request_defaults_duplicate_check_off() {
+        let request: CandidateShadowObserveOnceScheduledRequest = serde_json::from_value(json!({
+            "candidate_id": "70867792-93df-494c-9a8b-d961c73107e4"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            request.candidate_id,
+            Uuid::parse_str("70867792-93df-494c-9a8b-d961c73107e4").unwrap()
+        );
+        assert!(!request.allow_duplicate_operational_check);
     }
 
     #[test]

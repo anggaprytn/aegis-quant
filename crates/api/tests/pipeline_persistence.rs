@@ -4,8 +4,9 @@ use aegis_core::{
     Candle, CandleInterval, DataFreshnessStatus, FeedStatus, MarketDataSource, MarketMode,
     MarketTick, PaperCloseMode, PaperClosePositionRequest, PaperCloseStatus,
     PaperCloseValidationIssue, PaperPositionStatusFilter, PaperTradingPipelineRequest,
-    PipelineDecision, PipelineStepStatus, ScheduledResearchJobKind, ScheduledResearchJobRequest,
-    StrategyConfig, StrategyId, StrategyMode, Symbol, TestnetShadowRunnerConfigInput,
+    PipelineDecision, PipelineStepStatus, ResearchCandidate, ResearchCandidateDecision,
+    ResearchCandidateStatus, ScheduledResearchJobKind, ScheduledResearchJobRequest, StrategyConfig,
+    StrategyId, StrategyMode, Symbol, TestnetShadowRunnerConfigInput,
     TestnetShadowRunnerControlAction, TestnetShadowRunnerStaleFeedPolicy,
     TestnetShadowRunnerStatus,
 };
@@ -21,12 +22,14 @@ use api::{
 };
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use db::{
-    get_default_paper_account, get_order_by_id, get_paper_position, get_risk_decision,
-    insert_market_tick, insert_scheduled_research_job, list_open_paper_positions, list_orders,
-    list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
-    list_recent_signals, list_recent_system_events, scheduled_research_job_from_record,
-    set_kill_switch_state, test_support::TestDatabase, upsert_candle, upsert_market_feed_status,
-    upsert_strategy_config, StateActor,
+    create_research_candidate, get_default_paper_account, get_order_by_id, get_paper_position,
+    get_recent_closed_candles, get_risk_decision, insert_market_tick,
+    insert_research_candidate_shadow_run_link, insert_scheduled_research_job,
+    insert_testnet_shadow_run, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
+    list_paper_positions, list_paper_trade_journal, list_recent_signals, list_recent_system_events,
+    scheduled_research_job_from_record, set_kill_switch_state, test_support::TestDatabase,
+    upsert_candle, upsert_market_feed_status, upsert_strategy_config, StateActor,
+    TestnetShadowRunRecord,
 };
 use market_ingest::MarketIngestConfig;
 use rust_decimal::Decimal;
@@ -165,6 +168,139 @@ async fn scheduled_research_run_once_records_run_and_keeps_execution_tables_unch
     assert_eq!(before, execution_table_counts(&db.pool).await);
 }
 
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn scheduled_candidate_shadow_observe_once_skips_then_records_only_on_new_candle() {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let state = app_state(test_db.pool.clone());
+    let candidate = seed_fresh_shadow_candidate_fixture(&test_db.pool).await;
+    persist_testnet_shadow_runner_config(&state, &runner_config_input(false), None)
+        .await
+        .expect("runner config should persist");
+
+    let latest_candle = get_recent_closed_candles(
+        &test_db.pool,
+        &Symbol::new("BTCUSDT").expect("valid symbol"),
+        CandleInterval::OneMinute,
+        1,
+    )
+    .await
+    .expect("latest candle should load")
+    .pop()
+    .expect("latest candle should exist");
+    let prior_run = TestnetShadowRunRecord {
+        id: Uuid::new_v4(),
+        strategy_id: candidate.strategy_id.clone(),
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        decision: "NO_SIGNAL".to_string(),
+        signal_id: None,
+        risk_decision_id: None,
+        would_submit_payload: None,
+        price_source: None,
+        resolved_price: None,
+        reasons: Vec::new(),
+        status: "COMPLETED".to_string(),
+        evaluated_candle_open_time: Some(latest_candle.open_time),
+        created_at: Utc::now(),
+        correlation_id: Some(Uuid::new_v4()),
+    };
+    insert_testnet_shadow_run(&test_db.pool, &prior_run)
+        .await
+        .expect("prior shadow run should persist");
+    insert_research_candidate_shadow_run_link(
+        &test_db.pool,
+        candidate.id,
+        prior_run.id,
+        Utc::now(),
+    )
+    .await
+    .expect("prior link should persist");
+
+    let request = ScheduledResearchJobRequest {
+        name: "candidate shadow observe once".to_string(),
+        kind: ScheduledResearchJobKind::CandidateShadowObserveOnce,
+        enabled: false,
+        interval_seconds: 300,
+        request: serde_json::json!({ "candidate_id": candidate.id }),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    };
+    let job_record = insert_scheduled_research_job(&test_db.pool, &request)
+        .await
+        .expect("scheduled job should persist");
+    let job = scheduled_research_job_from_record(&job_record).expect("job should map");
+    let before_execution = execution_table_counts(&test_db.pool).await;
+    let before_shadow_runs = count_rows(&test_db.pool, "testnet_shadow_runs").await;
+    let before_links = count_rows(&test_db.pool, "research_candidate_shadow_runs").await;
+
+    let skipped = run_scheduled_research_job_once(&state, &job)
+        .await
+        .expect("run-once should record skipped run");
+    assert_eq!(skipped.status.as_str(), "SKIPPED");
+    assert_eq!(
+        skipped.result["payload"]["decision"],
+        "SKIPPED_NO_NEW_CANDLE"
+    );
+    assert_eq!(
+        count_rows(&test_db.pool, "testnet_shadow_runs").await,
+        before_shadow_runs
+    );
+    assert_eq!(
+        count_rows(&test_db.pool, "research_candidate_shadow_runs").await,
+        before_links
+    );
+    assert_eq!(
+        execution_table_counts(&test_db.pool).await,
+        before_execution
+    );
+
+    let new_open_time = latest_candle.open_time + ChronoDuration::minutes(1);
+    upsert_candle(
+        &test_db.pool,
+        &Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new("BTCUSDT").expect("valid symbol"),
+            interval: CandleInterval::OneMinute,
+            open_time: new_open_time,
+            close_time: new_open_time + ChronoDuration::minutes(1),
+            open: Decimal::new(104_000, 0),
+            high: Decimal::new(105_000, 0),
+            low: Decimal::new(103_500, 0),
+            close: Decimal::new(104_500, 0),
+            volume: Decimal::new(10, 0),
+            quote_volume: Some(Decimal::new(1_045_000, 0)),
+            trade_count: 5,
+            is_closed: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        },
+    )
+    .await
+    .expect("new candle should persist");
+
+    let observed = run_scheduled_research_job_once(&state, &job)
+        .await
+        .expect("run-once should observe new candle");
+    assert_eq!(observed.status.as_str(), "COMPLETED");
+    assert_eq!(observed.result["payload"]["decision"], "OBSERVED");
+    assert_eq!(
+        count_rows(&test_db.pool, "testnet_shadow_runs").await,
+        before_shadow_runs + 1
+    );
+    assert_eq!(
+        count_rows(&test_db.pool, "research_candidate_shadow_runs").await,
+        before_links + 1
+    );
+    assert_eq!(
+        execution_table_counts(&test_db.pool).await,
+        before_execution
+    );
+}
+
 async fn seed_pipeline_happy_path(pool: &db::PgPool) {
     let symbol = Symbol::new("BTCUSDT").expect("valid symbol");
     upsert_strategy_config(pool, &strategy_config())
@@ -209,6 +345,94 @@ async fn seed_pipeline_happy_path(pool: &db::PgPool) {
             .await
             .expect("candle should persist");
     }
+}
+
+async fn seed_fresh_shadow_candidate_fixture(pool: &db::PgPool) -> ResearchCandidate {
+    let symbol = Symbol::new("BTCUSDT").expect("valid symbol");
+    upsert_strategy_config(pool, &strategy_config())
+        .await
+        .expect("strategy config should persist");
+    upsert_market_feed_status(
+        pool,
+        MarketDataSource::Binance,
+        &symbol,
+        FeedStatus::Connected,
+        DataFreshnessStatus::Fresh,
+        Some(Utc::now()),
+        None,
+        0,
+    )
+    .await
+    .expect("feed status should persist");
+    insert_market_tick(
+        pool,
+        &sample_market_tick(Decimal::new(103_500, 0), Utc::now()),
+    )
+    .await
+    .expect("market tick should persist");
+
+    let base_open = Utc::now() - ChronoDuration::seconds(270);
+    for index in 0..4 {
+        let open_time = base_open + ChronoDuration::minutes(index);
+        let close = 100_000_i64 + index * 1_000;
+        upsert_candle(
+            pool,
+            &Candle {
+                id: Uuid::new_v4(),
+                exchange: MarketDataSource::Binance,
+                symbol: symbol.clone(),
+                interval: CandleInterval::OneMinute,
+                open_time,
+                close_time: open_time + ChronoDuration::minutes(1),
+                open: Decimal::new(close - 500, 0),
+                high: Decimal::new(close + 200, 0),
+                low: Decimal::new(close - 700, 0),
+                close: Decimal::new(close, 0),
+                volume: Decimal::new(10, 0),
+                quote_volume: Some(Decimal::new(close * 10, 0)),
+                trade_count: 5,
+                is_closed: true,
+                created_at: open_time + ChronoDuration::seconds(59),
+                updated_at: open_time + ChronoDuration::seconds(59),
+            },
+        )
+        .await
+        .expect("fresh candle should persist");
+    }
+
+    let candidate = ResearchCandidate {
+        id: Uuid::new_v4(),
+        experiment_id: None,
+        experiment_run_id: None,
+        strategy_id: "momentum_v1".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        timeframe: "1m".to_string(),
+        config: serde_json::to_value(strategy_config()).expect("strategy config json"),
+        score: Some(Decimal::new(100, 0)),
+        pnl_pct: Some(Decimal::new(10, 0)),
+        max_drawdown_pct: Some(Decimal::ZERO),
+        trade_count: Some(3),
+        win_rate: Some(Decimal::new(100, 0)),
+        fee_drag: Some(Decimal::ZERO),
+        status: ResearchCandidateStatus::PromotedToShadowConfig,
+        rejection_reason: None,
+        notes: Some("scheduled shadow fixture".to_string()),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        correlation_id: Some(Uuid::new_v4()),
+    };
+    create_research_candidate(
+        pool,
+        &candidate,
+        None,
+        ResearchCandidateDecision::PromoteToShadowConfig,
+        Some("scheduled shadow fixture"),
+        Some("scheduled shadow fixture"),
+        &serde_json::json!({"fixture": true}),
+    )
+    .await
+    .expect("candidate should persist");
+    candidate
 }
 
 fn sample_market_tick(price: Decimal, received_at: chrono::DateTime<Utc>) -> MarketTick {

@@ -291,6 +291,26 @@ The safe bootstrap creates only:
 - `market-data-quality-<SYMBOL>-<INTERVAL>` every 30 minutes for configured symbols and `1m,5m,15m,1h`
 - `operator-report-daily` every 24 hours
 
+Candidate-specific shadow observation jobs are not part of safe bootstrap. Create them manually only
+after the candidate is `PROMOTED_TO_SHADOW_CONFIG`, the shadow-runner config covers the candidate,
+and `SHADOW_OBSERVATION_ONLY=true`:
+
+```bash
+cargo run -p cli -- research scheduled-jobs create \
+  --name eth-fbr-shadow-observe \
+  --kind CANDIDATE_SHADOW_OBSERVE_ONCE \
+  --interval-seconds 300 \
+  --request-json '{"candidate_id":"70867792-93df-494c-9a8b-d961c73107e4"}'
+
+cargo run -p cli -- research scheduled-jobs run-once <job-id>
+```
+
+`CANDIDATE_SHADOW_OBSERVE_ONCE` records no row when there is no newer closed candle; the run result
+reports `SKIPPED_NO_NEW_CANDLE`. When a newer closed candle exists, it records exactly one safe
+`testnet_shadow_runs` row through the existing no-submit shadow path and links it to the candidate.
+It must not create paper positions, paper fills, exchange testnet orders, lifecycle events, or live
+orders.
+
 Jobs are created disabled unless `--enable` is passed. The normal VPS path is:
 
 ```bash

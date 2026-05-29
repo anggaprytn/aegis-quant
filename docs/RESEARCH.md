@@ -40,6 +40,12 @@ The MVP shadow runner stores one singleton `timeframe` for all configured strate
 
 Preview must show the current config, proposed config, structured diff, blockers, warnings, status, and recommendation. Timeframe mismatch is a proposed config change, not a hard blocker, when the candidate is already `ACCEPTED_FOR_SHADOW` and the operator allows missing runner alignment. Apply keeps the existing enabled flag, does not start the runner, does not create shadow runs, and does not create paper, testnet, or live execution rows.
 
+## Scheduled Candidate Shadow Observation
+
+`CANDIDATE_SHADOW_OBSERVE_ONCE` is a manually created scheduled research job for one promoted candidate. It requires `SHADOW_OBSERVATION_ONLY=true` and current shadow-runner config coverage for the candidate. Each run checks the newest closed candle first. If there is no newer closed candle than the candidate's latest linked evaluated candle, it records `SKIPPED_NO_NEW_CANDLE` in the scheduled-job result and does not create a `testnet_shadow_runs` row. If a newer closed candle exists, it uses the existing no-submit shadow path to create one safe shadow run and candidate link.
+
+This job kind is intentionally excluded from `scheduled-jobs bootstrap-safe` because it is candidate-specific.
+
 ## Experiment Plan Runner Semantics
 
 `POST /research/experiment-plans/:id/run-preview` is not a dry run in the sense of being invisible. It persists a plan-run history record so the operator has an audit trail of previews and blockers.

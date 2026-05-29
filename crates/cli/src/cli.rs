@@ -17,6 +17,10 @@ use aegis_core::{
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
 pub const TESTNET_ORDER_CONFIRMATION_TEXT: &str = "TESTNET ORDER";
 
+fn parse_json_value(value: &str) -> Result<serde_json::Value, String> {
+    serde_json::from_str(value).map_err(|err| format!("invalid JSON: {err}"))
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "aegis", about = "Aegis Quant operational CLI")]
 pub struct Cli {
@@ -956,7 +960,12 @@ pub struct ResearchScheduledJobCreateArgs {
     pub enabled: bool,
     #[arg(long = "interval-seconds")]
     pub interval_seconds: i64,
-    #[arg(long, default_value = "{}")]
+    #[arg(
+        long,
+        alias = "request-json",
+        default_value = "{}",
+        value_parser = parse_json_value
+    )]
     pub request: serde_json::Value,
     #[arg(long = "max-runs-per-tick", default_value_t = 1)]
     pub max_runs_per_tick: i32,
@@ -2305,6 +2314,37 @@ mod tests {
 
         assert_eq!(args.candidate_id, candidate_id);
         assert!(args.allow_duplicate_operational_check);
+    }
+
+    #[test]
+    fn scheduled_job_create_parses_request_json_as_object() {
+        let candidate_id =
+            Uuid::parse_str("70867792-93df-494c-9a8b-d961c73107e4").expect("valid uuid");
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "scheduled-jobs",
+            "create",
+            "--name",
+            "eth-fbr-shadow-observe",
+            "--kind",
+            "CANDIDATE_SHADOW_OBSERVE_ONCE",
+            "--interval-seconds",
+            "300",
+            "--request-json",
+            "{\"candidate_id\":\"70867792-93df-494c-9a8b-d961c73107e4\"}",
+        ])
+        .expect("cli parses");
+
+        let Commands::Research(super::ResearchCommands::ScheduledJobs(
+            super::ResearchScheduledJobCommands::Create(args),
+        )) = cli.command
+        else {
+            panic!("expected scheduled job create command");
+        };
+
+        assert_eq!(args.request["candidate_id"], candidate_id.to_string());
+        assert!(args.request.is_object());
     }
 
     #[test]
