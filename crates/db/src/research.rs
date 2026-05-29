@@ -171,8 +171,18 @@ pub struct ResearchCandidateImportRecord {
     pub source_candidate_id: Uuid,
     pub source_environment: Option<String>,
     pub imported_status: String,
+    pub bundle_schema_version: String,
     pub evidence_summary_json: Value,
     pub warnings_json: Value,
+    pub reconciliation_status: String,
+    pub reconciliation_checked_at: Option<DateTime<Utc>>,
+    pub local_validation_window_start: Option<DateTime<Utc>>,
+    pub local_validation_window_end: Option<DateTime<Utc>>,
+    pub local_walk_forward_status: Option<String>,
+    pub local_worst_window_pnl: Option<Decimal>,
+    pub local_recommendation: Option<String>,
+    pub reconciliation_summary_json: Value,
+    pub recommended_next_action: String,
     pub imported_at: DateTime<Utc>,
     pub imported_by: Option<Uuid>,
 }
@@ -3521,20 +3531,24 @@ fn map_research_candidate_import(row: sqlx::postgres::PgRow) -> ResearchCandidat
         source_candidate_id: row.get("source_candidate_id"),
         source_environment: row.try_get("source_environment").unwrap_or(None),
         imported_status: row.get("imported_status"),
+        bundle_schema_version: row.get("bundle_schema_version"),
         evidence_summary_json: row.get("evidence_summary_json"),
         warnings_json: row.get("warnings_json"),
+        reconciliation_status: row.get("reconciliation_status"),
+        reconciliation_checked_at: row.get("reconciliation_checked_at"),
+        local_validation_window_start: row.get("local_validation_window_start"),
+        local_validation_window_end: row.get("local_validation_window_end"),
+        local_walk_forward_status: row.get("local_walk_forward_status"),
+        local_worst_window_pnl: row.get("local_worst_window_pnl"),
+        local_recommendation: row.get("local_recommendation"),
+        reconciliation_summary_json: row.get("reconciliation_summary_json"),
+        recommended_next_action: row.get("recommended_next_action"),
         imported_at: row.get("imported_at"),
         imported_by: row.try_get("imported_by").unwrap_or(None),
     }
 }
 
-pub async fn get_research_candidate_import_by_bundle_fingerprint(
-    pool: &PgPool,
-    bundle_fingerprint: &str,
-) -> Result<Option<ResearchCandidateImportRecord>> {
-    let row = sqlx::query(
-        r#"
-        SELECT
+const RESEARCH_CANDIDATE_IMPORT_COLUMNS: &str = r#"
             id,
             candidate_id,
             bundle_fingerprint,
@@ -3542,14 +3556,33 @@ pub async fn get_research_candidate_import_by_bundle_fingerprint(
             source_candidate_id,
             source_environment,
             imported_status,
+            bundle_schema_version,
             evidence_summary_json,
             warnings_json,
+            reconciliation_status,
+            reconciliation_checked_at,
+            local_validation_window_start,
+            local_validation_window_end,
+            local_walk_forward_status,
+            local_worst_window_pnl,
+            local_recommendation,
+            reconciliation_summary_json,
+            recommended_next_action,
             imported_at,
             imported_by
+"#;
+
+pub async fn get_research_candidate_import_by_bundle_fingerprint(
+    pool: &PgPool,
+    bundle_fingerprint: &str,
+) -> Result<Option<ResearchCandidateImportRecord>> {
+    let row = sqlx::query(&format!(
+        r#"
+        SELECT {RESEARCH_CANDIDATE_IMPORT_COLUMNS}
         FROM research_candidate_imports
         WHERE bundle_fingerprint = $1
-        "#,
-    )
+        "#
+    ))
     .bind(bundle_fingerprint)
     .fetch_optional(pool)
     .await?;
@@ -3562,27 +3595,34 @@ pub async fn get_research_candidate_import_by_source_config(
     source_candidate_id: Uuid,
     config_fingerprint: &str,
 ) -> Result<Option<ResearchCandidateImportRecord>> {
-    let row = sqlx::query(
+    let row = sqlx::query(&format!(
         r#"
-        SELECT
-            id,
-            candidate_id,
-            bundle_fingerprint,
-            config_fingerprint,
-            source_candidate_id,
-            source_environment,
-            imported_status,
-            evidence_summary_json,
-            warnings_json,
-            imported_at,
-            imported_by
+        SELECT {RESEARCH_CANDIDATE_IMPORT_COLUMNS}
         FROM research_candidate_imports
         WHERE source_candidate_id = $1
           AND config_fingerprint = $2
-        "#,
-    )
+        "#
+    ))
     .bind(source_candidate_id)
     .bind(config_fingerprint)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_import))
+}
+
+pub async fn get_research_candidate_import_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ResearchCandidateImportRecord>> {
+    let row = sqlx::query(&format!(
+        r#"
+        SELECT {RESEARCH_CANDIDATE_IMPORT_COLUMNS}
+        FROM research_candidate_imports
+        WHERE id = $1
+        "#
+    ))
+    .bind(id)
     .fetch_optional(pool)
     .await?;
 
@@ -3640,6 +3680,7 @@ pub async fn upsert_research_candidate_import(
     source_candidate_id: Uuid,
     source_environment: Option<&str>,
     imported_status: ResearchCandidateStatus,
+    bundle_schema_version: &str,
     evidence_summary_json: &Value,
     warnings_json: &Value,
     imported_at: DateTime<Utc>,
@@ -3655,12 +3696,13 @@ pub async fn upsert_research_candidate_import(
             source_candidate_id,
             source_environment,
             imported_status,
+            bundle_schema_version,
             evidence_summary_json,
             warnings_json,
             imported_at,
             imported_by
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (bundle_fingerprint) DO UPDATE
         SET candidate_id = research_candidate_imports.candidate_id
         RETURNING
@@ -3671,8 +3713,18 @@ pub async fn upsert_research_candidate_import(
             source_candidate_id,
             source_environment,
             imported_status,
+            bundle_schema_version,
             evidence_summary_json,
             warnings_json,
+            reconciliation_status,
+            reconciliation_checked_at,
+            local_validation_window_start,
+            local_validation_window_end,
+            local_walk_forward_status,
+            local_worst_window_pnl,
+            local_recommendation,
+            reconciliation_summary_json,
+            recommended_next_action,
             imported_at,
             imported_by
         "#,
@@ -3684,6 +3736,7 @@ pub async fn upsert_research_candidate_import(
     .bind(source_candidate_id)
     .bind(source_environment)
     .bind(imported_status.as_str())
+    .bind(bundle_schema_version)
     .bind(evidence_summary_json.clone())
     .bind(warnings_json.clone())
     .bind(imported_at)
@@ -3692,6 +3745,52 @@ pub async fn upsert_research_candidate_import(
     .await?;
 
     Ok(map_research_candidate_import(row))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn record_research_candidate_import_reconciliation(
+    pool: &PgPool,
+    id: Uuid,
+    reconciliation_status: &str,
+    reconciliation_checked_at: DateTime<Utc>,
+    local_validation_window_start: Option<DateTime<Utc>>,
+    local_validation_window_end: Option<DateTime<Utc>>,
+    local_walk_forward_status: Option<&str>,
+    local_worst_window_pnl: Option<Decimal>,
+    local_recommendation: Option<&str>,
+    reconciliation_summary_json: &Value,
+    recommended_next_action: &str,
+) -> Result<Option<ResearchCandidateImportRecord>> {
+    let row = sqlx::query(&format!(
+        r#"
+        UPDATE research_candidate_imports
+        SET reconciliation_status = $2,
+            reconciliation_checked_at = $3,
+            local_validation_window_start = $4,
+            local_validation_window_end = $5,
+            local_walk_forward_status = $6,
+            local_worst_window_pnl = $7,
+            local_recommendation = $8,
+            reconciliation_summary_json = $9,
+            recommended_next_action = $10
+        WHERE id = $1
+        RETURNING {RESEARCH_CANDIDATE_IMPORT_COLUMNS}
+        "#
+    ))
+    .bind(id)
+    .bind(reconciliation_status)
+    .bind(reconciliation_checked_at)
+    .bind(local_validation_window_start)
+    .bind(local_validation_window_end)
+    .bind(local_walk_forward_status)
+    .bind(local_worst_window_pnl)
+    .bind(local_recommendation)
+    .bind(reconciliation_summary_json.clone())
+    .bind(recommended_next_action)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate_import))
 }
 
 pub async fn insert_research_regime_dataset(

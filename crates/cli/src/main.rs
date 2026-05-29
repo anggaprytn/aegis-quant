@@ -2,11 +2,11 @@ use aegis_core::{
     OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
     ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateImportBundlePreviewRequest,
-    ResearchCandidateImportBundleRequest, ResearchCandidateReviewRequest,
-    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunRequest,
-    ResearchHypothesisGenerationRequest, ResearchHypothesisIncludedSource,
-    ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest, TestnetShadowRunnerControlAction,
-    TestnetShadowRunnerControlRequest,
+    ResearchCandidateImportBundleRequest, ResearchCandidateImportReconciliationRequest,
+    ResearchCandidateReviewRequest, ResearchExperimentPlanRunMode,
+    ResearchExperimentPlanRunRequest, ResearchHypothesisGenerationRequest,
+    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest,
+    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -1084,6 +1084,34 @@ async fn main() -> anyhow::Result<()> {
                             correlation_id: None,
                         })
                         .await?;
+                    output::print_json(&response)?;
+                }
+                ResearchCandidateCommands::RecordReconciliation(args) => {
+                    let response = client
+                        .record_research_candidate_import_reconciliation(
+                            args.import_id,
+                            &ResearchCandidateImportReconciliationRequest {
+                                reconciliation_status: args.status,
+                                local_validation_window_start: args.local_validation_window_start,
+                                local_validation_window_end: args.local_validation_window_end,
+                                local_walk_forward_status: args.local_walk_forward_status,
+                                local_worst_window_pnl: args.local_worst_window_pnl,
+                                local_recommendation: args.local_recommendation,
+                                reconciliation_summary_json: args.summary_json,
+                                recommended_next_action: args.recommended_next_action,
+                                confirm: args.confirm,
+                                correlation_id: None,
+                            },
+                        )
+                        .await?;
+                    if response.result.candidate_id != args.candidate_id {
+                        anyhow::bail!(
+                            "import {} belongs to candidate {}, not {}",
+                            args.import_id,
+                            response.result.candidate_id,
+                            args.candidate_id
+                        );
+                    }
                     output::print_json(&response)?;
                 }
                 ResearchCandidateCommands::Events { candidate_id } => {

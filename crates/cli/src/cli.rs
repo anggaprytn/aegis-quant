@@ -1,4 +1,6 @@
+use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
+use rust_decimal::Decimal;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -1396,6 +1398,7 @@ pub enum ResearchCandidateCommands {
     ExportBundle(ResearchCandidateExportBundleArgs),
     ImportBundlePreview(ResearchCandidateImportBundlePreviewArgs),
     ImportBundle(ResearchCandidateImportBundleArgs),
+    RecordReconciliation(ResearchCandidateRecordReconciliationArgs),
     Events { candidate_id: Uuid },
     Reviews { candidate_id: Uuid },
     Observations { candidate_id: Uuid },
@@ -1438,6 +1441,31 @@ pub struct ResearchCandidateImportBundlePreviewArgs {
 pub struct ResearchCandidateImportBundleArgs {
     #[arg(long)]
     pub file: PathBuf,
+    #[arg(long)]
+    pub confirm: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCandidateRecordReconciliationArgs {
+    pub candidate_id: Uuid,
+    #[arg(long)]
+    pub import_id: Uuid,
+    #[arg(long)]
+    pub status: String,
+    #[arg(long)]
+    pub local_validation_window_start: Option<DateTime<Utc>>,
+    #[arg(long)]
+    pub local_validation_window_end: Option<DateTime<Utc>>,
+    #[arg(long)]
+    pub local_walk_forward_status: Option<String>,
+    #[arg(long)]
+    pub local_worst_window_pnl: Option<Decimal>,
+    #[arg(long)]
+    pub local_recommendation: Option<String>,
+    #[arg(long, value_parser = parse_json_value)]
+    pub summary_json: Option<serde_json::Value>,
+    #[arg(long, default_value = "KEEP_DISCOVERED_PROVENANCE_ONLY")]
+    pub recommended_next_action: String,
     #[arg(long)]
     pub confirm: String,
 }

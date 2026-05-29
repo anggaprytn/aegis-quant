@@ -7771,12 +7771,83 @@ pub struct ResearchCandidateExecutionBoundary {
     pub no_paper_testnet_live: bool,
     pub import_does_not_authorize_execution: bool,
     pub paper_testnet_live_boundary_crossed: bool,
+    #[serde(default)]
+    pub import_does_not_create_shadow_runs: bool,
+    #[serde(default)]
+    pub import_does_not_update_runner_config: bool,
+    #[serde(default)]
+    pub import_does_not_create_scheduled_jobs: bool,
+    #[serde(default)]
+    pub import_does_not_mark_ready_for_testnet: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResearchCandidateEvidenceBundleIntegrity {
     pub bundle_fingerprint: String,
     pub algorithm: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateValidationProtocol {
+    pub data_window_start: DateTime<Utc>,
+    pub data_window_end: DateTime<Utc>,
+    pub symbol: String,
+    pub timeframe: String,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    pub holding_candles: Option<u32>,
+    pub replay_mode: String,
+    pub strategy_id: String,
+    pub normalized_strategy_config: Value,
+    pub config_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateWalkForwardProtocolWindow {
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub pnl_pct: Decimal,
+    pub trade_count: i32,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateWalkForwardProtocol {
+    pub train_window_hours: Option<i64>,
+    pub test_window_hours: Option<i64>,
+    pub step_hours: Option<i64>,
+    pub min_windows: Option<i32>,
+    pub explicit_windows: Vec<ResearchCandidateWalkForwardProtocolWindow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateDataQualitySnapshot {
+    pub candle_count: Option<i64>,
+    pub expected_candle_count: Option<i64>,
+    pub coverage_pct: Option<Decimal>,
+    pub gap_count: Option<i64>,
+    pub first_candle: Option<DateTime<Utc>>,
+    pub last_candle: Option<DateTime<Utc>>,
+    pub quality_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateEvidenceArtifacts {
+    pub experiment_run_id: Option<Uuid>,
+    pub walk_forward_run_id: Option<Uuid>,
+    pub robustness_matrix_run_id: Option<Uuid>,
+    pub candidate_gate_source_id: Option<Uuid>,
+    pub proposal_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateEngineFingerprint {
+    pub app_git_hash: Option<String>,
+    pub replay_engine_version: Option<String>,
+    pub replay_engine_hash: Option<String>,
+    pub strategy_engine_version: Option<String>,
+    pub strategy_engine_hash: Option<String>,
+    pub migration_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -7789,6 +7860,16 @@ pub struct ResearchCandidateEvidenceBundle {
     pub evidence_summary: Value,
     pub warnings: Vec<String>,
     pub execution_boundary: ResearchCandidateExecutionBoundary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_protocol: Option<ResearchCandidateValidationProtocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walk_forward_protocol: Option<ResearchCandidateWalkForwardProtocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_quality_snapshot: Option<ResearchCandidateDataQualitySnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_artifacts: Option<ResearchCandidateEvidenceArtifacts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_fingerprint: Option<ResearchCandidateEngineFingerprint>,
     pub integrity: ResearchCandidateEvidenceBundleIntegrity,
 }
 
@@ -7838,6 +7919,30 @@ pub struct ResearchCandidateImportBundleResult {
     pub applied: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateImportReconciliationRequest {
+    pub reconciliation_status: String,
+    pub local_validation_window_start: Option<DateTime<Utc>>,
+    pub local_validation_window_end: Option<DateTime<Utc>>,
+    pub local_walk_forward_status: Option<String>,
+    pub local_worst_window_pnl: Option<Decimal>,
+    pub local_recommendation: Option<String>,
+    pub reconciliation_summary_json: Option<Value>,
+    pub recommended_next_action: String,
+    pub confirm: String,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResearchCandidateImportReconciliationResult {
+    pub import_audit_id: Uuid,
+    pub candidate_id: Uuid,
+    pub candidate_status: ResearchCandidateStatus,
+    pub reconciliation_status: String,
+    pub recommended_next_action: String,
+    pub reconciliation_checked_at: DateTime<Utc>,
+}
+
 pub fn expected_research_candidate_import_confirmation(config_fingerprint: &str) -> String {
     format!("IMPORT RESEARCH CANDIDATE {}", config_fingerprint.trim())
 }
@@ -7847,6 +7952,17 @@ pub fn is_valid_research_candidate_import_confirmation(
     confirmation_text: &str,
 ) -> bool {
     confirmation_text == expected_research_candidate_import_confirmation(config_fingerprint)
+}
+
+pub fn expected_research_candidate_import_reconciliation_confirmation(import_id: Uuid) -> String {
+    format!("RECORD RECONCILIATION {import_id}")
+}
+
+pub fn is_valid_research_candidate_import_reconciliation_confirmation(
+    import_id: Uuid,
+    confirmation_text: &str,
+) -> bool {
+    confirmation_text == expected_research_candidate_import_reconciliation_confirmation(import_id)
 }
 
 pub fn canonical_json_value(value: &Value) -> Value {
@@ -7887,6 +8003,11 @@ pub fn research_candidate_bundle_fingerprint_payload(
         "evidence_summary": bundle.evidence_summary,
         "warnings": bundle.warnings,
         "execution_boundary": bundle.execution_boundary,
+        "validation_protocol": bundle.validation_protocol,
+        "walk_forward_protocol": bundle.walk_forward_protocol,
+        "data_quality_snapshot": bundle.data_quality_snapshot,
+        "evidence_artifacts": bundle.evidence_artifacts,
+        "engine_fingerprint": bundle.engine_fingerprint,
     })
 }
 
@@ -18092,6 +18213,110 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn research_candidate_import_reconciliation_confirmation_requires_exact_import_id() {
+        let import_id = Uuid::parse_str("41a3ea74-0a43-4a1f-9665-ad03167a61ff").unwrap();
+        assert!(
+            is_valid_research_candidate_import_reconciliation_confirmation(
+                import_id,
+                &expected_research_candidate_import_reconciliation_confirmation(import_id)
+            )
+        );
+        assert!(
+            !is_valid_research_candidate_import_reconciliation_confirmation(
+                import_id,
+                "RECORD RECONCILIATION wrong"
+            )
+        );
+    }
+
+    #[test]
+    fn research_candidate_bundle_v2_fingerprint_includes_validation_protocol() {
+        let mut first = sample_research_candidate_bundle_v2(json!({"holding_candles": 20}));
+        let mut second = first.clone();
+        first.integrity.bundle_fingerprint = research_candidate_bundle_fingerprint(&first).unwrap();
+        second.validation_protocol.as_mut().unwrap().fee_bps = Decimal::new(11, 1);
+        second.integrity.bundle_fingerprint =
+            research_candidate_bundle_fingerprint(&second).unwrap();
+
+        assert_ne!(
+            first.integrity.bundle_fingerprint,
+            second.integrity.bundle_fingerprint
+        );
+    }
+
+    #[test]
+    fn research_candidate_bundle_v1_deserializes_without_v2_protocol() {
+        let bundle_json = serde_json::to_value(sample_research_candidate_bundle(json!({
+            "holding_candles": 20
+        })))
+        .unwrap();
+        let bundle: ResearchCandidateEvidenceBundle = serde_json::from_value(bundle_json).unwrap();
+
+        assert_eq!(
+            bundle.schema_version,
+            "research_candidate_evidence_bundle.v1"
+        );
+        assert!(bundle.validation_protocol.is_none());
+        assert!(bundle.walk_forward_protocol.is_none());
+    }
+
+    fn sample_research_candidate_bundle_v2(config: Value) -> ResearchCandidateEvidenceBundle {
+        let mut bundle = sample_research_candidate_bundle(config);
+        bundle.schema_version = "research_candidate_evidence_bundle.v2".to_string();
+        bundle.validation_protocol = Some(ResearchCandidateValidationProtocol {
+            data_window_start: ts(1, 0, 0),
+            data_window_end: ts(2, 0, 0),
+            symbol: "ETHUSDT".to_string(),
+            timeframe: "1h".to_string(),
+            fee_bps: Decimal::new(10, 1),
+            slippage_bps: Decimal::new(5, 1),
+            holding_candles: Some(20),
+            replay_mode: "strategy_experiment".to_string(),
+            strategy_id: "failed_breakdown_reclaim_v1".to_string(),
+            normalized_strategy_config: bundle.candidate.config.clone(),
+            config_fingerprint: bundle.candidate.config_fingerprint.clone(),
+        });
+        bundle.walk_forward_protocol = Some(ResearchCandidateWalkForwardProtocol {
+            train_window_hours: Some(24 * 90),
+            test_window_hours: Some(24 * 30),
+            step_hours: Some(24 * 30),
+            min_windows: Some(3),
+            explicit_windows: vec![ResearchCandidateWalkForwardProtocolWindow {
+                window_start: ts(1, 0, 0),
+                window_end: ts(1, 12, 0),
+                pnl_pct: Decimal::new(4045420723, 10),
+                trade_count: 4,
+                status: "PROFITABLE".to_string(),
+            }],
+        });
+        bundle.data_quality_snapshot = Some(ResearchCandidateDataQualitySnapshot {
+            candle_count: Some(24),
+            expected_candle_count: Some(24),
+            coverage_pct: Some(Decimal::new(100, 0)),
+            gap_count: Some(0),
+            first_candle: Some(ts(1, 0, 0)),
+            last_candle: Some(ts(2, 0, 0)),
+            quality_status: Some("GOOD".to_string()),
+        });
+        bundle.evidence_artifacts = Some(ResearchCandidateEvidenceArtifacts {
+            experiment_run_id: Some(Uuid::new_v4()),
+            walk_forward_run_id: Some(Uuid::new_v4()),
+            robustness_matrix_run_id: None,
+            candidate_gate_source_id: None,
+            proposal_id: None,
+        });
+        bundle.engine_fingerprint = Some(ResearchCandidateEngineFingerprint {
+            app_git_hash: Some("abc123".to_string()),
+            replay_engine_version: Some("test".to_string()),
+            replay_engine_hash: None,
+            strategy_engine_version: Some("test".to_string()),
+            strategy_engine_hash: None,
+            migration_version: Some("0064".to_string()),
+        });
+        bundle
+    }
+
     fn sample_research_candidate_bundle(config: Value) -> ResearchCandidateEvidenceBundle {
         ResearchCandidateEvidenceBundle {
             schema_version: "research_candidate_evidence_bundle.v1".to_string(),
@@ -18114,7 +18339,16 @@ mod tests {
                 no_paper_testnet_live: true,
                 import_does_not_authorize_execution: true,
                 paper_testnet_live_boundary_crossed: false,
+                import_does_not_create_shadow_runs: true,
+                import_does_not_update_runner_config: true,
+                import_does_not_create_scheduled_jobs: true,
+                import_does_not_mark_ready_for_testnet: true,
             },
+            validation_protocol: None,
+            walk_forward_protocol: None,
+            data_quality_snapshot: None,
+            evidence_artifacts: None,
+            engine_fingerprint: None,
             integrity: ResearchCandidateEvidenceBundleIntegrity {
                 bundle_fingerprint: String::new(),
                 algorithm: "sha256:canonical-json-without-integrity".to_string(),

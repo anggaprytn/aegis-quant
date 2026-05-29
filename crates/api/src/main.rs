@@ -20,11 +20,13 @@ use aegis_core::{
     aggregate_closed_1m_candles, candle_aggregation_status,
     expected_research_candidate_accept_shadow_confirmation,
     expected_research_candidate_import_confirmation,
+    expected_research_candidate_import_reconciliation_confirmation,
     expected_research_candidate_shadow_promotion_confirmation,
     expected_strategy_research_promotion_confirmation, expected_testnet_pipeline_confirmation,
     expected_testnet_shadow_promotion_confirmation,
     is_valid_research_candidate_accept_shadow_confirmation,
     is_valid_research_candidate_import_confirmation,
+    is_valid_research_candidate_import_reconciliation_confirmation,
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
@@ -57,13 +59,16 @@ use aegis_core::{
     ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowEvidenceSummary,
     ResearchCandidateAcceptForShadowPreviewInput, ResearchCandidateAcceptForShadowPreviewResult,
     ResearchCandidateCreationGateResult, ResearchCandidateCreationInput,
-    ResearchCandidateCreationPolicy, ResearchCandidateDecision, ResearchCandidateDecisionRejection,
-    ResearchCandidateDecisionRequest, ResearchCandidateEvidenceBundle,
+    ResearchCandidateCreationPolicy, ResearchCandidateDataQualitySnapshot,
+    ResearchCandidateDecision, ResearchCandidateDecisionRejection,
+    ResearchCandidateDecisionRequest, ResearchCandidateEngineFingerprint,
+    ResearchCandidateEvidenceArtifacts, ResearchCandidateEvidenceBundle,
     ResearchCandidateEvidenceBundleCandidate, ResearchCandidateEvidenceBundleIntegrity,
     ResearchCandidateEvidenceProvenance, ResearchCandidateExecutionBoundary,
     ResearchCandidateFailureInput, ResearchCandidateImportBundlePreview,
     ResearchCandidateImportBundlePreviewRequest, ResearchCandidateImportBundleRequest,
     ResearchCandidateImportBundleResult, ResearchCandidateImportProposedActions,
+    ResearchCandidateImportReconciliationRequest, ResearchCandidateImportReconciliationResult,
     ResearchCandidateLifecycleEvent, ResearchCandidateObservationFreshnessStatus,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidatePromotionReadiness, ResearchCandidateProposal,
@@ -80,23 +85,24 @@ use aegis_core::{
     ResearchCandidateShadowPromotionStatus, ResearchCandidateShadowPromotionTimeframeChange,
     ResearchCandidateShadowRunLink, ResearchCandidateStatus, ResearchCandidateTestnetReviewDossier,
     ResearchCandidateTestnetReviewFinding, ResearchCandidateTestnetReviewRequest,
-    ResearchCandidateWalkForwardEvidence, ResearchCandidateWatchlistEntry,
-    ResearchDataCoverageRequest, ResearchDataCoverageResult, ResearchDatasetBuildRequest,
-    ResearchDatasetBuildResult, ResearchExperimentPlan, ResearchExperimentPlanRunArtifact,
-    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunRequest,
-    ResearchExperimentPlanRunResult, ResearchExperimentPlanRunStatus, ResearchExperimentPlanStatus,
-    ResearchExperimentPlanType, ResearchHypothesis, ResearchHypothesisGenerationEvidence,
-    ResearchHypothesisGenerationRequest, ResearchHypothesisGenerationResult,
-    ResearchHypothesisStatus, ResearchRegimeCalibrationCandidateResult,
-    ResearchRegimeCalibrationRequest, ResearchRegimeCalibrationResult,
-    ResearchRegimeDatasetFromDiscoveryRequest, ResearchRegimeDatasetRequest,
-    ResearchRegimeDatasetResult, ResearchRegimeDiscoveryCandidateWindow,
-    ResearchRegimeDiscoveryRequest, ResearchRegimeDiscoveryResult,
-    ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, ResearchStaleRunRecoveryRequest,
-    ResearchStaleRunRecoveryResult, RiskCheckContext, RiskConfig, RiskConfigAuditEntry,
-    RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision, RiskEvaluationResult,
-    RiskRejectionReason, ScheduledResearchBootstrapSafeRequest,
+    ResearchCandidateValidationProtocol, ResearchCandidateWalkForwardEvidence,
+    ResearchCandidateWalkForwardProtocol, ResearchCandidateWalkForwardProtocolWindow,
+    ResearchCandidateWatchlistEntry, ResearchDataCoverageRequest, ResearchDataCoverageResult,
+    ResearchDatasetBuildRequest, ResearchDatasetBuildResult, ResearchExperimentPlan,
+    ResearchExperimentPlanRunArtifact, ResearchExperimentPlanRunMode,
+    ResearchExperimentPlanRunRequest, ResearchExperimentPlanRunResult,
+    ResearchExperimentPlanRunStatus, ResearchExperimentPlanStatus, ResearchExperimentPlanType,
+    ResearchHypothesis, ResearchHypothesisGenerationEvidence, ResearchHypothesisGenerationRequest,
+    ResearchHypothesisGenerationResult, ResearchHypothesisStatus,
+    ResearchRegimeCalibrationCandidateResult, ResearchRegimeCalibrationRequest,
+    ResearchRegimeCalibrationResult, ResearchRegimeDatasetFromDiscoveryRequest,
+    ResearchRegimeDatasetRequest, ResearchRegimeDatasetResult,
+    ResearchRegimeDiscoveryCandidateWindow, ResearchRegimeDiscoveryRequest,
+    ResearchRegimeDiscoveryResult, ResearchRegimeStrategyLeaderboard, ResearchRegimeWindow,
+    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
+    ResearchStaleRunRecoveryRequest, ResearchStaleRunRecoveryResult, RiskCheckContext, RiskConfig,
+    RiskConfigAuditEntry, RiskConfigValidationResult, RiskConfigVersion, RiskEvaluationDecision,
+    RiskEvaluationResult, RiskRejectionReason, ScheduledResearchBootstrapSafeRequest,
     ScheduledResearchBootstrapSafeResult, ScheduledResearchJob, ScheduledResearchJobControlRequest,
     ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobStatus, Side,
     SignalReason, StrategyCandidateObservationRequest, StrategyCandidateObservationResult,
@@ -174,7 +180,7 @@ use db::{
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
-    get_research_candidate_import_by_bundle_fingerprint,
+    get_research_candidate_import_by_bundle_fingerprint, get_research_candidate_import_by_id,
     get_research_candidate_import_by_source_config, get_research_candidate_proposal,
     get_research_candidate_qualification_evaluation_by_id,
     get_research_candidate_shadow_performance, get_research_candidate_shadow_pnl_attribution,
@@ -228,11 +234,11 @@ use db::{
     mark_research_experiment_plan_completed, mark_strategy_research_candidate_promoted,
     market_data_repair_result_from_record, paper_account_from_record,
     paper_equity_snapshot_from_record, paper_position_from_record, persist_risk_config_version,
-    persist_strategy_config_version, recover_stale_research_runs,
-    research_batch_result_from_records, research_batch_step_from_record,
-    research_campaign_batch_result_from_record, research_campaign_result_from_records,
-    research_candidate_event_from_record, research_candidate_from_record,
-    research_candidate_proposal_from_record,
+    persist_strategy_config_version, record_research_candidate_import_reconciliation,
+    recover_stale_research_runs, research_batch_result_from_records,
+    research_batch_step_from_record, research_campaign_batch_result_from_record,
+    research_campaign_result_from_records, research_candidate_event_from_record,
+    research_candidate_from_record, research_candidate_proposal_from_record,
     research_candidate_qualification_evaluation_from_record, research_candidate_review_from_record,
     research_candidate_walk_forward_evidence_from_watchlist_row,
     research_regime_calibration_candidate_from_record,
@@ -1705,6 +1711,14 @@ struct ResearchCandidateImportBundlePreviewResponse {
 #[derive(Serialize)]
 struct ResearchCandidateImportBundleResultResponse {
     result: ResearchCandidateImportBundleResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ResearchCandidateImportReconciliationResponse {
+    result: ResearchCandidateImportReconciliationResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3428,6 +3442,10 @@ async fn main() {
         .route(
             "/research/candidates/import-bundle",
             post(apply_research_candidate_import_bundle_handler),
+        )
+        .route(
+            "/research/candidate-imports/:id/reconciliation",
+            post(record_research_candidate_import_reconciliation_handler),
         )
         .route(
             "/research/candidate-proposals",
@@ -16701,6 +16719,17 @@ async fn build_research_state_snapshot(
             imported.source_candidate_id,
             imported.source_environment,
             imported.imported_status,
+            imported.bundle_schema_version,
+            imported.warnings_json,
+            imported.reconciliation_status,
+            imported.reconciliation_checked_at,
+            imported.local_validation_window_start,
+            imported.local_validation_window_end,
+            imported.local_walk_forward_status,
+            imported.local_worst_window_pnl,
+            imported.local_recommendation,
+            imported.reconciliation_summary_json,
+            imported.recommended_next_action,
             imported.imported_at,
             candidate.strategy_id,
             candidate.symbol,
@@ -16717,6 +16746,13 @@ async fn build_research_state_snapshot(
     let imported_candidates = imported_candidate_rows
         .iter()
         .map(|row| {
+            let bundle_schema_version = row.get::<String, _>("bundle_schema_version");
+            let mut warnings = row.get::<Value, _>("warnings_json");
+            if bundle_schema_version == "research_candidate_evidence_bundle.v1" {
+                if let Some(items) = warnings.as_array_mut() {
+                    items.push(json!("Bundle schema v1 lacks full validation protocol; exact reproducibility may require manual reconstruction."));
+                }
+            }
             json!({
                 "import_id": row.get::<Uuid, _>("import_id"),
                 "candidate_id": row.get::<Uuid, _>("candidate_id"),
@@ -16727,10 +16763,23 @@ async fn build_research_state_snapshot(
                 "timeframe": row.get::<String, _>("timeframe"),
                 "candidate_status": row.get::<String, _>("status"),
                 "imported_status_policy": row.get::<String, _>("imported_status"),
+                "import_status": row.get::<String, _>("imported_status"),
+                "bundle_schema_version": bundle_schema_version,
                 "bundle_fingerprint": row.get::<String, _>("bundle_fingerprint"),
                 "config_fingerprint": row.get::<String, _>("config_fingerprint"),
+                "reconciliation_status": row.get::<String, _>("reconciliation_status"),
+                "reconciliation_checked_at": row.get::<Option<DateTime<Utc>>, _>("reconciliation_checked_at"),
+                "local_validation_verdict": {
+                    "window_start": row.get::<Option<DateTime<Utc>>, _>("local_validation_window_start"),
+                    "window_end": row.get::<Option<DateTime<Utc>>, _>("local_validation_window_end"),
+                    "walk_forward_status": row.get::<Option<String>, _>("local_walk_forward_status"),
+                    "worst_window_pnl": row.get::<Option<Decimal>, _>("local_worst_window_pnl"),
+                    "recommendation": row.get::<Option<String>, _>("local_recommendation"),
+                    "summary": row.get::<Value, _>("reconciliation_summary_json"),
+                },
                 "warning": "Imported evidence is provenance-only until validated locally.",
-                "recommended_next_action": "RUN_LOCAL_VALIDATION_OR_OBSERVATION",
+                "warnings": warnings,
+                "recommended_next_action": row.get::<String, _>("recommended_next_action"),
                 "imported_at": row.get::<DateTime<Utc>, _>("imported_at"),
             })
         })
@@ -24705,6 +24754,242 @@ async fn apply_research_candidate_import_bundle_handler(
     }
 }
 
+async fn record_research_candidate_import_reconciliation_handler(
+    State(state): State<AppState>,
+    Path(import_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<ResearchCandidateImportReconciliationRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can record research import reconciliation."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    if !is_allowed_research_import_reconciliation_status(&payload.reconciliation_status) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_reconciliation_status",
+                message: format!(
+                    "Unsupported reconciliation status: {}",
+                    payload.reconciliation_status
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+    if !is_allowed_research_import_recommended_action(&payload.recommended_next_action) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_recommended_next_action",
+                message: format!(
+                    "Unsupported recommended next action: {}",
+                    payload.recommended_next_action
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+    if !is_valid_research_candidate_import_reconciliation_confirmation(import_id, &payload.confirm)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_confirmation",
+                message: format!(
+                    "Confirmation must be exactly: {}",
+                    expected_research_candidate_import_reconciliation_confirmation(import_id)
+                ),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let import_record = match get_research_candidate_import_by_id(&state.db_pool, import_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_import_not_found",
+                    message: format!("research candidate import not found: {import_id}"),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_read_research_candidate_import",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let candidate = match get_research_candidate(&state.db_pool, import_record.candidate_id).await {
+        Ok(Some(record)) => match research_candidate_from_record(&record) {
+            Ok(candidate) => candidate,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_research_candidate",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "research_candidate_not_found",
+                    message: format!(
+                        "research candidate not found: {}",
+                        import_record.candidate_id
+                    ),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_read_research_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match record_research_candidate_import_reconciliation(
+        &state.db_pool,
+        import_id,
+        &payload.reconciliation_status,
+        now,
+        payload.local_validation_window_start,
+        payload.local_validation_window_end,
+        payload.local_walk_forward_status.as_deref(),
+        payload.local_worst_window_pnl,
+        payload.local_recommendation.as_deref(),
+        &payload
+            .reconciliation_summary_json
+            .clone()
+            .unwrap_or_else(|| json!({})),
+        &payload.recommended_next_action,
+    )
+    .await
+    {
+        Ok(Some(updated)) => (
+            StatusCode::OK,
+            Json(ResearchCandidateImportReconciliationResponse {
+                result: ResearchCandidateImportReconciliationResult {
+                    import_audit_id: updated.id,
+                    candidate_id: updated.candidate_id,
+                    candidate_status: candidate.status,
+                    reconciliation_status: updated.reconciliation_status,
+                    recommended_next_action: updated.recommended_next_action,
+                    reconciliation_checked_at: updated.reconciliation_checked_at.unwrap_or(now),
+                },
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "research_candidate_import_not_found",
+                message: format!("research candidate import not found: {import_id}"),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_record_research_candidate_import_reconciliation",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+fn is_allowed_research_import_reconciliation_status(status: &str) -> bool {
+    matches!(
+        status,
+        "NOT_CHECKED"
+            | "IMPORTED_EVIDENCE_REPRODUCED"
+            | "IMPORTED_EVIDENCE_REPRODUCED_BUT_DEGRADED_BY_NEW_HOLDOUT"
+            | "IMPORTED_EVIDENCE_NOT_REPRODUCIBLE"
+            | "CONFIG_OR_PROTOCOL_MISMATCH"
+            | "DATA_MISMATCH"
+    )
+}
+
+fn is_allowed_research_import_recommended_action(action: &str) -> bool {
+    matches!(
+        action,
+        "KEEP_DISCOVERED_PROVENANCE_ONLY"
+            | "RUN_LOCAL_VALIDATION_OR_OBSERVATION"
+            | "REJECT_IMPORTED_CANDIDATE"
+            | "ELIGIBLE_FOR_ACCEPT_SHADOW_PREVIEW"
+    )
+}
+
 async fn list_research_candidate_events_handler(
     State(state): State<AppState>,
     Path(candidate_id): Path<Uuid>,
@@ -24825,6 +25110,144 @@ async fn build_research_candidate_evidence_bundle(
         campaign_id: None,
     };
 
+    let experiment_run = match provenance.source_experiment_run_id {
+        Some(id) => get_strategy_experiment_run(&state.db_pool, id).await?,
+        None => None,
+    };
+    let experiment = match experiment_run.as_ref() {
+        Some(run) => get_strategy_experiment(&state.db_pool, run.experiment_id).await?,
+        None => None,
+    };
+    let walk_forward_run = match provenance.source_walk_forward_run_id {
+        Some(id) => get_strategy_walk_forward_run(&state.db_pool, id).await?,
+        None => None,
+    };
+    let walk_forward_windows = match walk_forward_run.as_ref() {
+        Some(run) => list_strategy_walk_forward_windows(&state.db_pool, run.id).await?,
+        None => Vec::new(),
+    };
+
+    let data_window_start = experiment
+        .as_ref()
+        .map(|item| item.start_time)
+        .or_else(|| walk_forward_run.as_ref().and_then(|item| item.start_time))
+        .unwrap_or(candidate.created_at);
+    let data_window_end = experiment
+        .as_ref()
+        .map(|item| item.end_time)
+        .or_else(|| walk_forward_run.as_ref().and_then(|item| item.end_time))
+        .unwrap_or(exported_at);
+    let fee_bps = experiment
+        .as_ref()
+        .map(|item| item.fee_bps)
+        .or_else(|| walk_forward_run.as_ref().and_then(|item| item.fee_bps))
+        .unwrap_or(Decimal::ZERO);
+    let slippage_bps = experiment
+        .as_ref()
+        .map(|item| item.slippage_bps)
+        .or_else(|| walk_forward_run.as_ref().and_then(|item| item.slippage_bps))
+        .unwrap_or(Decimal::ZERO);
+    let expected_candle_count = estimate_research_bundle_expected_candle_count(
+        data_window_start,
+        data_window_end,
+        &candidate.timeframe,
+    );
+    let candle_count = experiment
+        .as_ref()
+        .and_then(|item| item.candle_count)
+        .map(i64::from);
+    let coverage_pct = candle_count
+        .zip(expected_candle_count)
+        .and_then(|(actual, expected)| {
+            (expected > 0)
+                .then(|| Decimal::from(actual) * Decimal::new(100, 0) / Decimal::from(expected))
+        });
+    let gap_count = candle_count
+        .zip(expected_candle_count)
+        .map(|(actual, expected)| expected.saturating_sub(actual).max(0));
+    let quality_status = coverage_pct.map(|coverage| {
+        if coverage >= Decimal::new(999, 1) && gap_count.unwrap_or(0) == 0 {
+            "GOOD".to_string()
+        } else {
+            "DEGRADED".to_string()
+        }
+    });
+
+    let validation_protocol = ResearchCandidateValidationProtocol {
+        data_window_start,
+        data_window_end,
+        symbol: candidate.symbol.clone(),
+        timeframe: candidate.timeframe.clone(),
+        fee_bps,
+        slippage_bps,
+        holding_candles: candidate
+            .config
+            .get("holding_candles")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok()),
+        replay_mode: "strategy_experiment".to_string(),
+        strategy_id: candidate.strategy_id.clone(),
+        normalized_strategy_config: candidate.config.clone(),
+        config_fingerprint: config_fingerprint.clone(),
+    };
+    let walk_forward_protocol = ResearchCandidateWalkForwardProtocol {
+        train_window_hours: walk_forward_run
+            .as_ref()
+            .and_then(|item| item.train_window_hours)
+            .map(i64::from),
+        test_window_hours: walk_forward_run
+            .as_ref()
+            .and_then(|item| item.test_window_hours)
+            .map(i64::from),
+        step_hours: walk_forward_run
+            .as_ref()
+            .and_then(|item| item.step_hours)
+            .map(i64::from),
+        min_windows: walk_forward_run.as_ref().and_then(|item| {
+            item.request
+                .get("min_required_test_windows")
+                .and_then(|value| value.as_i64())
+                .and_then(|value| i32::try_from(value).ok())
+                .or(Some(item.total_windows))
+        }),
+        explicit_windows: walk_forward_windows
+            .iter()
+            .map(|window| ResearchCandidateWalkForwardProtocolWindow {
+                window_start: window.test_start,
+                window_end: window.test_end,
+                pnl_pct: window.pnl_pct,
+                trade_count: window.trade_count,
+                status: window.status.clone(),
+            })
+            .collect(),
+    };
+    let data_quality_snapshot = ResearchCandidateDataQualitySnapshot {
+        candle_count,
+        expected_candle_count,
+        coverage_pct,
+        gap_count,
+        first_candle: Some(data_window_start),
+        last_candle: Some(data_window_end),
+        quality_status,
+    };
+    let evidence_artifacts = ResearchCandidateEvidenceArtifacts {
+        experiment_run_id: provenance.source_experiment_run_id,
+        walk_forward_run_id: provenance.source_walk_forward_run_id,
+        robustness_matrix_run_id: provenance.source_robustness_matrix_run_id,
+        candidate_gate_source_id: provenance.source_batch_id,
+        proposal_id: provenance.source_proposal_id,
+    };
+    let engine_fingerprint = ResearchCandidateEngineFingerprint {
+        app_git_hash: option_env!("VERGEN_GIT_SHA")
+            .or(option_env!("GIT_HASH"))
+            .map(str::to_string),
+        replay_engine_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        replay_engine_hash: None,
+        strategy_engine_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        strategy_engine_hash: None,
+        migration_version: None,
+    };
+
     let warnings = vec![
         "ETH-only evidence".to_string(),
         "BTC/generalization not proven".to_string(),
@@ -24860,7 +25283,7 @@ async fn build_research_candidate_evidence_bundle(
     });
 
     let mut bundle = ResearchCandidateEvidenceBundle {
-        schema_version: "research_candidate_evidence_bundle.v1".to_string(),
+        schema_version: "research_candidate_evidence_bundle.v2".to_string(),
         exported_at,
         source_environment: Some(state.config.environment.clone()),
         candidate: ResearchCandidateEvidenceBundleCandidate {
@@ -24879,7 +25302,16 @@ async fn build_research_candidate_evidence_bundle(
             no_paper_testnet_live: true,
             import_does_not_authorize_execution: true,
             paper_testnet_live_boundary_crossed: false,
+            import_does_not_create_shadow_runs: true,
+            import_does_not_update_runner_config: true,
+            import_does_not_create_scheduled_jobs: true,
+            import_does_not_mark_ready_for_testnet: true,
         },
+        validation_protocol: Some(validation_protocol),
+        walk_forward_protocol: Some(walk_forward_protocol),
+        data_quality_snapshot: Some(data_quality_snapshot),
+        evidence_artifacts: Some(evidence_artifacts),
+        engine_fingerprint: Some(engine_fingerprint),
         integrity: ResearchCandidateEvidenceBundleIntegrity {
             bundle_fingerprint: String::new(),
             algorithm: "sha256:canonical-json-without-integrity".to_string(),
@@ -24896,11 +25328,19 @@ async fn build_research_candidate_import_preview(
 ) -> anyhow::Result<ResearchCandidateImportBundlePreview> {
     let mut blockers = Vec::new();
     let mut warnings = bundle.warnings.clone();
-    if bundle.schema_version != "research_candidate_evidence_bundle.v1" {
+    let is_schema_v1 = bundle.schema_version == "research_candidate_evidence_bundle.v1";
+    let is_schema_v2 = bundle.schema_version == "research_candidate_evidence_bundle.v2";
+    if !is_schema_v1 && !is_schema_v2 {
         blockers.push(format!(
             "unsupported_schema_version: {}",
             bundle.schema_version
         ));
+    }
+    if is_schema_v1 {
+        warnings.push(
+            "Bundle schema v1 lacks full validation protocol; exact reproducibility may require manual reconstruction."
+                .to_string(),
+        );
     }
     if !bundle.execution_boundary.no_paper_testnet_live
         || !bundle
@@ -24911,6 +25351,37 @@ async fn build_research_candidate_import_preview(
             .paper_testnet_live_boundary_crossed
     {
         blockers.push("execution_boundary_not_research_only".to_string());
+    }
+    if is_schema_v2
+        && (!bundle.execution_boundary.import_does_not_create_shadow_runs
+            || !bundle
+                .execution_boundary
+                .import_does_not_update_runner_config
+            || !bundle
+                .execution_boundary
+                .import_does_not_create_scheduled_jobs
+            || !bundle
+                .execution_boundary
+                .import_does_not_mark_ready_for_testnet)
+    {
+        blockers.push("execution_boundary_v2_not_research_only".to_string());
+    }
+    if is_schema_v2 {
+        if bundle.validation_protocol.is_none() {
+            blockers.push("missing_validation_protocol".to_string());
+        }
+        if bundle.walk_forward_protocol.is_none() {
+            blockers.push("missing_walk_forward_protocol".to_string());
+        }
+        if bundle.data_quality_snapshot.is_none() {
+            blockers.push("missing_data_quality_snapshot".to_string());
+        }
+        if bundle.evidence_artifacts.is_none() {
+            blockers.push("missing_evidence_artifacts".to_string());
+        }
+        if bundle.engine_fingerprint.is_none() {
+            blockers.push("missing_engine_fingerprint".to_string());
+        }
     }
 
     let computed_config_fingerprint =
@@ -24999,6 +25470,32 @@ async fn build_research_candidate_import_preview(
             "ATTACH_IMPORT_AUDIT_ONLY".to_string()
         },
     })
+}
+
+fn estimate_research_bundle_expected_candle_count(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    timeframe: &str,
+) -> Option<i64> {
+    let timeframe = timeframe.trim().to_ascii_lowercase();
+    let (number, multiplier) = timeframe.split_at(timeframe.len().saturating_sub(1));
+    let amount = number.parse::<i64>().ok()?;
+    let unit_seconds = match multiplier {
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return None,
+    };
+    let interval_seconds = amount.checked_mul(unit_seconds)?;
+    if interval_seconds <= 0 || end <= start {
+        return None;
+    }
+    Some(
+        end.signed_duration_since(start)
+            .num_seconds()
+            .div_euclid(interval_seconds)
+            .max(0),
+    )
 }
 
 async fn missing_research_candidate_bundle_source_ids(
@@ -25134,6 +25631,7 @@ async fn apply_research_candidate_import_bundle(
             bundle.candidate.candidate_id,
             bundle.source_environment.as_deref(),
             ResearchCandidateStatus::Discovered,
+            &bundle.schema_version,
             &bundle.evidence_summary,
             &json!(bundle.warnings),
             now,
@@ -31784,7 +32282,8 @@ mod tests {
         get_research_candidate_shadow_pnl_attribution_handler,
         get_research_candidate_testnet_review_dossier_handler, get_risk_decisions,
         get_strategy_candidate_observation_handler, get_strategy_config_handler, get_strategy_list,
-        get_strategy_research_candidate_handler, is_valid_resume_confirmation,
+        get_strategy_research_candidate_handler, is_allowed_research_import_recommended_action,
+        is_allowed_research_import_reconciliation_status, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
         list_execution_readiness_snapshots_handler, list_research_candidate_shadow_runs_handler,
@@ -32116,6 +32615,22 @@ mod tests {
         assert!(is_valid_testnet_order_confirmation("TESTNET ORDER"));
         assert!(!is_valid_testnet_order_confirmation("testnet order"));
         assert!(!is_valid_testnet_order_confirmation("TESTNET"));
+    }
+
+    #[test]
+    fn research_import_reconciliation_status_and_action_are_allowlisted() {
+        assert!(is_allowed_research_import_reconciliation_status(
+            "IMPORTED_EVIDENCE_REPRODUCED_BUT_DEGRADED_BY_NEW_HOLDOUT"
+        ));
+        assert!(is_allowed_research_import_recommended_action(
+            "KEEP_DISCOVERED_PROVENANCE_ONLY"
+        ));
+        assert!(!is_allowed_research_import_reconciliation_status(
+            "ACCEPT_CANDIDATE"
+        ));
+        assert!(!is_allowed_research_import_recommended_action(
+            "PROMOTE_TO_SHADOW_CONFIG"
+        ));
     }
 
     #[test]

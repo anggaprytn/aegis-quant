@@ -16,7 +16,8 @@ use aegis_core::{
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateImportBundlePreview,
     ResearchCandidateImportBundlePreviewRequest, ResearchCandidateImportBundleRequest,
-    ResearchCandidateImportBundleResult, ResearchCandidateLifecycleEvent,
+    ResearchCandidateImportBundleResult, ResearchCandidateImportReconciliationRequest,
+    ResearchCandidateImportReconciliationResult, ResearchCandidateLifecycleEvent,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
     ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
@@ -1236,6 +1237,18 @@ impl ApiClient {
     ) -> Result<ResearchCandidateImportBundleResultResponse, ApiClientError> {
         self.post("/research/candidates/import-bundle", request)
             .await
+    }
+
+    pub async fn record_research_candidate_import_reconciliation(
+        &self,
+        import_id: Uuid,
+        request: &ResearchCandidateImportReconciliationRequest,
+    ) -> Result<ResearchCandidateImportReconciliationResponse, ApiClientError> {
+        self.post(
+            &format!("/research/candidate-imports/{import_id}/reconciliation"),
+            request,
+        )
+        .await
     }
 
     pub async fn create_research_candidate(
@@ -3262,6 +3275,14 @@ pub struct ResearchCandidateImportBundlePreviewResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateImportBundleResultResponse {
     pub result: ResearchCandidateImportBundleResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchCandidateImportReconciliationResponse {
+    pub result: ResearchCandidateImportReconciliationResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
@@ -5745,6 +5766,84 @@ mod tests {
             })
             .await
             .expect("manual creation should succeed");
+    }
+
+    #[tokio::test]
+    async fn research_candidate_client_records_import_reconciliation_path_and_body() {
+        let import_id =
+            Uuid::parse_str("41a3ea74-0a43-4a1f-9665-ad03167a61ff").expect("valid uuid");
+        let candidate_id =
+            Uuid::parse_str("e734639d-77e0-5560-bd9d-39650b8714a4").expect("valid uuid");
+        let client = ApiClient::new_with_test_handler(test_base_url(), move |request| {
+            match (request.method().as_str(), request.url().path()) {
+                (
+                    "POST",
+                    "/research/candidate-imports/41a3ea74-0a43-4a1f-9665-ad03167a61ff/reconciliation",
+                ) => {
+                    let payload: aegis_core::ResearchCandidateImportReconciliationRequest =
+                        request_json(&request);
+                    assert_eq!(
+                        payload.reconciliation_status,
+                        "IMPORTED_EVIDENCE_REPRODUCED_BUT_DEGRADED_BY_NEW_HOLDOUT"
+                    );
+                    assert_eq!(
+                        payload.confirm,
+                        "RECORD RECONCILIATION 41a3ea74-0a43-4a1f-9665-ad03167a61ff"
+                    );
+                    Ok((
+                        StatusCode::OK,
+                        json_response(serde_json::json!({
+                            "result": {
+                                "import_audit_id": import_id,
+                                "candidate_id": candidate_id,
+                                "candidate_status": "DISCOVERED",
+                                "reconciliation_status": payload.reconciliation_status,
+                                "recommended_next_action": payload.recommended_next_action,
+                                "reconciliation_checked_at": "2026-05-30T00:00:00Z"
+                            },
+                            "request_id": "req-reconciliation",
+                            "correlation_id": "corr-reconciliation",
+                            "timestamp": "2026-05-30T00:00:00Z"
+                        })),
+                    ))
+                }
+                _ => Err(format!(
+                    "unexpected request {} {}",
+                    request.method(),
+                    request.url()
+                )),
+            }
+        });
+
+        let response = client
+            .record_research_candidate_import_reconciliation(
+                import_id,
+                &aegis_core::ResearchCandidateImportReconciliationRequest {
+                    reconciliation_status:
+                        "IMPORTED_EVIDENCE_REPRODUCED_BUT_DEGRADED_BY_NEW_HOLDOUT".to_string(),
+                    local_validation_window_start: None,
+                    local_validation_window_end: None,
+                    local_walk_forward_status: Some("OVERFIT_RISK".to_string()),
+                    local_worst_window_pnl: Some(Decimal::new(-244972253086, 10)),
+                    local_recommendation: Some("DO_NOT_ACCEPT".to_string()),
+                    reconciliation_summary_json: Some(serde_json::json!({
+                        "scope": "combined"
+                    })),
+                    recommended_next_action: "KEEP_DISCOVERED_PROVENANCE_ONLY".to_string(),
+                    confirm: "RECORD RECONCILIATION 41a3ea74-0a43-4a1f-9665-ad03167a61ff"
+                        .to_string(),
+                    correlation_id: None,
+                },
+            )
+            .await
+            .expect("record reconciliation should succeed");
+
+        assert_eq!(response.result.import_audit_id, import_id);
+        assert_eq!(response.result.candidate_id, candidate_id);
+        assert_eq!(
+            response.result.recommended_next_action,
+            "KEEP_DISCOVERED_PROVENANCE_ONLY"
+        );
     }
 
     #[tokio::test]
