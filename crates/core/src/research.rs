@@ -7761,9 +7761,24 @@ pub struct ResearchCandidateEvidenceProvenance {
     pub source_experiment_run_id: Option<Uuid>,
     pub source_walk_forward_run_id: Option<Uuid>,
     pub source_robustness_matrix_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_robustness_matrix_cell_id: Option<Uuid>,
     pub source_proposal_id: Option<Uuid>,
     pub source_batch_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_campaign_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_creation_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_decision: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_status_summary: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -7836,8 +7851,22 @@ pub struct ResearchCandidateEvidenceArtifacts {
     pub experiment_run_id: Option<Uuid>,
     pub walk_forward_run_id: Option<Uuid>,
     pub robustness_matrix_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub robustness_matrix_cell_id: Option<Uuid>,
     pub candidate_gate_source_id: Option<Uuid>,
     pub proposal_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_batch_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_campaign_id: Option<Uuid>,
+    #[serde(default)]
+    pub has_experiment: bool,
+    #[serde(default)]
+    pub has_walk_forward: bool,
+    #[serde(default)]
+    pub has_robustness_matrix: bool,
+    #[serde(default)]
+    pub has_data_quality_snapshot: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -18318,8 +18347,15 @@ mod tests {
             experiment_run_id: Some(Uuid::new_v4()),
             walk_forward_run_id: Some(Uuid::new_v4()),
             robustness_matrix_run_id: None,
+            robustness_matrix_cell_id: None,
             candidate_gate_source_id: None,
             proposal_id: None,
+            source_batch_id: None,
+            source_campaign_id: None,
+            has_experiment: true,
+            has_walk_forward: true,
+            has_robustness_matrix: false,
+            has_data_quality_snapshot: true,
         });
         bundle.engine_fingerprint = Some(ResearchCandidateEngineFingerprint {
             app_git_hash: Some("abc123".to_string()),

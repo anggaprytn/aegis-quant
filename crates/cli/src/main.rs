@@ -1031,6 +1031,9 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate(&response.candidate);
+                        output::print_research_candidate_evidence_provenance(
+                            response.evidence_provenance.as_ref(),
+                        );
                     }
                 }
                 ResearchCandidateCommands::ExportBundle(args) => {
@@ -1311,6 +1314,9 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate(&response.candidate);
+                        output::print_research_candidate_evidence_provenance(
+                            response.evidence_provenance.as_ref(),
+                        );
                     }
                 }
                 ResearchCandidateCommands::FromExperimentRun(args) => {
@@ -1328,6 +1334,9 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate(&response.candidate);
+                        output::print_research_candidate_evidence_provenance(
+                            response.evidence_provenance.as_ref(),
+                        );
                     }
                 }
                 ResearchCandidateCommands::Observe { candidate_id } => {
@@ -1401,6 +1410,9 @@ async fn main() -> anyhow::Result<()> {
                         output::print_json(&response)?;
                     } else {
                         output::print_research_candidate(&response.candidate);
+                        output::print_research_candidate_evidence_provenance(
+                            response.evidence_provenance.as_ref(),
+                        );
                     }
                 }
                 ResearchCandidateCommands::PromoteShadowPreview(args) => {

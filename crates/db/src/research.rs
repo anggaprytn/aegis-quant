@@ -174,6 +174,9 @@ pub struct ResearchCandidateImportRecord {
     pub bundle_schema_version: String,
     pub evidence_summary_json: Value,
     pub warnings_json: Value,
+    pub evidence_provenance_json: Value,
+    pub evidence_artifacts_json: Value,
+    pub evidence_completeness_json: Value,
     pub reconciliation_status: String,
     pub reconciliation_checked_at: Option<DateTime<Utc>>,
     pub local_validation_window_start: Option<DateTime<Utc>>,
@@ -938,6 +941,18 @@ pub struct ResearchCandidateRecord {
     pub id: Uuid,
     pub experiment_id: Option<Uuid>,
     pub experiment_run_id: Option<Uuid>,
+    pub source_experiment_run_id: Option<Uuid>,
+    pub source_walk_forward_run_id: Option<Uuid>,
+    pub source_robustness_matrix_run_id: Option<Uuid>,
+    pub source_robustness_matrix_cell_id: Option<Uuid>,
+    pub source_batch_id: Option<Uuid>,
+    pub source_campaign_id: Option<Uuid>,
+    pub source_proposal_id: Option<Uuid>,
+    pub candidate_creation_mode: Option<String>,
+    pub gate_status: Option<String>,
+    pub config_fingerprint: Option<String>,
+    pub gate_decision: Option<Value>,
+    pub evidence_status_summary: Option<Value>,
     pub strategy_id: String,
     pub symbol: String,
     pub timeframe: String,
@@ -3534,6 +3549,15 @@ fn map_research_candidate_import(row: sqlx::postgres::PgRow) -> ResearchCandidat
         bundle_schema_version: row.get("bundle_schema_version"),
         evidence_summary_json: row.get("evidence_summary_json"),
         warnings_json: row.get("warnings_json"),
+        evidence_provenance_json: row
+            .try_get("evidence_provenance_json")
+            .unwrap_or_else(|_| serde_json::json!({})),
+        evidence_artifacts_json: row
+            .try_get("evidence_artifacts_json")
+            .unwrap_or_else(|_| serde_json::json!({})),
+        evidence_completeness_json: row
+            .try_get("evidence_completeness_json")
+            .unwrap_or_else(|_| serde_json::json!({})),
         reconciliation_status: row.get("reconciliation_status"),
         reconciliation_checked_at: row.get("reconciliation_checked_at"),
         local_validation_window_start: row.get("local_validation_window_start"),
@@ -3559,6 +3583,9 @@ const RESEARCH_CANDIDATE_IMPORT_COLUMNS: &str = r#"
             bundle_schema_version,
             evidence_summary_json,
             warnings_json,
+            evidence_provenance_json,
+            evidence_artifacts_json,
+            evidence_completeness_json,
             reconciliation_status,
             reconciliation_checked_at,
             local_validation_window_start,
@@ -3683,10 +3710,13 @@ pub async fn upsert_research_candidate_import(
     bundle_schema_version: &str,
     evidence_summary_json: &Value,
     warnings_json: &Value,
+    evidence_provenance_json: &Value,
+    evidence_artifacts_json: &Value,
+    evidence_completeness_json: &Value,
     imported_at: DateTime<Utc>,
     imported_by: Option<Uuid>,
 ) -> Result<ResearchCandidateImportRecord> {
-    let row = sqlx::query(
+    let row = sqlx::query(&format!(
         r#"
         INSERT INTO research_candidate_imports (
             id,
@@ -3699,36 +3729,18 @@ pub async fn upsert_research_candidate_import(
             bundle_schema_version,
             evidence_summary_json,
             warnings_json,
+            evidence_provenance_json,
+            evidence_artifacts_json,
+            evidence_completeness_json,
             imported_at,
             imported_by
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (bundle_fingerprint) DO UPDATE
         SET candidate_id = research_candidate_imports.candidate_id
-        RETURNING
-            id,
-            candidate_id,
-            bundle_fingerprint,
-            config_fingerprint,
-            source_candidate_id,
-            source_environment,
-            imported_status,
-            bundle_schema_version,
-            evidence_summary_json,
-            warnings_json,
-            reconciliation_status,
-            reconciliation_checked_at,
-            local_validation_window_start,
-            local_validation_window_end,
-            local_walk_forward_status,
-            local_worst_window_pnl,
-            local_recommendation,
-            reconciliation_summary_json,
-            recommended_next_action,
-            imported_at,
-            imported_by
-        "#,
-    )
+        RETURNING {RESEARCH_CANDIDATE_IMPORT_COLUMNS}
+        "#
+    ))
     .bind(id)
     .bind(candidate_id)
     .bind(bundle_fingerprint)
@@ -3739,6 +3751,9 @@ pub async fn upsert_research_candidate_import(
     .bind(bundle_schema_version)
     .bind(evidence_summary_json.clone())
     .bind(warnings_json.clone())
+    .bind(evidence_provenance_json.clone())
+    .bind(evidence_artifacts_json.clone())
+    .bind(evidence_completeness_json.clone())
     .bind(imported_at)
     .bind(imported_by)
     .fetch_one(pool)
@@ -4474,6 +4489,41 @@ pub async fn create_research_candidate(
     payload: &Value,
 ) -> Result<(ResearchCandidateRecord, ResearchCandidateEventRecord)> {
     let mut tx = pool.begin().await?;
+    let source_experiment_run_id =
+        payload_uuid(payload, &["source_experiment_run_id", "experiment_run_id"])
+            .or(candidate.experiment_run_id);
+    let source_walk_forward_run_id = payload_uuid(
+        payload,
+        &["source_walk_forward_run_id", "walk_forward_run_id"],
+    );
+    let source_robustness_matrix_run_id = payload_uuid(
+        payload,
+        &[
+            "source_robustness_matrix_run_id",
+            "robustness_matrix_run_id",
+        ],
+    );
+    let source_robustness_matrix_cell_id = payload_uuid(
+        payload,
+        &[
+            "source_robustness_matrix_cell_id",
+            "robustness_matrix_cell_id",
+        ],
+    );
+    let source_batch_id = payload_uuid(payload, &["source_batch_id", "batch_id"]);
+    let source_campaign_id = payload_uuid(payload, &["source_campaign_id", "campaign_id"]);
+    let source_proposal_id = payload_uuid(payload, &["source_proposal_id", "proposal_id"]);
+    let candidate_creation_mode = payload_string(payload, &["candidate_creation_mode"]);
+    let gate_status = payload_string(payload, &["gate_status"]).or_else(|| {
+        payload
+            .get("gate_decision")
+            .and_then(|value| value.get("batch_triage_status"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let config_fingerprint = payload_string(payload, &["config_fingerprint"]);
+    let gate_decision = payload.get("gate_decision").cloned();
+    let evidence_status_summary = payload.get("evidence_status_summary").cloned();
     let legacy_source_type = if candidate.experiment_run_id.is_some() {
         StrategyResearchCandidateSource::ExperimentRun
     } else {
@@ -4546,6 +4596,18 @@ pub async fn create_research_candidate(
             id,
             experiment_id,
             experiment_run_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
+            source_robustness_matrix_cell_id,
+            source_batch_id,
+            source_campaign_id,
+            source_proposal_id,
+            candidate_creation_mode,
+            gate_status,
+            config_fingerprint,
+            gate_decision,
+            evidence_status_summary,
             strategy_id,
             symbol,
             timeframe,
@@ -4564,12 +4626,26 @@ pub async fn create_research_candidate(
             correlation_id
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
         )
         RETURNING
             id,
             experiment_id,
             experiment_run_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
+            source_robustness_matrix_cell_id,
+            source_batch_id,
+            source_campaign_id,
+            source_proposal_id,
+            candidate_creation_mode,
+            gate_status,
+            config_fingerprint,
+            gate_decision,
+            evidence_status_summary,
             strategy_id,
             symbol,
             timeframe,
@@ -4591,6 +4667,18 @@ pub async fn create_research_candidate(
     .bind(candidate.id)
     .bind(candidate.experiment_id)
     .bind(candidate.experiment_run_id)
+    .bind(source_experiment_run_id)
+    .bind(source_walk_forward_run_id)
+    .bind(source_robustness_matrix_run_id)
+    .bind(source_robustness_matrix_cell_id)
+    .bind(source_batch_id)
+    .bind(source_campaign_id)
+    .bind(source_proposal_id)
+    .bind(candidate_creation_mode)
+    .bind(gate_status)
+    .bind(config_fingerprint)
+    .bind(gate_decision)
+    .bind(evidence_status_summary)
     .bind(&candidate.strategy_id)
     .bind(candidate.symbol.trim().to_ascii_uppercase())
     .bind(&candidate.timeframe)
@@ -4671,6 +4759,18 @@ pub async fn list_research_candidates(
             id,
             experiment_id,
             experiment_run_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
+            source_robustness_matrix_cell_id,
+            source_batch_id,
+            source_campaign_id,
+            source_proposal_id,
+            candidate_creation_mode,
+            gate_status,
+            config_fingerprint,
+            gate_decision,
+            evidence_status_summary,
             strategy_id,
             symbol,
             timeframe,
@@ -4726,6 +4826,18 @@ pub async fn get_research_candidate(
             id,
             experiment_id,
             experiment_run_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
+            source_robustness_matrix_cell_id,
+            source_batch_id,
+            source_campaign_id,
+            source_proposal_id,
+            candidate_creation_mode,
+            gate_status,
+            config_fingerprint,
+            gate_decision,
+            evidence_status_summary,
             strategy_id,
             symbol,
             timeframe,
@@ -4776,6 +4888,18 @@ pub async fn update_research_candidate_status(
             id,
             experiment_id,
             experiment_run_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
+            source_robustness_matrix_cell_id,
+            source_batch_id,
+            source_campaign_id,
+            source_proposal_id,
+            candidate_creation_mode,
+            gate_status,
+            config_fingerprint,
+            gate_decision,
+            evidence_status_summary,
             strategy_id,
             symbol,
             timeframe,
@@ -5029,6 +5153,18 @@ pub async fn apply_research_candidate_review(
                 id,
                 experiment_id,
                 experiment_run_id,
+                source_experiment_run_id,
+                source_walk_forward_run_id,
+                source_robustness_matrix_run_id,
+                source_robustness_matrix_cell_id,
+                source_batch_id,
+                source_campaign_id,
+                source_proposal_id,
+                candidate_creation_mode,
+                gate_status,
+                config_fingerprint,
+                gate_decision,
+                evidence_status_summary,
                 strategy_id,
                 symbol,
                 timeframe,
@@ -6810,6 +6946,24 @@ pub fn research_candidate_event_from_record(
     })
 }
 
+fn payload_uuid(payload: &Value, keys: &[&str]) -> Option<Uuid> {
+    keys.iter().find_map(|key| {
+        payload
+            .get(*key)
+            .and_then(Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+    })
+}
+
+fn payload_string(payload: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        payload
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
 pub fn strategy_research_candidate_promotion_result_from_records(
     candidate: &StrategyResearchCandidateRecord,
     promotion: &StrategyResearchCandidatePromotionRecord,
@@ -7397,6 +7551,22 @@ fn map_research_candidate(row: sqlx::postgres::PgRow) -> ResearchCandidateRecord
         id: row.get("id"),
         experiment_id: row.get("experiment_id"),
         experiment_run_id: row.get("experiment_run_id"),
+        source_experiment_run_id: row.try_get("source_experiment_run_id").unwrap_or(None),
+        source_walk_forward_run_id: row.try_get("source_walk_forward_run_id").unwrap_or(None),
+        source_robustness_matrix_run_id: row
+            .try_get("source_robustness_matrix_run_id")
+            .unwrap_or(None),
+        source_robustness_matrix_cell_id: row
+            .try_get("source_robustness_matrix_cell_id")
+            .unwrap_or(None),
+        source_batch_id: row.try_get("source_batch_id").unwrap_or(None),
+        source_campaign_id: row.try_get("source_campaign_id").unwrap_or(None),
+        source_proposal_id: row.try_get("source_proposal_id").unwrap_or(None),
+        candidate_creation_mode: row.try_get("candidate_creation_mode").unwrap_or(None),
+        gate_status: row.try_get("gate_status").unwrap_or(None),
+        config_fingerprint: row.try_get("config_fingerprint").unwrap_or(None),
+        gate_decision: row.try_get("gate_decision").unwrap_or(None),
+        evidence_status_summary: row.try_get("evidence_status_summary").unwrap_or(None),
         strategy_id: row.get("strategy_id"),
         symbol: row.get("symbol"),
         timeframe: row.get("timeframe"),

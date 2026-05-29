@@ -3209,6 +3209,33 @@ pub fn print_research_candidate(candidate: &aegis_core::ResearchCandidate) {
     );
 }
 
+pub fn print_research_candidate_evidence_provenance(
+    provenance: Option<&aegis_core::ResearchCandidateEvidenceProvenance>,
+) {
+    let Some(provenance) = provenance else {
+        return;
+    };
+    println!(
+        "Evidence provenance: experiment={:?} walk_forward={:?} robustness_matrix={:?} robustness_cell={:?} batch={:?} campaign={:?} proposal={:?}",
+        provenance.source_experiment_run_id,
+        provenance.source_walk_forward_run_id,
+        provenance.source_robustness_matrix_run_id,
+        provenance.source_robustness_matrix_cell_id,
+        provenance.source_batch_id,
+        provenance.source_campaign_id.or(provenance.campaign_id),
+        provenance.source_proposal_id
+    );
+    if let Some(mode) = &provenance.candidate_creation_mode {
+        println!("Candidate creation mode: {}", mode);
+    }
+    if let Some(status) = &provenance.gate_status {
+        println!("Gate status: {}", status);
+    }
+    if let Some(fingerprint) = &provenance.config_fingerprint {
+        println!("Config fingerprint: {}", fingerprint);
+    }
+}
+
 pub fn print_research_candidate_walk_forward_evidence(
     latest: Option<&ResearchCandidateWalkForwardEvidence>,
     evidence: &[ResearchCandidateWalkForwardEvidence],

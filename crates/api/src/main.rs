@@ -268,9 +268,10 @@ use db::{
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
     PaperPositionRecord, PaperTradeJournalRecord, PgPool, ResearchCandidateListFilters,
-    ResearchCandidateShadowPerformanceWindow, ResearchCandidateShadowRunsQuery,
-    ResearchCandidateWatchlistRow, RiskDecisionRecord, SignalRecord, StateActor,
-    StrategyStatusRecord, SystemEventRecord, SystemStateRecord, TestnetShadowPromotionRecord,
+    ResearchCandidateRecord, ResearchCandidateShadowPerformanceWindow,
+    ResearchCandidateShadowRunsQuery, ResearchCandidateWatchlistRow, RiskDecisionRecord,
+    SignalRecord, StateActor, StrategyStatusRecord, SystemEventRecord, SystemStateRecord,
+    TestnetShadowPromotionRecord,
 };
 #[cfg(test)]
 use db::{list_strategy_research_candidates, StrategyResearchCandidateListFilters};
@@ -1687,6 +1688,7 @@ struct ResearchCandidatesResponse {
 struct ResearchCandidateResponse {
     candidate: ResearchCandidate,
     walk_forward_evidence: Option<ResearchCandidateWalkForwardEvidence>,
+    evidence_provenance: ResearchCandidateEvidenceProvenance,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -1714,6 +1716,26 @@ struct ResearchCandidateImportBundleResultResponse {
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
+}
+
+fn research_candidate_evidence_provenance_from_record(
+    record: &ResearchCandidateRecord,
+) -> ResearchCandidateEvidenceProvenance {
+    ResearchCandidateEvidenceProvenance {
+        source_experiment_run_id: record.source_experiment_run_id.or(record.experiment_run_id),
+        source_walk_forward_run_id: record.source_walk_forward_run_id,
+        source_robustness_matrix_run_id: record.source_robustness_matrix_run_id,
+        source_robustness_matrix_cell_id: record.source_robustness_matrix_cell_id,
+        source_batch_id: record.source_batch_id,
+        source_campaign_id: record.source_campaign_id,
+        campaign_id: record.source_campaign_id,
+        source_proposal_id: record.source_proposal_id,
+        candidate_creation_mode: record.candidate_creation_mode.clone(),
+        gate_decision: record.gate_decision.clone(),
+        gate_status: record.gate_status.clone(),
+        config_fingerprint: record.config_fingerprint.clone(),
+        evidence_status_summary: record.evidence_status_summary.clone(),
+    }
 }
 
 #[derive(Serialize)]
@@ -16576,11 +16598,24 @@ async fn build_research_state_snapshot(
             c.timeframe,
             c.status,
             c.experiment_run_id,
+            c.source_experiment_run_id AS c_source_experiment_run_id,
+            c.source_walk_forward_run_id AS c_source_walk_forward_run_id,
+            c.source_robustness_matrix_run_id AS c_source_robustness_matrix_run_id,
+            c.source_robustness_matrix_cell_id AS c_source_robustness_matrix_cell_id,
+            c.source_batch_id AS c_source_batch_id,
+            c.source_campaign_id AS c_source_campaign_id,
+            c.source_proposal_id AS c_source_proposal_id,
+            c.candidate_creation_mode AS c_candidate_creation_mode,
+            c.gate_status AS c_gate_status,
+            c.config_fingerprint AS c_config_fingerprint,
+            c.evidence_status_summary AS c_evidence_status_summary,
             c.updated_at,
-            proposal.source_experiment_run_id,
-            proposal.source_walk_forward_run_id,
-            proposal.source_robustness_matrix_run_id,
-            proposal.config_fingerprint,
+            proposal.source_experiment_run_id AS proposal_source_experiment_run_id,
+            proposal.source_walk_forward_run_id AS proposal_source_walk_forward_run_id,
+            proposal.source_robustness_matrix_run_id AS proposal_source_robustness_matrix_run_id,
+            proposal.source_robustness_status AS proposal_source_robustness_status,
+            proposal.source_batch_id AS proposal_source_batch_id,
+            proposal.config_fingerprint AS proposal_config_fingerprint,
             shadow.total_shadow_runs,
             shadow.independent_shadow_observation_count,
             shadow.would_submit_count,
@@ -16594,6 +16629,8 @@ async fn build_research_state_snapshot(
                 source_experiment_run_id,
                 source_walk_forward_run_id,
                 source_robustness_matrix_run_id,
+                source_robustness_status,
+                source_batch_id,
                 config_fingerprint
             FROM research_candidate_proposals
             WHERE promoted_candidate_id = c.id
@@ -16646,6 +16683,52 @@ async fn build_research_state_snapshot(
             let candidate_id = row.get::<Uuid, _>("id");
             let is_current_eth_candidate =
                 candidate_id.to_string() == "70867792-93df-494c-9a8b-d961c73107e4";
+            let experiment_run_id = row
+                .get::<Option<Uuid>, _>("proposal_source_experiment_run_id")
+                .or_else(|| row.get::<Option<Uuid>, _>("c_source_experiment_run_id"))
+                .or_else(|| row.get::<Option<Uuid>, _>("experiment_run_id"))
+                .or_else(|| {
+                    if is_current_eth_candidate {
+                        Uuid::parse_str("cdd3fbef-9e39-49e3-8e16-e23f19611cf0").ok()
+                    } else {
+                        None
+                    }
+                });
+            let walk_forward_run_id = row
+                .get::<Option<Uuid>, _>("proposal_source_walk_forward_run_id")
+                .or_else(|| row.get::<Option<Uuid>, _>("c_source_walk_forward_run_id"))
+                .or_else(|| {
+                    if is_current_eth_candidate {
+                        Uuid::parse_str("1279f5b3-9ffb-4534-babe-2e07f94a8180").ok()
+                    } else {
+                        None
+                    }
+                });
+            let robustness_matrix_run_id = row
+                .get::<Option<Uuid>, _>("proposal_source_robustness_matrix_run_id")
+                .or_else(|| row.get::<Option<Uuid>, _>("c_source_robustness_matrix_run_id"))
+                .or_else(|| {
+                    if is_current_eth_candidate {
+                        Uuid::parse_str("cebc28cd-36c3-4877-a6f0-172e4dcc2d80").ok()
+                    } else {
+                        None
+                    }
+                });
+            let has_data_quality_snapshot = row
+                .get::<Option<Value>, _>("c_evidence_status_summary")
+                .map(|summary| !summary.is_null() && summary != json!({}))
+                .unwrap_or(false);
+            let missing_provenance_warnings = [
+                (experiment_run_id.is_none(), "missing experiment provenance"),
+                (walk_forward_run_id.is_none(), "missing walk-forward provenance"),
+                (
+                    robustness_matrix_run_id.is_none(),
+                    "missing robustness matrix provenance",
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(missing, message)| missing.then_some(message))
+            .collect::<Vec<_>>();
             let qualification = row
                 .get::<Option<String>, _>("qualification_status")
                 .unwrap_or_else(|| "NOT_QUALIFIED".to_string());
@@ -16661,32 +16744,37 @@ async fn build_research_state_snapshot(
                 "symbol": row.get::<String, _>("symbol"),
                 "timeframe": row.get::<String, _>("timeframe"),
                 "source_evidence_ids": {
-                    "experiment_run_id": row.get::<Option<Uuid>, _>("source_experiment_run_id")
-                        .or_else(|| row.get::<Option<Uuid>, _>("experiment_run_id"))
-                        .or_else(|| if is_current_eth_candidate {
-                            Uuid::parse_str("cdd3fbef-9e39-49e3-8e16-e23f19611cf0").ok()
-                        } else {
-                            None
-                        }),
-                    "walk_forward_run_id": row.get::<Option<Uuid>, _>("source_walk_forward_run_id")
-                        .or_else(|| if is_current_eth_candidate {
-                            Uuid::parse_str("1279f5b3-9ffb-4534-babe-2e07f94a8180").ok()
-                        } else {
-                            None
-                        }),
-                    "robustness_matrix_run_id": row.get::<Option<Uuid>, _>("source_robustness_matrix_run_id")
-                        .or_else(|| if is_current_eth_candidate {
-                            Uuid::parse_str("cebc28cd-36c3-4877-a6f0-172e4dcc2d80").ok()
-                        } else {
-                            None
-                        }),
-                    "config_fingerprint": row.get::<Option<String>, _>("config_fingerprint")
+                    "experiment_run_id": experiment_run_id,
+                    "walk_forward_run_id": walk_forward_run_id,
+                    "robustness_matrix_run_id": robustness_matrix_run_id,
+                    "robustness_matrix_cell_id": row.get::<Option<Uuid>, _>("c_source_robustness_matrix_cell_id"),
+                    "batch_id": row.get::<Option<Uuid>, _>("proposal_source_batch_id")
+                        .or_else(|| row.get::<Option<Uuid>, _>("c_source_batch_id")),
+                    "campaign_id": row.get::<Option<Uuid>, _>("c_source_campaign_id"),
+                    "proposal_id": row.get::<Option<Uuid>, _>("c_source_proposal_id"),
+                    "config_fingerprint": row.get::<Option<String>, _>("proposal_config_fingerprint")
+                        .or_else(|| row.get::<Option<String>, _>("c_config_fingerprint"))
                         .or_else(|| if is_current_eth_candidate {
                             Some("399c3e554330ffb1bfbeafe1f1b090e32ba51e985eb383d242527137833750da".to_string())
                         } else {
                             None
                         }),
                 },
+                "evidence_completeness": {
+                    "has_experiment": experiment_run_id.is_some(),
+                    "has_walk_forward": walk_forward_run_id.is_some(),
+                    "has_robustness_matrix": robustness_matrix_run_id.is_some(),
+                    "has_data_quality_snapshot": has_data_quality_snapshot,
+                },
+                "missing_provenance_warnings": missing_provenance_warnings,
+                "robustness_provenance_status": if robustness_matrix_run_id.is_some() {
+                    "PRESENT"
+                } else {
+                    "MISSING"
+                },
+                "candidate_creation_mode": row.get::<Option<String>, _>("c_candidate_creation_mode"),
+                "gate_status": row.get::<Option<String>, _>("c_gate_status")
+                    .or_else(|| row.get::<Option<String>, _>("proposal_source_robustness_status")),
                 "evidence_progress": {
                     "independent_shadow_observation_count": row.get::<Option<i64>, _>("independent_shadow_observation_count").unwrap_or(0),
                     "independent_shadow_observation_threshold": 30,
@@ -16721,6 +16809,9 @@ async fn build_research_state_snapshot(
             imported.imported_status,
             imported.bundle_schema_version,
             imported.warnings_json,
+            imported.evidence_artifacts_json,
+            imported.evidence_provenance_json,
+            imported.evidence_completeness_json,
             imported.reconciliation_status,
             imported.reconciliation_checked_at,
             imported.local_validation_window_start,
@@ -16748,6 +16839,30 @@ async fn build_research_state_snapshot(
         .map(|row| {
             let bundle_schema_version = row.get::<String, _>("bundle_schema_version");
             let mut warnings = row.get::<Value, _>("warnings_json");
+            let evidence_artifacts = row.get::<Value, _>("evidence_artifacts_json");
+            let evidence_completeness = row.get::<Value, _>("evidence_completeness_json");
+            let missing_provenance_warnings = {
+                let has_experiment = evidence_completeness
+                    .get("has_experiment")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let has_walk_forward = evidence_completeness
+                    .get("has_walk_forward")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let has_robustness_matrix = evidence_completeness
+                    .get("has_robustness_matrix")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                [
+                    (!has_experiment, "missing experiment provenance"),
+                    (!has_walk_forward, "missing walk-forward provenance"),
+                    (!has_robustness_matrix, "missing robustness matrix provenance"),
+                ]
+                .into_iter()
+                .filter_map(|(missing, message)| missing.then_some(message))
+                .collect::<Vec<_>>()
+            };
             if bundle_schema_version == "research_candidate_evidence_bundle.v1" {
                 if let Some(items) = warnings.as_array_mut() {
                     items.push(json!("Bundle schema v1 lacks full validation protocol; exact reproducibility may require manual reconstruction."));
@@ -16767,6 +16882,19 @@ async fn build_research_state_snapshot(
                 "bundle_schema_version": bundle_schema_version,
                 "bundle_fingerprint": row.get::<String, _>("bundle_fingerprint"),
                 "config_fingerprint": row.get::<String, _>("config_fingerprint"),
+                "evidence_artifacts": evidence_artifacts,
+                "evidence_provenance": row.get::<Value, _>("evidence_provenance_json"),
+                "evidence_completeness": evidence_completeness,
+                "missing_provenance_warnings": missing_provenance_warnings,
+                "robustness_provenance_status": if evidence_artifacts
+                    .get("robustness_matrix_run_id")
+                    .and_then(Value::as_str)
+                    .is_some()
+                {
+                    "PRESENT"
+                } else {
+                    "MISSING"
+                },
                 "reconciliation_status": row.get::<String, _>("reconciliation_status"),
                 "reconciliation_checked_at": row.get::<Option<DateTime<Utc>>, _>("reconciliation_checked_at"),
                 "local_validation_verdict": {
@@ -17884,9 +18012,17 @@ async fn execute_research_batch(
                 Some("research_batch"),
                 lifecycle.notes.as_deref(),
                 &json!({
-                    "batch_id": result.batch_id,
-                    "experiment_run_id": candidate.experiment_run_id,
-                    "walk_forward_run_id": candidate.walk_forward_run_id
+                    "source_batch_id": result.batch_id,
+                    "source_experiment_run_id": candidate.experiment_run_id,
+                    "source_walk_forward_run_id": candidate.walk_forward_run_id,
+                    "source_robustness_matrix_run_id": source_robustness_matrix_run_id,
+                    "source_robustness_status": source_robustness_status,
+                    "candidate_creation_mode": payload.candidate_creation_mode.as_str(),
+                    "gate_status": candidate_triage_status.as_str(),
+                    "config_fingerprint": config_fingerprint,
+                    "gate_decision": decision,
+                    "evidence_status_summary": evidence_status_summary,
+                    "gate_evidence_mismatch": gate_evidence_mismatch
                 }),
             )
             .await?;
@@ -23948,7 +24084,8 @@ async fn create_research_candidate_from_experiment_run_handler(
         &json!({
             "source": "experiment_run",
             "experiment_id": candidate.experiment_id,
-            "experiment_run_id": candidate.experiment_run_id,
+            "source_experiment_run_id": candidate.experiment_run_id,
+            "config_fingerprint": strategy_evidence_config_fingerprint(&candidate.config).ok(),
         }),
     )
     .await
@@ -23986,6 +24123,9 @@ async fn create_research_candidate_from_experiment_run_handler(
                 Json(ResearchCandidateResponse {
                     candidate,
                     walk_forward_evidence,
+                    evidence_provenance: research_candidate_evidence_provenance_from_record(
+                        &record,
+                    ),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -24069,6 +24209,9 @@ async fn create_research_candidate_handler(
                 Json(ResearchCandidateResponse {
                     candidate,
                     walk_forward_evidence: None,
+                    evidence_provenance: research_candidate_evidence_provenance_from_record(
+                        &record,
+                    ),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -24365,10 +24508,21 @@ async fn promote_research_candidate_proposal_handler(
         Some("promoted_from_candidate_proposal"),
         candidate.notes.as_deref(),
         &json!({
-            "proposal_id": proposal.id,
+            "source_proposal_id": proposal.id,
             "source_batch_id": proposal.source_batch_id,
-            "experiment_run_id": proposal.experiment_run_id,
-            "gate_decision": proposal.gate_decision,
+            "source_experiment_run_id": proposal.source_experiment_run_id.or(Some(proposal.experiment_run_id)),
+            "source_walk_forward_run_id": proposal.source_walk_forward_run_id,
+            "source_robustness_matrix_run_id": proposal.source_robustness_matrix_run_id,
+            "source_robustness_status": proposal.source_robustness_status.clone(),
+            "candidate_creation_mode": proposal
+                .evidence_status_summary
+                .as_ref()
+                .and_then(|value| value.get("candidate_creation_mode"))
+                .and_then(Value::as_str),
+            "gate_status": proposal.triage_status.as_str(),
+            "config_fingerprint": proposal.config_fingerprint.clone(),
+            "gate_decision": proposal.gate_decision.clone(),
+            "evidence_status_summary": proposal.evidence_status_summary.clone(),
         }),
     )
     .await
@@ -24479,6 +24633,9 @@ async fn get_research_candidate_handler(
                     .await
                     .ok()
                     .flatten(),
+                    evidence_provenance: research_candidate_evidence_provenance_from_record(
+                        &record,
+                    ),
                     request_id: request.request_id,
                     correlation_id: request.correlation_id,
                     timestamp: Utc::now(),
@@ -25077,10 +25234,12 @@ async fn build_research_candidate_evidence_bundle(
         source_experiment_run_id: proposal
             .as_ref()
             .and_then(|row| row.get::<Option<Uuid>, _>("source_experiment_run_id"))
+            .or(record.source_experiment_run_id)
             .or(candidate.experiment_run_id),
         source_walk_forward_run_id: proposal
             .as_ref()
             .and_then(|row| row.get::<Option<Uuid>, _>("source_walk_forward_run_id"))
+            .or(record.source_walk_forward_run_id)
             .or_else(|| {
                 latest_walk_forward
                     .as_ref()
@@ -25089,12 +25248,39 @@ async fn build_research_candidate_evidence_bundle(
         source_robustness_matrix_run_id: proposal
             .as_ref()
             .and_then(|row| row.get::<Option<Uuid>, _>("source_robustness_matrix_run_id")),
+        source_robustness_matrix_cell_id: record.source_robustness_matrix_cell_id,
         source_proposal_id: proposal.as_ref().map(|row| row.get::<Uuid, _>("id")),
         source_batch_id: proposal
             .as_ref()
-            .and_then(|row| row.get::<Option<Uuid>, _>("source_batch_id")),
-        campaign_id: None,
+            .and_then(|row| row.get::<Option<Uuid>, _>("source_batch_id"))
+            .or(record.source_batch_id),
+        source_campaign_id: record.source_campaign_id,
+        campaign_id: record.source_campaign_id,
+        candidate_creation_mode: record.candidate_creation_mode.clone(),
+        gate_decision: record.gate_decision.clone(),
+        gate_status: record.gate_status.clone(),
+        config_fingerprint: record
+            .config_fingerprint
+            .clone()
+            .or_else(|| {
+                proposal
+                    .as_ref()
+                    .and_then(|row| row.get::<Option<String>, _>("config_fingerprint"))
+            })
+            .or_else(|| Some(config_fingerprint.clone())),
+        evidence_status_summary: record.evidence_status_summary.clone().or_else(|| {
+            proposal
+                .as_ref()
+                .and_then(|row| row.get::<Option<Value>, _>("evidence_status_summary"))
+        }),
     };
+    let mut provenance = provenance;
+    if provenance.source_robustness_matrix_run_id.is_none() {
+        provenance.source_robustness_matrix_run_id = record.source_robustness_matrix_run_id;
+    }
+    if provenance.source_proposal_id.is_none() {
+        provenance.source_proposal_id = record.source_proposal_id;
+    }
 
     let experiment_run = match provenance.source_experiment_run_id {
         Some(id) => get_strategy_experiment_run(&state.db_pool, id).await?,
@@ -25235,12 +25421,26 @@ async fn build_research_candidate_evidence_bundle(
         last_candle: Some(data_window_end),
         quality_status,
     };
+    let has_data_quality_snapshot = data_quality_snapshot.quality_status.is_some();
+    let evidence_completeness = json!({
+        "has_experiment": provenance.source_experiment_run_id.is_some(),
+        "has_walk_forward": provenance.source_walk_forward_run_id.is_some(),
+        "has_robustness_matrix": provenance.source_robustness_matrix_run_id.is_some(),
+        "has_data_quality_snapshot": has_data_quality_snapshot,
+    });
     let evidence_artifacts = ResearchCandidateEvidenceArtifacts {
         experiment_run_id: provenance.source_experiment_run_id,
         walk_forward_run_id: provenance.source_walk_forward_run_id,
         robustness_matrix_run_id: provenance.source_robustness_matrix_run_id,
+        robustness_matrix_cell_id: provenance.source_robustness_matrix_cell_id,
         candidate_gate_source_id: provenance.source_batch_id,
         proposal_id: provenance.source_proposal_id,
+        source_batch_id: provenance.source_batch_id,
+        source_campaign_id: provenance.source_campaign_id.or(provenance.campaign_id),
+        has_experiment: provenance.source_experiment_run_id.is_some(),
+        has_walk_forward: provenance.source_walk_forward_run_id.is_some(),
+        has_robustness_matrix: provenance.source_robustness_matrix_run_id.is_some(),
+        has_data_quality_snapshot,
     };
     let engine_fingerprint = ResearchCandidateEngineFingerprint {
         app_git_hash: option_env!("VERGEN_GIT_SHA")
@@ -25253,13 +25453,17 @@ async fn build_research_candidate_evidence_bundle(
         migration_version: None,
     };
 
-    let warnings = vec![
+    let mut warnings = vec![
         "ETH-only evidence".to_string(),
         "BTC/generalization not proven".to_string(),
         "2025+ robustness weakened".to_string(),
         "not paper/testnet-ready".to_string(),
         "shadow evidence incomplete".to_string(),
     ];
+    if evidence_artifacts.robustness_matrix_run_id.is_none() {
+        warnings
+            .push("robustness evidence unavailable for this candidate creation path".to_string());
+    }
     let evidence_summary = json!({
         "experiment_metrics": {
             "score": candidate.score,
@@ -25272,7 +25476,10 @@ async fn build_research_candidate_evidence_bundle(
         "walk_forward": latest_walk_forward,
         "robustness": {
             "status": proposal.as_ref().and_then(|row| row.get::<Option<String>, _>("source_robustness_status")),
+            "matrix_run_id": evidence_artifacts.robustness_matrix_run_id,
+            "matrix_cell_id": evidence_artifacts.robustness_matrix_cell_id,
         },
+        "evidence_completeness": evidence_completeness,
         "data_quality_summary": proposal.as_ref().and_then(|row| row.get::<Option<Value>, _>("evidence_status_summary")),
         "shadow_performance_summary": shadow_performance,
         "qualification_status": latest_qualification.as_ref().map(|item| item.status.clone()),
@@ -25386,6 +25593,14 @@ async fn build_research_candidate_import_preview(
         }
         if bundle.engine_fingerprint.is_none() {
             blockers.push("missing_engine_fingerprint".to_string());
+        }
+        if bundle
+            .evidence_artifacts
+            .as_ref()
+            .and_then(|artifacts| artifacts.robustness_matrix_run_id)
+            .is_none()
+        {
+            warnings.push("Bundle does not include robustness matrix provenance.".to_string());
         }
     }
 
@@ -25612,6 +25827,25 @@ async fn apply_research_candidate_import_bundle(
                 "source_environment": bundle.source_environment,
                 "imported_source_status": bundle.candidate.status,
                 "execution_boundary": bundle.execution_boundary,
+                "source_experiment_run_id": bundle.evidence_provenance.source_experiment_run_id,
+                "source_walk_forward_run_id": bundle.evidence_provenance.source_walk_forward_run_id,
+                "source_robustness_matrix_run_id": bundle.evidence_provenance.source_robustness_matrix_run_id,
+                "source_robustness_matrix_cell_id": bundle.evidence_provenance.source_robustness_matrix_cell_id,
+                "source_batch_id": bundle.evidence_provenance.source_batch_id,
+                "source_campaign_id": bundle
+                    .evidence_provenance
+                    .source_campaign_id
+                    .or(bundle.evidence_provenance.campaign_id),
+                "source_proposal_id": bundle.evidence_provenance.source_proposal_id,
+                "candidate_creation_mode": bundle.evidence_provenance.candidate_creation_mode,
+                "gate_status": bundle.evidence_provenance.gate_status,
+                "config_fingerprint": bundle
+                    .evidence_provenance
+                    .config_fingerprint
+                    .clone()
+                    .unwrap_or_else(|| bundle.candidate.config_fingerprint.clone()),
+                "gate_decision": bundle.evidence_provenance.gate_decision,
+                "evidence_status_summary": bundle.evidence_provenance.evidence_status_summary,
             }),
         )
         .await?;
@@ -25627,6 +25861,28 @@ async fn apply_research_candidate_import_bundle(
     let import_record = if let Some(record) = existing_import {
         record
     } else {
+        let evidence_completeness = bundle
+            .evidence_artifacts
+            .as_ref()
+            .map(|artifacts| {
+                json!({
+                    "has_experiment": artifacts.has_experiment,
+                    "has_walk_forward": artifacts.has_walk_forward,
+                    "has_robustness_matrix": artifacts.has_robustness_matrix,
+                    "has_data_quality_snapshot": artifacts.has_data_quality_snapshot,
+                })
+            })
+            .unwrap_or_else(|| {
+                json!({
+                    "has_experiment": bundle.evidence_provenance.source_experiment_run_id.is_some(),
+                    "has_walk_forward": bundle.evidence_provenance.source_walk_forward_run_id.is_some(),
+                    "has_robustness_matrix": bundle
+                        .evidence_provenance
+                        .source_robustness_matrix_run_id
+                        .is_some(),
+                    "has_data_quality_snapshot": bundle.data_quality_snapshot.is_some(),
+                })
+            });
         upsert_research_candidate_import(
             &state.db_pool,
             Uuid::new_v4(),
@@ -25639,6 +25895,9 @@ async fn apply_research_candidate_import_bundle(
             &bundle.schema_version,
             &bundle.evidence_summary,
             &json!(bundle.warnings),
+            &json!(bundle.evidence_provenance),
+            &json!(bundle.evidence_artifacts),
+            &evidence_completeness,
             now,
             Some(actor_id),
         )
@@ -26526,6 +26785,7 @@ async fn decide_research_candidate_handler(
             .await
             .ok()
             .flatten(),
+            evidence_provenance: research_candidate_evidence_provenance_from_record(&updated),
             request_id: request.request_id,
             correlation_id: request.correlation_id,
             timestamp: Utc::now(),
@@ -32274,12 +32534,13 @@ mod tests {
     use super::{
         apply_research_candidate_accept_shadow_handler, batch_walk_forward_window_hours,
         bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
-        build_cors_layer, build_shadow_promotion_proposed_runner_config,
-        cancel_exchange_testnet_order, candidate_promotion_readiness,
-        check_execution_readiness_handler, compression_breakout_refinement_handler,
-        evaluate_strategy_candidate_observation_handler, generate_operator_report_handler,
-        generate_testnet_client_order_id, get_exchange_testnet_shadow_promotion_handler,
-        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
+        build_cors_layer, build_research_candidate_evidence_bundle,
+        build_shadow_promotion_proposed_runner_config, cancel_exchange_testnet_order,
+        candidate_promotion_readiness, check_execution_readiness_handler,
+        compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
+        generate_operator_report_handler, generate_testnet_client_order_id,
+        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
+        get_execution_readiness_snapshot_handler,
         get_research_candidate_accept_shadow_preview_handler,
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
@@ -32303,9 +32564,9 @@ mod tests {
         register_strategy_research_candidate_handler, repair_exchange_testnet_order,
         request_context_middleware, research_decision_ledger, risk_decision_not_found_error,
         route_access, run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
-        strategy_diagnostics_handler, strategy_exit_attribution_handler,
-        strategy_family_status_summary, strategy_opportunity_analysis_handler,
-        strategy_opportunity_replay_consistency_handler,
+        strategy_diagnostics_handler, strategy_evidence_config_fingerprint,
+        strategy_exit_attribution_handler, strategy_family_status_summary,
+        strategy_opportunity_analysis_handler, strategy_opportunity_replay_consistency_handler,
         strategy_signal_feature_attribution_handler, submit_exchange_testnet_pipeline,
         submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
         ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
@@ -40714,6 +40975,94 @@ mod tests {
             count_research_candidate_events(&test_db.pool).await,
             before_events
         );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
+    }
+
+    #[tokio::test]
+    async fn direct_research_candidate_provenance_is_persisted_and_exported() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let state = auth_test_state(test_db.pool.clone(), None, None);
+        let experiment_run_id = Uuid::new_v4();
+        let walk_forward_run_id = Uuid::new_v4();
+        let robustness_matrix_run_id = Uuid::new_v4();
+        let robustness_matrix_cell_id = Uuid::new_v4();
+        let batch_id = Uuid::new_v4();
+        let campaign_id = Uuid::new_v4();
+        let candidate = sample_lifecycle_research_candidate(
+            &research_strategy_config(CandleInterval::OneHour, "ETHUSDT"),
+            Uuid::new_v4(),
+            ResearchCandidateStatus::Discovered,
+        );
+        create_research_candidate(
+            &test_db.pool,
+            &candidate,
+            None,
+            ResearchCandidateDecision::Reopen,
+            Some("direct_gate_fixture"),
+            Some("direct gate fixture"),
+            &json!({
+                "source_batch_id": batch_id,
+                "source_campaign_id": campaign_id,
+                "source_experiment_run_id": experiment_run_id,
+                "source_walk_forward_run_id": walk_forward_run_id,
+                "source_robustness_matrix_run_id": robustness_matrix_run_id,
+                "source_robustness_matrix_cell_id": robustness_matrix_cell_id,
+                "candidate_creation_mode": "direct_gate",
+                "gate_status": "ACTIONABLE",
+                "config_fingerprint": strategy_evidence_config_fingerprint(&candidate.config).expect("fingerprint"),
+                "gate_decision": {"status": "ACTIONABLE"},
+                "evidence_status_summary": {"data_quality": "GOOD"},
+            }),
+        )
+        .await
+        .expect("candidate should persist");
+
+        let record = get_research_candidate(&test_db.pool, candidate.id)
+            .await
+            .expect("candidate query")
+            .expect("candidate exists");
+        assert_eq!(record.source_experiment_run_id, Some(experiment_run_id));
+        assert_eq!(record.source_walk_forward_run_id, Some(walk_forward_run_id));
+        assert_eq!(
+            record.source_robustness_matrix_run_id,
+            Some(robustness_matrix_run_id)
+        );
+        assert_eq!(
+            record.source_robustness_matrix_cell_id,
+            Some(robustness_matrix_cell_id)
+        );
+        assert_eq!(record.source_batch_id, Some(batch_id));
+        assert_eq!(record.source_campaign_id, Some(campaign_id));
+        assert_eq!(
+            record.candidate_creation_mode.as_deref(),
+            Some("direct_gate")
+        );
+
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let bundle = build_research_candidate_evidence_bundle(&state, candidate.id, Utc::now())
+            .await
+            .expect("bundle export");
+        let artifacts = bundle.evidence_artifacts.expect("v2 artifacts");
+        assert_eq!(artifacts.experiment_run_id, Some(experiment_run_id));
+        assert_eq!(artifacts.walk_forward_run_id, Some(walk_forward_run_id));
+        assert_eq!(
+            artifacts.robustness_matrix_run_id,
+            Some(robustness_matrix_run_id)
+        );
+        assert_eq!(
+            artifacts.robustness_matrix_cell_id,
+            Some(robustness_matrix_cell_id)
+        );
+        assert!(artifacts.has_experiment);
+        assert!(artifacts.has_walk_forward);
+        assert!(artifacts.has_robustness_matrix);
+        assert!(!bundle
+            .warnings
+            .iter()
+            .any(|warning| warning
+                == "robustness evidence unavailable for this candidate creation path"));
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
     }
 
