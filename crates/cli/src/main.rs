@@ -1852,6 +1852,25 @@ async fn main() -> anyhow::Result<()> {
                             output::print_cross_asset_candidate_gate_preview(&response.preview);
                         }
                     }
+                    cli::cli::ResearchCrossAssetRelativeStrengthV1Commands::CandidateCreationPolicyPreview(args) => {
+                        if aegis_core::CrossAssetCandidateCreationPolicyStrictness::parse(&args.strictness).is_none() {
+                            anyhow::bail!(
+                                "strictness must be conservative, balanced, or experimental"
+                            );
+                        }
+                        let response = client
+                            .get_cross_asset_relative_strength_v1_candidate_creation_policy_preview(
+                                &args.strictness,
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_candidate_creation_policy_preview(
+                                &response.preview,
+                            );
+                        }
+                    }
                 },
                 ResearchCrossAssetCommands::RobustnessMatrix(command) => match command {
                     ResearchCrossAssetRobustnessMatrixCommands::Run(args) => {

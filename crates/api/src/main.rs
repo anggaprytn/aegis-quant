@@ -32,7 +32,8 @@ use aegis_core::{
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
-    preview_cross_asset_candidate_gate, relative_strength_continuation_v1_allowed_next_actions,
+    preview_cross_asset_candidate_creation_policy, preview_cross_asset_candidate_gate,
+    relative_strength_continuation_v1_allowed_next_actions,
     relative_strength_continuation_v1_default_request,
     relative_strength_continuation_v1_forbidden_actions,
     relative_strength_continuation_v1_identity, research_candidate_next_status,
@@ -42,28 +43,32 @@ use aegis_core::{
     AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
     CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
     CandleBackfillRequest, CandleBackfillResult, CandleInterval,
-    CrossAssetCandidateGatePreviewRequest, CrossAssetCandidateGatePreviewResult,
-    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier,
-    CrossAssetResearchRequest, CrossAssetResearchResult, CrossAssetRobustnessMatrixCell,
-    CrossAssetRobustnessMatrixRequest, CrossAssetRobustnessMatrixResult,
-    CrossAssetRobustnessMatrixWindow, EventEnvelope, ExchangeBalance, ExchangeCancelAck,
-    ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
-    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
-    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
-    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
-    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
-    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
-    MarketDataQualityReport, MarketDataQualityRequest, MarketDataRepairPlan,
-    MarketDataRepairPlanRequest, MarketDataRepairRange, MarketDataRepairRunRequest,
-    MarketDataRepairRunResult, MarketDataRepairStatus, MarketDataSource, MarketMode,
-    MarketProviderAttempt, MarketProviderHealth, OperatorReport, OperatorReportRequest,
-    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
-    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
-    PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchCandidateTriage,
-    ResearchBatchRecommendation, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus,
-    ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
+    CrossAssetCandidateCreationPolicyDossierSummary,
+    CrossAssetCandidateCreationPolicyPreviewRequest,
+    CrossAssetCandidateCreationPolicyPreviewResult, CrossAssetCandidateCreationPolicyStrictness,
+    CrossAssetCandidateGateCheckStatus, CrossAssetCandidateGatePreviewRequest,
+    CrossAssetCandidateGatePreviewResult, CrossAssetPortfolioTrade, CrossAssetPortfolioWindow,
+    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchRequest, CrossAssetResearchResult,
+    CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
+    CrossAssetRobustnessMatrixResult, CrossAssetRobustnessMatrixWindow, EventEnvelope,
+    ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName,
+    ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce,
+    ExchangeOrderType, ExchangePrivateStreamSource, ExchangePrivateStreamState,
+    ExchangePrivateStreamStatus, ExchangeRateLimitState, ExchangeReconciliationMismatch,
+    ExchangeReconciliationRequest, ExchangeReconciliationResult, ExchangeReconciliationRun,
+    ExchangeRequestMode, ExchangeSymbolInfo, ExchangeTestnetPipelinePreview,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
+    ExecutionReadinessStatus, MarketCandleCoverageSummary, MarketDataQualityReport,
+    MarketDataQualityRequest, MarketDataRepairPlan, MarketDataRepairPlanRequest,
+    MarketDataRepairRange, MarketDataRepairRunRequest, MarketDataRepairRunResult,
+    MarketDataRepairStatus, MarketDataSource, MarketMode, MarketProviderAttempt,
+    MarketProviderHealth, OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode,
+    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
+    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest,
+    ResearchBatchCandidateSummary, ResearchBatchCandidateTriage, ResearchBatchRecommendation,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus, ResearchBatchStep,
+    ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
     ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
     ResearchCampaignResult, ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRejection, ResearchCandidateAcceptForShadowApplyRequest,
@@ -1634,6 +1639,21 @@ struct CrossAssetCandidateGatePreviewQuery {
 #[derive(Serialize)]
 struct CrossAssetCandidateGatePreviewResponse {
     preview: CrossAssetCandidateGatePreviewResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CrossAssetCandidateCreationPolicyPreviewQuery {
+    run_id: Option<Uuid>,
+    matrix_id: Option<Uuid>,
+    strictness: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetCandidateCreationPolicyPreviewResponse {
+    preview: CrossAssetCandidateCreationPolicyPreviewResult,
     request_id: String,
     correlation_id: String,
     timestamp: DateTime<Utc>,
@@ -3299,6 +3319,10 @@ async fn main() {
         .route(
             "/research/cross-asset/relative-strength-v1/candidate-gate-preview",
             get(get_cross_asset_relative_strength_v1_candidate_gate_preview_handler),
+        )
+        .route(
+            "/research/cross-asset/relative-strength-v1/candidate-creation-policy-preview",
+            get(get_cross_asset_relative_strength_v1_candidate_creation_policy_preview_handler),
         )
         .route(
             "/research/cross-asset",
@@ -13392,11 +13416,152 @@ async fn get_cross_asset_relative_strength_v1_candidate_gate_preview_handler(
     }
 }
 
+async fn get_cross_asset_relative_strength_v1_candidate_creation_policy_preview_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Query(query): Query<CrossAssetCandidateCreationPolicyPreviewQuery>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let strictness = match query
+        .strictness
+        .as_deref()
+        .map(CrossAssetCandidateCreationPolicyStrictness::parse)
+        .unwrap_or(Some(
+            CrossAssetCandidateCreationPolicyStrictness::Conservative,
+        )) {
+        Some(strictness) => strictness,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_cross_asset_candidate_creation_policy_strictness",
+                    message: "strictness must be conservative, balanced, or experimental"
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match build_cross_asset_relative_strength_v1_candidate_creation_policy_preview(
+        &state,
+        query.run_id,
+        query.matrix_id,
+        strictness,
+    )
+    .await
+    {
+        Ok(preview) => (
+            StatusCode::OK,
+            Json(CrossAssetCandidateCreationPolicyPreviewResponse {
+                preview,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error:
+                    "failed_to_build_cross_asset_relative_strength_v1_candidate_creation_policy_preview",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn build_cross_asset_relative_strength_v1_candidate_gate_preview(
     state: &AppState,
     run_id_override: Option<Uuid>,
     matrix_id_override: Option<Uuid>,
 ) -> anyhow::Result<CrossAssetCandidateGatePreviewResult> {
+    let (run_id, matrix_id, supporting_run, matrix, cells) =
+        load_cross_asset_relative_strength_v1_policy_evidence(
+            state,
+            run_id_override,
+            matrix_id_override,
+        )
+        .await?;
+    let existing_candidate_count = count_existing_relative_strength_v1_candidates(state).await?;
+    let data_quality_good = supporting_run.is_some() && matrix.is_some();
+    Ok(preview_cross_asset_candidate_gate(
+        CrossAssetCandidateGatePreviewRequest {
+            strategy_package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            run_id,
+            matrix_id,
+        },
+        supporting_run.as_ref(),
+        matrix.as_ref(),
+        &cells,
+        existing_candidate_count,
+        data_quality_good,
+        true,
+    ))
+}
+
+async fn build_cross_asset_relative_strength_v1_candidate_creation_policy_preview(
+    state: &AppState,
+    run_id_override: Option<Uuid>,
+    matrix_id_override: Option<Uuid>,
+    strictness: CrossAssetCandidateCreationPolicyStrictness,
+) -> anyhow::Result<CrossAssetCandidateCreationPolicyPreviewResult> {
+    let (run_id, matrix_id, supporting_run, matrix, cells) =
+        load_cross_asset_relative_strength_v1_policy_evidence(
+            state,
+            run_id_override,
+            matrix_id_override,
+        )
+        .await?;
+    let existing_candidate_count = count_active_relative_strength_v1_candidates(state).await?;
+    let gate_preview = preview_cross_asset_candidate_gate(
+        CrossAssetCandidateGatePreviewRequest {
+            strategy_package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            run_id,
+            matrix_id,
+        },
+        supporting_run.as_ref(),
+        matrix.as_ref(),
+        &cells,
+        existing_candidate_count,
+        supporting_run.is_some() && matrix.is_some(),
+        true,
+    );
+    Ok(preview_cross_asset_candidate_creation_policy(
+        CrossAssetCandidateCreationPolicyPreviewRequest {
+            package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            run_id,
+            matrix_id,
+            strictness,
+        },
+        &gate_preview,
+        supporting_run.as_ref(),
+        matrix.as_ref(),
+        &cells,
+        existing_candidate_count,
+        false,
+        true,
+    ))
+}
+
+async fn load_cross_asset_relative_strength_v1_policy_evidence(
+    state: &AppState,
+    run_id_override: Option<Uuid>,
+    matrix_id_override: Option<Uuid>,
+) -> anyhow::Result<(
+    Option<Uuid>,
+    Option<Uuid>,
+    Option<CrossAssetResearchResult>,
+    Option<CrossAssetRobustnessMatrixResult>,
+    Vec<CrossAssetRobustnessMatrixCell>,
+)> {
     let dossier = build_cross_asset_relative_strength_v1_dossier_base(state).await?;
     let run_id = run_id_override.or(dossier.latest_supporting_run_id);
     let matrix_id = matrix_id_override.or(dossier.latest_matrix_id);
@@ -13426,21 +13591,8 @@ async fn build_cross_asset_relative_strength_v1_candidate_gate_preview(
     } else {
         Vec::new()
     };
-    let existing_candidate_count = count_existing_relative_strength_v1_candidates(state).await?;
-    let data_quality_good = supporting_run.is_some() && matrix.is_some();
-    Ok(preview_cross_asset_candidate_gate(
-        CrossAssetCandidateGatePreviewRequest {
-            strategy_package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
-            run_id,
-            matrix_id,
-        },
-        supporting_run.as_ref(),
-        matrix.as_ref(),
-        &cells,
-        existing_candidate_count,
-        data_quality_good,
-        true,
-    ))
+
+    Ok((run_id, matrix_id, supporting_run, matrix, cells))
 }
 
 async fn count_existing_relative_strength_v1_candidates(state: &AppState) -> anyhow::Result<i64> {
@@ -13449,6 +13601,30 @@ async fn count_existing_relative_strength_v1_candidates(state: &AppState) -> any
         SELECT
             (SELECT COUNT(*) FROM research_candidates WHERE strategy_id = $1)
             + (SELECT COUNT(*) FROM strategy_research_candidates WHERE strategy_id = $1)
+        "#,
+    )
+    .bind(RELATIVE_STRENGTH_CONTINUATION_V1_ID)
+    .fetch_one(&state.db_pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn count_active_relative_strength_v1_candidates(state: &AppState) -> anyhow::Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT
+            (
+                SELECT COUNT(*)
+                FROM research_candidates
+                WHERE strategy_id = $1
+                  AND status NOT IN ('REJECTED', 'ARCHIVED')
+            )
+            + (
+                SELECT COUNT(*)
+                FROM strategy_research_candidates
+                WHERE strategy_id = $1
+                  AND status NOT IN ('REJECTED', 'ARCHIVED')
+            )
         "#,
     )
     .bind(RELATIVE_STRENGTH_CONTINUATION_V1_ID)
@@ -13475,6 +13651,57 @@ async fn build_cross_asset_relative_strength_v1_dossier(
         .into_iter()
         .map(|warning| warning.code)
         .collect();
+    let mut policy_summaries = Vec::new();
+    for strictness in [
+        CrossAssetCandidateCreationPolicyStrictness::Conservative,
+        CrossAssetCandidateCreationPolicyStrictness::Balanced,
+        CrossAssetCandidateCreationPolicyStrictness::Experimental,
+    ] {
+        let policy = build_cross_asset_relative_strength_v1_candidate_creation_policy_preview(
+            state, None, None, strictness,
+        )
+        .await?;
+        policy_summaries.push(CrossAssetCandidateCreationPolicyDossierSummary {
+            strictness,
+            status: policy.status,
+            hard_blocker_count: policy
+                .hard_requirements
+                .iter()
+                .filter(|requirement| {
+                    requirement.status == CrossAssetCandidateGateCheckStatus::Block
+                })
+                .count() as i32,
+            review_warning_count: policy
+                .review_requirements
+                .iter()
+                .filter(|requirement| {
+                    requirement.status != CrossAssetCandidateGateCheckStatus::Pass
+                })
+                .count() as i32,
+            recommended_action: policy.recommended_action,
+        });
+    }
+    dossier.candidate_creation_policy_status = policy_summaries
+        .iter()
+        .find(|summary| summary.strictness == CrossAssetCandidateCreationPolicyStrictness::Balanced)
+        .map(|summary| summary.status);
+    dossier.candidate_creation_policy_recommended_next_action = Some(
+        match dossier.candidate_creation_policy_status {
+            Some(
+                aegis_core::CrossAssetCandidateCreationPolicyStatus::PolicyReadyForManualCreate,
+            )
+            | Some(aegis_core::CrossAssetCandidateCreationPolicyStatus::PolicyNeedsReview) => {
+                "HUMAN_REVIEW_CANDIDATE_POLICY"
+            }
+            Some(aegis_core::CrossAssetCandidateCreationPolicyStatus::PolicyBlocked) => {
+                "RUN_MORE_OUT_OF_SAMPLE"
+            }
+            Some(aegis_core::CrossAssetCandidateCreationPolicyStatus::PolicyNotApplicable)
+            | None => "DO_NOT_CREATE_CANDIDATE",
+        }
+        .to_string(),
+    );
+    dossier.candidate_creation_policy_summaries = policy_summaries;
     Ok(dossier)
 }
 
@@ -13558,6 +13785,9 @@ async fn build_cross_asset_relative_strength_v1_dossier_base(
         candidate_gate_preview_recommended_action: None,
         candidate_gate_blockers: Vec::new(),
         candidate_gate_warnings: Vec::new(),
+        candidate_creation_policy_status: None,
+        candidate_creation_policy_summaries: Vec::new(),
+        candidate_creation_policy_recommended_next_action: None,
         blockers: vec![
             "not_candidate_ready".to_string(),
             "not_testnet_ready".to_string(),
@@ -33816,6 +34046,7 @@ mod tests {
         candidate_promotion_readiness, check_execution_readiness_handler,
         compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
         generate_operator_report_handler, generate_testnet_client_order_id,
+        get_cross_asset_relative_strength_v1_candidate_creation_policy_preview_handler,
         get_cross_asset_relative_strength_v1_candidate_gate_preview_handler,
         get_cross_asset_relative_strength_v1_dossier_handler, get_cross_asset_research_run_handler,
         get_cross_asset_robustness_matrix_run_handler,
@@ -35198,6 +35429,10 @@ mod tests {
             .route(
                 "/research/cross-asset/relative-strength-v1/candidate-gate-preview",
                 get(get_cross_asset_relative_strength_v1_candidate_gate_preview_handler),
+            )
+            .route(
+                "/research/cross-asset/relative-strength-v1/candidate-creation-policy-preview",
+                get(get_cross_asset_relative_strength_v1_candidate_creation_policy_preview_handler),
             )
             .route(
                 "/research/cross-asset",
@@ -36968,6 +37203,79 @@ mod tests {
 
         assert_eq!(
             count_research_candidates(&test_db.pool).await,
+            before_candidates
+        );
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.3);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.5
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_asset_candidate_creation_policy_preview_is_read_only() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let before_candidates = (
+            count_research_candidates(&test_db.pool).await,
+            sqlx::query("SELECT COUNT(*) AS count FROM research_candidates")
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("lifecycle candidate count")
+                .get::<i64, _>("count"),
+        );
+        let before = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+
+        let response = app
+            .oneshot(cli_request(
+                "GET",
+                "/research/cross-asset/relative-strength-v1/candidate-creation-policy-preview?strictness=balanced",
+                json!({}),
+            ))
+            .await
+            .expect("candidate creation policy preview response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload["preview"]["package_id"].as_str(),
+            Some("relative_strength_continuation_v1")
+        );
+        assert_eq!(payload["preview"]["preview_only"].as_bool(), Some(true));
+        assert_eq!(
+            payload["preview"]["no_candidate_created"].as_bool(),
+            Some(true)
+        );
+        assert!(payload["preview"]["forbidden_actions"]
+            .as_array()
+            .expect("forbidden actions")
+            .iter()
+            .any(|value| value == "no_auto_candidate_creation"));
+
+        assert_eq!(
+            (
+                count_research_candidates(&test_db.pool).await,
+                sqlx::query("SELECT COUNT(*) AS count FROM research_candidates")
+                    .fetch_one(&test_db.pool)
+                    .await
+                    .expect("lifecycle candidate count")
+                    .get::<i64, _>("count"),
+            ),
             before_candidates
         );
         assert_eq!(count_paper_orders(&test_db.pool).await, before.0);

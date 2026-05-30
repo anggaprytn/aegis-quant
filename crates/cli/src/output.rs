@@ -165,6 +165,27 @@ pub fn print_cross_asset_relative_strength_v1_dossier(
     println!("Blockers: {:?}", dossier.blockers);
     println!("Gate blockers: {:?}", dossier.candidate_gate_blockers);
     println!("Gate warnings: {:?}", dossier.candidate_gate_warnings);
+    println!(
+        "Candidate creation policy: {}  Next action: {}",
+        dossier
+            .candidate_creation_policy_status
+            .map(|status| status.as_str())
+            .unwrap_or("unknown"),
+        dossier
+            .candidate_creation_policy_recommended_next_action
+            .as_deref()
+            .unwrap_or("unknown")
+    );
+    for summary in &dossier.candidate_creation_policy_summaries {
+        println!(
+            "  {} status={} hard_blockers={} review_warnings={} recommended={}",
+            summary.strictness.as_str(),
+            summary.status.as_str(),
+            summary.hard_blocker_count,
+            summary.review_warning_count,
+            summary.recommended_action
+        );
+    }
     println!("Allowed next actions: {:?}", dossier.allowed_next_actions);
     println!("Forbidden actions: {:?}", dossier.forbidden_actions);
 }
@@ -215,6 +236,65 @@ pub fn print_cross_asset_candidate_gate_preview(preview: &CrossAssetCandidateGat
             warning.threshold.as_deref().unwrap_or("n/a"),
             warning.message
         );
+    }
+    println!("Forbidden actions: {:?}", preview.forbidden_actions);
+}
+
+pub fn print_cross_asset_candidate_creation_policy_preview(
+    preview: &aegis_core::CrossAssetCandidateCreationPolicyPreviewResult,
+) {
+    println!("Cross-asset candidate creation policy preview");
+    println!(
+        "Package: {}  Strictness: {}  Status: {}",
+        preview.package_id,
+        preview.strictness.as_str(),
+        preview.status.as_str()
+    );
+    println!(
+        "Run: {}  Matrix: {}",
+        preview
+            .run_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        preview
+            .matrix_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!("Recommended action: {}", preview.recommended_action);
+    println!("Preview only, no candidate created.");
+    let hard_blocks = preview
+        .hard_requirements
+        .iter()
+        .filter(|requirement| {
+            requirement.status == aegis_core::CrossAssetCandidateGateCheckStatus::Block
+        })
+        .count();
+    let review_warnings = preview
+        .review_requirements
+        .iter()
+        .filter(|requirement| {
+            requirement.status != aegis_core::CrossAssetCandidateGateCheckStatus::Pass
+        })
+        .count();
+    println!(
+        "Hard pass/fail: {}/{} blockers={}",
+        preview.hard_requirements.len().saturating_sub(hard_blocks),
+        preview.hard_requirements.len(),
+        hard_blocks
+    );
+    println!("Review warnings: {}", review_warnings);
+    for requirement in &preview.review_requirements {
+        if requirement.status != aegis_core::CrossAssetCandidateGateCheckStatus::Pass {
+            println!(
+                "  {} {} observed={} threshold={} - {}",
+                requirement.status.as_str(),
+                requirement.code,
+                requirement.observed_value.as_deref().unwrap_or("n/a"),
+                requirement.threshold.as_deref().unwrap_or("n/a"),
+                requirement.message
+            );
+        }
     }
     println!("Forbidden actions: {:?}", preview.forbidden_actions);
 }

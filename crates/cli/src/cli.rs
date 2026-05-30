@@ -921,6 +921,14 @@ pub enum ResearchCrossAssetRelativeStrengthV1Commands {
     Dossier,
     #[command(name = "candidate-gate-preview")]
     CandidateGatePreview,
+    #[command(name = "candidate-creation-policy-preview")]
+    CandidateCreationPolicyPreview(ResearchCrossAssetCandidateCreationPolicyPreviewArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetCandidateCreationPolicyPreviewArgs {
+    #[arg(long, default_value = "conservative")]
+    pub strictness: String,
 }
 
 #[derive(Debug, Args)]

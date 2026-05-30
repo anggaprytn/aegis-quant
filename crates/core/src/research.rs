@@ -7897,6 +7897,9 @@ pub struct CrossAssetRelativeStrengthV1Dossier {
     pub candidate_gate_preview_recommended_action: Option<String>,
     pub candidate_gate_blockers: Vec<String>,
     pub candidate_gate_warnings: Vec<String>,
+    pub candidate_creation_policy_status: Option<CrossAssetCandidateCreationPolicyStatus>,
+    pub candidate_creation_policy_summaries: Vec<CrossAssetCandidateCreationPolicyDossierSummary>,
+    pub candidate_creation_policy_recommended_next_action: Option<String>,
     pub blockers: Vec<String>,
     pub allowed_next_actions: Vec<String>,
     pub forbidden_actions: Vec<String>,
@@ -7986,6 +7989,104 @@ pub struct CrossAssetCandidateGatePreviewResult {
     pub forbidden_actions: Vec<String>,
     pub preview_only: bool,
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CrossAssetCandidateCreationPolicyStrictness {
+    Conservative,
+    Balanced,
+    Experimental,
+}
+
+impl CrossAssetCandidateCreationPolicyStrictness {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Conservative => "conservative",
+            Self::Balanced => "balanced",
+            Self::Experimental => "experimental",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "conservative" => Some(Self::Conservative),
+            "balanced" => Some(Self::Balanced),
+            "experimental" => Some(Self::Experimental),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetCandidateCreationPolicyPreviewRequest {
+    pub package_id: String,
+    pub run_id: Option<Uuid>,
+    pub matrix_id: Option<Uuid>,
+    pub strictness: CrossAssetCandidateCreationPolicyStrictness,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetCandidateCreationPolicyStatus {
+    PolicyBlocked,
+    PolicyNeedsReview,
+    PolicyReadyForManualCreate,
+    PolicyNotApplicable,
+}
+
+impl CrossAssetCandidateCreationPolicyStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PolicyBlocked => "POLICY_BLOCKED",
+            Self::PolicyNeedsReview => "POLICY_NEEDS_REVIEW",
+            Self::PolicyReadyForManualCreate => "POLICY_READY_FOR_MANUAL_CREATE",
+            Self::PolicyNotApplicable => "POLICY_NOT_APPLICABLE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetCandidateCreationRequirement {
+    pub code: String,
+    pub status: CrossAssetCandidateGateCheckStatus,
+    pub message: String,
+    pub observed_value: Option<String>,
+    pub threshold: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetCandidateCreationRisk {
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetCandidateCreationPolicyPreviewResult {
+    pub package_id: String,
+    pub run_id: Option<Uuid>,
+    pub matrix_id: Option<Uuid>,
+    pub strictness: CrossAssetCandidateCreationPolicyStrictness,
+    pub status: CrossAssetCandidateCreationPolicyStatus,
+    pub hard_requirements: Vec<CrossAssetCandidateCreationRequirement>,
+    pub review_requirements: Vec<CrossAssetCandidateCreationRequirement>,
+    pub risks: Vec<CrossAssetCandidateCreationRisk>,
+    pub warnings: Vec<String>,
+    pub recommended_action: String,
+    pub forbidden_actions: Vec<String>,
+    pub preview_only: bool,
+    pub no_candidate_created: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetCandidateCreationPolicyDossierSummary {
+    pub strictness: CrossAssetCandidateCreationPolicyStrictness,
+    pub status: CrossAssetCandidateCreationPolicyStatus,
+    pub hard_blocker_count: i32,
+    pub review_warning_count: i32,
+    pub recommended_action: String,
 }
 
 pub fn relative_strength_continuation_v1_identity() -> CrossAssetStrategyPackageIdentity {
@@ -8488,6 +8589,578 @@ fn one_window_dominates_preview_cells(cells: &[&CrossAssetRobustnessMatrixCell])
         .into_iter()
         .max()
         .is_some_and(|value| value / total_positive > Decimal::new(70, 2))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn preview_cross_asset_candidate_creation_policy(
+    request: CrossAssetCandidateCreationPolicyPreviewRequest,
+    gate_preview: &CrossAssetCandidateGatePreviewResult,
+    supporting_run: Option<&CrossAssetResearchResult>,
+    matrix: Option<&CrossAssetRobustnessMatrixResult>,
+    matrix_cells: &[CrossAssetRobustnessMatrixCell],
+    existing_active_candidate_count: i64,
+    route_enabled: bool,
+    execution_authority_none: bool,
+) -> CrossAssetCandidateCreationPolicyPreviewResult {
+    let mut hard_requirements = Vec::new();
+    let mut review_requirements = Vec::new();
+    let mut risks = Vec::new();
+    let mut warnings = Vec::new();
+
+    let add_requirement = |items: &mut Vec<CrossAssetCandidateCreationRequirement>,
+                           code: &str,
+                           status: CrossAssetCandidateGateCheckStatus,
+                           message: &str,
+                           observed_value: Option<String>,
+                           threshold: Option<&str>| {
+        items.push(CrossAssetCandidateCreationRequirement {
+            code: code.to_string(),
+            status,
+            message: message.to_string(),
+            observed_value,
+            threshold: threshold.map(ToString::to_string),
+        });
+    };
+    let add_risk = |risks: &mut Vec<CrossAssetCandidateCreationRisk>,
+                    code: &str,
+                    severity: &str,
+                    message: &str| {
+        risks.push(CrossAssetCandidateCreationRisk {
+            code: code.to_string(),
+            severity: severity.to_string(),
+            message: message.to_string(),
+        });
+    };
+
+    if request.package_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID {
+        add_requirement(
+            &mut hard_requirements,
+            "supported_strategy_package",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Candidate creation policy preview currently supports only relative_strength_continuation_v1.",
+            Some(request.package_id.clone()),
+            Some(RELATIVE_STRENGTH_CONTINUATION_V1_ID),
+        );
+    } else {
+        add_requirement(
+            &mut hard_requirements,
+            "supported_strategy_package",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "Strategy package is supported by the candidate creation policy preview.",
+            Some(request.package_id.clone()),
+            Some(RELATIVE_STRENGTH_CONTINUATION_V1_ID),
+        );
+    }
+
+    if gate_preview.blockers.is_empty() {
+        add_requirement(
+            &mut hard_requirements,
+            "package_gate_preview_has_no_blockers",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "Package gate preview has no blockers.",
+            Some("0".to_string()),
+            Some("0"),
+        );
+    } else {
+        add_requirement(
+            &mut hard_requirements,
+            "package_gate_preview_has_no_blockers",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Package gate preview still has blockers.",
+            Some(gate_preview.blockers.len().to_string()),
+            Some("0"),
+        );
+    }
+
+    match matrix {
+        Some(matrix)
+            if matches!(
+                matrix.status,
+                CrossAssetRobustnessStatus::Robust | CrossAssetRobustnessStatus::Promising
+            ) =>
+        {
+            add_requirement(
+                &mut hard_requirements,
+                "matrix_status_robust_or_promising",
+                CrossAssetCandidateGateCheckStatus::Pass,
+                "Matrix status is acceptable for candidate creation policy review.",
+                Some(matrix.status.as_str().to_string()),
+                Some("ROBUST or PROMISING"),
+            );
+        }
+        Some(matrix) => add_requirement(
+            &mut hard_requirements,
+            "matrix_status_robust_or_promising",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Matrix status is not strong enough for candidate creation policy review.",
+            Some(matrix.status.as_str().to_string()),
+            Some("ROBUST or PROMISING"),
+        ),
+        None => add_requirement(
+            &mut hard_requirements,
+            "matrix_present",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "A robustness matrix is required before candidate creation policy review.",
+            None,
+            None,
+        ),
+    }
+
+    if execution_authority_none {
+        add_requirement(
+            &mut hard_requirements,
+            "execution_authority_none",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "Policy preview has no paper, testnet, or live execution authority.",
+            Some("NONE".to_string()),
+            Some("NONE"),
+        );
+    } else {
+        add_requirement(
+            &mut hard_requirements,
+            "execution_authority_none",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Candidate creation policy preview must not run with execution authority.",
+            Some("NOT_NONE".to_string()),
+            Some("NONE"),
+        );
+    }
+
+    let identity = relative_strength_continuation_v1_identity();
+    let research_only = identity.scope == "cross_asset_research_only"
+        && !identity.paper_executable
+        && !identity.testnet_executable
+        && !identity.live_executable;
+    add_requirement(
+        &mut hard_requirements,
+        "package_is_research_only",
+        if research_only {
+            CrossAssetCandidateGateCheckStatus::Pass
+        } else {
+            CrossAssetCandidateGateCheckStatus::Block
+        },
+        "Package must remain research-only before candidate creation can be manually considered.",
+        Some(format!(
+            "scope={},paper={},testnet={},live={}",
+            identity.scope,
+            identity.paper_executable,
+            identity.testnet_executable,
+            identity.live_executable
+        )),
+        Some("research-only and no execution routes"),
+    );
+
+    add_requirement(
+        &mut hard_requirements,
+        "no_existing_active_candidate_for_same_package_config",
+        if existing_active_candidate_count == 0 {
+            CrossAssetCandidateGateCheckStatus::Pass
+        } else {
+            CrossAssetCandidateGateCheckStatus::Block
+        },
+        "No active candidate may already exist for the same package/config.",
+        Some(existing_active_candidate_count.to_string()),
+        Some("0"),
+    );
+
+    add_requirement(
+        &mut hard_requirements,
+        "no_paper_testnet_live_route_enabled",
+        if route_enabled {
+            CrossAssetCandidateGateCheckStatus::Block
+        } else {
+            CrossAssetCandidateGateCheckStatus::Pass
+        },
+        "No paper, testnet, or live route may be enabled for this research package.",
+        Some(route_enabled.to_string()),
+        Some("false"),
+    );
+
+    let top_ranking = matrix.and_then(|matrix| matrix.rankings.first());
+    let max_drawdown_pct = top_ranking
+        .map(|ranking| ranking.max_drawdown_pct)
+        .or_else(|| supporting_run.map(|run| run.max_drawdown_pct));
+    let worst_window_pnl_pct = top_ranking
+        .map(|ranking| ranking.worst_window_pnl_pct)
+        .or_else(|| supporting_run.map(|run| run.worst_window_pnl_pct));
+    let max_symbol_concentration_pct = top_ranking
+        .map(|ranking| ranking.max_symbol_concentration_pct)
+        .or_else(|| supporting_run.map(|run| run.max_symbol_concentration_pct));
+    let total_trades = top_ranking
+        .map(|ranking| ranking.total_trades)
+        .or_else(|| supporting_run.map(|run| run.total_trades));
+    let btc_trade_count = top_ranking
+        .map(|ranking| ranking.btc_trade_count)
+        .or_else(|| {
+            supporting_run.map(|run| run.symbol_distribution.get("BTCUSDT").copied().unwrap_or(0))
+        });
+
+    match max_drawdown_pct {
+        Some(value) if value >= Decimal::new(-10, 0) => add_requirement(
+            &mut hard_requirements,
+            "max_drawdown_lte_10_pct",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "Maximum drawdown is within the candidate creation policy threshold.",
+            Some(value.to_string()),
+            Some(">= -10"),
+        ),
+        Some(value) => add_requirement(
+            &mut hard_requirements,
+            "max_drawdown_lte_10_pct",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Maximum drawdown exceeds the candidate creation policy threshold.",
+            Some(value.to_string()),
+            Some(">= -10"),
+        ),
+        None => add_requirement(
+            &mut hard_requirements,
+            "max_drawdown_lte_10_pct",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Maximum drawdown evidence is missing.",
+            None,
+            Some(">= -10"),
+        ),
+    }
+
+    match worst_window_pnl_pct {
+        Some(value) if value >= Decimal::new(-5, 0) => add_requirement(
+            &mut hard_requirements,
+            "worst_window_gte_minus_5_pct",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "Worst window is within the candidate creation policy threshold.",
+            Some(value.to_string()),
+            Some(">= -5"),
+        ),
+        Some(value) => add_requirement(
+            &mut hard_requirements,
+            "worst_window_gte_minus_5_pct",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Worst window breaches the candidate creation policy threshold.",
+            Some(value.to_string()),
+            Some(">= -5"),
+        ),
+        None => add_requirement(
+            &mut hard_requirements,
+            "worst_window_gte_minus_5_pct",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Worst-window evidence is missing.",
+            None,
+            Some(">= -5"),
+        ),
+    }
+
+    match max_symbol_concentration_pct {
+        Some(value) if value <= Decimal::new(50, 0) => add_requirement(
+            &mut hard_requirements,
+            "max_symbol_concentration_lte_50_pct",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "Maximum symbol concentration is within the candidate creation policy threshold.",
+            Some(value.to_string()),
+            Some("<= 50"),
+        ),
+        Some(value) => add_requirement(
+            &mut hard_requirements,
+            "max_symbol_concentration_lte_50_pct",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Maximum symbol concentration exceeds the candidate creation policy threshold.",
+            Some(value.to_string()),
+            Some("<= 50"),
+        ),
+        None => add_requirement(
+            &mut hard_requirements,
+            "max_symbol_concentration_lte_50_pct",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Symbol concentration evidence is missing.",
+            None,
+            Some("<= 50"),
+        ),
+    }
+
+    let top_config_cells = matrix_cells
+        .iter()
+        .filter(|cell| top_ranking.is_none_or(|ranking| cell.config_index == ranking.config_index))
+        .collect::<Vec<_>>();
+    let early_cell = top_config_cells
+        .iter()
+        .copied()
+        .find(|cell| cell.window_label.contains("2023") || cell.window_start.year() < 2025);
+    let late_cell = top_config_cells
+        .iter()
+        .copied()
+        .find(|cell| cell.window_label.contains("2025") || cell.window_start.year() >= 2025);
+
+    match early_cell {
+        Some(cell) if cell.compounded_pnl_pct > Decimal::ZERO => add_requirement(
+            &mut hard_requirements,
+            "positive_2023_2024",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "2023-2024 evidence is positive.",
+            Some(cell.compounded_pnl_pct.to_string()),
+            Some("> 0"),
+        ),
+        Some(cell) => add_requirement(
+            &mut hard_requirements,
+            "positive_2023_2024",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "2023-2024 evidence is not positive.",
+            Some(cell.compounded_pnl_pct.to_string()),
+            Some("> 0"),
+        ),
+        None => add_requirement(
+            &mut hard_requirements,
+            "positive_2023_2024",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "2023-2024 evidence cell is missing.",
+            None,
+            Some("> 0"),
+        ),
+    }
+
+    match late_cell {
+        Some(cell) if cell.compounded_pnl_pct > Decimal::ZERO => add_requirement(
+            &mut hard_requirements,
+            "positive_2025_plus",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "2025+ evidence is positive.",
+            Some(cell.compounded_pnl_pct.to_string()),
+            Some("> 0"),
+        ),
+        Some(cell) => add_requirement(
+            &mut hard_requirements,
+            "positive_2025_plus",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "2025+ evidence is not positive.",
+            Some(cell.compounded_pnl_pct.to_string()),
+            Some("> 0"),
+        ),
+        None => add_requirement(
+            &mut hard_requirements,
+            "positive_2025_plus",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "2025+ evidence cell is missing.",
+            None,
+            Some("> 0"),
+        ),
+    }
+
+    if one_window_dominates_preview_cells(&top_config_cells) {
+        add_requirement(
+            &mut hard_requirements,
+            "no_severe_one_window_dominance",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "One window contributes more than 70% of positive window PnL.",
+            Some("> 70%".to_string()),
+            Some("<= 70%"),
+        );
+    } else if !top_config_cells.is_empty() {
+        add_requirement(
+            &mut hard_requirements,
+            "no_severe_one_window_dominance",
+            CrossAssetCandidateGateCheckStatus::Pass,
+            "Positive window PnL is not severely dominated by one window.",
+            Some("<= 70%".to_string()),
+            Some("<= 70%"),
+        );
+    } else {
+        add_requirement(
+            &mut hard_requirements,
+            "no_severe_one_window_dominance",
+            CrossAssetCandidateGateCheckStatus::Block,
+            "Window-level evidence is missing.",
+            None,
+            Some("<= 70%"),
+        );
+    }
+
+    if let Some(cell) = late_cell {
+        let strict_status =
+            |condition: bool, strictness: CrossAssetCandidateCreationPolicyStrictness| {
+                if condition {
+                    CrossAssetCandidateGateCheckStatus::Pass
+                } else if strictness == CrossAssetCandidateCreationPolicyStrictness::Conservative {
+                    CrossAssetCandidateGateCheckStatus::Block
+                } else {
+                    CrossAssetCandidateGateCheckStatus::Warn
+                }
+            };
+        add_requirement(
+            &mut review_requirements,
+            "twenty_25_plus_median_trade_positive",
+            strict_status(
+                cell.median_trade_pnl_pct > Decimal::ZERO,
+                request.strictness,
+            ),
+            "2025+ median trade should be positive before manually creating a research candidate.",
+            Some(cell.median_trade_pnl_pct.to_string()),
+            Some("> 0"),
+        );
+        add_requirement(
+            &mut review_requirements,
+            "twenty_25_plus_trade_count_comfortably_above_minimum",
+            strict_status(cell.total_trades > 60, request.strictness),
+            "2025+ trade count should be comfortably above the minimum, not barely over it.",
+            Some(cell.total_trades.to_string()),
+            Some("> 60"),
+        );
+    } else {
+        add_requirement(
+            &mut review_requirements,
+            "twenty_25_plus_review_cell_present",
+            if request.strictness == CrossAssetCandidateCreationPolicyStrictness::Conservative {
+                CrossAssetCandidateGateCheckStatus::Block
+            } else {
+                CrossAssetCandidateGateCheckStatus::Warn
+            },
+            "2025+ review cell is missing.",
+            None,
+            None,
+        );
+    }
+
+    if let (Some(btc), Some(total)) = (btc_trade_count, total_trades) {
+        let btc_pct = if total > 0 {
+            Decimal::from(btc) * Decimal::new(100, 0) / Decimal::from(total)
+        } else {
+            Decimal::ZERO
+        };
+        let btc_ok = btc_pct >= Decimal::new(5, 0);
+        let btc_status = if btc_ok {
+            CrossAssetCandidateGateCheckStatus::Pass
+        } else if request.strictness == CrossAssetCandidateCreationPolicyStrictness::Conservative {
+            CrossAssetCandidateGateCheckStatus::Block
+        } else {
+            CrossAssetCandidateGateCheckStatus::Warn
+        };
+        add_requirement(
+            &mut review_requirements,
+            "btc_participation_at_least_5_pct",
+            btc_status,
+            "BTC participation should be at least 5% for cross-asset generalization.",
+            Some(btc_pct.round_dp(4).to_string()),
+            Some(">= 5"),
+        );
+    }
+
+    add_requirement(
+        &mut review_requirements,
+        "live_shadow_observations_exist",
+        CrossAssetCandidateGateCheckStatus::Warn,
+        "Live shadow observations are optional for research candidate creation but must remain visible.",
+        Some("0".to_string()),
+        Some("> 0 optional"),
+    );
+    add_requirement(
+        &mut review_requirements,
+        "direct_execution_unsupported",
+        CrossAssetCandidateGateCheckStatus::Warn,
+        "Direct execution is unsupported for this research package.",
+        Some("false".to_string()),
+        Some("false"),
+    );
+
+    for requirement in hard_requirements
+        .iter()
+        .chain(review_requirements.iter())
+        .filter(|requirement| requirement.status != CrossAssetCandidateGateCheckStatus::Pass)
+    {
+        warnings.push(requirement.code.clone());
+    }
+    for warning in &gate_preview.warnings {
+        if !warnings.contains(&warning.code) {
+            warnings.push(warning.code.clone());
+        }
+    }
+    warnings.sort();
+    warnings.dedup();
+
+    for requirement in hard_requirements.iter().chain(review_requirements.iter()) {
+        match requirement.status {
+            CrossAssetCandidateGateCheckStatus::Block => {
+                add_risk(&mut risks, &requirement.code, "HIGH", &requirement.message)
+            }
+            CrossAssetCandidateGateCheckStatus::Warn => add_risk(
+                &mut risks,
+                &requirement.code,
+                "MEDIUM",
+                &requirement.message,
+            ),
+            CrossAssetCandidateGateCheckStatus::Pass => {}
+        }
+    }
+
+    let hard_blocked = hard_requirements
+        .iter()
+        .any(|requirement| requirement.status == CrossAssetCandidateGateCheckStatus::Block);
+    let review_blocked = review_requirements
+        .iter()
+        .any(|requirement| requirement.status == CrossAssetCandidateGateCheckStatus::Block);
+    let review_warned = review_requirements
+        .iter()
+        .any(|requirement| requirement.status == CrossAssetCandidateGateCheckStatus::Warn);
+    let status = if request.package_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID {
+        CrossAssetCandidateCreationPolicyStatus::PolicyNotApplicable
+    } else if hard_blocked || review_blocked {
+        CrossAssetCandidateCreationPolicyStatus::PolicyBlocked
+    } else if request.strictness == CrossAssetCandidateCreationPolicyStrictness::Balanced
+        && review_warned
+    {
+        CrossAssetCandidateCreationPolicyStatus::PolicyNeedsReview
+    } else if request.strictness == CrossAssetCandidateCreationPolicyStrictness::Experimental
+        && !hard_blocked
+    {
+        CrossAssetCandidateCreationPolicyStatus::PolicyReadyForManualCreate
+    } else if review_warned {
+        CrossAssetCandidateCreationPolicyStatus::PolicyNeedsReview
+    } else {
+        CrossAssetCandidateCreationPolicyStatus::PolicyReadyForManualCreate
+    };
+
+    let recommended_action = match status {
+        CrossAssetCandidateCreationPolicyStatus::PolicyBlocked => {
+            if hard_blocked {
+                "RUN_MORE_OUT_OF_SAMPLE"
+            } else {
+                "DO_NOT_CREATE_CANDIDATE"
+            }
+        }
+        CrossAssetCandidateCreationPolicyStatus::PolicyNeedsReview => {
+            "HUMAN_REVIEW_CANDIDATE_POLICY"
+        }
+        CrossAssetCandidateCreationPolicyStatus::PolicyReadyForManualCreate => {
+            "HUMAN_REVIEW_CANDIDATE_POLICY"
+        }
+        CrossAssetCandidateCreationPolicyStatus::PolicyNotApplicable => "DO_NOT_CREATE_CANDIDATE",
+    }
+    .to_string();
+
+    let mut forbidden_actions = relative_strength_continuation_v1_forbidden_actions();
+    forbidden_actions.extend([
+        "no_auto_candidate_creation".to_string(),
+        "no_candidate_acceptance".to_string(),
+        "no_shadow_promotion".to_string(),
+        "no_runner_config_change".to_string(),
+        "no_scheduled_job_enablement".to_string(),
+        "no_ready_for_testnet_mark".to_string(),
+    ]);
+    forbidden_actions.sort();
+    forbidden_actions.dedup();
+
+    CrossAssetCandidateCreationPolicyPreviewResult {
+        package_id: request.package_id,
+        run_id: supporting_run.map(|run| run.run_id).or(request.run_id),
+        matrix_id: matrix.map(|matrix| matrix.run_id).or(request.matrix_id),
+        strictness: request.strictness,
+        status,
+        hard_requirements,
+        review_requirements,
+        risks,
+        warnings,
+        recommended_action,
+        forbidden_actions,
+        preview_only: true,
+        no_candidate_created: true,
+        generated_at: Utc::now(),
+    }
 }
 
 pub fn relative_strength_continuation_v1_default_request(
@@ -16757,6 +17430,60 @@ mod cross_asset_research_tests {
             .collect()
     }
 
+    fn policy_request(
+        run: &CrossAssetResearchResult,
+        matrix: &CrossAssetRobustnessMatrixResult,
+        strictness: CrossAssetCandidateCreationPolicyStrictness,
+    ) -> CrossAssetCandidateCreationPolicyPreviewRequest {
+        CrossAssetCandidateCreationPolicyPreviewRequest {
+            package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            run_id: Some(run.run_id),
+            matrix_id: Some(matrix.run_id),
+            strictness,
+        }
+    }
+
+    fn policy_preview(
+        run: &CrossAssetResearchResult,
+        matrix: &CrossAssetRobustnessMatrixResult,
+        cells: &[CrossAssetRobustnessMatrixCell],
+        strictness: CrossAssetCandidateCreationPolicyStrictness,
+        existing_active_candidate_count: i64,
+    ) -> CrossAssetCandidateCreationPolicyPreviewResult {
+        let gate = preview_cross_asset_candidate_gate(
+            candidate_gate_request(run, matrix),
+            Some(run),
+            Some(matrix),
+            cells,
+            existing_active_candidate_count,
+            true,
+            true,
+        );
+        preview_cross_asset_candidate_creation_policy(
+            policy_request(run, matrix, strictness),
+            &gate,
+            Some(run),
+            Some(matrix),
+            cells,
+            existing_active_candidate_count,
+            false,
+            true,
+        )
+    }
+
+    fn policy_requirement_codes(
+        preview: &CrossAssetCandidateCreationPolicyPreviewResult,
+        status: CrossAssetCandidateGateCheckStatus,
+    ) -> Vec<String> {
+        preview
+            .hard_requirements
+            .iter()
+            .chain(preview.review_requirements.iter())
+            .filter(|requirement| requirement.status == status)
+            .map(|requirement| requirement.code.clone())
+            .collect()
+    }
+
     #[test]
     fn candidate_gate_preview_treats_weak_2025_median_as_warning() {
         let run = candidate_gate_run();
@@ -16944,6 +17671,221 @@ mod cross_asset_research_tests {
             .iter()
             .any(|check| check.code == "no_existing_candidate"
                 && check.status == CrossAssetCandidateGateCheckStatus::Pass));
+    }
+
+    #[test]
+    fn candidate_creation_policy_conservative_blocks_current_warning_shape() {
+        let run = candidate_gate_run();
+        let mut cells = vec![
+            robustness_cell(0, "2023_2024", 75, 12, -4, 40, 3),
+            robustness_cell(0, "2025_plus", 51, 10, -4, 45, 1),
+            robustness_cell(0, "combined", 126, 25, -6, 45, 4),
+        ];
+        cells[1].median_trade_pnl_pct = Decimal::ZERO;
+        let matrix = candidate_gate_matrix(&cells);
+        let preview = policy_preview(
+            &run,
+            &matrix,
+            &cells,
+            CrossAssetCandidateCreationPolicyStrictness::Conservative,
+            0,
+        );
+
+        assert_eq!(
+            preview.status,
+            CrossAssetCandidateCreationPolicyStatus::PolicyBlocked
+        );
+        let blocks = policy_requirement_codes(&preview, CrossAssetCandidateGateCheckStatus::Block);
+        assert!(blocks.contains(&"twenty_25_plus_median_trade_positive".to_string()));
+        assert!(blocks.contains(&"btc_participation_at_least_5_pct".to_string()));
+        assert!(
+            blocks.contains(&"twenty_25_plus_trade_count_comfortably_above_minimum".to_string())
+        );
+        assert!(preview.no_candidate_created);
+    }
+
+    #[test]
+    fn candidate_creation_policy_balanced_needs_review_for_current_warning_shape() {
+        let run = candidate_gate_run();
+        let mut cells = vec![
+            robustness_cell(0, "2023_2024", 75, 12, -4, 40, 3),
+            robustness_cell(0, "2025_plus", 51, 10, -4, 45, 1),
+            robustness_cell(0, "combined", 126, 25, -6, 45, 4),
+        ];
+        cells[1].median_trade_pnl_pct = Decimal::ZERO;
+        let matrix = candidate_gate_matrix(&cells);
+        let preview = policy_preview(
+            &run,
+            &matrix,
+            &cells,
+            CrossAssetCandidateCreationPolicyStrictness::Balanced,
+            0,
+        );
+
+        assert_eq!(
+            preview.status,
+            CrossAssetCandidateCreationPolicyStatus::PolicyNeedsReview
+        );
+        assert!(
+            policy_requirement_codes(&preview, CrossAssetCandidateGateCheckStatus::Block)
+                .is_empty()
+        );
+        assert!(
+            policy_requirement_codes(&preview, CrossAssetCandidateGateCheckStatus::Warn)
+                .contains(&"btc_participation_at_least_5_pct".to_string())
+        );
+    }
+
+    #[test]
+    fn candidate_creation_policy_experimental_can_be_ready_with_review_warnings() {
+        let run = candidate_gate_run();
+        let mut cells = vec![
+            robustness_cell(0, "2023_2024", 75, 12, -4, 40, 3),
+            robustness_cell(0, "2025_plus", 51, 10, -4, 45, 1),
+            robustness_cell(0, "combined", 126, 25, -6, 45, 4),
+        ];
+        cells[1].median_trade_pnl_pct = Decimal::ZERO;
+        let matrix = candidate_gate_matrix(&cells);
+        let preview = policy_preview(
+            &run,
+            &matrix,
+            &cells,
+            CrossAssetCandidateCreationPolicyStrictness::Experimental,
+            0,
+        );
+
+        assert_eq!(
+            preview.status,
+            CrossAssetCandidateCreationPolicyStatus::PolicyReadyForManualCreate
+        );
+        assert!(preview.preview_only);
+        assert!(preview
+            .forbidden_actions
+            .contains(&"no_auto_candidate_creation".to_string()));
+    }
+
+    #[test]
+    fn candidate_creation_policy_hard_drawdown_failure_blocks_all_modes() {
+        let run = candidate_gate_run();
+        let cells = vec![
+            robustness_cell(0, "2023_2024", 75, 12, -11, 40, 6),
+            robustness_cell(0, "2025_plus", 65, 10, -4, 45, 4),
+            robustness_cell(0, "combined", 140, 25, -11, 45, 10),
+        ];
+        let matrix = candidate_gate_matrix(&cells);
+
+        for strictness in [
+            CrossAssetCandidateCreationPolicyStrictness::Conservative,
+            CrossAssetCandidateCreationPolicyStrictness::Balanced,
+            CrossAssetCandidateCreationPolicyStrictness::Experimental,
+        ] {
+            let preview = policy_preview(&run, &matrix, &cells, strictness, 0);
+            assert_eq!(
+                preview.status,
+                CrossAssetCandidateCreationPolicyStatus::PolicyBlocked
+            );
+            assert!(
+                policy_requirement_codes(&preview, CrossAssetCandidateGateCheckStatus::Block)
+                    .contains(&"package_gate_preview_has_no_blockers".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_creation_policy_hard_worst_window_failure_blocks_all_modes() {
+        let run = candidate_gate_run();
+        let cells = vec![
+            robustness_cell(0, "2023_2024", 75, -6, -4, 40, 6),
+            robustness_cell(0, "2025_plus", 65, 10, -4, 45, 4),
+            robustness_cell(0, "combined", 140, 20, -6, 45, 10),
+        ];
+        let matrix = candidate_gate_matrix(&cells);
+
+        for strictness in [
+            CrossAssetCandidateCreationPolicyStrictness::Conservative,
+            CrossAssetCandidateCreationPolicyStrictness::Balanced,
+            CrossAssetCandidateCreationPolicyStrictness::Experimental,
+        ] {
+            let preview = policy_preview(&run, &matrix, &cells, strictness, 0);
+            assert_eq!(
+                preview.status,
+                CrossAssetCandidateCreationPolicyStatus::PolicyBlocked
+            );
+            assert!(
+                policy_requirement_codes(&preview, CrossAssetCandidateGateCheckStatus::Block)
+                    .contains(&"worst_window_gte_minus_5_pct".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_creation_policy_existing_active_candidate_blocks() {
+        let run = candidate_gate_run();
+        let cells = vec![
+            robustness_cell(0, "2023_2024", 75, 12, -4, 40, 6),
+            robustness_cell(0, "2025_plus", 65, 10, -4, 45, 4),
+            robustness_cell(0, "combined", 140, 25, -6, 45, 10),
+        ];
+        let matrix = candidate_gate_matrix(&cells);
+        let preview = policy_preview(
+            &run,
+            &matrix,
+            &cells,
+            CrossAssetCandidateCreationPolicyStrictness::Experimental,
+            1,
+        );
+
+        assert_eq!(
+            preview.status,
+            CrossAssetCandidateCreationPolicyStatus::PolicyBlocked
+        );
+        assert!(
+            policy_requirement_codes(&preview, CrossAssetCandidateGateCheckStatus::Block)
+                .contains(&"no_existing_active_candidate_for_same_package_config".to_string())
+        );
+    }
+
+    #[test]
+    fn candidate_creation_policy_no_matrix_blocks() {
+        let run = candidate_gate_run();
+        let gate = preview_cross_asset_candidate_gate(
+            CrossAssetCandidateGatePreviewRequest {
+                strategy_package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+                run_id: Some(run.run_id),
+                matrix_id: None,
+            },
+            Some(&run),
+            None,
+            &[],
+            0,
+            true,
+            true,
+        );
+        let preview = preview_cross_asset_candidate_creation_policy(
+            CrossAssetCandidateCreationPolicyPreviewRequest {
+                package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+                run_id: Some(run.run_id),
+                matrix_id: None,
+                strictness: CrossAssetCandidateCreationPolicyStrictness::Experimental,
+            },
+            &gate,
+            Some(&run),
+            None,
+            &[],
+            0,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            preview.status,
+            CrossAssetCandidateCreationPolicyStatus::PolicyBlocked
+        );
+        assert!(
+            policy_requirement_codes(&preview, CrossAssetCandidateGateCheckStatus::Block)
+                .contains(&"matrix_present".to_string())
+        );
+        assert!(preview.no_candidate_created);
     }
 }
 
