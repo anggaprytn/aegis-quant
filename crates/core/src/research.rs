@@ -8440,6 +8440,85 @@ pub struct CrossAssetShadowObservationPerformanceSummary {
     pub shadow_status: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetObservationHealthStatus {
+    HealthyAccumulating,
+    WaitingForNewCandle,
+    DataStale,
+    JobDisabled,
+    SchedulerDisabled,
+    ExecutionSafetyViolation,
+}
+
+impl CrossAssetObservationHealthStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HealthyAccumulating => "HEALTHY_ACCUMULATING",
+            Self::WaitingForNewCandle => "WAITING_FOR_NEW_CANDLE",
+            Self::DataStale => "DATA_STALE",
+            Self::JobDisabled => "JOB_DISABLED",
+            Self::SchedulerDisabled => "SCHEDULER_DISABLED",
+            Self::ExecutionSafetyViolation => "EXECUTION_SAFETY_VIOLATION",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetObservationHealthJobStatus {
+    pub job_id: Uuid,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub enabled: bool,
+    pub status: String,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_failure_at: Option<DateTime<Utc>>,
+    pub last_failure_reason: Option<String>,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub missing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetObservationHealthRankSnapshotSummary {
+    pub evaluated_candle_time: Option<DateTime<Utc>>,
+    pub top_symbol: Option<String>,
+    pub second_symbol: Option<String>,
+    pub top_score: Option<Decimal>,
+    pub second_score: Option<Decimal>,
+    pub rank_spread_pct: Option<Decimal>,
+    pub row_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetObservationHealthReadiness {
+    pub evidence_accumulating: bool,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetObservationHealthReport {
+    pub candidate_id: Uuid,
+    pub candidate_status: ResearchCandidateStatus,
+    pub package_id: String,
+    pub latest_evaluated_candle: Option<DateTime<Utc>>,
+    pub latest_aligned_4h_candle: Option<DateTime<Utc>>,
+    pub observation_count: i64,
+    pub independent_observation_count: i64,
+    pub would_select_count: i64,
+    pub no_signal_count: i64,
+    pub skipped_count: i64,
+    pub latest_selected_symbol: Option<String>,
+    pub latest_rank_snapshot_summary: CrossAssetObservationHealthRankSnapshotSummary,
+    pub data_refresh_job_status: CrossAssetObservationHealthJobStatus,
+    pub rs_observation_job_status: CrossAssetObservationHealthJobStatus,
+    pub scheduler_enabled: bool,
+    pub execution_safety_counts: BTreeMap<String, i64>,
+    pub readiness: CrossAssetObservationHealthReadiness,
+    pub status: CrossAssetObservationHealthStatus,
+    pub no_mutation: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
 pub fn relative_strength_continuation_v1_identity() -> CrossAssetStrategyPackageIdentity {
     CrossAssetStrategyPackageIdentity {
         strategy_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),

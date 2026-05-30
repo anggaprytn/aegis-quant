@@ -1938,6 +1938,18 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     }
+                    cli::cli::ResearchCrossAssetCandidateCommands::ObservationHealth {
+                        candidate_id,
+                    } => {
+                        let response = client
+                            .get_cross_asset_candidate_observation_health(candidate_id)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_observation_health(&response.report);
+                        }
+                    }
                     cli::cli::ResearchCrossAssetCandidateCommands::AcceptShadowPreview {
                         candidate_id,
                     } => {

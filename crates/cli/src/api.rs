@@ -5,22 +5,22 @@ use aegis_core::{
     CandleBackfillRequest, CandleBackfillResult, CompressionBreakoutRefinementResult,
     CrossAssetAcceptShadowPreview, CrossAssetCandidateCreationPolicyPreviewResult,
     CrossAssetCandidateGatePreviewResult, CrossAssetCandidateQualification,
-    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier,
-    CrossAssetResearchCandidateDossier, CrossAssetResearchCandidateManualCreatePreview,
-    CrossAssetResearchCandidateManualCreateRequest, CrossAssetResearchCandidateManualCreateResult,
-    CrossAssetResearchRequest, CrossAssetResearchResult, CrossAssetRobustnessMatrixCell,
-    CrossAssetRobustnessMatrixRequest, CrossAssetRobustnessMatrixResult,
-    CrossAssetShadowObservationPreviewResult, CrossAssetShadowObservationRunRequest,
-    CrossAssetShadowObservationRunResult, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
-    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
-    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
-    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
-    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
-    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
-    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
-    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    CrossAssetObservationHealthReport, CrossAssetPortfolioTrade, CrossAssetPortfolioWindow,
+    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchCandidateDossier,
+    CrossAssetResearchCandidateManualCreatePreview, CrossAssetResearchCandidateManualCreateRequest,
+    CrossAssetResearchCandidateManualCreateResult, CrossAssetResearchRequest,
+    CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
+    CrossAssetRobustnessMatrixResult, CrossAssetShadowObservationPreviewResult,
+    CrossAssetShadowObservationRunRequest, CrossAssetShadowObservationRunResult,
+    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
+    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
+    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
+    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
+    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
+    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
+    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateEvidenceProvenance,
@@ -1445,6 +1445,17 @@ impl ApiClient {
     ) -> Result<CrossAssetCandidateQualificationResponse, ApiClientError> {
         self.get(
             &format!("/research/cross-asset/candidates/{candidate_id}/qualification"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_cross_asset_candidate_observation_health(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<CrossAssetObservationHealthResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/candidates/{candidate_id}/observation-health"),
             &[],
         )
         .await
@@ -3604,6 +3615,14 @@ pub struct CrossAssetResearchCandidateDossierResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossAssetCandidateQualificationResponse {
     pub qualification: CrossAssetCandidateQualification,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetObservationHealthResponse {
+    pub report: CrossAssetObservationHealthReport,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -926,6 +926,10 @@ pub enum ResearchCrossAssetCandidateCommands {
     Qualification {
         candidate_id: Uuid,
     },
+    #[command(name = "observation-health")]
+    ObservationHealth {
+        candidate_id: Uuid,
+    },
     #[command(name = "accept-shadow-preview")]
     AcceptShadowPreview {
         candidate_id: Uuid,
@@ -2713,6 +2717,33 @@ mod tests {
                 super::ResearchCandidateCommands::ObservationSummary {
                     candidate_id: parsed_candidate_id,
                 },
+            )) if parsed_candidate_id == candidate_id
+        ));
+    }
+
+    #[test]
+    fn cross_asset_observation_health_parses_candidate_id() {
+        let candidate_id =
+            Uuid::parse_str("69450d1e-31c4-4aa4-ad3f-f639db5959bf").expect("valid uuid");
+
+        let cli = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "cross-asset",
+            "candidates",
+            "observation-health",
+            &candidate_id.to_string(),
+        ])
+        .expect("observation health cli parses");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Research(super::ResearchCommands::CrossAsset(
+                super::ResearchCrossAssetCommands::Candidates(
+                    super::ResearchCrossAssetCandidateCommands::ObservationHealth {
+                        candidate_id: parsed_candidate_id,
+                    },
+                ),
             )) if parsed_candidate_id == candidate_id
         ));
     }

@@ -1,8 +1,8 @@
 use aegis_core::{
     CandleAggregationResult, CandleAggregationStatusRow, CrossAssetAcceptShadowPreview,
     CrossAssetCandidateGatePreviewResult, CrossAssetCandidateQualification,
-    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchCandidateDossier,
-    CrossAssetResearchResult, CrossAssetRobustnessMatrixResult,
+    CrossAssetObservationHealthReport, CrossAssetRelativeStrengthV1Dossier,
+    CrossAssetResearchCandidateDossier, CrossAssetResearchResult, CrossAssetRobustnessMatrixResult,
     CrossAssetShadowObservationPreviewResult, CrossAssetShadowObservationRunResult,
     MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairPlan,
     MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
@@ -508,6 +508,81 @@ pub fn print_cross_asset_candidate_qualification(qualification: &CrossAssetCandi
         println!("  - {}: {}", warning.code, warning.message);
     }
     println!("Forbidden actions: {:?}", qualification.forbidden_actions);
+}
+
+pub fn print_cross_asset_observation_health(report: &CrossAssetObservationHealthReport) {
+    println!("{}", report.status.as_str());
+    println!(
+        "Candidate: {} package={} status={}",
+        report.candidate_id,
+        report.package_id,
+        report.candidate_status.as_str()
+    );
+    println!(
+        "Candles: latest_evaluated={} latest_aligned_4h={}",
+        report
+            .latest_evaluated_candle
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string()),
+        report
+            .latest_aligned_4h_candle
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Observations: total={} independent={} WOULD_SELECT={} NO_SIGNAL={} skipped={}",
+        report.observation_count,
+        report.independent_observation_count,
+        report.would_select_count,
+        report.no_signal_count,
+        report.skipped_count
+    );
+    println!(
+        "Latest selected: {}",
+        report.latest_selected_symbol.as_deref().unwrap_or("none")
+    );
+    println!(
+        "Rank snapshot: candle={} top={} second={} rows={} spread_pct={}",
+        report
+            .latest_rank_snapshot_summary
+            .evaluated_candle_time
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string()),
+        report
+            .latest_rank_snapshot_summary
+            .top_symbol
+            .as_deref()
+            .unwrap_or("none"),
+        report
+            .latest_rank_snapshot_summary
+            .second_symbol
+            .as_deref()
+            .unwrap_or("none"),
+        report.latest_rank_snapshot_summary.row_count,
+        report
+            .latest_rank_snapshot_summary
+            .rank_spread_pct
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string())
+    );
+    println!(
+        "Jobs: data_refresh={} enabled={} rs_observation={} enabled={} scheduler_enabled={}",
+        report.data_refresh_job_status.status,
+        report.data_refresh_job_status.enabled,
+        report.rs_observation_job_status.status,
+        report.rs_observation_job_status.enabled,
+        report.scheduler_enabled
+    );
+    println!(
+        "Readiness: evidence_accumulating={} blocked_reason={}",
+        report.readiness.evidence_accumulating,
+        report.readiness.blocked_reason.as_deref().unwrap_or("none")
+    );
+    println!(
+        "Execution safety counts: {:?}",
+        report.execution_safety_counts
+    );
+    println!("No mutation: {}", report.no_mutation);
 }
 
 pub fn print_cross_asset_accept_shadow_preview(preview: &CrossAssetAcceptShadowPreview) {
