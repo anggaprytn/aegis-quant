@@ -7818,9 +7818,9 @@ impl CrossAssetResearchRequest {
             ));
         }
         self.parsed_timeframe()?;
-        if self.timeframe != "1h" {
+        if self.timeframe != "1h" && self.timeframe != "4h" {
             return Err(CoreError::InvalidCrossAssetResearchRequest(
-                "only 1h timeframe is supported for cross-asset research MVP".to_string(),
+                "only 1h and 4h timeframes are supported for cross-asset research MVP".to_string(),
             ));
         }
         if self.end_time <= self.start_time {
@@ -8213,9 +8213,9 @@ impl CrossAssetRobustnessMatrixRequest {
                 "symbols cannot contain empty values".to_string(),
             ));
         }
-        if self.timeframe != "1h" {
+        if self.timeframe != "1h" && self.timeframe != "4h" {
             return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
-                "only 1h timeframe is supported".to_string(),
+                "only 1h and 4h timeframes are supported".to_string(),
             ));
         }
         self.timeframe.parse::<CandleInterval>()?;
@@ -13870,6 +13870,14 @@ struct CrossAssetFeatureRow {
     distance_72h_high_pct: Option<Decimal>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CrossAssetFeatureLookbacks {
+    ranking: usize,
+    six_hours: usize,
+    twenty_four_hours: usize,
+    seventy_two_hours: usize,
+}
+
 #[derive(Debug, Clone)]
 struct CrossAssetScore {
     symbol: String,
@@ -13910,9 +13918,19 @@ pub fn run_cross_asset_relative_strength_research(
         .collect::<Vec<_>>();
     let interval = request.parsed_timeframe()?;
     let interval_seconds = interval.duration().num_seconds();
-    let ranking_lookback = request.ranking_lookback_hours as usize;
-    let holding = request.holding_hours as usize;
-    let required_lookback = ranking_lookback.max(72).max(24).max(6);
+    let ranking_lookback = cross_asset_hours_to_candles(request.ranking_lookback_hours, interval)?;
+    let holding = cross_asset_hours_to_candles(request.holding_hours, interval)?;
+    let feature_lookbacks = CrossAssetFeatureLookbacks {
+        ranking: ranking_lookback,
+        six_hours: cross_asset_hours_to_candles(6, interval)?,
+        twenty_four_hours: cross_asset_hours_to_candles(24, interval)?,
+        seventy_two_hours: cross_asset_hours_to_candles(72, interval)?,
+    };
+    let required_lookback = feature_lookbacks
+        .ranking
+        .max(feature_lookbacks.seventy_two_hours)
+        .max(feature_lookbacks.twenty_four_hours)
+        .max(feature_lookbacks.six_hours);
 
     let mut aligned_times: Option<BTreeSet<DateTime<Utc>>> = None;
     let mut normalized_candles = BTreeMap::new();
@@ -13977,7 +13995,7 @@ pub fn run_cross_asset_relative_strength_research(
         );
     }
 
-    let features = compute_cross_asset_features(&symbols, &candles, ranking_lookback);
+    let features = compute_cross_asset_features(&symbols, &candles, feature_lookbacks);
     let basket_vol_threshold = match &request.vol_filter {
         CrossAssetVolFilter::BasketVolBelowPercentile { percentile } => {
             basket_vol_percentile(&symbols, &features, *percentile)
@@ -14020,7 +14038,8 @@ pub fn run_cross_asset_relative_strength_research(
         }
 
         let entry_index = index + 1;
-        let Some(exit) = cross_asset_exit_index(&request, &candles, &top.symbol, entry_index)
+        let Some(exit) =
+            cross_asset_exit_index(&request, holding, &candles, &top.symbol, entry_index)
         else {
             continue;
         };
@@ -14164,7 +14183,7 @@ pub fn run_cross_asset_relative_strength_research(
 fn compute_cross_asset_features(
     symbols: &[String],
     candles: &BTreeMap<String, Vec<Candle>>,
-    lookback: usize,
+    lookbacks: CrossAssetFeatureLookbacks,
 ) -> BTreeMap<String, Vec<CrossAssetFeatureRow>> {
     let mut out = BTreeMap::new();
     for symbol in symbols {
@@ -14172,8 +14191,9 @@ fn compute_cross_asset_features(
         let hourly_returns = hourly_returns(rows);
         let mut features = Vec::with_capacity(rows.len());
         for index in 0..rows.len() {
-            let distance_72h_high_pct = if index >= 71 {
-                let max_high = rows[index - 71..=index]
+            let distance_72h_high_pct = if index + 1 >= lookbacks.seventy_two_hours {
+                let start = index + 1 - lookbacks.seventy_two_hours;
+                let max_high = rows[start..=index]
                     .iter()
                     .map(|candle| candle.high)
                     .max()
@@ -14184,13 +14204,13 @@ fn compute_cross_asset_features(
                 None
             };
             features.push(CrossAssetFeatureRow {
-                return_6h: return_over(rows, index, 6),
-                return_24h: return_over(rows, index, 24),
-                return_72h: return_over(rows, index, 72),
-                lookback_return: return_over(rows, index, lookback),
-                vol_24h: realized_vol(&hourly_returns, index, 24),
-                vol_72h: realized_vol(&hourly_returns, index, 72),
-                lookback_vol: realized_vol(&hourly_returns, index, lookback),
+                return_6h: return_over(rows, index, lookbacks.six_hours),
+                return_24h: return_over(rows, index, lookbacks.twenty_four_hours),
+                return_72h: return_over(rows, index, lookbacks.seventy_two_hours),
+                lookback_return: return_over(rows, index, lookbacks.ranking),
+                vol_24h: realized_vol(&hourly_returns, index, lookbacks.twenty_four_hours),
+                vol_72h: realized_vol(&hourly_returns, index, lookbacks.seventy_two_hours),
+                lookback_vol: realized_vol(&hourly_returns, index, lookbacks.ranking),
                 distance_72h_high_pct,
             });
         }
@@ -14208,6 +14228,22 @@ fn hourly_returns(candles: &[Candle]) -> Vec<Option<Decimal>> {
         }
     }
     returns
+}
+
+fn cross_asset_hours_to_candles(hours: u32, interval: CandleInterval) -> Result<usize, CoreError> {
+    let interval_hours = interval.duration().num_seconds() / 3_600;
+    if interval_hours <= 0 {
+        return Err(CoreError::InvalidCrossAssetResearchRequest(
+            "cross-asset research requires an hourly-or-slower timeframe".to_string(),
+        ));
+    }
+    let hours = i64::from(hours);
+    let candles = (hours + interval_hours - 1) / interval_hours;
+    usize::try_from(candles.max(1)).map_err(|_| {
+        CoreError::InvalidCrossAssetResearchRequest(
+            "lookback or holding period is too large".to_string(),
+        )
+    })
 }
 
 fn return_over(candles: &[Candle], index: usize, lookback: usize) -> Option<Decimal> {
@@ -14412,12 +14448,13 @@ fn cross_asset_weight(
 
 fn cross_asset_exit_index(
     request: &CrossAssetResearchRequest,
+    holding_candles: usize,
     candles: &BTreeMap<String, Vec<Candle>>,
     symbol: &str,
     entry_index: usize,
 ) -> Option<CrossAssetExit> {
     let rows = candles.get(symbol)?;
-    let deadline = (entry_index + request.holding_hours as usize).min(rows.len().saturating_sub(1));
+    let deadline = (entry_index + holding_candles).min(rows.len().saturating_sub(1));
     let entry = rows.get(entry_index)?.open;
     match &request.exit_rule {
         CrossAssetExitRule::FixedHold => Some(CrossAssetExit {

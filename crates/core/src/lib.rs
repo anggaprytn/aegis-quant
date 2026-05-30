@@ -329,6 +329,7 @@ pub enum CandleInterval {
     FiveMinutes,
     FifteenMinutes,
     OneHour,
+    FourHours,
 }
 
 impl CandleInterval {
@@ -338,6 +339,7 @@ impl CandleInterval {
             Self::FiveMinutes => "5m",
             Self::FifteenMinutes => "15m",
             Self::OneHour => "1h",
+            Self::FourHours => "4h",
         }
     }
 
@@ -347,6 +349,7 @@ impl CandleInterval {
             Self::FiveMinutes => Duration::minutes(5),
             Self::FifteenMinutes => Duration::minutes(15),
             Self::OneHour => Duration::hours(1),
+            Self::FourHours => Duration::hours(4),
         }
     }
 
@@ -356,6 +359,7 @@ impl CandleInterval {
             Self::FiveMinutes => 5,
             Self::FifteenMinutes => 15,
             Self::OneHour => 60,
+            Self::FourHours => 240,
         }
     }
 
@@ -382,6 +386,7 @@ impl CandleInterval {
             Self::FiveMinutes => (600_000, 900_000),
             Self::FifteenMinutes => (1_800_000, 2_700_000),
             Self::OneHour => (7_200_000, 10_800_000),
+            Self::FourHours => (28_800_000, 43_200_000),
         }
     }
 
@@ -412,6 +417,7 @@ impl std::str::FromStr for CandleInterval {
             "5m" => Ok(Self::FiveMinutes),
             "15m" => Ok(Self::FifteenMinutes),
             "1h" => Ok(Self::OneHour),
+            "4h" => Ok(Self::FourHours),
             other => Err(CoreError::UnsupportedCandleInterval(other.to_string())),
         }
     }
