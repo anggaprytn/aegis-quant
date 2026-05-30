@@ -919,6 +919,8 @@ pub enum ResearchCrossAssetCommands {
 #[derive(Debug, Subcommand)]
 pub enum ResearchCrossAssetRelativeStrengthV1Commands {
     Dossier,
+    #[command(name = "candidate-gate-preview")]
+    CandidateGatePreview,
 }
 
 #[derive(Debug, Args)]

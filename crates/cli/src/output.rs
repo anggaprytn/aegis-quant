@@ -1,15 +1,15 @@
 use aegis_core::{
-    CandleAggregationResult, CandleAggregationStatusRow, CrossAssetRelativeStrengthV1Dossier,
-    CrossAssetResearchResult, CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary,
-    MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
-    ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
-    ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
-    ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowPreviewResult,
-    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewResult,
+    CandleAggregationResult, CandleAggregationStatusRow, CrossAssetCandidateGatePreviewResult,
+    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchResult,
+    CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary, MarketDataQualityReport,
+    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidateAcceptForShadowApplyResult,
+    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
     ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
@@ -142,6 +142,17 @@ pub fn print_cross_asset_relative_strength_v1_dossier(
             .map(|recommendation| recommendation.as_str())
             .unwrap_or("unknown")
     );
+    println!(
+        "Candidate gate preview: {}  Recommended action: {}",
+        dossier
+            .candidate_gate_preview_status
+            .map(|status| status.as_str())
+            .unwrap_or("unknown"),
+        dossier
+            .candidate_gate_preview_recommended_action
+            .as_deref()
+            .unwrap_or("unknown")
+    );
     if let Some(run) = &dossier.evidence_combined {
         println!(
             "Combined: trades={} pnl={} dd={} status={}",
@@ -152,8 +163,60 @@ pub fn print_cross_asset_relative_strength_v1_dossier(
         );
     }
     println!("Blockers: {:?}", dossier.blockers);
+    println!("Gate blockers: {:?}", dossier.candidate_gate_blockers);
+    println!("Gate warnings: {:?}", dossier.candidate_gate_warnings);
     println!("Allowed next actions: {:?}", dossier.allowed_next_actions);
     println!("Forbidden actions: {:?}", dossier.forbidden_actions);
+}
+
+pub fn print_cross_asset_candidate_gate_preview(preview: &CrossAssetCandidateGatePreviewResult) {
+    println!("Cross-asset candidate gate preview");
+    println!(
+        "Package: {}  Status: {}  Recommended action: {}",
+        preview.package_id,
+        preview.status.as_str(),
+        preview.recommended_action
+    );
+    println!(
+        "Run: {}  Matrix: {}  Preview only: {}",
+        preview
+            .run_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        preview
+            .matrix_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        preview.preview_only
+    );
+    println!("Preview only, no candidate created.");
+    println!("Blockers:");
+    if preview.blockers.is_empty() {
+        println!("  none");
+    }
+    for blocker in &preview.blockers {
+        println!(
+            "  {} observed={} threshold={} - {}",
+            blocker.code,
+            blocker.observed_value.as_deref().unwrap_or("n/a"),
+            blocker.threshold.as_deref().unwrap_or("n/a"),
+            blocker.message
+        );
+    }
+    println!("Warnings:");
+    if preview.warnings.is_empty() {
+        println!("  none");
+    }
+    for warning in &preview.warnings {
+        println!(
+            "  {} observed={} threshold={} - {}",
+            warning.code,
+            warning.observed_value.as_deref().unwrap_or("n/a"),
+            warning.threshold.as_deref().unwrap_or("n/a"),
+            warning.message
+        );
+    }
+    println!("Forbidden actions: {:?}", preview.forbidden_actions);
 }
 
 pub fn print_research_state_snapshot(response: &serde_json::Value) {

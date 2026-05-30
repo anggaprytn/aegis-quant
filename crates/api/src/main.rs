@@ -32,7 +32,7 @@ use aegis_core::{
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
-    relative_strength_continuation_v1_allowed_next_actions,
+    preview_cross_asset_candidate_gate, relative_strength_continuation_v1_allowed_next_actions,
     relative_strength_continuation_v1_default_request,
     relative_strength_continuation_v1_forbidden_actions,
     relative_strength_continuation_v1_identity, research_candidate_next_status,
@@ -41,28 +41,29 @@ use aegis_core::{
     validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
     AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
     CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
-    CandleBackfillRequest, CandleBackfillResult, CandleInterval, CrossAssetPortfolioTrade,
-    CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchRequest,
-    CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
-    CrossAssetRobustnessMatrixResult, CrossAssetRobustnessMatrixWindow, EventEnvelope,
-    ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName,
-    ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce,
-    ExchangeOrderType, ExchangePrivateStreamSource, ExchangePrivateStreamState,
-    ExchangePrivateStreamStatus, ExchangeRateLimitState, ExchangeReconciliationMismatch,
-    ExchangeReconciliationRequest, ExchangeReconciliationResult, ExchangeReconciliationRun,
-    ExchangeRequestMode, ExchangeSymbolInfo, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
-    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
-    ExecutionReadinessStatus, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataQualityRequest, MarketDataRepairPlan, MarketDataRepairPlanRequest,
-    MarketDataRepairRange, MarketDataRepairRunRequest, MarketDataRepairRunResult,
-    MarketDataRepairStatus, MarketDataSource, MarketMode, MarketProviderAttempt,
-    MarketProviderHealth, OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode,
-    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest,
-    ResearchBatchCandidateSummary, ResearchBatchCandidateTriage, ResearchBatchRecommendation,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus, ResearchBatchStep,
-    ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
+    CandleBackfillRequest, CandleBackfillResult, CandleInterval,
+    CrossAssetCandidateGatePreviewRequest, CrossAssetCandidateGatePreviewResult,
+    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier,
+    CrossAssetResearchRequest, CrossAssetResearchResult, CrossAssetRobustnessMatrixCell,
+    CrossAssetRobustnessMatrixRequest, CrossAssetRobustnessMatrixResult,
+    CrossAssetRobustnessMatrixWindow, EventEnvelope, ExchangeBalance, ExchangeCancelAck,
+    ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
+    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
+    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
+    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
+    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
+    ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
+    MarketDataQualityReport, MarketDataQualityRequest, MarketDataRepairPlan,
+    MarketDataRepairPlanRequest, MarketDataRepairRange, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketDataRepairStatus, MarketDataSource, MarketMode,
+    MarketProviderAttempt, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
+    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchCandidateTriage,
+    ResearchBatchRecommendation, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus,
+    ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
     ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
     ResearchCampaignResult, ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRejection, ResearchCandidateAcceptForShadowApplyRequest,
@@ -142,7 +143,8 @@ use aegis_core::{
     TestnetShadowPromotionStatus, TestnetShadowPromotionSubmitRequest, TestnetShadowRunRequest,
     TestnetShadowRunResult, TestnetShadowRunnerConfig, TestnetShadowRunnerConfigInput,
     TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest, TestnetShadowRunnerState,
-    TestnetShadowRunnerTickResult, UserRole, UserStatus, RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
+    TestnetShadowRunnerTickResult, UserRole, UserStatus, RELATIVE_STRENGTH_CONTINUATION_V1_ID,
+    RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
 };
 use aegis_core::{CompressionBreakoutRefinementRequest, CompressionBreakoutRefinementResult};
 use api::{
@@ -1618,6 +1620,20 @@ struct CrossAssetResearchWindowsResponse {
 #[derive(Serialize)]
 struct CrossAssetRelativeStrengthV1DossierResponse {
     dossier: CrossAssetRelativeStrengthV1Dossier,
+    request_id: String,
+    correlation_id: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CrossAssetCandidateGatePreviewQuery {
+    run_id: Option<Uuid>,
+    matrix_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetCandidateGatePreviewResponse {
+    preview: CrossAssetCandidateGatePreviewResult,
     request_id: String,
     correlation_id: String,
     timestamp: DateTime<Utc>,
@@ -3279,6 +3295,10 @@ async fn main() {
         .route(
             "/research/cross-asset/relative-strength-v1/dossier",
             get(get_cross_asset_relative_strength_v1_dossier_handler),
+        )
+        .route(
+            "/research/cross-asset/relative-strength-v1/candidate-gate-preview",
+            get(get_cross_asset_relative_strength_v1_candidate_gate_preview_handler),
         )
         .route(
             "/research/cross-asset",
@@ -13335,7 +13355,130 @@ async fn get_cross_asset_relative_strength_v1_dossier_handler(
     }
 }
 
+async fn get_cross_asset_relative_strength_v1_candidate_gate_preview_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Query(query): Query<CrossAssetCandidateGatePreviewQuery>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match build_cross_asset_relative_strength_v1_candidate_gate_preview(
+        &state,
+        query.run_id,
+        query.matrix_id,
+    )
+    .await
+    {
+        Ok(preview) => (
+            StatusCode::OK,
+            Json(CrossAssetCandidateGatePreviewResponse {
+                preview,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_cross_asset_relative_strength_v1_candidate_gate_preview",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn build_cross_asset_relative_strength_v1_candidate_gate_preview(
+    state: &AppState,
+    run_id_override: Option<Uuid>,
+    matrix_id_override: Option<Uuid>,
+) -> anyhow::Result<CrossAssetCandidateGatePreviewResult> {
+    let dossier = build_cross_asset_relative_strength_v1_dossier_base(state).await?;
+    let run_id = run_id_override.or(dossier.latest_supporting_run_id);
+    let matrix_id = matrix_id_override.or(dossier.latest_matrix_id);
+
+    let supporting_run = if let Some(run_id) = run_id {
+        get_cross_asset_research_run(&state.db_pool, run_id)
+            .await?
+            .map(|record| cross_asset_research_result_from_record(&record))
+            .transpose()?
+    } else {
+        None
+    };
+    let matrix = if let Some(matrix_id) = matrix_id {
+        get_cross_asset_robustness_matrix_run(&state.db_pool, matrix_id)
+            .await?
+            .map(|record| cross_asset_robustness_matrix_result_from_record(&record))
+            .transpose()?
+    } else {
+        None
+    };
+    let cells = if let Some(matrix_id) = matrix.as_ref().map(|matrix| matrix.run_id) {
+        list_cross_asset_robustness_matrix_cells(&state.db_pool, matrix_id)
+            .await?
+            .iter()
+            .map(cross_asset_robustness_matrix_cell_from_record)
+            .collect::<anyhow::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let existing_candidate_count = count_existing_relative_strength_v1_candidates(state).await?;
+    let data_quality_good = supporting_run.is_some() && matrix.is_some();
+    Ok(preview_cross_asset_candidate_gate(
+        CrossAssetCandidateGatePreviewRequest {
+            strategy_package_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            run_id,
+            matrix_id,
+        },
+        supporting_run.as_ref(),
+        matrix.as_ref(),
+        &cells,
+        existing_candidate_count,
+        data_quality_good,
+        true,
+    ))
+}
+
+async fn count_existing_relative_strength_v1_candidates(state: &AppState) -> anyhow::Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT
+            (SELECT COUNT(*) FROM research_candidates WHERE strategy_id = $1)
+            + (SELECT COUNT(*) FROM strategy_research_candidates WHERE strategy_id = $1)
+        "#,
+    )
+    .bind(RELATIVE_STRENGTH_CONTINUATION_V1_ID)
+    .fetch_one(&state.db_pool)
+    .await
+    .map_err(Into::into)
+}
+
 async fn build_cross_asset_relative_strength_v1_dossier(
+    state: &AppState,
+) -> anyhow::Result<CrossAssetRelativeStrengthV1Dossier> {
+    let mut dossier = build_cross_asset_relative_strength_v1_dossier_base(state).await?;
+    let preview =
+        build_cross_asset_relative_strength_v1_candidate_gate_preview(state, None, None).await?;
+    dossier.candidate_gate_preview_status = Some(preview.status);
+    dossier.candidate_gate_preview_recommended_action = Some(preview.recommended_action);
+    dossier.candidate_gate_blockers = preview
+        .blockers
+        .into_iter()
+        .map(|blocker| blocker.code)
+        .collect();
+    dossier.candidate_gate_warnings = preview
+        .warnings
+        .into_iter()
+        .map(|warning| warning.code)
+        .collect();
+    Ok(dossier)
+}
+
+async fn build_cross_asset_relative_strength_v1_dossier_base(
     state: &AppState,
 ) -> anyhow::Result<CrossAssetRelativeStrengthV1Dossier> {
     let start_2023 = Utc.with_ymd_and_hms(2023, 3, 25, 0, 0, 0).unwrap();
@@ -13411,6 +13554,10 @@ async fn build_cross_asset_relative_strength_v1_dossier(
         evidence_combined,
         robustness_status,
         robustness_recommendation,
+        candidate_gate_preview_status: None,
+        candidate_gate_preview_recommended_action: None,
+        candidate_gate_blockers: Vec::new(),
+        candidate_gate_warnings: Vec::new(),
         blockers: vec![
             "not_candidate_ready".to_string(),
             "not_testnet_ready".to_string(),
@@ -33669,6 +33816,7 @@ mod tests {
         candidate_promotion_readiness, check_execution_readiness_handler,
         compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
         generate_operator_report_handler, generate_testnet_client_order_id,
+        get_cross_asset_relative_strength_v1_candidate_gate_preview_handler,
         get_cross_asset_relative_strength_v1_dossier_handler, get_cross_asset_research_run_handler,
         get_cross_asset_robustness_matrix_run_handler,
         get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
@@ -35046,6 +35194,10 @@ mod tests {
             .route(
                 "/research/cross-asset/relative-strength-v1/dossier",
                 get(get_cross_asset_relative_strength_v1_dossier_handler),
+            )
+            .route(
+                "/research/cross-asset/relative-strength-v1/candidate-gate-preview",
+                get(get_cross_asset_relative_strength_v1_candidate_gate_preview_handler),
             )
             .route(
                 "/research/cross-asset",
@@ -36763,6 +36915,61 @@ mod tests {
             .iter()
             .any(|value| value == "not_testnet_ready"));
 
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.3);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.5
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_asset_candidate_gate_preview_is_read_only() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let before_candidates = count_research_candidates(&test_db.pool).await;
+        let before = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+
+        let response = app
+            .oneshot(cli_request(
+                "GET",
+                "/research/cross-asset/relative-strength-v1/candidate-gate-preview",
+                json!({}),
+            ))
+            .await
+            .expect("candidate gate preview response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload["preview"]["package_id"].as_str(),
+            Some("relative_strength_continuation_v1")
+        );
+        assert_eq!(payload["preview"]["preview_only"].as_bool(), Some(true));
+        assert!(payload["preview"]["forbidden_actions"]
+            .as_array()
+            .expect("forbidden actions")
+            .iter()
+            .any(|value| value == "no_auto_candidate_creation"));
+
+        assert_eq!(
+            count_research_candidates(&test_db.pool).await,
+            before_candidates
+        );
         assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
         assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
         assert_eq!(count_paper_fills(&test_db.pool).await, before.2);

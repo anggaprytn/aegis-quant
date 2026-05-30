@@ -3,18 +3,19 @@ use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
     CandleBackfillRequest, CandleBackfillResult, CompressionBreakoutRefinementResult,
-    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier,
-    CrossAssetResearchRequest, CrossAssetResearchResult, CrossAssetRobustnessMatrixCell,
-    CrossAssetRobustnessMatrixRequest, CrossAssetRobustnessMatrixResult,
-    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
-    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
-    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    CrossAssetCandidateGatePreviewResult, CrossAssetPortfolioTrade, CrossAssetPortfolioWindow,
+    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchRequest, CrossAssetResearchResult,
+    CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
+    CrossAssetRobustnessMatrixResult, ExchangeTestnetPipelinePreview,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
+    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
+    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateEvidenceProvenance,
@@ -2376,6 +2377,16 @@ impl ApiClient {
             .await
     }
 
+    pub async fn get_cross_asset_relative_strength_v1_candidate_gate_preview(
+        &self,
+    ) -> Result<CrossAssetCandidateGatePreviewResponse, ApiClientError> {
+        self.get(
+            "/research/cross-asset/relative-strength-v1/candidate-gate-preview",
+            &[],
+        )
+        .await
+    }
+
     pub async fn run_cross_asset_robustness_matrix(
         &self,
         request: &CrossAssetRobustnessMatrixRequest,
@@ -4457,6 +4468,14 @@ pub struct CrossAssetResearchWindowsResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CrossAssetRelativeStrengthV1DossierResponse {
     pub dossier: CrossAssetRelativeStrengthV1Dossier,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetCandidateGatePreviewResponse {
+    pub preview: CrossAssetCandidateGatePreviewResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -1842,6 +1842,16 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     }
+                    cli::cli::ResearchCrossAssetRelativeStrengthV1Commands::CandidateGatePreview => {
+                        let response = client
+                            .get_cross_asset_relative_strength_v1_candidate_gate_preview()
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_candidate_gate_preview(&response.preview);
+                        }
+                    }
                 },
                 ResearchCrossAssetCommands::RobustnessMatrix(command) => match command {
                     ResearchCrossAssetRobustnessMatrixCommands::Run(args) => {
