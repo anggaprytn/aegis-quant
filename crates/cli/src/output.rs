@@ -78,9 +78,30 @@ pub fn print_research_state_snapshot(response: &serde_json::Value) {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".to_string())
     );
+    let active_candidates = snapshot["active_candidates"]
+        .as_array()
+        .or_else(|| snapshot["active_research_candidates"].as_array());
+    let imported_candidates = snapshot["imported_candidates_provenance_only"]
+        .as_array()
+        .or_else(|| snapshot["imported_research_candidates"].as_array());
+    let execution_eligible_candidates = snapshot["execution_eligible_candidates"].as_array();
+    println!(
+        "Imported provenance-only candidates: {}",
+        imported_candidates.map(|items| items.len()).unwrap_or(0)
+    );
+    println!(
+        "Active candidates: {}",
+        active_candidates.map(|items| items.len()).unwrap_or(0)
+    );
+    println!(
+        "Execution eligible candidates: {}",
+        execution_eligible_candidates
+            .map(|items| items.len())
+            .unwrap_or(0)
+    );
 
     println!("\nActive candidates:");
-    if let Some(candidates) = snapshot["active_research_candidates"].as_array() {
+    if let Some(candidates) = active_candidates {
         if candidates.is_empty() {
             println!("  none");
         }
@@ -102,6 +123,52 @@ pub fn print_research_state_snapshot(response: &serde_json::Value) {
                 candidate["recommended_next_action"].as_str().unwrap_or("unknown")
             );
         }
+    }
+
+    println!("\nImported provenance-only candidates:");
+    if let Some(candidates) = imported_candidates {
+        if candidates.is_empty() {
+            println!("  none");
+        }
+        for candidate in candidates {
+            println!(
+                "  {} {} {} {} schema={} provenance={} reconciliation={} next={} lifecycle_allowed={} execution_allowed={} config={}",
+                candidate["candidate_id"].as_str().unwrap_or("unknown"),
+                candidate["strategy"].as_str().unwrap_or("unknown"),
+                candidate["symbol"].as_str().unwrap_or("unknown"),
+                candidate["timeframe"].as_str().unwrap_or("unknown"),
+                candidate["bundle_schema_version"].as_str().unwrap_or("unknown"),
+                candidate["provenance_status"].as_str().unwrap_or("unknown"),
+                candidate["reconciliation_status"].as_str().unwrap_or("unknown"),
+                candidate["recommended_next_action"].as_str().unwrap_or("unknown"),
+                candidate["lifecycle_allowed"]
+                    .as_bool()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "false".to_string()),
+                candidate["execution_allowed"]
+                    .as_bool()
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "false".to_string()),
+                candidate["config_fingerprint"].as_str().unwrap_or("unknown")
+            );
+            if let Some(reason) = candidate["reason"].as_str() {
+                println!("    reason: {reason}");
+            }
+        }
+    }
+    if let Some(warnings) = snapshot["imported_candidate_warnings"].as_array() {
+        for warning in warnings {
+            println!("  warning: {}", warning.as_str().unwrap_or(""));
+        }
+    }
+
+    println!("\nExecution eligible candidates:");
+    if let Some(candidates) = execution_eligible_candidates {
+        if candidates.is_empty() {
+            println!("  none");
+        }
+    } else {
+        println!("  none");
     }
 
     println!("\nExecution safety counts:");

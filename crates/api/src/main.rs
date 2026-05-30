@@ -6,7 +6,7 @@ mod readiness;
 mod research_candidate_observation;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     net::SocketAddr,
     sync::Arc,
@@ -16834,13 +16834,18 @@ async fn build_research_state_snapshot(
     )
     .fetch_all(&state.db_pool)
     .await?;
-    let imported_candidates = imported_candidate_rows
+    let mut imported_candidates = imported_candidate_rows
         .iter()
         .map(|row| {
             let bundle_schema_version = row.get::<String, _>("bundle_schema_version");
             let mut warnings = row.get::<Value, _>("warnings_json");
             let evidence_artifacts = row.get::<Value, _>("evidence_artifacts_json");
             let evidence_completeness = row.get::<Value, _>("evidence_completeness_json");
+            let provenance_status = imported_candidate_provenance_status(
+                &bundle_schema_version,
+                &evidence_artifacts,
+                &evidence_completeness,
+            );
             let missing_provenance_warnings = {
                 let has_experiment = evidence_completeness
                     .get("has_experiment")
@@ -16865,7 +16870,12 @@ async fn build_research_state_snapshot(
             };
             if bundle_schema_version == "research_candidate_evidence_bundle.v1" {
                 if let Some(items) = warnings.as_array_mut() {
-                    items.push(json!("Bundle schema v1 lacks full validation protocol; exact reproducibility may require manual reconstruction."));
+                    items.push(json!(LEGACY_IMPORT_WARNING));
+                }
+            }
+            if provenance_status == "COMPLETE_V2" {
+                if let Some(items) = warnings.as_array_mut() {
+                    items.push(json!(EXTERNAL_PROVENANCE_WARNING));
                 }
             }
             json!({
@@ -16885,6 +16895,7 @@ async fn build_research_state_snapshot(
                 "evidence_artifacts": evidence_artifacts,
                 "evidence_provenance": row.get::<Value, _>("evidence_provenance_json"),
                 "evidence_completeness": evidence_completeness,
+                "provenance_status": provenance_status,
                 "missing_provenance_warnings": missing_provenance_warnings,
                 "robustness_provenance_status": if evidence_artifacts
                     .get("robustness_matrix_run_id")
@@ -16908,10 +16919,16 @@ async fn build_research_state_snapshot(
                 "warning": "Imported evidence is provenance-only until validated locally.",
                 "warnings": warnings,
                 "recommended_next_action": row.get::<String, _>("recommended_next_action"),
+                "lifecycle_allowed": false,
+                "execution_allowed": false,
+                "reason": imported_candidate_provenance_reason(provenance_status),
                 "imported_at": row.get::<DateTime<Utc>, _>("imported_at"),
             })
         })
         .collect::<Vec<_>>();
+    let imported_candidate_warnings =
+        annotate_imported_candidate_config_groups(&mut imported_candidates);
+    let execution_eligible_candidates = Vec::<Value>::new();
 
     let latest_operator_report =
         match operator_reports::list_operator_reports(&state.db_pool, 1).await {
@@ -16947,8 +16964,12 @@ async fn build_research_state_snapshot(
             "latest_operator_report": latest_operator_report,
         },
         "active_research_candidates": active_candidates.clone(),
+        "active_candidates": active_candidates.clone(),
+        "execution_eligible_candidates": execution_eligible_candidates,
+        "imported_candidates_provenance_only": imported_candidates.clone(),
         "imported_research_candidates": imported_candidates,
         "imported_research_candidate_warning": "Imported evidence is provenance-only until validated locally.",
+        "imported_candidate_warnings": imported_candidate_warnings,
         "shadow_observed_candidates": active_candidates.iter()
             .filter(|candidate| candidate["evidence_progress"]["total_shadow_runs"].as_i64().unwrap_or(0) > 0)
             .cloned()
@@ -17002,6 +17023,144 @@ async fn load_execution_safety_counts(pool: &PgPool) -> anyhow::Result<Value> {
         "exchange_testnet_order_lifecycle_events": row.get::<i64, _>("exchange_testnet_order_lifecycle_events"),
         "testnet_shadow_promotions": row.get::<i64, _>("testnet_shadow_promotions"),
     }))
+}
+
+const LEGACY_IMPORT_WARNING: &str =
+    "Legacy v1 import lacks full protocol/provenance fields. Keep as provenance-only unless revalidated locally.";
+const EXTERNAL_PROVENANCE_WARNING: &str =
+    "Provenance complete, but source artifacts are external unless reproduced locally.";
+const MULTIPLE_IMPORTED_CONFIGS_WARNING: &str =
+    "Multiple imported configs exist for this strategy/symbol/timeframe. Do not treat them as the same candidate.";
+
+fn imported_candidate_provenance_status(
+    bundle_schema_version: &str,
+    evidence_artifacts: &Value,
+    evidence_completeness: &Value,
+) -> &'static str {
+    if bundle_schema_version == "research_candidate_evidence_bundle.v1" {
+        return "LEGACY_INCOMPLETE";
+    }
+
+    let complete_flags = [
+        "has_experiment",
+        "has_walk_forward",
+        "has_robustness_matrix",
+    ]
+    .iter()
+    .all(|key| {
+        evidence_completeness
+            .get(*key)
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    let complete_artifact_ids = [
+        "experiment_run_id",
+        "walk_forward_run_id",
+        "robustness_matrix_run_id",
+    ]
+    .iter()
+    .all(|key| {
+        evidence_artifacts
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    });
+
+    if bundle_schema_version == "research_candidate_evidence_bundle.v2"
+        && complete_flags
+        && complete_artifact_ids
+    {
+        "COMPLETE_V2"
+    } else {
+        "EXTERNAL_PROVENANCE_ONLY"
+    }
+}
+
+fn imported_candidate_provenance_reason(provenance_status: &str) -> &'static str {
+    match provenance_status {
+        "LEGACY_INCOMPLETE" => {
+            "Imported legacy evidence is incomplete and cannot progress lifecycle without local revalidation."
+        }
+        "COMPLETE_V2" => {
+            "Imported schema v2 evidence has complete provenance, but remains provenance-only and execution-ineligible."
+        }
+        _ => {
+            "Imported evidence is external provenance only and cannot progress lifecycle or execution."
+        }
+    }
+}
+
+fn append_json_warning(value: &mut Value, warning: &str) {
+    if !value.is_array() {
+        *value = json!([]);
+    }
+    if let Some(items) = value.as_array_mut() {
+        if !items.iter().any(|item| item.as_str() == Some(warning)) {
+            items.push(json!(warning));
+        }
+    }
+}
+
+fn annotate_imported_candidate_config_groups(imported_candidates: &mut [Value]) -> Vec<String> {
+    let mut configs_by_group: BTreeMap<(String, String, String), BTreeSet<String>> =
+        BTreeMap::new();
+    for candidate in imported_candidates.iter() {
+        let key = (
+            candidate["strategy"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            candidate["symbol"].as_str().unwrap_or_default().to_string(),
+            candidate["timeframe"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        let config_fingerprint = candidate["config_fingerprint"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if !key.0.is_empty() && !config_fingerprint.is_empty() {
+            configs_by_group
+                .entry(key)
+                .or_default()
+                .insert(config_fingerprint);
+        }
+    }
+
+    let duplicate_groups = configs_by_group
+        .into_iter()
+        .filter_map(|(key, configs)| (configs.len() > 1).then_some(key))
+        .collect::<BTreeSet<_>>();
+
+    for candidate in imported_candidates.iter_mut() {
+        let key = (
+            candidate["strategy"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            candidate["symbol"].as_str().unwrap_or_default().to_string(),
+            candidate["timeframe"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        let is_duplicate_group = duplicate_groups.contains(&key);
+        candidate["separate_imported_config"] = json!(is_duplicate_group);
+        if is_duplicate_group {
+            append_json_warning(
+                &mut candidate["warnings"],
+                MULTIPLE_IMPORTED_CONFIGS_WARNING,
+            );
+        }
+    }
+
+    if duplicate_groups.is_empty() {
+        Vec::new()
+    } else {
+        vec![MULTIPLE_IMPORTED_CONFIGS_WARNING.to_string()]
+    }
 }
 
 fn strategy_family_status_summary() -> Value {
@@ -32532,9 +32691,9 @@ async fn evaluate_strategy_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_research_candidate_accept_shadow_handler, batch_walk_forward_window_hours,
-        bootstrap_owner, bounded_recent_events_limit, bounded_risk_decisions_limit,
-        build_cors_layer, build_research_candidate_evidence_bundle,
+        annotate_imported_candidate_config_groups, apply_research_candidate_accept_shadow_handler,
+        batch_walk_forward_window_hours, bootstrap_owner, bounded_recent_events_limit,
+        bounded_risk_decisions_limit, build_cors_layer, build_research_candidate_evidence_bundle,
         build_shadow_promotion_proposed_runner_config, cancel_exchange_testnet_order,
         candidate_promotion_readiness, check_execution_readiness_handler,
         compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
@@ -32548,7 +32707,8 @@ mod tests {
         get_research_candidate_shadow_pnl_attribution_handler,
         get_research_candidate_testnet_review_dossier_handler, get_risk_decisions,
         get_strategy_candidate_observation_handler, get_strategy_config_handler, get_strategy_list,
-        get_strategy_research_candidate_handler, is_allowed_research_import_recommended_action,
+        get_strategy_research_candidate_handler, imported_candidate_provenance_reason,
+        imported_candidate_provenance_status, is_allowed_research_import_recommended_action,
         is_allowed_research_import_reconciliation_status, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_exchange_testnet_order_repairs,
         list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
@@ -32575,7 +32735,7 @@ mod tests {
         TestnetShadowPromotionsResponse, TestnetShadowRunResponse, TestnetShadowRunsResponse,
         CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE, DEFAULT_RECENT_EVENTS_LIMIT,
         DEFAULT_RESEARCH_CANDIDATE_OBSERVATION_MAX_AGE_SECONDS, DEFAULT_RISK_DECISIONS_LIMIT,
-        MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
+        MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT, MULTIPLE_IMPORTED_CONFIGS_WARNING,
     };
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
@@ -33289,6 +33449,76 @@ mod tests {
                 .expect("valid filter"),
             Some(Uuid::parse_str("2ea0ed54-f2bf-402d-8da0-4e92cde5b2a0").expect("valid uuid"))
         );
+    }
+
+    #[test]
+    fn imported_candidate_snapshot_classifies_v1_as_legacy_incomplete() {
+        let status = imported_candidate_provenance_status(
+            "research_candidate_evidence_bundle.v1",
+            &json!({}),
+            &json!({}),
+        );
+
+        assert_eq!(status, "LEGACY_INCOMPLETE");
+        assert_eq!(
+            imported_candidate_provenance_reason(status),
+            "Imported legacy evidence is incomplete and cannot progress lifecycle without local revalidation."
+        );
+    }
+
+    #[test]
+    fn imported_candidate_snapshot_classifies_complete_v2_artifacts() {
+        let status = imported_candidate_provenance_status(
+            "research_candidate_evidence_bundle.v2",
+            &json!({
+                "experiment_run_id": Uuid::new_v4().to_string(),
+                "walk_forward_run_id": Uuid::new_v4().to_string(),
+                "robustness_matrix_run_id": Uuid::new_v4().to_string(),
+            }),
+            &json!({
+                "has_experiment": true,
+                "has_walk_forward": true,
+                "has_robustness_matrix": true,
+                "has_data_quality_snapshot": true,
+            }),
+        );
+
+        assert_eq!(status, "COMPLETE_V2");
+        assert_eq!(
+            imported_candidate_provenance_reason(status),
+            "Imported schema v2 evidence has complete provenance, but remains provenance-only and execution-ineligible."
+        );
+    }
+
+    #[test]
+    fn imported_candidate_snapshot_warns_for_multiple_imported_configs() {
+        let mut imported = vec![
+            json!({
+                "strategy": "failed_breakdown_reclaim_v1",
+                "symbol": "ETHUSDT",
+                "timeframe": "1h",
+                "config_fingerprint": "config-a",
+                "warnings": []
+            }),
+            json!({
+                "strategy": "failed_breakdown_reclaim_v1",
+                "symbol": "ETHUSDT",
+                "timeframe": "1h",
+                "config_fingerprint": "config-b",
+                "warnings": []
+            }),
+        ];
+
+        let warnings = annotate_imported_candidate_config_groups(&mut imported);
+
+        assert_eq!(warnings, vec![MULTIPLE_IMPORTED_CONFIGS_WARNING]);
+        assert_eq!(imported[0]["separate_imported_config"], true);
+        assert_eq!(imported[1]["separate_imported_config"], true);
+        assert!(imported[0]["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning.as_str() == Some(MULTIPLE_IMPORTED_CONFIGS_WARNING)));
     }
 
     #[test]
