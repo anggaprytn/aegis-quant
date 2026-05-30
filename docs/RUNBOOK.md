@@ -78,10 +78,10 @@ It only runs:
 
 ```bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler build scheduled-research-runner
-docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d --force-recreate scheduled-research-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d --no-deps --force-recreate scheduled-research-runner
 ```
 
-It does not run `docker compose down`, touch Postgres volumes, recreate API/dashboard/market-ingest, edit `.env`, or enable the scheduler.
+It does not run `docker compose down`, touch Postgres volumes, recreate Postgres/API/dashboard/market-ingest, edit `.env`, or enable the scheduler. The `--no-deps` flag is required for runner-only refreshes so Compose does not recreate dependency containers such as Postgres. After refreshing, verify Postgres was not recreated and confirm `ai_read.execution_safety_counts` still reports zero execution rows.
 
 Do not reset VPS volumes as part of routine sync. Take a database backup before migrations or destructive maintenance.
 
@@ -413,6 +413,7 @@ To refresh scheduled runner code without enabling/disabling jobs or touching oth
 ```
 
 This rebuilds and recreates only `scheduled-research-runner`. It does not run VPS sync, migrations, job creation, job execution, or scheduler enable/disable actions.
+It must use `docker compose up -d --no-deps --force-recreate scheduled-research-runner`; do not use `docker compose down` or recreate Postgres for a runner-only refresh. After the refresh, verify the Postgres container was not recreated and run the read-only validator or `ai_read.execution_safety_counts`.
 
 ## Common Failures
 
