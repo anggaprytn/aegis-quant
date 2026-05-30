@@ -7,14 +7,15 @@ use uuid::Uuid;
 use aegis_core::{
     expected_research_candidate_accept_shadow_confirmation,
     expected_research_candidate_shadow_promotion_confirmation,
-    expected_testnet_pipeline_confirmation, ExecutionReadinessRequest, ExecutionReadinessTarget,
-    OperatorReportFormat, OperatorReportRequest, ResearchCandidateAcceptForShadowApplyRequest,
-    ResearchCandidateDecision, ResearchCandidateQualificationThresholds,
-    ResearchCandidateReviewAction, ResearchCandidateShadowPromotionMode,
-    ResearchCandidateShadowPromotionRequest, ResearchStaleRunRecoveryTargetType,
-    ScheduledResearchBootstrapSafeRequest, ScheduledResearchJobKind, ScheduledResearchJobRequest,
-    TestnetShadowPromotionRequest, TestnetShadowRunRequest, TestnetShadowRunnerConfigInput,
-    TestnetShadowRunnerStaleFeedPolicy, RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
+    expected_testnet_pipeline_confirmation, CrossAssetRankMetric, CrossAssetSizingMode,
+    ExecutionReadinessRequest, ExecutionReadinessTarget, OperatorReportFormat,
+    OperatorReportRequest, ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateDecision,
+    ResearchCandidateQualificationThresholds, ResearchCandidateReviewAction,
+    ResearchCandidateShadowPromotionMode, ResearchCandidateShadowPromotionRequest,
+    ResearchStaleRunRecoveryTargetType, ScheduledResearchBootstrapSafeRequest,
+    ScheduledResearchJobKind, ScheduledResearchJobRequest, TestnetShadowPromotionRequest,
+    TestnetShadowRunRequest, TestnetShadowRunnerConfigInput, TestnetShadowRunnerStaleFeedPolicy,
+    RESEARCH_STALE_RUN_RECOVERY_CONFIRMATION,
 };
 
 pub const RESUME_CONFIRMATION_TEXT: &str = "RESUME TRADING";
@@ -890,6 +891,85 @@ pub enum ResearchCommands {
     ScheduledJobs(ResearchScheduledJobCommands),
     #[command(name = "stale-runs", subcommand)]
     StaleRuns(ResearchStaleRunCommands),
+    #[command(name = "cross-asset", subcommand)]
+    CrossAsset(ResearchCrossAssetCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchCrossAssetCommands {
+    Run(ResearchCrossAssetRunArgs),
+    List(ResearchCrossAssetListArgs),
+    Get { run_id: Uuid },
+    Trades { run_id: Uuid },
+    Windows { run_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetListArgs {
+    #[arg(long, default_value_t = 20)]
+    pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetRunArgs {
+    #[arg(long = "request-json")]
+    pub request_json: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub symbols: Vec<String>,
+    #[arg(long, default_value = "1h")]
+    pub timeframe: String,
+    #[arg(long = "start")]
+    pub start_time: Option<DateTime<Utc>>,
+    #[arg(long = "end")]
+    pub end_time: Option<DateTime<Utc>>,
+    #[arg(long = "ranking-lookback")]
+    pub ranking_lookback_hours: Option<u32>,
+    #[arg(long = "rank-metric")]
+    pub rank_metric: Option<CrossAssetRankMetric>,
+    #[arg(long = "min-top-return-pct", default_value = "0")]
+    pub min_top_return_pct: Decimal,
+    #[arg(long = "min-rank-spread-pct")]
+    pub min_rank_spread_pct: Option<Decimal>,
+    #[arg(long = "holding-hours")]
+    pub holding_hours: Option<u32>,
+    #[arg(long = "fee-bps", default_value = "10")]
+    pub fee_bps: Decimal,
+    #[arg(long = "slippage-bps", default_value = "5")]
+    pub slippage_bps: Decimal,
+    #[arg(long = "one-active-position", default_value_t = true)]
+    pub one_active_position: bool,
+    #[arg(long = "sizing-mode")]
+    pub sizing_mode: Option<CrossAssetSizingMode>,
+    #[arg(long = "min-weight", default_value = "0.25")]
+    pub min_weight: Decimal,
+    #[arg(long = "max-weight", default_value = "1")]
+    pub max_weight: Decimal,
+    #[arg(long = "market-filter", default_value = "none")]
+    pub market_filter: String,
+    #[arg(long = "market-threshold-pct")]
+    pub market_threshold_pct: Option<Decimal>,
+    #[arg(long = "market-min-symbols")]
+    pub market_min_symbols: Option<u32>,
+    #[arg(long = "vol-filter", default_value = "none")]
+    pub vol_filter: String,
+    #[arg(long = "vol-max-ratio", default_value = "1.5")]
+    pub vol_max_ratio: Decimal,
+    #[arg(long = "vol-percentile", default_value = "90")]
+    pub vol_percentile: Decimal,
+    #[arg(long = "overextension-filter", default_value = "none")]
+    pub overextension_filter: String,
+    #[arg(long = "max-return-24h-pct")]
+    pub max_return_24h_pct: Option<Decimal>,
+    #[arg(long = "min-distance-72h-high-pct")]
+    pub min_distance_72h_high_pct: Option<Decimal>,
+    #[arg(long = "exit-rule", default_value = "fixed_hold")]
+    pub exit_rule: String,
+    #[arg(long = "stop-pct")]
+    pub stop_pct: Option<Decimal>,
+    #[arg(long = "take-profit-pct")]
+    pub take_profit_pct: Option<Decimal>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -8633,6 +8633,24 @@ pub enum CoreError {
     UnsafeScheduledResearchJobKind(String),
     #[error("unsupported strategy robustness matrix status: {0}")]
     UnsupportedStrategyRobustnessMatrixStatus(String),
+    #[error("unsupported cross-asset research status: {0}")]
+    UnsupportedCrossAssetResearchStatus(String),
+    #[error("unsupported cross-asset strategy kind: {0}")]
+    UnsupportedCrossAssetStrategyKind(String),
+    #[error("unsupported cross-asset rank metric: {0}")]
+    UnsupportedCrossAssetRankMetric(String),
+    #[error("unsupported cross-asset sizing mode: {0}")]
+    UnsupportedCrossAssetSizingMode(String),
+    #[error("unsupported cross-asset market filter: {0}")]
+    UnsupportedCrossAssetMarketFilter(String),
+    #[error("unsupported cross-asset volatility filter: {0}")]
+    UnsupportedCrossAssetVolFilter(String),
+    #[error("unsupported cross-asset overextension filter: {0}")]
+    UnsupportedCrossAssetOverextensionFilter(String),
+    #[error("unsupported cross-asset exit rule: {0}")]
+    UnsupportedCrossAssetExitRule(String),
+    #[error("unsupported cross-asset research recommendation: {0}")]
+    UnsupportedCrossAssetResearchRecommendation(String),
     #[error("research campaign requires at least one strategy")]
     EmptyResearchCampaignStrategies,
     #[error("research campaign requires at least one symbol")]
@@ -8801,6 +8819,8 @@ pub enum CoreError {
     InvalidStrategyWalkForwardStepSize,
     #[error("invalid strategy robustness matrix threshold: {0}")]
     InvalidStrategyRobustnessMatrixThreshold(String),
+    #[error("invalid cross-asset research request: {0}")]
+    InvalidCrossAssetResearchRequest(String),
     #[error("candle backfill request limit must be greater than zero")]
     InvalidCandleBackfillLimit,
     #[error("market data repair max_ranges must be greater than zero")]

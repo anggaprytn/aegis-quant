@@ -1,14 +1,14 @@
 use aegis_core::{
-    CandleAggregationResult, CandleAggregationStatusRow, MarketCandleCoverageSummary,
-    MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
-    ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
-    ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
-    ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowPreviewResult,
-    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewResult,
+    CandleAggregationResult, CandleAggregationStatusRow, CrossAssetResearchResult,
+    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairPlan,
+    MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignResult,
+    ResearchCampaignSummary, ResearchCandidateAcceptForShadowApplyResult,
+    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
     ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
@@ -56,6 +56,25 @@ use crate::api::{
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+pub fn print_cross_asset_research_run(run: &CrossAssetResearchResult) {
+    println!("Cross-asset run: {}", run.run_id);
+    println!(
+        "Strategy: {}  Status: {}  Recommendation: {}",
+        run.strategy_kind.as_str(),
+        run.portfolio_status.as_str(),
+        run.recommendation.as_str()
+    );
+    println!(
+        "Trades: {}  PnL: {}%  DD: {}%  Win rate: {}%",
+        run.total_trades, run.compounded_pnl_pct, run.max_drawdown_pct, run.win_rate
+    );
+    println!(
+        "Worst window: {}%  Median window: {}%  Max symbol concentration: {}%",
+        run.worst_window_pnl_pct, run.median_window_pnl_pct, run.max_symbol_concentration_pct
+    );
+    println!("Symbols: {:?}", run.symbol_distribution);
 }
 
 pub fn print_research_state_snapshot(response: &serde_json::Value) {

@@ -3,15 +3,17 @@ use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
     CandleBackfillRequest, CandleBackfillResult, CompressionBreakoutRefinementResult,
-    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
-    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
-    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetResearchRequest,
+    CrossAssetResearchResult, ExchangeTestnetPipelinePreview,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
+    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
+    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateEvidenceProvenance,
@@ -2327,6 +2329,45 @@ impl ApiClient {
             .await
     }
 
+    pub async fn run_cross_asset_research(
+        &self,
+        request: &CrossAssetResearchRequest,
+    ) -> Result<CrossAssetResearchRunResponse, ApiClientError> {
+        self.post("/research/cross-asset/run", request).await
+    }
+
+    pub async fn list_cross_asset_research_runs(
+        &self,
+        limit: i64,
+    ) -> Result<CrossAssetResearchRunsResponse, ApiClientError> {
+        self.get("/research/cross-asset", &[("limit", limit.to_string())])
+            .await
+    }
+
+    pub async fn get_cross_asset_research_run(
+        &self,
+        run_id: Uuid,
+    ) -> Result<CrossAssetResearchRunResponse, ApiClientError> {
+        self.get(&format!("/research/cross-asset/{run_id}"), &[])
+            .await
+    }
+
+    pub async fn list_cross_asset_research_trades(
+        &self,
+        run_id: Uuid,
+    ) -> Result<CrossAssetResearchTradesResponse, ApiClientError> {
+        self.get(&format!("/research/cross-asset/{run_id}/trades"), &[])
+            .await
+    }
+
+    pub async fn list_cross_asset_research_windows(
+        &self,
+        run_id: Uuid,
+    ) -> Result<CrossAssetResearchWindowsResponse, ApiClientError> {
+        self.get(&format!("/research/cross-asset/{run_id}/windows"), &[])
+            .await
+    }
+
     pub async fn strategy_robustness_matrix_runs(
         &self,
         limit: i64,
@@ -4330,6 +4371,38 @@ pub struct StrategyWalkForwardWindowsResponse {
 pub struct StrategyRobustnessMatrixAcceptedResponse {
     pub matrix: StrategyRobustnessMatrixResult,
     pub cells: Vec<StrategyRobustnessMatrixCell>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetResearchRunResponse {
+    pub run: CrossAssetResearchResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetResearchRunsResponse {
+    pub runs: Vec<CrossAssetResearchResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetResearchTradesResponse {
+    pub trades: Vec<CrossAssetPortfolioTrade>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetResearchWindowsResponse {
+    pub windows: Vec<CrossAssetPortfolioWindow>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
-use rust_decimal::{prelude::ToPrimitive, Decimal};
+use rust_decimal::{
+    prelude::{FromPrimitive, ToPrimitive},
+    Decimal,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -7482,6 +7485,454 @@ pub struct ResearchDataCoverageResult {
     pub correlation_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetResearchStatus {
+    Completed,
+    Failed,
+    InsufficientData,
+}
+
+impl CrossAssetResearchStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "COMPLETED",
+            Self::Failed => "FAILED",
+            Self::InsufficientData => "INSUFFICIENT_DATA",
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetResearchStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "COMPLETED" => Ok(Self::Completed),
+            "FAILED" => Ok(Self::Failed),
+            "INSUFFICIENT_DATA" => Ok(Self::InsufficientData),
+            other => Err(CoreError::UnsupportedCrossAssetResearchStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetStrategyKind {
+    RelativeStrengthContinuationV1Research,
+}
+
+impl CrossAssetStrategyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RelativeStrengthContinuationV1Research => {
+                "RELATIVE_STRENGTH_CONTINUATION_V1_RESEARCH"
+            }
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetStrategyKind {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "RELATIVE_STRENGTH_CONTINUATION_V1_RESEARCH" => {
+                Ok(Self::RelativeStrengthContinuationV1Research)
+            }
+            other => Err(CoreError::UnsupportedCrossAssetStrategyKind(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossAssetRankMetric {
+    RawReturn,
+    VolAdjustedReturn,
+}
+
+impl CrossAssetRankMetric {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RawReturn => "raw_return",
+            Self::VolAdjustedReturn => "vol_adjusted_return",
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetRankMetric {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "raw_return" => Ok(Self::RawReturn),
+            "vol_adjusted_return" | "vol_adjusted" | "norm24" => Ok(Self::VolAdjustedReturn),
+            other => Err(CoreError::UnsupportedCrossAssetRankMetric(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossAssetSizingMode {
+    EqualNotional,
+    VolatilityNormalized,
+}
+
+impl CrossAssetSizingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EqualNotional => "equal_notional",
+            Self::VolatilityNormalized => "volatility_normalized",
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetSizingMode {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "equal_notional" | "equal" => Ok(Self::EqualNotional),
+            "volatility_normalized" | "vol_norm" => Ok(Self::VolatilityNormalized),
+            other => Err(CoreError::UnsupportedCrossAssetSizingMode(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CrossAssetMarketFilter {
+    None,
+    Basket72hReturnGt { threshold_pct: Decimal },
+    Basket24hReturnGt { threshold_pct: Decimal },
+    AtLeastNSymbolsPositive24h { min_symbols: u32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CrossAssetVolFilter {
+    None,
+    AssetNotExtremeVsBasket { max_ratio: Decimal },
+    BasketVolBelowPercentile { percentile: Decimal },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CrossAssetOverextensionFilter {
+    None,
+    MaxReturn24hPct { max_pct: Decimal },
+    MinDistanceFrom72hHighPct { min_pct: Decimal },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CrossAssetExitRule {
+    FixedHold,
+    StopPct { stop_pct: Decimal },
+    TakeProfitPct { take_profit_pct: Decimal },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetPortfolioStatus {
+    Promising,
+    Weak,
+    OverfitRisk,
+    Negative,
+    TooSparse,
+}
+
+impl CrossAssetPortfolioStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Promising => "PROMISING",
+            Self::Weak => "WEAK",
+            Self::OverfitRisk => "OVERFIT_RISK",
+            Self::Negative => "NEGATIVE",
+            Self::TooSparse => "TOO_SPARSE",
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetPortfolioStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "PROMISING" => Ok(Self::Promising),
+            "WEAK" => Ok(Self::Weak),
+            "OVERFIT_RISK" => Ok(Self::OverfitRisk),
+            "NEGATIVE" => Ok(Self::Negative),
+            "TOO_SPARSE" => Ok(Self::TooSparse),
+            other => Err(CoreError::UnsupportedCrossAssetResearchStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetResearchRecommendation {
+    KeepResearching,
+    Reject,
+    ConsiderImplementationResearchOnly,
+}
+
+impl CrossAssetResearchRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::KeepResearching => "KEEP_RESEARCHING",
+            Self::Reject => "REJECT",
+            Self::ConsiderImplementationResearchOnly => "CONSIDER_IMPLEMENTATION_RESEARCH_ONLY",
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetResearchRecommendation {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "KEEP_RESEARCHING" => Ok(Self::KeepResearching),
+            "REJECT" => Ok(Self::Reject),
+            "CONSIDER_IMPLEMENTATION_RESEARCH_ONLY" => Ok(Self::ConsiderImplementationResearchOnly),
+            other => Err(CoreError::UnsupportedCrossAssetResearchRecommendation(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+fn default_cross_asset_strategy_kind() -> CrossAssetStrategyKind {
+    CrossAssetStrategyKind::RelativeStrengthContinuationV1Research
+}
+
+fn default_cross_asset_timeframe() -> String {
+    "1h".to_string()
+}
+
+fn default_cross_asset_one_active_position() -> bool {
+    true
+}
+
+fn default_cross_asset_min_weight() -> Decimal {
+    Decimal::new(25, 2)
+}
+
+fn default_cross_asset_max_weight() -> Decimal {
+    Decimal::ONE
+}
+
+fn default_cross_asset_market_filter() -> CrossAssetMarketFilter {
+    CrossAssetMarketFilter::None
+}
+
+fn default_cross_asset_vol_filter() -> CrossAssetVolFilter {
+    CrossAssetVolFilter::None
+}
+
+fn default_cross_asset_overextension_filter() -> CrossAssetOverextensionFilter {
+    CrossAssetOverextensionFilter::None
+}
+
+fn default_cross_asset_exit_rule() -> CrossAssetExitRule {
+    CrossAssetExitRule::FixedHold
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetResearchRequest {
+    #[serde(default = "default_cross_asset_strategy_kind")]
+    pub strategy_kind: CrossAssetStrategyKind,
+    pub symbols: Vec<String>,
+    #[serde(default = "default_cross_asset_timeframe")]
+    pub timeframe: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub ranking_lookback_hours: u32,
+    pub rank_metric: CrossAssetRankMetric,
+    pub min_top_return_pct: Decimal,
+    pub min_rank_spread_pct: Decimal,
+    pub holding_hours: u32,
+    pub fee_bps: Decimal,
+    pub slippage_bps: Decimal,
+    #[serde(default = "default_cross_asset_one_active_position")]
+    pub one_active_position: bool,
+    pub sizing_mode: CrossAssetSizingMode,
+    #[serde(default = "default_cross_asset_min_weight")]
+    pub min_weight: Decimal,
+    #[serde(default = "default_cross_asset_max_weight")]
+    pub max_weight: Decimal,
+    #[serde(default = "default_cross_asset_market_filter")]
+    pub market_filter: CrossAssetMarketFilter,
+    #[serde(default = "default_cross_asset_vol_filter")]
+    pub vol_filter: CrossAssetVolFilter,
+    #[serde(default = "default_cross_asset_overextension_filter")]
+    pub overextension_filter: CrossAssetOverextensionFilter,
+    #[serde(default = "default_cross_asset_exit_rule")]
+    pub exit_rule: CrossAssetExitRule,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl CrossAssetResearchRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbols.len() < 2 {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "at least two symbols are required".to_string(),
+            ));
+        }
+        if self.symbols.iter().any(|symbol| symbol.trim().is_empty()) {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "symbols cannot contain empty values".to_string(),
+            ));
+        }
+        self.parsed_timeframe()?;
+        if self.timeframe != "1h" {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "only 1h timeframe is supported for cross-asset research MVP".to_string(),
+            ));
+        }
+        if self.end_time <= self.start_time {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "end_time must be after start_time".to_string(),
+            ));
+        }
+        if self.ranking_lookback_hours == 0 || self.holding_hours == 0 {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "ranking_lookback_hours and holding_hours must be greater than zero".to_string(),
+            ));
+        }
+        if self.min_weight <= Decimal::ZERO || self.max_weight <= Decimal::ZERO {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "min_weight and max_weight must be greater than zero".to_string(),
+            ));
+        }
+        if self.min_weight > self.max_weight {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "min_weight cannot exceed max_weight".to_string(),
+            ));
+        }
+        if self.fee_bps < Decimal::ZERO || self.slippage_bps < Decimal::ZERO {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "fee_bps and slippage_bps cannot be negative".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn parsed_symbols(&self) -> Result<Vec<Symbol>, CoreError> {
+        self.symbols.iter().cloned().map(Symbol::new).collect()
+    }
+
+    pub fn parsed_timeframe(&self) -> Result<CandleInterval, CoreError> {
+        self.timeframe.parse::<CandleInterval>()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetPortfolioRankingSnapshot {
+    pub signal_time: DateTime<Utc>,
+    pub selected_symbol: String,
+    pub top_score: Decimal,
+    pub second_score: Decimal,
+    pub rank_spread_pct: Decimal,
+    pub top_return_pct: Decimal,
+    pub return_6h_pct: Option<Decimal>,
+    pub return_24h_pct: Option<Decimal>,
+    pub return_72h_pct: Option<Decimal>,
+    pub realized_vol_24h_pct: Option<Decimal>,
+    pub realized_vol_72h_pct: Option<Decimal>,
+    pub distance_from_72h_high_pct: Option<Decimal>,
+    pub basket_return_24h_pct: Option<Decimal>,
+    pub basket_return_72h_pct: Option<Decimal>,
+    pub basket_vol_72h_pct: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetPortfolioTrade {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub trade_index: i32,
+    pub symbol: String,
+    pub signal_time: DateTime<Utc>,
+    pub entry_time: DateTime<Utc>,
+    pub exit_time: DateTime<Utc>,
+    pub entry_price: Decimal,
+    pub exit_price: Decimal,
+    pub weight: Decimal,
+    pub gross_pnl_pct: Decimal,
+    pub net_pnl_pct: Decimal,
+    pub fee_slippage_drag_pct: Decimal,
+    pub exit_reason: String,
+    pub ranking_snapshot: CrossAssetPortfolioRankingSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetPortfolioWindow {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub window_index: i32,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub trade_count: i32,
+    pub net_pnl_pct: Decimal,
+    pub compounded_pnl_pct: Decimal,
+    pub avg_trade_pnl_pct: Decimal,
+    pub median_trade_pnl_pct: Decimal,
+    pub win_rate: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub worst_trade_pct: Decimal,
+    pub best_trade_pct: Decimal,
+    pub symbol_distribution: BTreeMap<String, i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetResearchResult {
+    pub run_id: Uuid,
+    pub strategy_kind: CrossAssetStrategyKind,
+    pub request: CrossAssetResearchRequest,
+    pub status: CrossAssetResearchStatus,
+    pub portfolio_status: CrossAssetPortfolioStatus,
+    pub recommendation: CrossAssetResearchRecommendation,
+    pub total_trades: i32,
+    pub net_pnl_pct: Decimal,
+    pub compounded_pnl_pct: Decimal,
+    pub avg_trade_pnl_pct: Decimal,
+    pub median_trade_pnl_pct: Decimal,
+    pub win_rate: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub worst_trade_pct: Decimal,
+    pub best_trade_pct: Decimal,
+    pub fee_slippage_drag_pct: Decimal,
+    pub symbol_distribution: BTreeMap<String, i32>,
+    pub max_symbol_concentration_pct: Decimal,
+    pub window_count: i32,
+    pub profitable_windows: i32,
+    pub worst_window_pnl_pct: Decimal,
+    pub median_window_pnl_pct: Decimal,
+    pub warnings: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetResearchRun {
+    pub result: CrossAssetResearchResult,
+    pub trades: Vec<CrossAssetPortfolioTrade>,
+    pub windows: Vec<CrossAssetPortfolioWindow>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResearchDatasetBuildStatus {
@@ -12975,6 +13426,1006 @@ pub fn detect_research_data_gaps(
     }
 
     gaps
+}
+
+#[derive(Debug, Clone)]
+struct CrossAssetFeatureRow {
+    return_6h: Option<Decimal>,
+    return_24h: Option<Decimal>,
+    return_72h: Option<Decimal>,
+    lookback_return: Option<Decimal>,
+    vol_24h: Option<Decimal>,
+    vol_72h: Option<Decimal>,
+    lookback_vol: Option<Decimal>,
+    distance_72h_high_pct: Option<Decimal>,
+}
+
+#[derive(Debug, Clone)]
+struct CrossAssetScore {
+    symbol: String,
+    score: Decimal,
+    return_pct: Decimal,
+}
+
+#[derive(Debug, Clone)]
+struct CrossAssetExit {
+    index: usize,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct CrossAssetMetricSummary {
+    net_pnl_pct: Decimal,
+    compounded_pnl_pct: Decimal,
+    avg_trade_pnl_pct: Decimal,
+    median_trade_pnl_pct: Decimal,
+    win_rate: Decimal,
+    max_drawdown_pct: Decimal,
+    worst_trade_pct: Decimal,
+    best_trade_pct: Decimal,
+}
+
+pub fn run_cross_asset_relative_strength_research(
+    request: CrossAssetResearchRequest,
+    candles_by_symbol: BTreeMap<String, Vec<Candle>>,
+) -> Result<CrossAssetResearchRun, CoreError> {
+    request.validate()?;
+    let run_id = Uuid::new_v4();
+    let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
+    let created_at = Utc::now();
+    let symbols = request
+        .symbols
+        .iter()
+        .map(|symbol| symbol.trim().to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    let interval = request.parsed_timeframe()?;
+    let interval_seconds = interval.duration().num_seconds();
+    let ranking_lookback = request.ranking_lookback_hours as usize;
+    let holding = request.holding_hours as usize;
+    let required_lookback = ranking_lookback.max(72).max(24).max(6);
+
+    let mut aligned_times: Option<BTreeSet<DateTime<Utc>>> = None;
+    let mut normalized_candles = BTreeMap::new();
+    for symbol in &symbols {
+        let mut candles = candles_by_symbol.get(symbol).cloned().ok_or_else(|| {
+            CoreError::InvalidCrossAssetResearchRequest(format!("missing candles for {symbol}"))
+        })?;
+        candles.sort_by_key(|candle| candle.open_time);
+        candles.retain(|candle| {
+            candle.interval == interval
+                && candle.is_closed
+                && candle.open_time >= request.start_time
+                && candle.close_time <= request.end_time
+        });
+        let times = candles
+            .iter()
+            .map(|candle| candle.open_time)
+            .collect::<BTreeSet<_>>();
+        aligned_times = Some(match aligned_times {
+            Some(existing) => existing.intersection(&times).copied().collect(),
+            None => times,
+        });
+        normalized_candles.insert(symbol.clone(), candles);
+    }
+
+    let aligned_times = aligned_times.unwrap_or_default();
+    let expected = i64::from(interval.candles_between(request.start_time, request.end_time)?);
+    if aligned_times.len() as i64 != expected {
+        return Err(CoreError::InvalidCrossAssetResearchRequest(format!(
+            "insufficient aligned candle coverage: expected {expected}, actual {}",
+            aligned_times.len()
+        )));
+    }
+    let times = aligned_times.iter().copied().collect::<Vec<_>>();
+    for pair in times.windows(2) {
+        if pair[1].signed_duration_since(pair[0]).num_seconds() != interval_seconds {
+            return Err(CoreError::InvalidCrossAssetResearchRequest(
+                "aligned candles contain a gap".to_string(),
+            ));
+        }
+    }
+    if times.len() <= required_lookback + holding + 1 {
+        return Err(CoreError::InvalidCrossAssetResearchRequest(
+            "not enough candles for requested lookback and holding period".to_string(),
+        ));
+    }
+
+    let mut candles = BTreeMap::new();
+    for symbol in &symbols {
+        let by_time = normalized_candles
+            .remove(symbol)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|candle| (candle.open_time, candle))
+            .collect::<BTreeMap<_, _>>();
+        candles.insert(
+            symbol.clone(),
+            times
+                .iter()
+                .filter_map(|time| by_time.get(time).cloned())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    let features = compute_cross_asset_features(&symbols, &candles, ranking_lookback);
+    let basket_vol_threshold = match &request.vol_filter {
+        CrossAssetVolFilter::BasketVolBelowPercentile { percentile } => {
+            basket_vol_percentile(&symbols, &features, *percentile)
+        }
+        _ => None,
+    };
+    let median_vol_24h = median_asset_vol_24h(&symbols, &features).unwrap_or(Decimal::ZERO);
+    let drag = (request.fee_bps + request.slippage_bps) * Decimal::new(2, 0) / Decimal::new(100, 0);
+    let mut trades = Vec::new();
+    let mut next_available_index = 0usize;
+
+    for index in required_lookback..times.len().saturating_sub(holding + 1) {
+        if request.one_active_position && index < next_available_index {
+            continue;
+        }
+        if !cross_asset_market_filter_passes(&request, &symbols, &features, index) {
+            continue;
+        }
+        if !basket_vol_filter_passes(&request, &symbols, &features, index, basket_vol_threshold) {
+            continue;
+        }
+        let ranking = cross_asset_ranking(&request, &symbols, &features, index);
+        if ranking.len() < symbols.len() {
+            continue;
+        }
+        let top = &ranking[0];
+        let second = &ranking[1];
+        if top.return_pct <= request.min_top_return_pct {
+            continue;
+        }
+        let spread = top.return_pct - second.return_pct;
+        if spread < request.min_rank_spread_pct {
+            continue;
+        }
+        if !cross_asset_vol_filter_passes(&request, &symbols, &features, index, &top.symbol) {
+            continue;
+        }
+        if !cross_asset_overextension_filter_passes(&request, &features, index, &top.symbol) {
+            continue;
+        }
+
+        let entry_index = index + 1;
+        let Some(exit) = cross_asset_exit_index(&request, &candles, &top.symbol, entry_index)
+        else {
+            continue;
+        };
+        if exit.index <= entry_index || exit.index >= times.len() {
+            continue;
+        }
+        let symbol_candles = candles
+            .get(&top.symbol)
+            .expect("selected symbol must have candles");
+        let entry_price = symbol_candles[entry_index].open;
+        let exit_price = symbol_candles[exit.index].open;
+        if entry_price <= Decimal::ZERO {
+            continue;
+        }
+        let weight = cross_asset_weight(&request, &features, &top.symbol, index, median_vol_24h);
+        let gross_pct = percent(exit_price / entry_price - Decimal::ONE);
+        let net_pct = (gross_pct - drag) * weight;
+        let feature = features
+            .get(&top.symbol)
+            .and_then(|rows| rows.get(index))
+            .expect("feature must exist");
+        let snapshot = CrossAssetPortfolioRankingSnapshot {
+            signal_time: times[index],
+            selected_symbol: top.symbol.clone(),
+            top_score: top.score,
+            second_score: second.score,
+            rank_spread_pct: spread,
+            top_return_pct: top.return_pct,
+            return_6h_pct: feature.return_6h.map(percent),
+            return_24h_pct: feature.return_24h.map(percent),
+            return_72h_pct: feature.return_72h.map(percent),
+            realized_vol_24h_pct: feature.vol_24h.map(percent),
+            realized_vol_72h_pct: feature.vol_72h.map(percent),
+            distance_from_72h_high_pct: feature.distance_72h_high_pct,
+            basket_return_24h_pct: basket_return_pct(&symbols, &features, index, 24),
+            basket_return_72h_pct: basket_return_pct(&symbols, &features, index, 72),
+            basket_vol_72h_pct: basket_vol_pct(&symbols, &features, index),
+        };
+        trades.push(CrossAssetPortfolioTrade {
+            id: Uuid::new_v4(),
+            run_id,
+            trade_index: trades.len() as i32,
+            symbol: top.symbol.clone(),
+            signal_time: times[index],
+            entry_time: times[entry_index],
+            exit_time: times[exit.index],
+            entry_price,
+            exit_price,
+            weight,
+            gross_pnl_pct: gross_pct * weight,
+            net_pnl_pct: net_pct,
+            fee_slippage_drag_pct: drag * weight,
+            exit_reason: exit.reason,
+            ranking_snapshot: snapshot,
+        });
+        if request.one_active_position {
+            next_available_index = exit.index + 1;
+        }
+    }
+
+    let windows = cross_asset_windows(run_id, request.start_time, request.end_time, &trades);
+    let summary = cross_asset_metric_summary(&trades);
+    let window_pnls = windows
+        .iter()
+        .map(|window| window.compounded_pnl_pct)
+        .collect::<Vec<_>>();
+    let symbol_distribution = symbol_distribution(&trades);
+    let max_symbol_concentration_pct =
+        max_symbol_concentration_pct(&symbol_distribution, trades.len());
+    let profitable_windows = windows
+        .iter()
+        .filter(|window| window.compounded_pnl_pct > Decimal::ZERO)
+        .count() as i32;
+    let worst_window_pnl_pct = window_pnls.iter().copied().min().unwrap_or(Decimal::ZERO);
+    let median_window_pnl_pct = median_decimal_vec(window_pnls);
+    let mut warnings = Vec::new();
+    if max_symbol_concentration_pct > Decimal::new(60, 0) {
+        warnings.push("max_symbol_concentration_gt_60_pct".to_string());
+    }
+    if worst_window_pnl_pct < Decimal::new(-15, 0) {
+        warnings.push("worst_window_below_minus_15_pct".to_string());
+    }
+    if has_weak_2025_plus(&trades) {
+        warnings.push("2025_plus_weak_relative_to_2023_2024".to_string());
+    }
+    let portfolio_status = classify_cross_asset_portfolio(
+        trades.len() as i32,
+        &summary,
+        max_symbol_concentration_pct,
+        worst_window_pnl_pct,
+    );
+    let recommendation = match portfolio_status {
+        CrossAssetPortfolioStatus::Promising => {
+            CrossAssetResearchRecommendation::ConsiderImplementationResearchOnly
+        }
+        CrossAssetPortfolioStatus::Weak | CrossAssetPortfolioStatus::OverfitRisk => {
+            CrossAssetResearchRecommendation::KeepResearching
+        }
+        CrossAssetPortfolioStatus::Negative | CrossAssetPortfolioStatus::TooSparse => {
+            CrossAssetResearchRecommendation::Reject
+        }
+    };
+    let result = CrossAssetResearchResult {
+        run_id,
+        strategy_kind: request.strategy_kind,
+        request,
+        status: CrossAssetResearchStatus::Completed,
+        portfolio_status,
+        recommendation,
+        total_trades: trades.len() as i32,
+        net_pnl_pct: summary.net_pnl_pct,
+        compounded_pnl_pct: summary.compounded_pnl_pct,
+        avg_trade_pnl_pct: summary.avg_trade_pnl_pct,
+        median_trade_pnl_pct: summary.median_trade_pnl_pct,
+        win_rate: summary.win_rate,
+        max_drawdown_pct: summary.max_drawdown_pct,
+        worst_trade_pct: summary.worst_trade_pct,
+        best_trade_pct: summary.best_trade_pct,
+        fee_slippage_drag_pct: trades.iter().fold(Decimal::ZERO, |sum, trade| {
+            sum + trade.fee_slippage_drag_pct
+        }),
+        symbol_distribution,
+        max_symbol_concentration_pct,
+        window_count: windows.len() as i32,
+        profitable_windows,
+        worst_window_pnl_pct,
+        median_window_pnl_pct,
+        warnings,
+        created_at,
+        completed_at: Some(Utc::now()),
+        correlation_id,
+    };
+
+    Ok(CrossAssetResearchRun {
+        result,
+        trades,
+        windows,
+    })
+}
+
+fn compute_cross_asset_features(
+    symbols: &[String],
+    candles: &BTreeMap<String, Vec<Candle>>,
+    lookback: usize,
+) -> BTreeMap<String, Vec<CrossAssetFeatureRow>> {
+    let mut out = BTreeMap::new();
+    for symbol in symbols {
+        let rows = candles.get(symbol).expect("symbol candles must exist");
+        let hourly_returns = hourly_returns(rows);
+        let mut features = Vec::with_capacity(rows.len());
+        for index in 0..rows.len() {
+            let distance_72h_high_pct = if index >= 71 {
+                let max_high = rows[index - 71..=index]
+                    .iter()
+                    .map(|candle| candle.high)
+                    .max()
+                    .unwrap_or(Decimal::ZERO);
+                (max_high > Decimal::ZERO)
+                    .then(|| percent((max_high - rows[index].close) / max_high))
+            } else {
+                None
+            };
+            features.push(CrossAssetFeatureRow {
+                return_6h: return_over(rows, index, 6),
+                return_24h: return_over(rows, index, 24),
+                return_72h: return_over(rows, index, 72),
+                lookback_return: return_over(rows, index, lookback),
+                vol_24h: realized_vol(&hourly_returns, index, 24),
+                vol_72h: realized_vol(&hourly_returns, index, 72),
+                lookback_vol: realized_vol(&hourly_returns, index, lookback),
+                distance_72h_high_pct,
+            });
+        }
+        out.insert(symbol.clone(), features);
+    }
+    out
+}
+
+fn hourly_returns(candles: &[Candle]) -> Vec<Option<Decimal>> {
+    let mut returns = vec![None; candles.len()];
+    for index in 1..candles.len() {
+        let previous = candles[index - 1].close;
+        if previous > Decimal::ZERO {
+            returns[index] = Some(candles[index].close / previous - Decimal::ONE);
+        }
+    }
+    returns
+}
+
+fn return_over(candles: &[Candle], index: usize, lookback: usize) -> Option<Decimal> {
+    if index < lookback {
+        return None;
+    }
+    let previous = candles[index - lookback].close;
+    (previous > Decimal::ZERO).then(|| candles[index].close / previous - Decimal::ONE)
+}
+
+fn realized_vol(returns: &[Option<Decimal>], index: usize, lookback: usize) -> Option<Decimal> {
+    if index < lookback {
+        return None;
+    }
+    let values = returns[index + 1 - lookback..=index]
+        .iter()
+        .copied()
+        .collect::<Option<Vec<_>>>()?;
+    let mean = values.iter().copied().sum::<Decimal>() / Decimal::from(lookback as i64);
+    let variance = values
+        .iter()
+        .map(|value| {
+            let diff = *value - mean;
+            diff * diff
+        })
+        .sum::<Decimal>()
+        / Decimal::from(lookback as i64);
+    Decimal::from_f64(variance.to_f64().unwrap_or(0.0).sqrt())
+}
+
+fn cross_asset_ranking(
+    request: &CrossAssetResearchRequest,
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+) -> Vec<CrossAssetScore> {
+    let mut scores = Vec::new();
+    for symbol in symbols {
+        let Some(feature) = features.get(symbol).and_then(|rows| rows.get(index)) else {
+            continue;
+        };
+        let Some(return_value) = feature.lookback_return else {
+            continue;
+        };
+        let score = match request.rank_metric {
+            CrossAssetRankMetric::RawReturn => return_value,
+            CrossAssetRankMetric::VolAdjustedReturn => {
+                let Some(vol) = feature.lookback_vol else {
+                    continue;
+                };
+                if vol <= Decimal::ZERO {
+                    continue;
+                }
+                return_value / vol
+            }
+        };
+        scores.push(CrossAssetScore {
+            symbol: symbol.clone(),
+            score,
+            return_pct: percent(return_value),
+        });
+    }
+    scores.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.symbol.cmp(&right.symbol))
+    });
+    scores
+}
+
+fn cross_asset_market_filter_passes(
+    request: &CrossAssetResearchRequest,
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+) -> bool {
+    match &request.market_filter {
+        CrossAssetMarketFilter::None => true,
+        CrossAssetMarketFilter::Basket72hReturnGt { threshold_pct } => {
+            basket_return_pct(symbols, features, index, 72)
+                .is_some_and(|value| value > *threshold_pct)
+        }
+        CrossAssetMarketFilter::Basket24hReturnGt { threshold_pct } => {
+            basket_return_pct(symbols, features, index, 24)
+                .is_some_and(|value| value > *threshold_pct)
+        }
+        CrossAssetMarketFilter::AtLeastNSymbolsPositive24h { min_symbols } => {
+            let count = symbols
+                .iter()
+                .filter(|symbol| {
+                    features
+                        .get(*symbol)
+                        .and_then(|rows| rows.get(index))
+                        .and_then(|feature| feature.return_24h)
+                        .is_some_and(|value| value > Decimal::ZERO)
+                })
+                .count() as u32;
+            count >= *min_symbols
+        }
+    }
+}
+
+fn cross_asset_vol_filter_passes(
+    request: &CrossAssetResearchRequest,
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+    selected_symbol: &str,
+) -> bool {
+    match &request.vol_filter {
+        CrossAssetVolFilter::None | CrossAssetVolFilter::BasketVolBelowPercentile { .. } => true,
+        CrossAssetVolFilter::AssetNotExtremeVsBasket { max_ratio } => {
+            let Some(asset_vol) = features
+                .get(selected_symbol)
+                .and_then(|rows| rows.get(index))
+                .and_then(|feature| feature.vol_24h)
+            else {
+                return false;
+            };
+            let vols = symbols
+                .iter()
+                .filter_map(|symbol| {
+                    features
+                        .get(symbol)
+                        .and_then(|rows| rows.get(index))
+                        .and_then(|feature| feature.vol_24h)
+                })
+                .collect::<Vec<_>>();
+            if vols.len() != symbols.len() {
+                return false;
+            }
+            let basket = vols.iter().copied().sum::<Decimal>() / Decimal::from(vols.len() as i64);
+            basket > Decimal::ZERO && asset_vol <= basket * *max_ratio
+        }
+    }
+}
+
+fn basket_vol_filter_passes(
+    request: &CrossAssetResearchRequest,
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+    threshold: Option<Decimal>,
+) -> bool {
+    match &request.vol_filter {
+        CrossAssetVolFilter::BasketVolBelowPercentile { .. } => threshold
+            .zip(basket_vol_decimal(symbols, features, index))
+            .is_some_and(|(threshold, value)| value <= threshold),
+        _ => true,
+    }
+}
+
+fn cross_asset_overextension_filter_passes(
+    request: &CrossAssetResearchRequest,
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+    selected_symbol: &str,
+) -> bool {
+    let Some(feature) = features
+        .get(selected_symbol)
+        .and_then(|rows| rows.get(index))
+    else {
+        return false;
+    };
+    match &request.overextension_filter {
+        CrossAssetOverextensionFilter::None => true,
+        CrossAssetOverextensionFilter::MaxReturn24hPct { max_pct } => feature
+            .return_24h
+            .map(percent)
+            .is_some_and(|value| value <= *max_pct),
+        CrossAssetOverextensionFilter::MinDistanceFrom72hHighPct { min_pct } => feature
+            .distance_72h_high_pct
+            .is_some_and(|value| value >= *min_pct),
+    }
+}
+
+fn cross_asset_weight(
+    request: &CrossAssetResearchRequest,
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    symbol: &str,
+    index: usize,
+    median_vol_24h: Decimal,
+) -> Decimal {
+    match request.sizing_mode {
+        CrossAssetSizingMode::EqualNotional => request.max_weight,
+        CrossAssetSizingMode::VolatilityNormalized => {
+            let Some(vol) = features
+                .get(symbol)
+                .and_then(|rows| rows.get(index))
+                .and_then(|feature| feature.vol_24h)
+            else {
+                return request.min_weight;
+            };
+            if vol <= Decimal::ZERO || median_vol_24h <= Decimal::ZERO {
+                return request.min_weight;
+            }
+            (median_vol_24h / vol).clamp(request.min_weight, request.max_weight)
+        }
+    }
+}
+
+fn cross_asset_exit_index(
+    request: &CrossAssetResearchRequest,
+    candles: &BTreeMap<String, Vec<Candle>>,
+    symbol: &str,
+    entry_index: usize,
+) -> Option<CrossAssetExit> {
+    let rows = candles.get(symbol)?;
+    let deadline = (entry_index + request.holding_hours as usize).min(rows.len().saturating_sub(1));
+    let entry = rows.get(entry_index)?.open;
+    match &request.exit_rule {
+        CrossAssetExitRule::FixedHold => Some(CrossAssetExit {
+            index: deadline,
+            reason: "fixed_hold".to_string(),
+        }),
+        CrossAssetExitRule::StopPct { stop_pct } => {
+            let stop = -*stop_pct;
+            for index in entry_index..deadline {
+                let pnl_pct = percent(rows[index].close / entry - Decimal::ONE);
+                if pnl_pct <= stop {
+                    return Some(CrossAssetExit {
+                        index: (index + 1).min(rows.len().saturating_sub(1)),
+                        reason: "stop_pct".to_string(),
+                    });
+                }
+            }
+            Some(CrossAssetExit {
+                index: deadline,
+                reason: "fixed_hold".to_string(),
+            })
+        }
+        CrossAssetExitRule::TakeProfitPct { take_profit_pct } => {
+            for index in entry_index..deadline {
+                let pnl_pct = percent(rows[index].close / entry - Decimal::ONE);
+                if pnl_pct >= *take_profit_pct {
+                    return Some(CrossAssetExit {
+                        index: (index + 1).min(rows.len().saturating_sub(1)),
+                        reason: "take_profit_pct".to_string(),
+                    });
+                }
+            }
+            Some(CrossAssetExit {
+                index: deadline,
+                reason: "fixed_hold".to_string(),
+            })
+        }
+    }
+}
+
+fn cross_asset_windows(
+    run_id: Uuid,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+    trades: &[CrossAssetPortfolioTrade],
+) -> Vec<CrossAssetPortfolioWindow> {
+    let mut windows = Vec::new();
+    let mut cursor = start_time;
+    let mut index = 0;
+    while cursor < end_time {
+        let window_end = (cursor + Duration::hours(24 * 91)).min(end_time);
+        let window_trades = trades
+            .iter()
+            .filter(|trade| trade.entry_time >= cursor && trade.entry_time < window_end)
+            .cloned()
+            .collect::<Vec<_>>();
+        let summary = cross_asset_metric_summary(&window_trades);
+        windows.push(CrossAssetPortfolioWindow {
+            id: Uuid::new_v4(),
+            run_id,
+            window_index: index,
+            window_start: cursor,
+            window_end,
+            trade_count: window_trades.len() as i32,
+            net_pnl_pct: summary.net_pnl_pct,
+            compounded_pnl_pct: summary.compounded_pnl_pct,
+            avg_trade_pnl_pct: summary.avg_trade_pnl_pct,
+            median_trade_pnl_pct: summary.median_trade_pnl_pct,
+            win_rate: summary.win_rate,
+            max_drawdown_pct: summary.max_drawdown_pct,
+            worst_trade_pct: summary.worst_trade_pct,
+            best_trade_pct: summary.best_trade_pct,
+            symbol_distribution: symbol_distribution(&window_trades),
+        });
+        cursor = window_end;
+        index += 1;
+    }
+    windows
+}
+
+fn cross_asset_metric_summary(trades: &[CrossAssetPortfolioTrade]) -> CrossAssetMetricSummary {
+    if trades.is_empty() {
+        return CrossAssetMetricSummary {
+            net_pnl_pct: Decimal::ZERO,
+            compounded_pnl_pct: Decimal::ZERO,
+            avg_trade_pnl_pct: Decimal::ZERO,
+            median_trade_pnl_pct: Decimal::ZERO,
+            win_rate: Decimal::ZERO,
+            max_drawdown_pct: Decimal::ZERO,
+            worst_trade_pct: Decimal::ZERO,
+            best_trade_pct: Decimal::ZERO,
+        };
+    }
+    let pnl_values = trades
+        .iter()
+        .map(|trade| trade.net_pnl_pct)
+        .collect::<Vec<_>>();
+    let net_pnl_pct = pnl_values.iter().copied().sum::<Decimal>();
+    let avg_trade_pnl_pct = net_pnl_pct / Decimal::from(trades.len() as i64);
+    let median_trade_pnl_pct = median_decimal_vec(pnl_values.clone());
+    let wins = pnl_values
+        .iter()
+        .filter(|value| **value > Decimal::ZERO)
+        .count();
+    let win_rate =
+        Decimal::from(wins as i64) * Decimal::new(100, 0) / Decimal::from(trades.len() as i64);
+    let mut equity = Decimal::ONE;
+    let mut peak = Decimal::ONE;
+    let mut max_drawdown_pct = Decimal::ZERO;
+    for pnl_pct in &pnl_values {
+        equity *= Decimal::ONE + (*pnl_pct / Decimal::new(100, 0));
+        peak = peak.max(equity);
+        if peak > Decimal::ZERO {
+            max_drawdown_pct = max_drawdown_pct.min(percent(equity / peak - Decimal::ONE));
+        }
+    }
+    CrossAssetMetricSummary {
+        net_pnl_pct,
+        compounded_pnl_pct: percent(equity - Decimal::ONE),
+        avg_trade_pnl_pct,
+        median_trade_pnl_pct,
+        win_rate,
+        max_drawdown_pct,
+        worst_trade_pct: pnl_values.iter().copied().min().unwrap_or(Decimal::ZERO),
+        best_trade_pct: pnl_values.iter().copied().max().unwrap_or(Decimal::ZERO),
+    }
+}
+
+fn classify_cross_asset_portfolio(
+    trade_count: i32,
+    summary: &CrossAssetMetricSummary,
+    max_symbol_concentration_pct: Decimal,
+    worst_window_pnl_pct: Decimal,
+) -> CrossAssetPortfolioStatus {
+    if trade_count < 50 {
+        CrossAssetPortfolioStatus::TooSparse
+    } else if summary.compounded_pnl_pct <= Decimal::ZERO {
+        CrossAssetPortfolioStatus::Negative
+    } else if max_symbol_concentration_pct > Decimal::new(60, 0)
+        || summary.median_trade_pnl_pct <= Decimal::ZERO
+    {
+        CrossAssetPortfolioStatus::OverfitRisk
+    } else if summary.max_drawdown_pct < Decimal::new(-25, 0)
+        || worst_window_pnl_pct < Decimal::new(-15, 0)
+    {
+        CrossAssetPortfolioStatus::Weak
+    } else {
+        CrossAssetPortfolioStatus::Promising
+    }
+}
+
+fn basket_return_pct(
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+    lookback: usize,
+) -> Option<Decimal> {
+    let returns = symbols
+        .iter()
+        .map(|symbol| {
+            let feature = features.get(symbol).and_then(|rows| rows.get(index))?;
+            match lookback {
+                24 => feature.return_24h,
+                72 => feature.return_72h,
+                _ => feature.lookback_return,
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(percent(
+        returns.iter().copied().sum::<Decimal>() / Decimal::from(returns.len() as i64),
+    ))
+}
+
+fn basket_vol_decimal(
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+) -> Option<Decimal> {
+    let vols = symbols
+        .iter()
+        .map(|symbol| {
+            features
+                .get(symbol)
+                .and_then(|rows| rows.get(index))
+                .and_then(|feature| feature.vol_72h)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(vols.iter().copied().sum::<Decimal>() / Decimal::from(vols.len() as i64))
+}
+
+fn basket_vol_pct(
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    index: usize,
+) -> Option<Decimal> {
+    basket_vol_decimal(symbols, features, index).map(percent)
+}
+
+fn basket_vol_percentile(
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+    percentile_value: Decimal,
+) -> Option<Decimal> {
+    let len = features.values().next().map(|rows| rows.len()).unwrap_or(0);
+    percentile_decimal(
+        (0..len)
+            .filter_map(|index| basket_vol_decimal(symbols, features, index))
+            .collect(),
+        percentile_value,
+    )
+}
+
+fn median_asset_vol_24h(
+    symbols: &[String],
+    features: &BTreeMap<String, Vec<CrossAssetFeatureRow>>,
+) -> Option<Decimal> {
+    let mut values = Vec::new();
+    for symbol in symbols {
+        if let Some(rows) = features.get(symbol) {
+            values.extend(rows.iter().filter_map(|row| row.vol_24h));
+        }
+    }
+    percentile_decimal(values, Decimal::new(50, 0))
+}
+
+fn symbol_distribution(trades: &[CrossAssetPortfolioTrade]) -> BTreeMap<String, i32> {
+    let mut distribution = BTreeMap::new();
+    for trade in trades {
+        *distribution.entry(trade.symbol.clone()).or_insert(0) += 1;
+    }
+    distribution
+}
+
+fn max_symbol_concentration_pct(
+    distribution: &BTreeMap<String, i32>,
+    total_trades: usize,
+) -> Decimal {
+    if total_trades == 0 {
+        return Decimal::ZERO;
+    }
+    Decimal::from(*distribution.values().max().unwrap_or(&0) as i64) * Decimal::new(100, 0)
+        / Decimal::from(total_trades as i64)
+}
+
+fn has_weak_2025_plus(trades: &[CrossAssetPortfolioTrade]) -> bool {
+    let split = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+    let early = trades
+        .iter()
+        .filter(|trade| trade.entry_time < split)
+        .cloned()
+        .collect::<Vec<_>>();
+    let late = trades
+        .iter()
+        .filter(|trade| trade.entry_time >= split)
+        .cloned()
+        .collect::<Vec<_>>();
+    let early_summary = cross_asset_metric_summary(&early);
+    let late_summary = cross_asset_metric_summary(&late);
+    early_summary.compounded_pnl_pct > Decimal::new(20, 0)
+        && late_summary.compounded_pnl_pct < Decimal::new(5, 0)
+}
+
+fn percentile_decimal(mut values: Vec<Decimal>, percentile_value: Decimal) -> Option<Decimal> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort();
+    let p = percentile_value.clamp(Decimal::ZERO, Decimal::new(100, 0));
+    let rank = ((values.len() - 1) as f64) * (p.to_f64().unwrap_or(0.0) / 100.0);
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    if lower == upper {
+        return values.get(lower).copied();
+    }
+    let lower_weight = Decimal::from_f64(upper as f64 - rank)?;
+    let upper_weight = Decimal::from_f64(rank - lower as f64)?;
+    Some(values[lower] * lower_weight + values[upper] * upper_weight)
+}
+
+fn median_decimal_vec(values: Vec<Decimal>) -> Decimal {
+    percentile_decimal(values, Decimal::new(50, 0)).unwrap_or(Decimal::ZERO)
+}
+
+fn percent(value: Decimal) -> Decimal {
+    value * Decimal::new(100, 0)
+}
+
+#[cfg(test)]
+mod cross_asset_research_tests {
+    use super::*;
+
+    fn ts(hour: i64) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap() + Duration::hours(hour)
+    }
+
+    fn candle(symbol: &str, hour: i64, open: i64, high: i64, low: i64, close: i64) -> Candle {
+        Candle {
+            id: Uuid::new_v4(),
+            exchange: MarketDataSource::Binance,
+            symbol: Symbol::new(symbol).unwrap(),
+            interval: CandleInterval::OneHour,
+            open_time: ts(hour),
+            close_time: ts(hour + 1),
+            open: Decimal::from(open),
+            high: Decimal::from(high),
+            low: Decimal::from(low),
+            close: Decimal::from(close),
+            volume: Decimal::from(1000),
+            quote_volume: Some(Decimal::from(1000)),
+            trade_count: 100,
+            is_closed: true,
+            created_at: ts(hour + 1),
+            updated_at: ts(hour + 1),
+        }
+    }
+
+    fn candles(symbol: &str, slope: i64, volatility: i64) -> Vec<Candle> {
+        (0..120)
+            .map(|hour| {
+                let base = 1000 + hour * slope;
+                let wobble = if hour % 2 == 0 {
+                    volatility
+                } else {
+                    -volatility
+                };
+                candle(
+                    symbol,
+                    hour,
+                    base + wobble,
+                    base + wobble + 5,
+                    base + wobble - 5,
+                    base + wobble + slope,
+                )
+            })
+            .collect()
+    }
+
+    fn request() -> CrossAssetResearchRequest {
+        CrossAssetResearchRequest {
+            strategy_kind: CrossAssetStrategyKind::RelativeStrengthContinuationV1Research,
+            symbols: vec!["AAAUSDT".to_string(), "BBBUSDT".to_string()],
+            timeframe: "1h".to_string(),
+            start_time: ts(0),
+            end_time: ts(120),
+            ranking_lookback_hours: 6,
+            rank_metric: CrossAssetRankMetric::RawReturn,
+            min_top_return_pct: Decimal::ZERO,
+            min_rank_spread_pct: Decimal::ZERO,
+            holding_hours: 12,
+            fee_bps: Decimal::ZERO,
+            slippage_bps: Decimal::ZERO,
+            one_active_position: true,
+            sizing_mode: CrossAssetSizingMode::EqualNotional,
+            min_weight: Decimal::new(25, 2),
+            max_weight: Decimal::ONE,
+            market_filter: CrossAssetMarketFilter::None,
+            vol_filter: CrossAssetVolFilter::None,
+            overextension_filter: CrossAssetOverextensionFilter::None,
+            exit_rule: CrossAssetExitRule::FixedHold,
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn deterministic_ranking_tie_break_uses_symbol() {
+        let mut by_symbol = BTreeMap::new();
+        by_symbol.insert("AAAUSDT".to_string(), candles("AAAUSDT", 1, 0));
+        by_symbol.insert("BBBUSDT".to_string(), candles("BBBUSDT", 1, 0));
+        let run = run_cross_asset_relative_strength_research(request(), by_symbol).unwrap();
+        assert_eq!(run.trades.first().unwrap().symbol, "AAAUSDT");
+    }
+
+    #[test]
+    fn one_active_position_prevents_overlap() {
+        let mut by_symbol = BTreeMap::new();
+        by_symbol.insert("AAAUSDT".to_string(), candles("AAAUSDT", 3, 0));
+        by_symbol.insert("BBBUSDT".to_string(), candles("BBBUSDT", 1, 0));
+        let run = run_cross_asset_relative_strength_research(request(), by_symbol).unwrap();
+        for pair in run.trades.windows(2) {
+            assert!(pair[1].entry_time >= pair[0].exit_time + Duration::hours(1));
+        }
+    }
+
+    #[test]
+    fn volatility_normalized_sizing_is_bounded() {
+        let mut by_symbol = BTreeMap::new();
+        by_symbol.insert("AAAUSDT".to_string(), candles("AAAUSDT", 5, 30));
+        by_symbol.insert("BBBUSDT".to_string(), candles("BBBUSDT", 1, 1));
+        let mut req = request();
+        req.sizing_mode = CrossAssetSizingMode::VolatilityNormalized;
+        let run = run_cross_asset_relative_strength_research(req, by_symbol).unwrap();
+        assert!(run
+            .trades
+            .iter()
+            .all(|trade| trade.weight >= Decimal::new(25, 2) && trade.weight <= Decimal::ONE));
+    }
+
+    #[test]
+    fn stop_and_take_profit_exits_trigger() {
+        let mut stop_candles = candles("AAAUSDT", 2, 0);
+        stop_candles[80].close = stop_candles[73].open * Decimal::new(96, 2);
+        let mut by_symbol = BTreeMap::new();
+        by_symbol.insert("AAAUSDT".to_string(), stop_candles);
+        by_symbol.insert("BBBUSDT".to_string(), candles("BBBUSDT", 1, 0));
+        let mut req = request();
+        req.exit_rule = CrossAssetExitRule::StopPct {
+            stop_pct: Decimal::new(3, 0),
+        };
+        let stop_run = run_cross_asset_relative_strength_research(req, by_symbol).unwrap();
+        assert!(stop_run
+            .trades
+            .iter()
+            .any(|trade| trade.exit_reason == "stop_pct"));
+
+        let mut by_symbol = BTreeMap::new();
+        by_symbol.insert("AAAUSDT".to_string(), candles("AAAUSDT", 5, 0));
+        by_symbol.insert("BBBUSDT".to_string(), candles("BBBUSDT", 1, 0));
+        let mut req = request();
+        req.exit_rule = CrossAssetExitRule::TakeProfitPct {
+            take_profit_pct: Decimal::new(3, 0),
+        };
+        let tp_run = run_cross_asset_relative_strength_research(req, by_symbol).unwrap();
+        assert!(tp_run
+            .trades
+            .iter()
+            .any(|trade| trade.exit_reason == "take_profit_pct"));
+    }
+
+    #[test]
+    fn symbol_concentration_and_window_metrics_are_calculated() {
+        let mut by_symbol = BTreeMap::new();
+        by_symbol.insert("AAAUSDT".to_string(), candles("AAAUSDT", 3, 0));
+        by_symbol.insert("BBBUSDT".to_string(), candles("BBBUSDT", 1, 0));
+        let run = run_cross_asset_relative_strength_research(request(), by_symbol).unwrap();
+        assert!(run.result.max_symbol_concentration_pct > Decimal::ZERO);
+        assert!(run.result.window_count > 0);
+        assert_eq!(run.result.total_trades, run.trades.len() as i32);
+    }
 }
 
 #[cfg(test)]

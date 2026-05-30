@@ -1,12 +1,14 @@
 use aegis_core::{
-    OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
-    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateEvidenceBundle, ResearchCandidateImportBundlePreviewRequest,
-    ResearchCandidateImportBundleRequest, ResearchCandidateImportReconciliationRequest,
-    ResearchCandidateReviewRequest, ResearchExperimentPlanRunMode,
-    ResearchExperimentPlanRunRequest, ResearchHypothesisGenerationRequest,
-    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest,
-    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
+    CrossAssetExitRule, CrossAssetMarketFilter, CrossAssetOverextensionFilter,
+    CrossAssetResearchRequest, CrossAssetVolFilter, OperatorReportFormat, OperatorReportRequest,
+    PaperTradingPipelineRequest, ResearchCandidateDecisionRejection,
+    ResearchCandidateDecisionRequest, ResearchCandidateEvidenceBundle,
+    ResearchCandidateImportBundlePreviewRequest, ResearchCandidateImportBundleRequest,
+    ResearchCandidateImportReconciliationRequest, ResearchCandidateReviewRequest,
+    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunRequest,
+    ResearchHypothesisGenerationRequest, ResearchHypothesisIncludedSource,
+    ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -31,12 +33,13 @@ use cli::cli::{
     ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
-    ResearchCandidateCommands, ResearchCommands, ResearchDataCommands,
-    ResearchExperimentPlanCommands, ResearchHypothesisCommands, ResearchRegimeCalibrationCommands,
-    ResearchRegimeDatasetCommands, ResearchRegimeDiscoveryCommands,
-    ResearchRobustnessMatrixCommands, ResearchScheduledJobCommands, ResearchStaleRunCommands,
-    RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
-    StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchCandidateCommands, ResearchCommands, ResearchCrossAssetCommands,
+    ResearchCrossAssetRunArgs, ResearchDataCommands, ResearchExperimentPlanCommands,
+    ResearchHypothesisCommands, ResearchRegimeCalibrationCommands, ResearchRegimeDatasetCommands,
+    ResearchRegimeDiscoveryCommands, ResearchRobustnessMatrixCommands,
+    ResearchScheduledJobCommands, ResearchStaleRunCommands, RiskCommands, RiskConfigCommands,
+    StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
+    TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -44,6 +47,106 @@ use cli::config::{
 use cli::output;
 use serde::{Deserialize, Serialize};
 use std::fs;
+
+fn build_cross_asset_research_request(
+    args: &ResearchCrossAssetRunArgs,
+) -> anyhow::Result<CrossAssetResearchRequest> {
+    if let Some(raw) = args.request_json.as_deref() {
+        return serde_json::from_str(raw).context("invalid --request-json");
+    }
+    let start_time = args.start_time.context("missing --start")?;
+    let end_time = args.end_time.context("missing --end")?;
+    let market_filter = match args.market_filter.trim().to_ascii_lowercase().as_str() {
+        "none" => CrossAssetMarketFilter::None,
+        "basket_72h_return_gt" => CrossAssetMarketFilter::Basket72hReturnGt {
+            threshold_pct: args
+                .market_threshold_pct
+                .context("--market-threshold-pct is required")?,
+        },
+        "basket_24h_return_gt" => CrossAssetMarketFilter::Basket24hReturnGt {
+            threshold_pct: args
+                .market_threshold_pct
+                .context("--market-threshold-pct is required")?,
+        },
+        "at_least_n_symbols_positive_24h" => CrossAssetMarketFilter::AtLeastNSymbolsPositive24h {
+            min_symbols: args
+                .market_min_symbols
+                .context("--market-min-symbols is required")?,
+        },
+        other => anyhow::bail!("unsupported --market-filter {other}"),
+    };
+    let vol_filter = match args.vol_filter.trim().to_ascii_lowercase().as_str() {
+        "none" => CrossAssetVolFilter::None,
+        "asset_not_extreme_vs_basket" => CrossAssetVolFilter::AssetNotExtremeVsBasket {
+            max_ratio: args.vol_max_ratio,
+        },
+        "basket_vol_below_percentile" => CrossAssetVolFilter::BasketVolBelowPercentile {
+            percentile: args.vol_percentile,
+        },
+        other => anyhow::bail!("unsupported --vol-filter {other}"),
+    };
+    let overextension_filter = match args
+        .overextension_filter
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "none" => CrossAssetOverextensionFilter::None,
+        "max_return_24h_pct" => CrossAssetOverextensionFilter::MaxReturn24hPct {
+            max_pct: args
+                .max_return_24h_pct
+                .context("--max-return-24h-pct is required")?,
+        },
+        "min_distance_from_72h_high_pct" => {
+            CrossAssetOverextensionFilter::MinDistanceFrom72hHighPct {
+                min_pct: args
+                    .min_distance_72h_high_pct
+                    .context("--min-distance-72h-high-pct is required")?,
+            }
+        }
+        other => anyhow::bail!("unsupported --overextension-filter {other}"),
+    };
+    let exit_rule = match args.exit_rule.trim().to_ascii_lowercase().as_str() {
+        "fixed_hold" => CrossAssetExitRule::FixedHold,
+        "stop_pct" => CrossAssetExitRule::StopPct {
+            stop_pct: args.stop_pct.context("--stop-pct is required")?,
+        },
+        "take_profit_pct" => CrossAssetExitRule::TakeProfitPct {
+            take_profit_pct: args
+                .take_profit_pct
+                .context("--take-profit-pct is required")?,
+        },
+        other => anyhow::bail!("unsupported --exit-rule {other}"),
+    };
+
+    Ok(CrossAssetResearchRequest {
+        strategy_kind: aegis_core::CrossAssetStrategyKind::RelativeStrengthContinuationV1Research,
+        symbols: args.symbols.clone(),
+        timeframe: args.timeframe.clone(),
+        start_time,
+        end_time,
+        ranking_lookback_hours: args
+            .ranking_lookback_hours
+            .context("missing --ranking-lookback")?,
+        rank_metric: args.rank_metric.context("missing --rank-metric")?,
+        min_top_return_pct: args.min_top_return_pct,
+        min_rank_spread_pct: args
+            .min_rank_spread_pct
+            .context("missing --min-rank-spread-pct")?,
+        holding_hours: args.holding_hours.context("missing --holding-hours")?,
+        fee_bps: args.fee_bps,
+        slippage_bps: args.slippage_bps,
+        one_active_position: args.one_active_position,
+        sizing_mode: args.sizing_mode.context("missing --sizing-mode")?,
+        min_weight: args.min_weight,
+        max_weight: args.max_weight,
+        market_filter,
+        vol_filter,
+        overextension_filter,
+        exit_rule,
+        correlation_id: args.correlation_id,
+    })
+}
 
 #[derive(Deserialize, Serialize)]
 struct ResearchCandidateDecisionErrorResponse {
@@ -1592,6 +1695,43 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         output::print_strategy_robustness_matrix_cells(&response.cells);
                     }
+                }
+            },
+            ResearchCommands::CrossAsset(command) => match command {
+                ResearchCrossAssetCommands::Run(args) => {
+                    let request = build_cross_asset_research_request(&args)?;
+                    let response = client.run_cross_asset_research(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_cross_asset_research_run(&response.run);
+                    }
+                }
+                ResearchCrossAssetCommands::List(args) => {
+                    let response = client.list_cross_asset_research_runs(args.limit).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        for run in &response.runs {
+                            output::print_cross_asset_research_run(run);
+                        }
+                    }
+                }
+                ResearchCrossAssetCommands::Get { run_id } => {
+                    let response = client.get_cross_asset_research_run(run_id).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_cross_asset_research_run(&response.run);
+                    }
+                }
+                ResearchCrossAssetCommands::Trades { run_id } => {
+                    let response = client.list_cross_asset_research_trades(run_id).await?;
+                    output::print_json(&response)?;
+                }
+                ResearchCrossAssetCommands::Windows { run_id } => {
+                    let response = client.list_cross_asset_research_windows(run_id).await?;
+                    output::print_json(&response)?;
                 }
             },
         },

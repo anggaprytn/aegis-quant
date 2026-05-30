@@ -4,17 +4,20 @@ use aegis_core::{
     combine_strategy_performance_summaries, count_expected_candles_for_window,
     summarize_candle_continuity, BacktestConfig, BacktestEquityPoint, BacktestResult,
     BacktestTrade, Candle, CandleAggregationRun, CandleBackfillProgress, CandleBackfillRequest,
-    CandleBackfillResult, CandleBackfillStatus, CandleInterval, DataFreshnessStatus, EventEnvelope,
-    ExchangeReconciliationStatus, ExecutionReadinessBlockingReason, ExecutionReadinessCheck,
-    ExecutionReadinessRecommendation, ExecutionReadinessSnapshot, ExecutionReadinessStatus,
-    ExecutionReadinessTarget, ExecutionState, FeedStatus, MarketCandleCoverageSummary,
-    MarketCandleIntervalCoverage, MarketDataQualityReport, MarketDataQualityRequest,
-    MarketDataRepairPlan, MarketDataRepairRange, MarketDataRepairRunResult, MarketDataRepairStatus,
-    MarketDataSource, MarketProviderAttempt, MarketTick, OrderIntent, OrderStatus, PaperAccount,
-    PaperAccountStatus, PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill,
-    PaperOrder, PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter,
-    PaperPriceStatus, PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus,
-    RiskCheckContext, RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
+    CandleBackfillResult, CandleBackfillStatus, CandleInterval, CrossAssetPortfolioRankingSnapshot,
+    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetResearchRecommendation,
+    CrossAssetResearchResult, CrossAssetResearchStatus, CrossAssetStrategyKind,
+    DataFreshnessStatus, EventEnvelope, ExchangeReconciliationStatus,
+    ExecutionReadinessBlockingReason, ExecutionReadinessCheck, ExecutionReadinessRecommendation,
+    ExecutionReadinessSnapshot, ExecutionReadinessStatus, ExecutionReadinessTarget, ExecutionState,
+    FeedStatus, MarketCandleCoverageSummary, MarketCandleIntervalCoverage, MarketDataQualityReport,
+    MarketDataQualityRequest, MarketDataRepairPlan, MarketDataRepairRange,
+    MarketDataRepairRunResult, MarketDataRepairStatus, MarketDataSource, MarketProviderAttempt,
+    MarketTick, OrderIntent, OrderStatus, PaperAccount, PaperAccountStatus,
+    PaperClosePositionResult, PaperCloseStatus, PaperEquitySnapshot, PaperFill, PaperOrder,
+    PaperPosition, PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradeJournalEntry, PositionSide, PositionStatus, ReplayRunStatus, RiskCheckContext,
+    RiskConfig, RiskConfigAuditEntry, RiskConfigVersion, RiskEvaluationDecision,
     RiskEvaluationResult, Session, Side, SignalReason, StrategyComparisonSummary, StrategyConfig,
     StrategyConfigAuditEntry, StrategyConfigVersion, StrategyDecisionBreakdown,
     StrategyExperimentCandidate, StrategyExperimentComparison, StrategyExperimentResult,
@@ -506,6 +509,70 @@ pub struct CandleBackfillRunRecord {
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub config: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetResearchRunRecord {
+    pub id: Uuid,
+    pub strategy_kind: String,
+    pub timeframe: String,
+    pub symbols: Value,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub request: Value,
+    pub summary: Value,
+    pub status: String,
+    pub portfolio_status: String,
+    pub recommendation: String,
+    pub total_trades: i32,
+    pub compounded_pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub max_symbol_concentration_pct: Decimal,
+    pub warnings: Value,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetResearchTradeRecord {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub trade_index: i32,
+    pub symbol: String,
+    pub signal_time: DateTime<Utc>,
+    pub entry_time: DateTime<Utc>,
+    pub exit_time: DateTime<Utc>,
+    pub entry_price: Decimal,
+    pub exit_price: Decimal,
+    pub weight: Decimal,
+    pub gross_pnl_pct: Decimal,
+    pub net_pnl_pct: Decimal,
+    pub fee_slippage_drag_pct: Decimal,
+    pub exit_reason: String,
+    pub ranking_snapshot: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetResearchWindowRecord {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub window_index: i32,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub trade_count: i32,
+    pub net_pnl_pct: Decimal,
+    pub compounded_pnl_pct: Decimal,
+    pub avg_trade_pnl_pct: Decimal,
+    pub median_trade_pnl_pct: Decimal,
+    pub win_rate: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub worst_trade_pct: Decimal,
+    pub best_trade_pct: Decimal,
+    pub symbol_distribution: Value,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5146,6 +5213,370 @@ pub async fn get_closed_candles_range(
     .await?;
 
     Ok(rows.iter().map(map_candle_domain).collect())
+}
+
+pub async fn insert_cross_asset_research_run(
+    pool: &PgPool,
+    result: &CrossAssetResearchResult,
+) -> Result<CrossAssetResearchRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO cross_asset_research_runs (
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            start_time,
+            end_time,
+            request,
+            summary,
+            status,
+            portfolio_status,
+            recommendation,
+            total_trades,
+            compounded_pnl_pct,
+            max_drawdown_pct,
+            max_symbol_concentration_pct,
+            warnings,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+        )
+        RETURNING
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            start_time,
+            end_time,
+            request,
+            summary,
+            status,
+            portfolio_status,
+            recommendation,
+            total_trades,
+            compounded_pnl_pct,
+            max_drawdown_pct,
+            max_symbol_concentration_pct,
+            warnings,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        "#,
+    )
+    .bind(result.run_id)
+    .bind(result.strategy_kind.as_str())
+    .bind(&result.request.timeframe)
+    .bind(serde_json::to_value(&result.request.symbols)?)
+    .bind(result.request.start_time)
+    .bind(result.request.end_time)
+    .bind(serde_json::to_value(&result.request)?)
+    .bind(serde_json::to_value(result)?)
+    .bind(result.status.as_str())
+    .bind(result.portfolio_status.as_str())
+    .bind(result.recommendation.as_str())
+    .bind(result.total_trades)
+    .bind(result.compounded_pnl_pct)
+    .bind(result.max_drawdown_pct)
+    .bind(result.max_symbol_concentration_pct)
+    .bind(serde_json::to_value(&result.warnings)?)
+    .bind(Option::<String>::None)
+    .bind(result.created_at)
+    .bind(result.completed_at)
+    .bind(result.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_cross_asset_research_run(&row))
+}
+
+pub async fn insert_cross_asset_research_trades(
+    pool: &PgPool,
+    trades: &[CrossAssetPortfolioTrade],
+) -> Result<Vec<CrossAssetResearchTradeRecord>> {
+    let mut records = Vec::with_capacity(trades.len());
+    for trade in trades {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO cross_asset_research_trades (
+                id,
+                run_id,
+                trade_index,
+                symbol,
+                signal_time,
+                entry_time,
+                exit_time,
+                entry_price,
+                exit_price,
+                weight,
+                gross_pnl_pct,
+                net_pnl_pct,
+                fee_slippage_drag_pct,
+                exit_reason,
+                ranking_snapshot
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9, $10, $11, $12, $13, $14, $15
+            )
+            RETURNING
+                id,
+                run_id,
+                trade_index,
+                symbol,
+                signal_time,
+                entry_time,
+                exit_time,
+                entry_price,
+                exit_price,
+                weight,
+                gross_pnl_pct,
+                net_pnl_pct,
+                fee_slippage_drag_pct,
+                exit_reason,
+                ranking_snapshot,
+                created_at
+            "#,
+        )
+        .bind(trade.id)
+        .bind(trade.run_id)
+        .bind(trade.trade_index)
+        .bind(&trade.symbol)
+        .bind(trade.signal_time)
+        .bind(trade.entry_time)
+        .bind(trade.exit_time)
+        .bind(trade.entry_price)
+        .bind(trade.exit_price)
+        .bind(trade.weight)
+        .bind(trade.gross_pnl_pct)
+        .bind(trade.net_pnl_pct)
+        .bind(trade.fee_slippage_drag_pct)
+        .bind(&trade.exit_reason)
+        .bind(serde_json::to_value(&trade.ranking_snapshot)?)
+        .fetch_one(pool)
+        .await?;
+        records.push(map_cross_asset_research_trade(&row));
+    }
+    Ok(records)
+}
+
+pub async fn insert_cross_asset_research_windows(
+    pool: &PgPool,
+    windows: &[CrossAssetPortfolioWindow],
+) -> Result<Vec<CrossAssetResearchWindowRecord>> {
+    let mut records = Vec::with_capacity(windows.len());
+    for window in windows {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO cross_asset_research_windows (
+                id,
+                run_id,
+                window_index,
+                window_start,
+                window_end,
+                trade_count,
+                net_pnl_pct,
+                compounded_pnl_pct,
+                avg_trade_pnl_pct,
+                median_trade_pnl_pct,
+                win_rate,
+                max_drawdown_pct,
+                worst_trade_pct,
+                best_trade_pct,
+                symbol_distribution
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9, $10, $11, $12, $13, $14, $15
+            )
+            RETURNING
+                id,
+                run_id,
+                window_index,
+                window_start,
+                window_end,
+                trade_count,
+                net_pnl_pct,
+                compounded_pnl_pct,
+                avg_trade_pnl_pct,
+                median_trade_pnl_pct,
+                win_rate,
+                max_drawdown_pct,
+                worst_trade_pct,
+                best_trade_pct,
+                symbol_distribution,
+                created_at
+            "#,
+        )
+        .bind(window.id)
+        .bind(window.run_id)
+        .bind(window.window_index)
+        .bind(window.window_start)
+        .bind(window.window_end)
+        .bind(window.trade_count)
+        .bind(window.net_pnl_pct)
+        .bind(window.compounded_pnl_pct)
+        .bind(window.avg_trade_pnl_pct)
+        .bind(window.median_trade_pnl_pct)
+        .bind(window.win_rate)
+        .bind(window.max_drawdown_pct)
+        .bind(window.worst_trade_pct)
+        .bind(window.best_trade_pct)
+        .bind(serde_json::to_value(&window.symbol_distribution)?)
+        .fetch_one(pool)
+        .await?;
+        records.push(map_cross_asset_research_window(&row));
+    }
+    Ok(records)
+}
+
+pub async fn get_cross_asset_research_run(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<CrossAssetResearchRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            start_time,
+            end_time,
+            request,
+            summary,
+            status,
+            portfolio_status,
+            recommendation,
+            total_trades,
+            compounded_pnl_pct,
+            max_drawdown_pct,
+            max_symbol_concentration_pct,
+            warnings,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        FROM cross_asset_research_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.as_ref().map(map_cross_asset_research_run))
+}
+
+pub async fn list_cross_asset_research_runs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<CrossAssetResearchRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            start_time,
+            end_time,
+            request,
+            summary,
+            status,
+            portfolio_status,
+            recommendation,
+            total_trades,
+            compounded_pnl_pct,
+            max_drawdown_pct,
+            max_symbol_concentration_pct,
+            warnings,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        FROM cross_asset_research_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(map_cross_asset_research_run).collect())
+}
+
+pub async fn list_cross_asset_research_trades(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Vec<CrossAssetResearchTradeRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            run_id,
+            trade_index,
+            symbol,
+            signal_time,
+            entry_time,
+            exit_time,
+            entry_price,
+            exit_price,
+            weight,
+            gross_pnl_pct,
+            net_pnl_pct,
+            fee_slippage_drag_pct,
+            exit_reason,
+            ranking_snapshot,
+            created_at
+        FROM cross_asset_research_trades
+        WHERE run_id = $1
+        ORDER BY trade_index ASC
+        "#,
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(map_cross_asset_research_trade).collect())
+}
+
+pub async fn list_cross_asset_research_windows(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Vec<CrossAssetResearchWindowRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            run_id,
+            window_index,
+            window_start,
+            window_end,
+            trade_count,
+            net_pnl_pct,
+            compounded_pnl_pct,
+            avg_trade_pnl_pct,
+            median_trade_pnl_pct,
+            win_rate,
+            max_drawdown_pct,
+            worst_trade_pct,
+            best_trade_pct,
+            symbol_distribution,
+            created_at
+        FROM cross_asset_research_windows
+        WHERE run_id = $1
+        ORDER BY window_index ASC
+        "#,
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(map_cross_asset_research_window).collect())
 }
 
 pub async fn count_candles_range(
@@ -10659,6 +11090,73 @@ fn map_candle_backfill_run(row: &sqlx::postgres::PgRow) -> CandleBackfillRunReco
     }
 }
 
+fn map_cross_asset_research_run(row: &sqlx::postgres::PgRow) -> CrossAssetResearchRunRecord {
+    CrossAssetResearchRunRecord {
+        id: row.get("id"),
+        strategy_kind: row.get("strategy_kind"),
+        timeframe: row.get("timeframe"),
+        symbols: row.get("symbols"),
+        start_time: row.get("start_time"),
+        end_time: row.get("end_time"),
+        request: row.get("request"),
+        summary: row.get("summary"),
+        status: row.get("status"),
+        portfolio_status: row.get("portfolio_status"),
+        recommendation: row.get("recommendation"),
+        total_trades: row.get("total_trades"),
+        compounded_pnl_pct: row.get("compounded_pnl_pct"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        max_symbol_concentration_pct: row.get("max_symbol_concentration_pct"),
+        warnings: row.get("warnings"),
+        error: row.get("error"),
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_cross_asset_research_trade(row: &sqlx::postgres::PgRow) -> CrossAssetResearchTradeRecord {
+    CrossAssetResearchTradeRecord {
+        id: row.get("id"),
+        run_id: row.get("run_id"),
+        trade_index: row.get("trade_index"),
+        symbol: row.get("symbol"),
+        signal_time: row.get("signal_time"),
+        entry_time: row.get("entry_time"),
+        exit_time: row.get("exit_time"),
+        entry_price: row.get("entry_price"),
+        exit_price: row.get("exit_price"),
+        weight: row.get("weight"),
+        gross_pnl_pct: row.get("gross_pnl_pct"),
+        net_pnl_pct: row.get("net_pnl_pct"),
+        fee_slippage_drag_pct: row.get("fee_slippage_drag_pct"),
+        exit_reason: row.get("exit_reason"),
+        ranking_snapshot: row.get("ranking_snapshot"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn map_cross_asset_research_window(row: &sqlx::postgres::PgRow) -> CrossAssetResearchWindowRecord {
+    CrossAssetResearchWindowRecord {
+        id: row.get("id"),
+        run_id: row.get("run_id"),
+        window_index: row.get("window_index"),
+        window_start: row.get("window_start"),
+        window_end: row.get("window_end"),
+        trade_count: row.get("trade_count"),
+        net_pnl_pct: row.get("net_pnl_pct"),
+        compounded_pnl_pct: row.get("compounded_pnl_pct"),
+        avg_trade_pnl_pct: row.get("avg_trade_pnl_pct"),
+        median_trade_pnl_pct: row.get("median_trade_pnl_pct"),
+        win_rate: row.get("win_rate"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        worst_trade_pct: row.get("worst_trade_pct"),
+        best_trade_pct: row.get("best_trade_pct"),
+        symbol_distribution: row.get("symbol_distribution"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn map_candle_aggregation_run(row: &sqlx::postgres::PgRow) -> CandleAggregationRun {
     CandleAggregationRun {
         id: row.get("id"),
@@ -11495,6 +11993,64 @@ pub fn strategy_robustness_matrix_result_from_record(
     record: &StrategyRobustnessMatrixRunRecord,
 ) -> Result<StrategyRobustnessMatrixResult> {
     Ok(serde_json::from_value(record.summary.clone())?)
+}
+
+pub fn cross_asset_research_result_from_record(
+    record: &CrossAssetResearchRunRecord,
+) -> Result<CrossAssetResearchResult> {
+    let mut result: CrossAssetResearchResult = serde_json::from_value(record.summary.clone())?;
+    result.status = record.status.parse::<CrossAssetResearchStatus>()?;
+    result.strategy_kind = record.strategy_kind.parse::<CrossAssetStrategyKind>()?;
+    result.recommendation = record
+        .recommendation
+        .parse::<CrossAssetResearchRecommendation>()?;
+    Ok(result)
+}
+
+pub fn cross_asset_research_trade_from_record(
+    record: &CrossAssetResearchTradeRecord,
+) -> Result<CrossAssetPortfolioTrade> {
+    Ok(CrossAssetPortfolioTrade {
+        id: record.id,
+        run_id: record.run_id,
+        trade_index: record.trade_index,
+        symbol: record.symbol.clone(),
+        signal_time: record.signal_time,
+        entry_time: record.entry_time,
+        exit_time: record.exit_time,
+        entry_price: record.entry_price,
+        exit_price: record.exit_price,
+        weight: record.weight,
+        gross_pnl_pct: record.gross_pnl_pct,
+        net_pnl_pct: record.net_pnl_pct,
+        fee_slippage_drag_pct: record.fee_slippage_drag_pct,
+        exit_reason: record.exit_reason.clone(),
+        ranking_snapshot: serde_json::from_value::<CrossAssetPortfolioRankingSnapshot>(
+            record.ranking_snapshot.clone(),
+        )?,
+    })
+}
+
+pub fn cross_asset_research_window_from_record(
+    record: &CrossAssetResearchWindowRecord,
+) -> Result<CrossAssetPortfolioWindow> {
+    Ok(CrossAssetPortfolioWindow {
+        id: record.id,
+        run_id: record.run_id,
+        window_index: record.window_index,
+        window_start: record.window_start,
+        window_end: record.window_end,
+        trade_count: record.trade_count,
+        net_pnl_pct: record.net_pnl_pct,
+        compounded_pnl_pct: record.compounded_pnl_pct,
+        avg_trade_pnl_pct: record.avg_trade_pnl_pct,
+        median_trade_pnl_pct: record.median_trade_pnl_pct,
+        win_rate: record.win_rate,
+        max_drawdown_pct: record.max_drawdown_pct,
+        worst_trade_pct: record.worst_trade_pct,
+        best_trade_pct: record.best_trade_pct,
+        symbol_distribution: serde_json::from_value(record.symbol_distribution.clone())?,
+    })
 }
 
 pub fn strategy_robustness_matrix_cell_from_record(
