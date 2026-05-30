@@ -300,6 +300,25 @@ manual CANDIDATE_SHADOW_OBSERVE_ONCE job
 
 This job kind is excluded from `scheduled-jobs bootstrap-safe` because it is candidate-specific.
 
+Cross-asset market-data refresh flow:
+
+```txt
+manual CROSS_ASSET_MARKET_DATA_REFRESH job
+-> symbols + source_interval=1m + derived_intervals request
+-> existing research dataset build path per symbol
+-> public Binance REST backfill for missing 1m only
+-> deterministic 1m -> derived interval aggregation
+-> quality check per symbol/interval
+-> latest aligned 4h summary
+-> scheduled-job execution isolation check
+```
+
+This job is research market-data automation only. It may write candles, candle backfill metadata,
+research dataset build rows, and system/audit events from the existing dataset path. It must not
+mutate candidates, runner config, orders, paper accounting, testnet order state, shadow promotions,
+or live execution state. It is excluded from `scheduled-jobs bootstrap-safe` by default because it is
+an explicit data-writing maintenance job for a reviewed cross-asset research workflow.
+
 ## Strategy analytics read model
 
 Operator analytics is a read-only aggregation layer over the existing isolated persistence:

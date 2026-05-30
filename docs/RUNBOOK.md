@@ -344,6 +344,24 @@ aegis research scheduled-jobs create \
 
 Do not add candidate-specific shadow jobs to bootstrap-safe. Create them only after human review for a specific candidate.
 
+Cross-asset research candidates that depend on symbols outside `MARKET_SYMBOLS` can use a
+manual scheduled public-data refresh job. This is intentionally not part of `bootstrap-safe`
+because it writes market-data/research dataset build rows, not just monitoring results:
+
+```bash
+aegis research scheduled-jobs create \
+  --name rs-v1-cross-asset-data-refresh \
+  --kind CROSS_ASSET_MARKET_DATA_REFRESH \
+  --interval-seconds 900 \
+  --request-json '{"symbols":["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"],"source_interval":"1m","derived_intervals":["1h","4h"],"lookback_hours":12}'
+```
+
+The job uses public Binance market data only, builds missing `1m` candles through the existing
+research dataset path, derives the requested higher intervals, validates quality, reports the
+latest aligned `4h` candle, and is wrapped by scheduled-job execution isolation. It must not be
+used to accept candidates, change runner config, submit paper/testnet/live orders, or mark anything
+ready for testnet.
+
 Jobs created with `scheduled-jobs create` are disabled unless `--enabled` is passed. The safe bootstrap uses `--enable` to enable bootstrap-managed jobs. The normal VPS path is:
 
 ```bash

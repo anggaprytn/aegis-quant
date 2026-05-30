@@ -4,13 +4,14 @@ use aegis_core::{
     candle_aggregation_status, evaluate_cross_asset_shadow_observation_preview,
     relative_strength_continuation_v1_default_request, scheduled_research_next_run_at,
     CandleInterval, CrossAssetShadowObservationDecision, CrossAssetShadowObservationRunResult,
-    CrossAssetShadowObservationStatus, MarketDataQualityRequest, MarketDataSource,
-    ResearchCandidateShadowObserveOnceDecision, ResearchCandidateShadowObserveOnceRequest,
-    ResearchCandidateShadowObserveOnceResult, ResearchCandidateStatus,
-    ScheduledResearchBootstrapSafePlanItem, ScheduledResearchBootstrapSafeRequest,
-    ScheduledResearchJob, ScheduledResearchJobKind, ScheduledResearchJobRequest,
-    ScheduledResearchJobRun, ScheduledResearchJobRunStatus, ScheduledResearchJobStatus, Symbol,
-    TestnetShadowRunRequest, TestnetShadowRunnerConfig, RELATIVE_STRENGTH_CONTINUATION_V1_ID,
+    CrossAssetShadowObservationStatus, MarketDataQualityRequest, MarketDataQualityStatus,
+    MarketDataSource, ResearchCandidateShadowObserveOnceDecision,
+    ResearchCandidateShadowObserveOnceRequest, ResearchCandidateShadowObserveOnceResult,
+    ResearchCandidateStatus, ResearchDatasetBuildRequest, ScheduledResearchBootstrapSafePlanItem,
+    ScheduledResearchBootstrapSafeRequest, ScheduledResearchJob, ScheduledResearchJobKind,
+    ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobRunStatus,
+    ScheduledResearchJobStatus, Symbol, TestnetShadowRunRequest, TestnetShadowRunnerConfig,
+    RELATIVE_STRENGTH_CONTINUATION_V1_ID,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -25,6 +26,8 @@ use db::{
     summarize_candle_continuity_report, try_claim_scheduled_research_job,
     ResearchCandidateShadowPerformanceWindow,
 };
+use market_ingest::ResearchDatasetService;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{error, info, warn};
@@ -84,6 +87,21 @@ struct CandidateShadowObserveOnceScheduledRequest {
 #[derive(Debug, Clone, Deserialize)]
 struct CrossAssetCandidateShadowObserveOnceScheduledRequest {
     candidate_id: Uuid,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CrossAssetMarketDataRefreshScheduledRequest {
+    symbols: Vec<String>,
+    #[serde(default = "default_refresh_source_interval")]
+    source_interval: String,
+    derived_intervals: Vec<String>,
+    lookback_hours: i64,
+    #[serde(default)]
+    exchange: MarketDataSource,
+}
+
+fn default_refresh_source_interval() -> String {
+    CandleInterval::OneMinute.as_str().to_string()
 }
 
 pub fn build_safe_bootstrap_scheduled_research_jobs(
@@ -725,6 +743,28 @@ async fn execute_job_kind(
                 artifact_id: None,
             })
         }
+        ScheduledResearchJobKind::CrossAssetMarketDataRefresh => {
+            let result =
+                refresh_cross_asset_market_data_for_scheduled_job(state, job, _correlation_id)
+                    .await
+                    .context("failed to run CROSS_ASSET_MARKET_DATA_REFRESH job")?;
+            let warning_count = result
+                .get("warnings")
+                .and_then(Value::as_array)
+                .map(|warnings| warnings.len())
+                .unwrap_or(0);
+            Ok(ScheduledJobExecution {
+                status: if warning_count > 0 {
+                    ScheduledResearchJobRunStatus::PartialSuccess
+                } else {
+                    ScheduledResearchJobRunStatus::Completed
+                },
+                result,
+                error: None,
+                artifact_type: None,
+                artifact_id: None,
+            })
+        }
         ScheduledResearchJobKind::OperatorReport => {
             let (total_runs, failed_runs) = db::count_recent_scheduled_research_runs(
                 &state.db_pool,
@@ -841,6 +881,278 @@ async fn execute_job_kind(
             })
         }
     }
+}
+
+async fn refresh_cross_asset_market_data_for_scheduled_job(
+    state: &AppState,
+    job: &ScheduledResearchJob,
+    correlation_id: Uuid,
+) -> Result<Value> {
+    let request = parse_cross_asset_market_data_refresh_request(job)?;
+    let end_time = floor_datetime_to_interval(Utc::now(), CandleInterval::OneHour);
+    let start_time = largest_refresh_interval(&request.derived_intervals)
+        .bucket_start(end_time - Duration::hours(request.lookback_hours));
+    let interval_names = request
+        .derived_intervals
+        .iter()
+        .map(|interval| interval.as_str().to_string())
+        .collect::<Vec<_>>();
+    let service = ResearchDatasetService::new(
+        state.db_pool.clone(),
+        state.config.app_name.clone(),
+        state.market_config.binance_rest_base_url.clone(),
+    );
+
+    let mut symbol_results = Vec::new();
+    let mut warnings = Vec::new();
+    let mut latest_4h_by_symbol = BTreeMap::new();
+
+    for symbol in &request.symbols {
+        let build_request = ResearchDatasetBuildRequest {
+            exchange: request.exchange,
+            symbol: symbol.as_str().to_string(),
+            intervals: interval_names.clone(),
+            start_time,
+            end_time,
+            required_coverage_pct: Decimal::new(100, 0),
+            correlation_id: Some(correlation_id),
+        };
+        let build = service
+            .build_dataset(build_request)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to refresh public market data for {}",
+                    symbol.as_str()
+                )
+            })?;
+
+        let mut quality_reports = Vec::new();
+        for interval in &request.derived_intervals {
+            let quality_request = MarketDataQualityRequest {
+                exchange: request.exchange,
+                symbol: symbol.as_str().to_string(),
+                interval: interval.as_str().to_string(),
+                start_time,
+                end_time,
+                expected_interval_seconds: Some(interval.duration().num_seconds()),
+                max_allowed_gap_count: Some(0),
+                max_allowed_gap_pct: None,
+            };
+            let report = summarize_candle_continuity_report(&state.db_pool, &quality_request)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to validate refreshed {} {} candles",
+                        symbol.as_str(),
+                        interval.as_str()
+                    )
+                })?;
+            if report.status != MarketDataQualityStatus::Good || report.gap_count != 0 {
+                warnings.push(json!({
+                    "symbol": symbol.as_str(),
+                    "interval": interval.as_str(),
+                    "code": "refreshed_data_quality_not_good",
+                    "status": report.status.as_str(),
+                    "gap_count": report.gap_count,
+                    "missing_candle_count": report.missing_candle_count
+                }));
+            }
+            quality_reports.push(json!({
+                "symbol": report.symbol,
+                "interval": report.interval,
+                "status": report.status.as_str(),
+                "gap_count": report.gap_count,
+                "missing_candle_count": report.missing_candle_count,
+                "coverage_pct": report.coverage_pct,
+                "first_candle_time": report.first_candle_time,
+                "last_candle_time": report.last_candle_time
+            }));
+        }
+
+        let latest_intervals = latest_interval_times(
+            &state.db_pool,
+            request.exchange,
+            symbol,
+            &request.derived_intervals,
+        )
+        .await?;
+        if let Some(latest_4h) = latest_intervals.get(CandleInterval::FourHours.as_str()) {
+            latest_4h_by_symbol.insert(symbol.as_str().to_string(), *latest_4h);
+        }
+
+        symbol_results.push(json!({
+            "symbol": symbol.as_str(),
+            "build_id": build.build_id,
+            "build_status": build.status.as_str(),
+            "start_time": build.start_time,
+            "end_time": build.end_time,
+            "steps": build.steps,
+            "coverage_after": build.coverage_after,
+            "quality": quality_reports,
+            "latest_intervals": latest_intervals
+        }));
+    }
+
+    let latest_aligned_4h = if request
+        .derived_intervals
+        .contains(&CandleInterval::FourHours)
+        && latest_4h_by_symbol.len() == request.symbols.len()
+    {
+        latest_4h_by_symbol.values().min().copied()
+    } else {
+        if request
+            .derived_intervals
+            .contains(&CandleInterval::FourHours)
+        {
+            warnings.push(json!({
+                "code": "missing_latest_4h_for_one_or_more_symbols",
+                "expected_symbols": request.symbols.iter().map(|symbol| symbol.as_str()).collect::<Vec<_>>(),
+                "available_symbols": latest_4h_by_symbol.keys().cloned().collect::<Vec<_>>()
+            }));
+        }
+        None
+    };
+
+    Ok(json!({
+        "status": if warnings.is_empty() { "COMPLETED" } else { "PARTIAL_SUCCESS" },
+        "exchange": request.exchange.as_str(),
+        "symbols": request.symbols.iter().map(|symbol| symbol.as_str()).collect::<Vec<_>>(),
+        "source_interval": request.source_interval.as_str(),
+        "derived_intervals": interval_names,
+        "lookback_hours": request.lookback_hours,
+        "window_start": start_time,
+        "window_end": end_time,
+        "latest_aligned_4h": latest_aligned_4h,
+        "latest_4h_by_symbol": latest_4h_by_symbol,
+        "warnings": warnings,
+        "symbols_refreshed": symbol_results,
+        "public_market_data_only": true,
+        "candidate_mutation": false,
+        "no_order_submission": true,
+        "execution_authority": "NONE"
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedCrossAssetMarketDataRefreshRequest {
+    symbols: Vec<Symbol>,
+    source_interval: CandleInterval,
+    derived_intervals: Vec<CandleInterval>,
+    lookback_hours: i64,
+    exchange: MarketDataSource,
+}
+
+fn parse_cross_asset_market_data_refresh_request(
+    job: &ScheduledResearchJob,
+) -> Result<ParsedCrossAssetMarketDataRefreshRequest> {
+    let raw: CrossAssetMarketDataRefreshScheduledRequest =
+        serde_json::from_value(job.request.clone())
+            .context("CROSS_ASSET_MARKET_DATA_REFRESH request is invalid")?;
+    if raw.symbols.is_empty() {
+        anyhow::bail!("CROSS_ASSET_MARKET_DATA_REFRESH requires at least one symbol");
+    }
+    if raw.lookback_hours <= 0 {
+        anyhow::bail!("CROSS_ASSET_MARKET_DATA_REFRESH requires positive lookback_hours");
+    }
+    let source_interval = raw.source_interval.parse::<CandleInterval>()?;
+    if source_interval != CandleInterval::OneMinute {
+        anyhow::bail!("CROSS_ASSET_MARKET_DATA_REFRESH only supports source_interval=1m");
+    }
+    if raw.derived_intervals.is_empty() {
+        anyhow::bail!("CROSS_ASSET_MARKET_DATA_REFRESH requires derived_intervals");
+    }
+
+    let mut symbols = Vec::new();
+    for raw_symbol in raw.symbols {
+        let symbol = Symbol::new(raw_symbol)?;
+        if !symbols.contains(&symbol) {
+            symbols.push(symbol);
+        }
+    }
+
+    let mut derived_intervals = Vec::new();
+    for raw_interval in raw.derived_intervals {
+        let interval = raw_interval.parse::<CandleInterval>()?;
+        if interval == CandleInterval::OneMinute {
+            anyhow::bail!(
+                "CROSS_ASSET_MARKET_DATA_REFRESH derived_intervals must be higher than 1m"
+            );
+        }
+        if !interval.is_aggregated_from_one_minute() {
+            anyhow::bail!(
+                "CROSS_ASSET_MARKET_DATA_REFRESH interval {} cannot be derived from 1m",
+                interval.as_str()
+            );
+        }
+        if !derived_intervals.contains(&interval) {
+            derived_intervals.push(interval);
+        }
+    }
+
+    Ok(ParsedCrossAssetMarketDataRefreshRequest {
+        symbols,
+        source_interval,
+        derived_intervals,
+        lookback_hours: raw.lookback_hours,
+        exchange: raw.exchange,
+    })
+}
+
+async fn latest_interval_times(
+    pool: &db::PgPool,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    intervals: &[CandleInterval],
+) -> Result<BTreeMap<String, DateTime<Utc>>> {
+    let mut latest = BTreeMap::new();
+    for interval in intervals {
+        if let Some(open_time) =
+            get_latest_closed_candle_open_time(pool, exchange, symbol, *interval).await?
+        {
+            latest.insert(interval.as_str().to_string(), open_time);
+        }
+    }
+    Ok(latest)
+}
+
+async fn get_latest_closed_candle_open_time(
+    pool: &db::PgPool,
+    exchange: MarketDataSource,
+    symbol: &Symbol,
+    interval: CandleInterval,
+) -> Result<Option<DateTime<Utc>>> {
+    let latest = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        r#"
+        SELECT MAX(open_time)
+        FROM candles
+        WHERE exchange = $1
+          AND symbol = $2
+          AND interval = $3
+          AND is_closed = TRUE
+        "#,
+    )
+    .bind(exchange.as_str())
+    .bind(symbol.as_str())
+    .bind(interval.as_str())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(latest)
+}
+
+fn largest_refresh_interval(intervals: &[CandleInterval]) -> CandleInterval {
+    intervals
+        .iter()
+        .copied()
+        .max_by_key(|interval| interval.duration().num_seconds())
+        .unwrap_or(CandleInterval::OneHour)
+}
+
+fn floor_datetime_to_interval(value: DateTime<Utc>, interval: CandleInterval) -> DateTime<Utc> {
+    let seconds = interval.duration().num_seconds();
+    let floored = value.timestamp().div_euclid(seconds) * seconds;
+    DateTime::<Utc>::from_timestamp(floored, 0).unwrap_or(value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1590,7 +1902,8 @@ mod tests {
         )));
         assert!(!jobs.iter().any(|job| matches!(
             job.kind,
-            ScheduledResearchJobKind::CandidateShadowObserveOnce
+            ScheduledResearchJobKind::CrossAssetMarketDataRefresh
+                | ScheduledResearchJobKind::CandidateShadowObserveOnce
                 | ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
                 | ScheduledResearchJobKind::ResearchBatch
                 | ScheduledResearchJobKind::ResearchCampaign
@@ -1604,7 +1917,13 @@ mod tests {
         assert!(!is_safe_monitoring_job_kind(
             ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
         ));
+        assert!(!is_safe_monitoring_job_kind(
+            ScheduledResearchJobKind::CrossAssetMarketDataRefresh
+        ));
         assert!("CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE"
+            .parse::<ScheduledResearchJobKind>()
+            .is_ok());
+        assert!("CROSS_ASSET_MARKET_DATA_REFRESH"
             .parse::<ScheduledResearchJobKind>()
             .is_ok());
     }
@@ -1630,9 +1949,72 @@ mod tests {
                 | ScheduledResearchJobKind::ResearchCampaign
                 | ScheduledResearchJobKind::RegimeDiscovery
                 | ScheduledResearchJobKind::RobustnessMatrix
+                | ScheduledResearchJobKind::CrossAssetMarketDataRefresh
                 | ScheduledResearchJobKind::CandidateShadowObserveOnce
                 | ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
         )));
+    }
+
+    #[test]
+    fn cross_asset_market_data_refresh_request_normalizes_and_deduplicates() {
+        let mut scheduled = job(0);
+        scheduled.kind = ScheduledResearchJobKind::CrossAssetMarketDataRefresh;
+        scheduled.request = json!({
+            "symbols": ["btcusdt", "BTCUSDT", "ethusdt"],
+            "source_interval": "1m",
+            "derived_intervals": ["1h", "4h", "4h"],
+            "lookback_hours": 12
+        });
+
+        let parsed = parse_cross_asset_market_data_refresh_request(&scheduled).unwrap();
+
+        assert_eq!(
+            parsed
+                .symbols
+                .iter()
+                .map(|symbol| symbol.as_str())
+                .collect::<Vec<_>>(),
+            vec!["BTCUSDT", "ETHUSDT"]
+        );
+        assert_eq!(parsed.source_interval, CandleInterval::OneMinute);
+        assert_eq!(
+            parsed.derived_intervals,
+            vec![CandleInterval::OneHour, CandleInterval::FourHours]
+        );
+        assert_eq!(parsed.lookback_hours, 12);
+        assert_eq!(parsed.exchange, MarketDataSource::Binance);
+    }
+
+    #[test]
+    fn cross_asset_market_data_refresh_rejects_non_public_source_interval() {
+        let mut scheduled = job(0);
+        scheduled.kind = ScheduledResearchJobKind::CrossAssetMarketDataRefresh;
+        scheduled.request = json!({
+            "symbols": ["BTCUSDT"],
+            "source_interval": "1h",
+            "derived_intervals": ["4h"],
+            "lookback_hours": 12
+        });
+
+        let err = parse_cross_asset_market_data_refresh_request(&scheduled).unwrap_err();
+        assert!(err.to_string().contains("source_interval=1m"));
+    }
+
+    #[test]
+    fn cross_asset_market_data_refresh_rejects_1m_as_derived_interval() {
+        let mut scheduled = job(0);
+        scheduled.kind = ScheduledResearchJobKind::CrossAssetMarketDataRefresh;
+        scheduled.request = json!({
+            "symbols": ["BTCUSDT"],
+            "source_interval": "1m",
+            "derived_intervals": ["1m"],
+            "lookback_hours": 12
+        });
+
+        let err = parse_cross_asset_market_data_refresh_request(&scheduled).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("derived_intervals must be higher than 1m"));
     }
 
     #[test]

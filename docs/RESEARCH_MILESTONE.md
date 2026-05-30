@@ -28,6 +28,7 @@ Aegis is operating as a research control plane.
 - Unique-candle shadow observation.
 - Scheduled safe monitoring.
 - Candidate-specific scheduled shadow observation job kind.
+- Manual scheduled cross-asset public market-data refresh for research observation freshness.
 
 ## First Real Candidate Family
 

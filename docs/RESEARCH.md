@@ -156,6 +156,14 @@ Preview must show the current config, proposed config, structured diff, blockers
 
 This job kind is intentionally excluded from `scheduled-jobs bootstrap-safe` because it is candidate-specific.
 
+`CROSS_ASSET_MARKET_DATA_REFRESH` is a manually created scheduled research job for cross-asset
+observation data freshness. It uses public market data only, runs the existing research dataset
+build path for each requested symbol, derives requested higher intervals from stored `1m` candles,
+reports quality/gaps and latest aligned `4h`, and is wrapped by execution-table isolation. It does
+not accept, promote, or otherwise mutate candidates and must not submit paper, testnet, or live
+orders. It is intentionally excluded from `scheduled-jobs bootstrap-safe` because it is a
+data-writing maintenance job, not a read-only monitoring job.
+
 ## Experiment Plan Runner Semantics
 
 `POST /research/experiment-plans/:id/run-preview` is not a dry run in the sense of being invisible. It persists a plan-run history record so the operator has an audit trail of previews and blockers.

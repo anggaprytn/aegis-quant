@@ -160,6 +160,7 @@ pub enum ScheduledResearchJobKind {
     ProviderHealth,
     MarketDataQuality,
     AggregationStatus,
+    CrossAssetMarketDataRefresh,
     CandidateShadowObserveOnce,
     CrossAssetCandidateShadowObserveOnce,
     ResearchBatch,
@@ -175,6 +176,7 @@ impl ScheduledResearchJobKind {
             Self::ProviderHealth => "PROVIDER_HEALTH",
             Self::MarketDataQuality => "MARKET_DATA_QUALITY",
             Self::AggregationStatus => "AGGREGATION_STATUS",
+            Self::CrossAssetMarketDataRefresh => "CROSS_ASSET_MARKET_DATA_REFRESH",
             Self::CandidateShadowObserveOnce => "CANDIDATE_SHADOW_OBSERVE_ONCE",
             Self::CrossAssetCandidateShadowObserveOnce => {
                 "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE"
@@ -193,6 +195,7 @@ impl ScheduledResearchJobKind {
             Self::ProviderHealth
                 | Self::MarketDataQuality
                 | Self::AggregationStatus
+                | Self::CrossAssetMarketDataRefresh
                 | Self::CandidateShadowObserveOnce
                 | Self::CrossAssetCandidateShadowObserveOnce
                 | Self::ResearchBatch
@@ -212,6 +215,7 @@ impl std::str::FromStr for ScheduledResearchJobKind {
             "PROVIDER_HEALTH" => Ok(Self::ProviderHealth),
             "MARKET_DATA_QUALITY" => Ok(Self::MarketDataQuality),
             "AGGREGATION_STATUS" => Ok(Self::AggregationStatus),
+            "CROSS_ASSET_MARKET_DATA_REFRESH" => Ok(Self::CrossAssetMarketDataRefresh),
             "CANDIDATE_SHADOW_OBSERVE_ONCE" => Ok(Self::CandidateShadowObserveOnce),
             "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE" => {
                 Ok(Self::CrossAssetCandidateShadowObserveOnce)
@@ -24145,6 +24149,16 @@ mod tests {
         };
         assert!(request.validate().is_ok());
         assert!(!request.enabled);
+    }
+
+    #[test]
+    fn cross_asset_market_data_refresh_is_safe_research_job_kind() {
+        let kind = "CROSS_ASSET_MARKET_DATA_REFRESH"
+            .parse::<ScheduledResearchJobKind>()
+            .unwrap();
+        assert_eq!(kind, ScheduledResearchJobKind::CrossAssetMarketDataRefresh);
+        assert!(kind.is_safe_research_kind());
+        assert_eq!(kind.as_str(), "CROSS_ASSET_MARKET_DATA_REFRESH");
     }
 
     #[test]

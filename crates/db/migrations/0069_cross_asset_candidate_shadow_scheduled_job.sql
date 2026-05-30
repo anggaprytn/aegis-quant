@@ -7,6 +7,7 @@ ALTER TABLE scheduled_research_jobs
             'PROVIDER_HEALTH',
             'MARKET_DATA_QUALITY',
             'AGGREGATION_STATUS',
+            'CROSS_ASSET_MARKET_DATA_REFRESH',
             'CANDIDATE_SHADOW_OBSERVE_ONCE',
             'CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE',
             'RESEARCH_BATCH',
