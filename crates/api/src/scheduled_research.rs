@@ -24,9 +24,11 @@ use db::{
     mark_scheduled_research_job_after_run, research_candidate_from_record,
     scheduled_research_job_from_record, scheduled_research_job_run_from_record,
     summarize_candle_continuity_report, try_claim_scheduled_research_job,
+    upsert_derivatives_funding_rates, upsert_derivatives_open_interest_snapshots,
+    upsert_derivatives_positioning_snapshots, DerivativesContextCoverage,
     ResearchCandidateShadowPerformanceWindow,
 };
-use market_ingest::ResearchDatasetService;
+use market_ingest::{BinanceUsdMFuturesPublicClient, ResearchDatasetService};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -100,8 +102,51 @@ struct CrossAssetMarketDataRefreshScheduledRequest {
     exchange: MarketDataSource,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct DerivativesContextRefreshScheduledRequest {
+    #[serde(default = "default_derivatives_exchange")]
+    exchange: String,
+    symbols: Vec<String>,
+    #[serde(default = "default_funding_lookback_hours")]
+    funding_lookback_hours: i64,
+    #[serde(default = "default_derivatives_period")]
+    oi_period: String,
+    #[serde(default = "default_derivatives_period")]
+    positioning_period: String,
+    #[serde(default = "default_positioning_lookback_days")]
+    positioning_lookback_days: i64,
+    #[serde(default = "default_true")]
+    include_funding: bool,
+    #[serde(default = "default_true")]
+    include_open_interest: bool,
+    #[serde(default = "default_true")]
+    include_global_long_short: bool,
+    #[serde(default = "default_true")]
+    include_taker_buy_sell: bool,
+}
+
 fn default_refresh_source_interval() -> String {
     CandleInterval::OneMinute.as_str().to_string()
+}
+
+fn default_derivatives_exchange() -> String {
+    "binance_usdm".to_string()
+}
+
+fn default_funding_lookback_hours() -> i64 {
+    72
+}
+
+fn default_derivatives_period() -> String {
+    "4h".to_string()
+}
+
+fn default_positioning_lookback_days() -> i64 {
+    29
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn build_safe_bootstrap_scheduled_research_jobs(
@@ -765,6 +810,18 @@ async fn execute_job_kind(
                 artifact_id: None,
             })
         }
+        ScheduledResearchJobKind::DerivativesContextRefresh => {
+            let result = refresh_derivatives_context_for_scheduled_job(state, job)
+                .await
+                .context("failed to run DERIVATIVES_CONTEXT_REFRESH job")?;
+            Ok(ScheduledJobExecution {
+                status: ScheduledResearchJobRunStatus::Completed,
+                result,
+                error: None,
+                artifact_type: None,
+                artifact_id: None,
+            })
+        }
         ScheduledResearchJobKind::OperatorReport => {
             let (total_runs, failed_runs) = db::count_recent_scheduled_research_runs(
                 &state.db_pool,
@@ -881,6 +938,166 @@ async fn execute_job_kind(
             })
         }
     }
+}
+
+async fn refresh_derivatives_context_for_scheduled_job(
+    state: &AppState,
+    job: &ScheduledResearchJob,
+) -> Result<Value> {
+    let request: DerivativesContextRefreshScheduledRequest =
+        serde_json::from_value(job.request.clone())?;
+    if request.exchange.trim().to_ascii_lowercase() != "binance_usdm" {
+        anyhow::bail!("DERIVATIVES_CONTEXT_REFRESH only supports exchange=binance_usdm");
+    }
+    if request.symbols.is_empty() {
+        anyhow::bail!("DERIVATIVES_CONTEXT_REFRESH requires at least one symbol");
+    }
+    let symbols = request
+        .symbols
+        .iter()
+        .map(|symbol| Symbol::new(symbol.clone()).map(|value| value.as_str().to_string()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let client = BinanceUsdMFuturesPublicClient::production();
+    let now = Utc::now();
+    let funding_start = now - Duration::hours(request.funding_lookback_hours.clamp(1, 24 * 30));
+    let recent_start = now - Duration::days(request.positioning_lookback_days.clamp(1, 29));
+    let mut rows = Vec::new();
+
+    for symbol in symbols {
+        if request.include_funding {
+            let fetched = client
+                .fetch_funding_rate_history(&symbol, funding_start, now)
+                .await?;
+            let upsert = upsert_derivatives_funding_rates(&state.db_pool, &fetched).await?;
+            let coverage =
+                db::derivatives_funding_coverage(&state.db_pool, "binance", &symbol).await?;
+            rows.push(derivatives_refresh_row(
+                &symbol,
+                "funding",
+                None,
+                upsert.inserted,
+                upsert.updated,
+                upsert.skipped,
+                fetched.len() as i32,
+                coverage,
+            ));
+        }
+        if request.include_open_interest {
+            let fetched = client
+                .fetch_open_interest_history(&symbol, &request.oi_period, recent_start, now)
+                .await?;
+            let upsert =
+                upsert_derivatives_open_interest_snapshots(&state.db_pool, &fetched).await?;
+            let coverage = db::derivatives_open_interest_coverage(
+                &state.db_pool,
+                "binance",
+                &symbol,
+                &request.oi_period,
+            )
+            .await?;
+            rows.push(derivatives_refresh_row(
+                &symbol,
+                "open_interest",
+                Some(&request.oi_period),
+                upsert.inserted,
+                upsert.updated,
+                upsert.skipped,
+                fetched.len() as i32,
+                coverage,
+            ));
+        }
+        if request.include_global_long_short {
+            let fetched = client
+                .fetch_global_long_short_ratio(
+                    &symbol,
+                    &request.positioning_period,
+                    recent_start,
+                    now,
+                )
+                .await?;
+            let upsert = upsert_derivatives_positioning_snapshots(&state.db_pool, &fetched).await?;
+            let coverage = db::derivatives_positioning_coverage(
+                &state.db_pool,
+                "binance",
+                &symbol,
+                "global-long-short",
+                &request.positioning_period,
+            )
+            .await?;
+            rows.push(derivatives_refresh_row(
+                &symbol,
+                "global-long-short",
+                Some(&request.positioning_period),
+                upsert.inserted,
+                upsert.updated,
+                upsert.skipped,
+                fetched.len() as i32,
+                coverage,
+            ));
+        }
+        if request.include_taker_buy_sell {
+            let fetched = client
+                .fetch_taker_buy_sell_volume(
+                    &symbol,
+                    &request.positioning_period,
+                    recent_start,
+                    now,
+                )
+                .await?;
+            let upsert = upsert_derivatives_positioning_snapshots(&state.db_pool, &fetched).await?;
+            let coverage = db::derivatives_positioning_coverage(
+                &state.db_pool,
+                "binance",
+                &symbol,
+                "taker-buy-sell",
+                &request.positioning_period,
+            )
+            .await?;
+            rows.push(derivatives_refresh_row(
+                &symbol,
+                "taker-buy-sell",
+                Some(&request.positioning_period),
+                upsert.inserted,
+                upsert.updated,
+                upsert.skipped,
+                fetched.len() as i32,
+                coverage,
+            ));
+        }
+    }
+
+    Ok(json!({
+        "exchange": "binance_usdm",
+        "execution_authority": "NONE",
+        "public_endpoints_only": true,
+        "no_api_secrets": true,
+        "no_candidate_mutation": true,
+        "no_execution_mutation": true,
+        "rows": rows
+    }))
+}
+
+fn derivatives_refresh_row(
+    symbol: &str,
+    metric: &str,
+    period: Option<&str>,
+    inserted: i32,
+    updated: i32,
+    skipped: i32,
+    fetched_rows: i32,
+    coverage: DerivativesContextCoverage,
+) -> Value {
+    json!({
+        "symbol": symbol,
+        "metric": metric,
+        "period": period,
+        "fetched_rows": fetched_rows,
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "latest_timestamp": coverage.last_timestamp,
+        "total_rows": coverage.rows
+    })
 }
 
 async fn refresh_cross_asset_market_data_for_scheduled_job(
@@ -1903,6 +2120,7 @@ mod tests {
         assert!(!jobs.iter().any(|job| matches!(
             job.kind,
             ScheduledResearchJobKind::CrossAssetMarketDataRefresh
+                | ScheduledResearchJobKind::DerivativesContextRefresh
                 | ScheduledResearchJobKind::CandidateShadowObserveOnce
                 | ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
                 | ScheduledResearchJobKind::ResearchBatch
@@ -1920,10 +2138,16 @@ mod tests {
         assert!(!is_safe_monitoring_job_kind(
             ScheduledResearchJobKind::CrossAssetMarketDataRefresh
         ));
+        assert!(!is_safe_monitoring_job_kind(
+            ScheduledResearchJobKind::DerivativesContextRefresh
+        ));
         assert!("CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE"
             .parse::<ScheduledResearchJobKind>()
             .is_ok());
         assert!("CROSS_ASSET_MARKET_DATA_REFRESH"
+            .parse::<ScheduledResearchJobKind>()
+            .is_ok());
+        assert!("DERIVATIVES_CONTEXT_REFRESH"
             .parse::<ScheduledResearchJobKind>()
             .is_ok());
     }
@@ -1950,9 +2174,34 @@ mod tests {
                 | ScheduledResearchJobKind::RegimeDiscovery
                 | ScheduledResearchJobKind::RobustnessMatrix
                 | ScheduledResearchJobKind::CrossAssetMarketDataRefresh
+                | ScheduledResearchJobKind::DerivativesContextRefresh
                 | ScheduledResearchJobKind::CandidateShadowObserveOnce
                 | ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
         )));
+    }
+
+    #[test]
+    fn derivatives_context_refresh_request_parses_with_defaults() {
+        let mut scheduled = job(0);
+        scheduled.kind = ScheduledResearchJobKind::DerivativesContextRefresh;
+        scheduled.request = json!({
+            "symbols": ["BTCUSDT", "ETHUSDT"],
+            "include_open_interest": false
+        });
+
+        let parsed: DerivativesContextRefreshScheduledRequest =
+            serde_json::from_value(scheduled.request).unwrap();
+
+        assert_eq!(parsed.exchange, "binance_usdm");
+        assert_eq!(parsed.symbols, vec!["BTCUSDT", "ETHUSDT"]);
+        assert_eq!(parsed.funding_lookback_hours, 72);
+        assert_eq!(parsed.oi_period, "4h");
+        assert_eq!(parsed.positioning_period, "4h");
+        assert_eq!(parsed.positioning_lookback_days, 29);
+        assert!(parsed.include_funding);
+        assert!(!parsed.include_open_interest);
+        assert!(parsed.include_global_long_short);
+        assert!(parsed.include_taker_buy_sell);
     }
 
     #[test]

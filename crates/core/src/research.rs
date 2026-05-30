@@ -161,6 +161,7 @@ pub enum ScheduledResearchJobKind {
     MarketDataQuality,
     AggregationStatus,
     CrossAssetMarketDataRefresh,
+    DerivativesContextRefresh,
     CandidateShadowObserveOnce,
     CrossAssetCandidateShadowObserveOnce,
     ResearchBatch,
@@ -177,6 +178,7 @@ impl ScheduledResearchJobKind {
             Self::MarketDataQuality => "MARKET_DATA_QUALITY",
             Self::AggregationStatus => "AGGREGATION_STATUS",
             Self::CrossAssetMarketDataRefresh => "CROSS_ASSET_MARKET_DATA_REFRESH",
+            Self::DerivativesContextRefresh => "DERIVATIVES_CONTEXT_REFRESH",
             Self::CandidateShadowObserveOnce => "CANDIDATE_SHADOW_OBSERVE_ONCE",
             Self::CrossAssetCandidateShadowObserveOnce => {
                 "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE"
@@ -196,6 +198,7 @@ impl ScheduledResearchJobKind {
                 | Self::MarketDataQuality
                 | Self::AggregationStatus
                 | Self::CrossAssetMarketDataRefresh
+                | Self::DerivativesContextRefresh
                 | Self::CandidateShadowObserveOnce
                 | Self::CrossAssetCandidateShadowObserveOnce
                 | Self::ResearchBatch
@@ -216,6 +219,7 @@ impl std::str::FromStr for ScheduledResearchJobKind {
             "MARKET_DATA_QUALITY" => Ok(Self::MarketDataQuality),
             "AGGREGATION_STATUS" => Ok(Self::AggregationStatus),
             "CROSS_ASSET_MARKET_DATA_REFRESH" => Ok(Self::CrossAssetMarketDataRefresh),
+            "DERIVATIVES_CONTEXT_REFRESH" => Ok(Self::DerivativesContextRefresh),
             "CANDIDATE_SHADOW_OBSERVE_ONCE" => Ok(Self::CandidateShadowObserveOnce),
             "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE" => {
                 Ok(Self::CrossAssetCandidateShadowObserveOnce)
@@ -24238,6 +24242,16 @@ mod tests {
         assert_eq!(kind, ScheduledResearchJobKind::CrossAssetMarketDataRefresh);
         assert!(kind.is_safe_research_kind());
         assert_eq!(kind.as_str(), "CROSS_ASSET_MARKET_DATA_REFRESH");
+    }
+
+    #[test]
+    fn derivatives_context_refresh_is_safe_research_job_kind() {
+        let kind = "DERIVATIVES_CONTEXT_REFRESH"
+            .parse::<ScheduledResearchJobKind>()
+            .unwrap();
+        assert_eq!(kind, ScheduledResearchJobKind::DerivativesContextRefresh);
+        assert!(kind.is_safe_research_kind());
+        assert_eq!(kind.as_str(), "DERIVATIVES_CONTEXT_REFRESH");
     }
 
     #[test]

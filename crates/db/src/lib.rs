@@ -57,6 +57,8 @@ pub const TESTNET_SHADOW_RUNNER_STATE_ID: Uuid =
 pub use sqlx::PgPool;
 mod research;
 pub use research::*;
+mod derivatives;
+pub use derivatives::*;
 pub mod test_support;
 
 #[derive(Debug, Clone)]

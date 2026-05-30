@@ -13,7 +13,7 @@ use aegis_core::{
     TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use clap::Parser;
 use cli::api::{
     build_backtest_request, build_candle_aggregation_request, build_candle_backfill_request,
@@ -37,7 +37,9 @@ use cli::cli::{
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
     ResearchCandidateCommands, ResearchCommands, ResearchCrossAssetCommands,
     ResearchCrossAssetRobustnessMatrixCommands, ResearchCrossAssetRobustnessMatrixRunArgs,
-    ResearchCrossAssetRunArgs, ResearchDataCommands, ResearchExperimentPlanCommands,
+    ResearchCrossAssetRunArgs, ResearchDataCommands, ResearchDerivativesCommands,
+    ResearchDerivativesFundingCommands, ResearchDerivativesOiCommands,
+    ResearchDerivativesPositioningCommands, ResearchExperimentPlanCommands,
     ResearchHypothesisCommands, ResearchRegimeCalibrationCommands, ResearchRegimeDatasetCommands,
     ResearchRegimeDiscoveryCommands, ResearchRobustnessMatrixCommands,
     ResearchScheduledJobCommands, ResearchStaleRunCommands, RiskCommands, RiskConfigCommands,
@@ -50,6 +52,160 @@ use cli::config::{
 use cli::output;
 use serde::{Deserialize, Serialize};
 use std::fs;
+
+const BINANCE_USDM_PUBLIC_BASE_URL: &str = "https://fapi.binance.com";
+
+async fn connect_research_db() -> anyhow::Result<db::PgPool> {
+    let database_url = std::env::var("DATABASE_URL")
+        .context("DATABASE_URL must be set for local research derivatives commands")?;
+    db::connect_pool(&db::DbConfig {
+        database_url,
+        max_connections: std::env::var("DATABASE_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(5),
+    })
+    .await
+}
+
+async fn run_derivatives_funding_backfill(
+    symbol: &str,
+    start_time: chrono::DateTime<Utc>,
+    end_time: chrono::DateTime<Utc>,
+) -> anyhow::Result<db::DerivativesBackfillSummary> {
+    let pool = connect_research_db().await?;
+    let client = market_ingest::BinanceUsdMFuturesPublicClient::new(BINANCE_USDM_PUBLIC_BASE_URL);
+    let rows = client
+        .fetch_funding_rate_history(symbol, start_time, end_time)
+        .await?;
+    let upsert = db::upsert_derivatives_funding_rates(&pool, &rows).await?;
+    let normalized_symbol = symbol.trim().to_ascii_uppercase();
+    let coverage = db::derivatives_funding_coverage(&pool, "binance", &normalized_symbol).await?;
+    Ok(db::DerivativesBackfillSummary {
+        exchange: "binance".to_string(),
+        symbol: normalized_symbol,
+        data_kind: "funding".to_string(),
+        period: None,
+        metric: None,
+        requested_start: Some(start_time),
+        requested_end: Some(end_time),
+        fetched_rows: rows.len() as i32,
+        inserted: upsert.inserted,
+        updated: upsert.updated,
+        skipped: upsert.skipped,
+        coverage,
+        retention_note: Some(
+            "Funding history is the only derivatives dataset here intended for long historical attribution."
+                .to_string(),
+        ),
+    })
+}
+
+async fn run_derivatives_oi_backfill(
+    symbol: &str,
+    period: &str,
+    lookback_days: i64,
+) -> anyhow::Result<db::DerivativesBackfillSummary> {
+    let pool = connect_research_db().await?;
+    let client = market_ingest::BinanceUsdMFuturesPublicClient::new(BINANCE_USDM_PUBLIC_BASE_URL);
+    let end_time = Utc::now();
+    let bounded_lookback_days = lookback_days.clamp(1, 29);
+    let start_time = end_time - Duration::days(bounded_lookback_days);
+    let rows = client
+        .fetch_open_interest_history(symbol, period, start_time, end_time)
+        .await?;
+    let upsert = db::upsert_derivatives_open_interest_snapshots(&pool, &rows).await?;
+    let normalized_symbol = symbol.trim().to_ascii_uppercase();
+    let coverage =
+        db::derivatives_open_interest_coverage(&pool, "binance", &normalized_symbol, period)
+            .await?;
+    Ok(db::DerivativesBackfillSummary {
+        exchange: "binance".to_string(),
+        symbol: normalized_symbol,
+        data_kind: "open_interest".to_string(),
+        period: Some(period.to_string()),
+        metric: None,
+        requested_start: Some(start_time),
+        requested_end: Some(end_time),
+        fetched_rows: rows.len() as i32,
+        inserted: upsert.inserted,
+        updated: upsert.updated,
+        skipped: upsert.skipped,
+        coverage,
+        retention_note: Some(
+            "Binance public OI history retention is recent-only; this command clamps lookback to 29 days to avoid strict 30-day boundary rejection."
+                .to_string(),
+        ),
+    })
+}
+
+async fn run_derivatives_positioning_backfill(
+    symbol: &str,
+    metric: &str,
+    period: &str,
+    lookback_days: i64,
+) -> anyhow::Result<db::DerivativesBackfillSummary> {
+    let metric = metric.trim().to_ascii_lowercase();
+    let pool = connect_research_db().await?;
+    let client = market_ingest::BinanceUsdMFuturesPublicClient::new(BINANCE_USDM_PUBLIC_BASE_URL);
+    let end_time = Utc::now();
+    let bounded_lookback_days = lookback_days.clamp(1, 29);
+    let start_time = end_time - Duration::days(bounded_lookback_days);
+    let rows = match metric.as_str() {
+        "global-long-short" => {
+            client
+                .fetch_global_long_short_ratio(symbol, period, start_time, end_time)
+                .await?
+        }
+        "taker-buy-sell" => {
+            client
+                .fetch_taker_buy_sell_volume(symbol, period, start_time, end_time)
+                .await?
+        }
+        other => anyhow::bail!(
+            "unsupported positioning metric {other}; use global-long-short or taker-buy-sell"
+        ),
+    };
+    let upsert = db::upsert_derivatives_positioning_snapshots(&pool, &rows).await?;
+    let normalized_symbol = symbol.trim().to_ascii_uppercase();
+    let coverage =
+        db::derivatives_positioning_coverage(&pool, "binance", &normalized_symbol, &metric, period)
+            .await?;
+    Ok(db::DerivativesBackfillSummary {
+        exchange: "binance".to_string(),
+        symbol: normalized_symbol,
+        data_kind: "positioning".to_string(),
+        period: Some(period.to_string()),
+        metric: Some(metric),
+        requested_start: Some(start_time),
+        requested_end: Some(end_time),
+        fetched_rows: rows.len() as i32,
+        inserted: upsert.inserted,
+        updated: upsert.updated,
+        skipped: upsert.skipped,
+        coverage,
+        retention_note: Some(
+            "Binance public positioning retention is recent-only; this command clamps lookback to 29 days to avoid strict 30-day boundary rejection."
+                .to_string(),
+        ),
+    })
+}
+
+async fn run_rs_v1_derivatives_attribution() -> anyhow::Result<db::RsV1DerivativesAttributionReport>
+{
+    let pool = connect_research_db().await?;
+    db::build_rs_v1_derivatives_attribution_report(&pool).await
+}
+
+async fn run_derivatives_freshness(
+    symbols: &[String],
+    oi_period: &str,
+    positioning_period: &str,
+) -> anyhow::Result<db::DerivativesFreshnessReport> {
+    let pool = connect_research_db().await?;
+    db::derivatives_freshness_report(&pool, symbols, oi_period, positioning_period, Utc::now())
+        .await
+}
 
 fn build_cross_asset_research_request(
     args: &ResearchCrossAssetRunArgs,
@@ -1778,6 +1934,52 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         output::print_strategy_robustness_matrix_cells(&response.cells);
                     }
+                }
+            },
+            ResearchCommands::Derivatives(command) => match command {
+                ResearchDerivativesCommands::Funding(command) => match command {
+                    ResearchDerivativesFundingCommands::Backfill(args) => {
+                        let summary = run_derivatives_funding_backfill(
+                            &args.symbol,
+                            args.start_time,
+                            args.end_time,
+                        )
+                        .await?;
+                        output::print_json(&summary)?;
+                    }
+                },
+                ResearchDerivativesCommands::Oi(command) => match command {
+                    ResearchDerivativesOiCommands::Backfill(args) => {
+                        let summary =
+                            run_derivatives_oi_backfill(&args.symbol, &args.period, args.lookback_days)
+                                .await?;
+                        output::print_json(&summary)?;
+                    }
+                },
+                ResearchDerivativesCommands::Positioning(command) => match command {
+                    ResearchDerivativesPositioningCommands::Backfill(args) => {
+                        let summary = run_derivatives_positioning_backfill(
+                            &args.symbol,
+                            &args.metric,
+                            &args.period,
+                            args.lookback_days,
+                        )
+                        .await?;
+                        output::print_json(&summary)?;
+                    }
+                },
+                ResearchDerivativesCommands::RsV1Attribution => {
+                    let report = run_rs_v1_derivatives_attribution().await?;
+                    output::print_json(&report)?;
+                }
+                ResearchDerivativesCommands::Freshness(args) => {
+                    let report = run_derivatives_freshness(
+                        &args.symbols,
+                        &args.oi_period,
+                        &args.positioning_period,
+                    )
+                    .await?;
+                    output::print_json(&report)?;
                 }
             },
             ResearchCommands::CrossAsset(command) => match command {

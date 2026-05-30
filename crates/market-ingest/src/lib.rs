@@ -25,8 +25,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+mod derivatives;
 mod research;
 
+pub use derivatives::*;
 pub use research::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

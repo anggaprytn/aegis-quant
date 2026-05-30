@@ -891,8 +891,84 @@ pub enum ResearchCommands {
     ScheduledJobs(ResearchScheduledJobCommands),
     #[command(name = "stale-runs", subcommand)]
     StaleRuns(ResearchStaleRunCommands),
+    #[command(name = "derivatives", subcommand)]
+    Derivatives(ResearchDerivativesCommands),
     #[command(name = "cross-asset", subcommand)]
     CrossAsset(ResearchCrossAssetCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchDerivativesCommands {
+    #[command(subcommand)]
+    Funding(ResearchDerivativesFundingCommands),
+    #[command(subcommand)]
+    Oi(ResearchDerivativesOiCommands),
+    #[command(subcommand)]
+    Positioning(ResearchDerivativesPositioningCommands),
+    #[command(name = "rs-v1-attribution")]
+    RsV1Attribution,
+    Freshness(ResearchDerivativesFreshnessArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchDerivativesFreshnessArgs {
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT"
+    )]
+    pub symbols: Vec<String>,
+    #[arg(long = "oi-period", default_value = "4h")]
+    pub oi_period: String,
+    #[arg(long = "positioning-period", default_value = "4h")]
+    pub positioning_period: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchDerivativesFundingCommands {
+    Backfill(ResearchDerivativesFundingBackfillArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchDerivativesFundingBackfillArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long = "start")]
+    pub start_time: DateTime<Utc>,
+    #[arg(long = "end")]
+    pub end_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchDerivativesOiCommands {
+    Backfill(ResearchDerivativesOiBackfillArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchDerivativesOiBackfillArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long, default_value = "4h")]
+    pub period: String,
+    #[arg(long = "lookback-days", default_value_t = 30)]
+    pub lookback_days: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchDerivativesPositioningCommands {
+    Backfill(ResearchDerivativesPositioningBackfillArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchDerivativesPositioningBackfillArgs {
+    #[arg(long)]
+    pub symbol: String,
+    #[arg(long)]
+    pub metric: String,
+    #[arg(long, default_value = "4h")]
+    pub period: String,
+    #[arg(long = "lookback-days", default_value_t = 30)]
+    pub lookback_days: i64,
 }
 
 #[derive(Debug, Subcommand)]

@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 aegis-core = { path = "../core" }
+db = { path = "../db" }
+market-ingest = { path = "../market-ingest" }
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
