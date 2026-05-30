@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use rust_decimal::{
     prelude::{FromPrimitive, ToPrimitive},
     Decimal,
@@ -7613,9 +7613,21 @@ impl std::str::FromStr for CrossAssetSizingMode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CrossAssetMarketFilter {
     None,
-    Basket72hReturnGt { threshold_pct: Decimal },
-    Basket24hReturnGt { threshold_pct: Decimal },
-    AtLeastNSymbolsPositive24h { min_symbols: u32 },
+    #[serde(rename = "basket_72h_return_gt", alias = "basket72h_return_gt")]
+    Basket72hReturnGt {
+        threshold_pct: Decimal,
+    },
+    #[serde(rename = "basket_24h_return_gt", alias = "basket24h_return_gt")]
+    Basket24hReturnGt {
+        threshold_pct: Decimal,
+    },
+    #[serde(
+        rename = "at_least_n_symbols_positive_24h",
+        alias = "at_least_n_symbols_positive24h"
+    )]
+    AtLeastNSymbolsPositive24h {
+        min_symbols: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -7630,8 +7642,17 @@ pub enum CrossAssetVolFilter {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CrossAssetOverextensionFilter {
     None,
-    MaxReturn24hPct { max_pct: Decimal },
-    MinDistanceFrom72hHighPct { min_pct: Decimal },
+    #[serde(rename = "max_return_24h_pct", alias = "max_return24h_pct")]
+    MaxReturn24hPct {
+        max_pct: Decimal,
+    },
+    #[serde(
+        rename = "min_distance_from_72h_high_pct",
+        alias = "min_distance_from72h_high_pct"
+    )]
+    MinDistanceFrom72hHighPct {
+        min_pct: Decimal,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -7931,6 +7952,415 @@ pub struct CrossAssetResearchRun {
     pub result: CrossAssetResearchResult,
     pub trades: Vec<CrossAssetPortfolioTrade>,
     pub windows: Vec<CrossAssetPortfolioWindow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetRobustnessMatrixWindow {
+    pub label: String,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetRobustnessConfig {
+    pub ranking_lookback_hours: u32,
+    pub rank_metric: CrossAssetRankMetric,
+    pub min_rank_spread_pct: Decimal,
+    pub holding_hours: u32,
+    pub sizing_mode: CrossAssetSizingMode,
+    pub market_filter: CrossAssetMarketFilter,
+    pub vol_filter: CrossAssetVolFilter,
+    pub overextension_filter: CrossAssetOverextensionFilter,
+    pub exit_rule: CrossAssetExitRule,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetRobustnessStatus {
+    Robust,
+    Promising,
+    Weak,
+    OverfitRisk,
+    Negative,
+    TooSparse,
+}
+
+impl CrossAssetRobustnessStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Robust => "ROBUST",
+            Self::Promising => "PROMISING",
+            Self::Weak => "WEAK",
+            Self::OverfitRisk => "OVERFIT_RISK",
+            Self::Negative => "NEGATIVE",
+            Self::TooSparse => "TOO_SPARSE",
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetRobustnessStatus {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ROBUST" => Ok(Self::Robust),
+            "PROMISING" => Ok(Self::Promising),
+            "WEAK" => Ok(Self::Weak),
+            "OVERFIT_RISK" => Ok(Self::OverfitRisk),
+            "NEGATIVE" => Ok(Self::Negative),
+            "TOO_SPARSE" => Ok(Self::TooSparse),
+            other => Err(CoreError::UnsupportedCrossAssetRobustnessStatus(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetRobustnessRecommendation {
+    ImplementResearchOnly,
+    KeepResearchOnly,
+    RejectFamily,
+}
+
+impl CrossAssetRobustnessRecommendation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ImplementResearchOnly => "IMPLEMENT_RESEARCH_ONLY",
+            Self::KeepResearchOnly => "KEEP_RESEARCH_ONLY",
+            Self::RejectFamily => "REJECT_FAMILY",
+        }
+    }
+}
+
+impl std::str::FromStr for CrossAssetRobustnessRecommendation {
+    type Err = CoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "IMPLEMENT_RESEARCH_ONLY" => Ok(Self::ImplementResearchOnly),
+            "KEEP_RESEARCH_ONLY" => Ok(Self::KeepResearchOnly),
+            "REJECT_FAMILY" => Ok(Self::RejectFamily),
+            other => Err(CoreError::UnsupportedCrossAssetRobustnessRecommendation(
+                other.to_string(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetRobustnessFinding {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetRobustnessRecommendationItem {
+    pub priority: String,
+    pub code: String,
+    pub message: String,
+}
+
+fn default_cross_asset_robustness_symbols() -> Vec<String> {
+    vec![
+        "BTCUSDT".to_string(),
+        "ETHUSDT".to_string(),
+        "SOLUSDT".to_string(),
+        "BNBUSDT".to_string(),
+    ]
+}
+
+fn default_cross_asset_robustness_ranking_lookbacks() -> Vec<u32> {
+    vec![6, 12, 24]
+}
+
+fn default_cross_asset_robustness_rank_metrics() -> Vec<CrossAssetRankMetric> {
+    vec![
+        CrossAssetRankMetric::RawReturn,
+        CrossAssetRankMetric::VolAdjustedReturn,
+    ]
+}
+
+fn default_cross_asset_robustness_spreads() -> Vec<Decimal> {
+    vec![Decimal::new(2, 0), Decimal::new(3, 0), Decimal::new(5, 0)]
+}
+
+fn default_cross_asset_robustness_holding_hours() -> Vec<u32> {
+    vec![6, 12, 24]
+}
+
+fn default_cross_asset_fee_bps() -> Decimal {
+    Decimal::new(10, 0)
+}
+
+fn default_cross_asset_slippage_bps() -> Decimal {
+    Decimal::new(5, 0)
+}
+
+fn default_cross_asset_robustness_sizing_modes() -> Vec<CrossAssetSizingMode> {
+    vec![
+        CrossAssetSizingMode::EqualNotional,
+        CrossAssetSizingMode::VolatilityNormalized,
+    ]
+}
+
+fn default_cross_asset_robustness_market_filters() -> Vec<CrossAssetMarketFilter> {
+    vec![
+        CrossAssetMarketFilter::None,
+        CrossAssetMarketFilter::Basket72hReturnGt {
+            threshold_pct: Decimal::new(-5, 0),
+        },
+        CrossAssetMarketFilter::AtLeastNSymbolsPositive24h { min_symbols: 2 },
+    ]
+}
+
+fn default_cross_asset_robustness_vol_filters() -> Vec<CrossAssetVolFilter> {
+    vec![
+        CrossAssetVolFilter::None,
+        CrossAssetVolFilter::AssetNotExtremeVsBasket {
+            max_ratio: Decimal::new(15, 1),
+        },
+    ]
+}
+
+fn default_cross_asset_robustness_overextension_filters() -> Vec<CrossAssetOverextensionFilter> {
+    vec![
+        CrossAssetOverextensionFilter::None,
+        CrossAssetOverextensionFilter::MaxReturn24hPct {
+            max_pct: Decimal::new(8, 0),
+        },
+        CrossAssetOverextensionFilter::MaxReturn24hPct {
+            max_pct: Decimal::new(10, 0),
+        },
+    ]
+}
+
+fn default_cross_asset_robustness_exit_rules() -> Vec<CrossAssetExitRule> {
+    vec![
+        CrossAssetExitRule::FixedHold,
+        CrossAssetExitRule::StopPct {
+            stop_pct: Decimal::new(3, 0),
+        },
+        CrossAssetExitRule::StopPct {
+            stop_pct: Decimal::new(5, 0),
+        },
+        CrossAssetExitRule::TakeProfitPct {
+            take_profit_pct: Decimal::new(5, 0),
+        },
+    ]
+}
+
+fn default_cross_asset_robustness_max_configs() -> usize {
+    256
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetRobustnessMatrixRequest {
+    #[serde(default = "default_cross_asset_strategy_kind")]
+    pub strategy_kind: CrossAssetStrategyKind,
+    #[serde(default = "default_cross_asset_robustness_symbols")]
+    pub symbols: Vec<String>,
+    #[serde(default = "default_cross_asset_timeframe")]
+    pub timeframe: String,
+    #[serde(default)]
+    pub windows: Vec<CrossAssetRobustnessMatrixWindow>,
+    #[serde(default = "default_cross_asset_robustness_ranking_lookbacks")]
+    pub ranking_lookback_hours: Vec<u32>,
+    #[serde(default = "default_cross_asset_robustness_rank_metrics")]
+    pub rank_metrics: Vec<CrossAssetRankMetric>,
+    #[serde(default)]
+    pub min_top_return_pct: Decimal,
+    #[serde(default = "default_cross_asset_robustness_spreads")]
+    pub min_rank_spread_pct: Vec<Decimal>,
+    #[serde(default = "default_cross_asset_robustness_holding_hours")]
+    pub holding_hours: Vec<u32>,
+    #[serde(default = "default_cross_asset_fee_bps")]
+    pub fee_bps: Decimal,
+    #[serde(default = "default_cross_asset_slippage_bps")]
+    pub slippage_bps: Decimal,
+    #[serde(default = "default_cross_asset_one_active_position")]
+    pub one_active_position: bool,
+    #[serde(default = "default_cross_asset_robustness_sizing_modes")]
+    pub sizing_modes: Vec<CrossAssetSizingMode>,
+    #[serde(default = "default_cross_asset_min_weight")]
+    pub min_weight: Decimal,
+    #[serde(default = "default_cross_asset_max_weight")]
+    pub max_weight: Decimal,
+    #[serde(default = "default_cross_asset_robustness_market_filters")]
+    pub market_filters: Vec<CrossAssetMarketFilter>,
+    #[serde(default = "default_cross_asset_robustness_vol_filters")]
+    pub vol_filters: Vec<CrossAssetVolFilter>,
+    #[serde(default = "default_cross_asset_robustness_overextension_filters")]
+    pub overextension_filters: Vec<CrossAssetOverextensionFilter>,
+    #[serde(default = "default_cross_asset_robustness_exit_rules")]
+    pub exit_rules: Vec<CrossAssetExitRule>,
+    #[serde(default = "default_cross_asset_robustness_max_configs")]
+    pub max_configs: usize,
+    pub correlation_id: Option<Uuid>,
+}
+
+impl CrossAssetRobustnessMatrixRequest {
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.symbols.len() < 2 {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "at least two symbols are required".to_string(),
+            ));
+        }
+        if self.symbols.iter().any(|value| value.trim().is_empty()) {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "symbols cannot contain empty values".to_string(),
+            ));
+        }
+        if self.timeframe != "1h" {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "only 1h timeframe is supported".to_string(),
+            ));
+        }
+        self.timeframe.parse::<CandleInterval>()?;
+        if self.windows.is_empty() {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "at least one window is required".to_string(),
+            ));
+        }
+        for window in &self.windows {
+            if window.label.trim().is_empty() || window.end_time <= window.start_time {
+                return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                    "matrix windows require a label and valid time range".to_string(),
+                ));
+            }
+        }
+        if self.ranking_lookback_hours.is_empty()
+            || self.rank_metrics.is_empty()
+            || self.min_rank_spread_pct.is_empty()
+            || self.holding_hours.is_empty()
+            || self.sizing_modes.is_empty()
+            || self.market_filters.is_empty()
+            || self.vol_filters.is_empty()
+            || self.overextension_filters.is_empty()
+            || self.exit_rules.is_empty()
+        {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "all matrix parameter grids must contain at least one value".to_string(),
+            ));
+        }
+        if self.ranking_lookback_hours.iter().any(|value| *value == 0)
+            || self.holding_hours.iter().any(|value| *value == 0)
+        {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "ranking lookbacks and holding hours must be greater than zero".to_string(),
+            ));
+        }
+        if self
+            .min_rank_spread_pct
+            .iter()
+            .any(|value| *value < Decimal::ZERO)
+            || self.fee_bps < Decimal::ZERO
+            || self.slippage_bps < Decimal::ZERO
+        {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "spread, fee, and slippage values cannot be negative".to_string(),
+            ));
+        }
+        if self.min_weight <= Decimal::ZERO
+            || self.max_weight <= Decimal::ZERO
+            || self.min_weight > self.max_weight
+        {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "min_weight and max_weight must be positive and ordered".to_string(),
+            ));
+        }
+        if self.max_configs == 0 {
+            return Err(CoreError::InvalidCrossAssetRobustnessMatrixRequest(
+                "max_configs must be greater than zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn full_config_count(&self) -> usize {
+        self.ranking_lookback_hours.len()
+            * self.rank_metrics.len()
+            * self.min_rank_spread_pct.len()
+            * self.holding_hours.len()
+            * self.sizing_modes.len()
+            * self.market_filters.len()
+            * self.vol_filters.len()
+            * self.overextension_filters.len()
+            * self.exit_rules.len()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetRobustnessMatrixCell {
+    pub id: Uuid,
+    pub matrix_run_id: Uuid,
+    pub config_index: i32,
+    pub config: CrossAssetRobustnessConfig,
+    pub window_label: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub status: CrossAssetRobustnessStatus,
+    pub total_trades: i32,
+    pub compounded_pnl_pct: Decimal,
+    pub avg_trade_pnl_pct: Decimal,
+    pub median_trade_pnl_pct: Decimal,
+    pub win_rate: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub worst_trade_pct: Decimal,
+    pub worst_window_pnl_pct: Decimal,
+    pub fee_slippage_drag_pct: Decimal,
+    pub symbol_distribution: BTreeMap<String, i32>,
+    pub max_symbol_concentration_pct: Decimal,
+    pub quarter_distribution: BTreeMap<String, i32>,
+    pub max_quarter_concentration_pct: Decimal,
+    pub findings: Vec<CrossAssetRobustnessFinding>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetRobustnessRanking {
+    pub rank: i32,
+    pub config_index: i32,
+    pub config: CrossAssetRobustnessConfig,
+    pub status: CrossAssetRobustnessStatus,
+    pub robustness_score: Decimal,
+    pub total_trades: i32,
+    pub combined_pnl_pct: Decimal,
+    pub median_cell_pnl_pct: Decimal,
+    pub worst_window_pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub max_symbol_concentration_pct: Decimal,
+    pub btc_trade_count: i32,
+    pub skipped_window_count: i32,
+    pub warnings: Vec<String>,
+    pub findings: Vec<CrossAssetRobustnessFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetRobustnessMatrixResult {
+    pub run_id: Uuid,
+    pub request: CrossAssetRobustnessMatrixRequest,
+    pub status: CrossAssetRobustnessStatus,
+    pub recommendation: CrossAssetRobustnessRecommendation,
+    pub rankings: Vec<CrossAssetRobustnessRanking>,
+    pub findings: Vec<CrossAssetRobustnessFinding>,
+    pub recommendations: Vec<CrossAssetRobustnessRecommendationItem>,
+    pub cell_count: i32,
+    pub evaluated_config_count: i32,
+    pub full_config_count: i32,
+    pub skipped_config_count: i32,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetRobustnessMatrixRun {
+    pub result: CrossAssetRobustnessMatrixResult,
+    pub cells: Vec<CrossAssetRobustnessMatrixCell>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -14250,6 +14680,727 @@ fn has_weak_2025_plus(trades: &[CrossAssetPortfolioTrade]) -> bool {
         && late_summary.compounded_pnl_pct < Decimal::new(5, 0)
 }
 
+pub fn build_cross_asset_robustness_configs(
+    request: &CrossAssetRobustnessMatrixRequest,
+) -> Result<(Vec<CrossAssetRobustnessConfig>, usize), CoreError> {
+    request.validate()?;
+    let full_count = request.full_config_count();
+    let mut configs = Vec::with_capacity(full_count);
+    for ranking_lookback_hours in &request.ranking_lookback_hours {
+        for rank_metric in &request.rank_metrics {
+            for min_rank_spread_pct in &request.min_rank_spread_pct {
+                for holding_hours in &request.holding_hours {
+                    for sizing_mode in &request.sizing_modes {
+                        for market_filter in &request.market_filters {
+                            for vol_filter in &request.vol_filters {
+                                for overextension_filter in &request.overextension_filters {
+                                    for exit_rule in &request.exit_rules {
+                                        configs.push(CrossAssetRobustnessConfig {
+                                            ranking_lookback_hours: *ranking_lookback_hours,
+                                            rank_metric: *rank_metric,
+                                            min_rank_spread_pct: *min_rank_spread_pct,
+                                            holding_hours: *holding_hours,
+                                            sizing_mode: *sizing_mode,
+                                            market_filter: market_filter.clone(),
+                                            vol_filter: vol_filter.clone(),
+                                            overextension_filter: overextension_filter.clone(),
+                                            exit_rule: exit_rule.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    configs.sort_by(|left, right| {
+        cross_asset_robustness_config_distance(left)
+            .cmp(&cross_asset_robustness_config_distance(right))
+            .then_with(|| {
+                serde_json::to_string(left)
+                    .unwrap_or_default()
+                    .cmp(&serde_json::to_string(right).unwrap_or_default())
+            })
+    });
+    let skipped = full_count.saturating_sub(request.max_configs);
+    configs.truncate(request.max_configs);
+    Ok((configs, skipped))
+}
+
+fn cross_asset_robustness_config_distance(config: &CrossAssetRobustnessConfig) -> i32 {
+    let mut distance = 0i32;
+    distance += config.ranking_lookback_hours.abs_diff(12) as i32;
+    distance += config.holding_hours.abs_diff(12) as i32;
+    distance += (config.min_rank_spread_pct - Decimal::new(3, 0))
+        .abs()
+        .to_i32()
+        .unwrap_or(50);
+    distance += match config.rank_metric {
+        CrossAssetRankMetric::RawReturn => 0,
+        CrossAssetRankMetric::VolAdjustedReturn => 2,
+    };
+    distance += match config.sizing_mode {
+        CrossAssetSizingMode::EqualNotional => 0,
+        CrossAssetSizingMode::VolatilityNormalized => 1,
+    };
+    distance += match &config.market_filter {
+        CrossAssetMarketFilter::None => 0,
+        CrossAssetMarketFilter::Basket72hReturnGt { .. }
+        | CrossAssetMarketFilter::AtLeastNSymbolsPositive24h { .. } => 1,
+        CrossAssetMarketFilter::Basket24hReturnGt { .. } => 3,
+    };
+    distance += match &config.vol_filter {
+        CrossAssetVolFilter::None => 0,
+        CrossAssetVolFilter::AssetNotExtremeVsBasket { .. } => 1,
+        CrossAssetVolFilter::BasketVolBelowPercentile { .. } => 3,
+    };
+    distance += match &config.overextension_filter {
+        CrossAssetOverextensionFilter::None => 0,
+        CrossAssetOverextensionFilter::MaxReturn24hPct { max_pct } => {
+            if *max_pct == Decimal::new(10, 0) {
+                1
+            } else {
+                2
+            }
+        }
+        CrossAssetOverextensionFilter::MinDistanceFrom72hHighPct { .. } => 3,
+    };
+    distance += match &config.exit_rule {
+        CrossAssetExitRule::FixedHold => 0,
+        CrossAssetExitRule::StopPct { stop_pct } if *stop_pct == Decimal::new(5, 0) => 1,
+        CrossAssetExitRule::StopPct { .. } | CrossAssetExitRule::TakeProfitPct { .. } => 2,
+    };
+    distance
+}
+
+pub fn run_cross_asset_robustness_matrix(
+    request: CrossAssetRobustnessMatrixRequest,
+    candles_by_symbol: BTreeMap<String, Vec<Candle>>,
+) -> Result<CrossAssetRobustnessMatrixRun, CoreError> {
+    request.validate()?;
+    let run_id = Uuid::new_v4();
+    let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
+    let created_at = Utc::now();
+    let (configs, skipped_config_count) = build_cross_asset_robustness_configs(&request)?;
+    let mut cells = Vec::with_capacity(configs.len() * request.windows.len());
+
+    for (config_index, config) in configs.iter().enumerate() {
+        for window in &request.windows {
+            let cell_request =
+                cross_asset_request_for_robustness(&request, config, window, correlation_id);
+            let cell = match run_cross_asset_relative_strength_research(
+                cell_request,
+                candles_by_symbol.clone(),
+            ) {
+                Ok(run) => cross_asset_robustness_cell_from_run(
+                    run_id,
+                    config_index as i32,
+                    config.clone(),
+                    window,
+                    &run,
+                    created_at,
+                ),
+                Err(err) => empty_cross_asset_robustness_cell(
+                    run_id,
+                    config_index as i32,
+                    config.clone(),
+                    window,
+                    CrossAssetRobustnessStatus::TooSparse,
+                    vec![CrossAssetRobustnessFinding {
+                        severity: "WARN".to_string(),
+                        code: "cell_failed".to_string(),
+                        message: err.to_string(),
+                    }],
+                    Some(err.to_string()),
+                    created_at,
+                ),
+            };
+            cells.push(cell);
+        }
+    }
+
+    let rankings = rank_cross_asset_robustness_configs(&cells);
+    let status = rankings
+        .first()
+        .map(|ranking| ranking.status)
+        .unwrap_or(CrossAssetRobustnessStatus::TooSparse);
+    let recommendation = cross_asset_robustness_recommendation(status);
+    let findings = cross_asset_robustness_matrix_findings(&rankings, skipped_config_count);
+    let recommendations =
+        cross_asset_robustness_matrix_recommendations(status, &rankings, skipped_config_count);
+    let result = CrossAssetRobustnessMatrixResult {
+        run_id,
+        request,
+        status,
+        recommendation,
+        rankings,
+        findings,
+        recommendations,
+        cell_count: cells.len() as i32,
+        evaluated_config_count: configs.len() as i32,
+        full_config_count: (configs.len() + skipped_config_count) as i32,
+        skipped_config_count: skipped_config_count as i32,
+        created_at,
+        completed_at: Some(Utc::now()),
+        correlation_id,
+    };
+
+    Ok(CrossAssetRobustnessMatrixRun { result, cells })
+}
+
+fn cross_asset_request_for_robustness(
+    matrix: &CrossAssetRobustnessMatrixRequest,
+    config: &CrossAssetRobustnessConfig,
+    window: &CrossAssetRobustnessMatrixWindow,
+    correlation_id: Uuid,
+) -> CrossAssetResearchRequest {
+    CrossAssetResearchRequest {
+        strategy_kind: matrix.strategy_kind,
+        symbols: matrix.symbols.clone(),
+        timeframe: matrix.timeframe.clone(),
+        start_time: window.start_time,
+        end_time: window.end_time,
+        ranking_lookback_hours: config.ranking_lookback_hours,
+        rank_metric: config.rank_metric,
+        min_top_return_pct: matrix.min_top_return_pct,
+        min_rank_spread_pct: config.min_rank_spread_pct,
+        holding_hours: config.holding_hours,
+        fee_bps: matrix.fee_bps,
+        slippage_bps: matrix.slippage_bps,
+        one_active_position: matrix.one_active_position,
+        sizing_mode: config.sizing_mode,
+        min_weight: matrix.min_weight,
+        max_weight: matrix.max_weight,
+        market_filter: config.market_filter.clone(),
+        vol_filter: config.vol_filter.clone(),
+        overextension_filter: config.overextension_filter.clone(),
+        exit_rule: config.exit_rule.clone(),
+        correlation_id: Some(correlation_id),
+    }
+}
+
+fn cross_asset_robustness_cell_from_run(
+    matrix_run_id: Uuid,
+    config_index: i32,
+    config: CrossAssetRobustnessConfig,
+    window: &CrossAssetRobustnessMatrixWindow,
+    run: &CrossAssetResearchRun,
+    created_at: DateTime<Utc>,
+) -> CrossAssetRobustnessMatrixCell {
+    let quarter_distribution = quarter_distribution(&run.trades);
+    let max_quarter_concentration_pct =
+        max_quarter_concentration_pct(&quarter_distribution, run.trades.len());
+    let findings = cross_asset_robustness_cell_findings(
+        &run.result,
+        &quarter_distribution,
+        max_quarter_concentration_pct,
+    );
+    let status = classify_cross_asset_robustness_cell(
+        run.result.total_trades,
+        run.result.compounded_pnl_pct,
+        run.result.median_trade_pnl_pct,
+        run.result.max_drawdown_pct,
+        run.result.worst_window_pnl_pct,
+        run.result.max_symbol_concentration_pct,
+        max_quarter_concentration_pct,
+    );
+    CrossAssetRobustnessMatrixCell {
+        id: Uuid::new_v4(),
+        matrix_run_id,
+        config_index,
+        config,
+        window_label: window.label.clone(),
+        window_start: window.start_time,
+        window_end: window.end_time,
+        status,
+        total_trades: run.result.total_trades,
+        compounded_pnl_pct: run.result.compounded_pnl_pct,
+        avg_trade_pnl_pct: run.result.avg_trade_pnl_pct,
+        median_trade_pnl_pct: run.result.median_trade_pnl_pct,
+        win_rate: run.result.win_rate,
+        max_drawdown_pct: run.result.max_drawdown_pct,
+        worst_trade_pct: run.result.worst_trade_pct,
+        worst_window_pnl_pct: run.result.worst_window_pnl_pct,
+        fee_slippage_drag_pct: run.result.fee_slippage_drag_pct,
+        symbol_distribution: run.result.symbol_distribution.clone(),
+        max_symbol_concentration_pct: run.result.max_symbol_concentration_pct,
+        quarter_distribution,
+        max_quarter_concentration_pct,
+        findings,
+        error: None,
+        created_at,
+    }
+}
+
+fn empty_cross_asset_robustness_cell(
+    matrix_run_id: Uuid,
+    config_index: i32,
+    config: CrossAssetRobustnessConfig,
+    window: &CrossAssetRobustnessMatrixWindow,
+    status: CrossAssetRobustnessStatus,
+    findings: Vec<CrossAssetRobustnessFinding>,
+    error: Option<String>,
+    created_at: DateTime<Utc>,
+) -> CrossAssetRobustnessMatrixCell {
+    CrossAssetRobustnessMatrixCell {
+        id: Uuid::new_v4(),
+        matrix_run_id,
+        config_index,
+        config,
+        window_label: window.label.clone(),
+        window_start: window.start_time,
+        window_end: window.end_time,
+        status,
+        total_trades: 0,
+        compounded_pnl_pct: Decimal::ZERO,
+        avg_trade_pnl_pct: Decimal::ZERO,
+        median_trade_pnl_pct: Decimal::ZERO,
+        win_rate: Decimal::ZERO,
+        max_drawdown_pct: Decimal::ZERO,
+        worst_trade_pct: Decimal::ZERO,
+        worst_window_pnl_pct: Decimal::ZERO,
+        fee_slippage_drag_pct: Decimal::ZERO,
+        symbol_distribution: BTreeMap::new(),
+        max_symbol_concentration_pct: Decimal::ZERO,
+        quarter_distribution: BTreeMap::new(),
+        max_quarter_concentration_pct: Decimal::ZERO,
+        findings,
+        error,
+        created_at,
+    }
+}
+
+fn classify_cross_asset_robustness_cell(
+    total_trades: i32,
+    compounded_pnl_pct: Decimal,
+    median_trade_pnl_pct: Decimal,
+    max_drawdown_pct: Decimal,
+    worst_window_pnl_pct: Decimal,
+    max_symbol_concentration_pct: Decimal,
+    max_quarter_concentration_pct: Decimal,
+) -> CrossAssetRobustnessStatus {
+    if total_trades < 50 {
+        CrossAssetRobustnessStatus::TooSparse
+    } else if compounded_pnl_pct <= Decimal::ZERO {
+        CrossAssetRobustnessStatus::Negative
+    } else if max_symbol_concentration_pct > Decimal::new(50, 0)
+        || max_quarter_concentration_pct > Decimal::new(50, 0)
+        || median_trade_pnl_pct <= Decimal::ZERO
+    {
+        CrossAssetRobustnessStatus::OverfitRisk
+    } else if max_drawdown_pct < Decimal::new(-10, 0) || worst_window_pnl_pct < Decimal::new(-5, 0)
+    {
+        CrossAssetRobustnessStatus::Weak
+    } else if total_trades >= 70 {
+        CrossAssetRobustnessStatus::Robust
+    } else {
+        CrossAssetRobustnessStatus::Promising
+    }
+}
+
+fn cross_asset_robustness_cell_findings(
+    result: &CrossAssetResearchResult,
+    quarter_distribution: &BTreeMap<String, i32>,
+    max_quarter_concentration_pct: Decimal,
+) -> Vec<CrossAssetRobustnessFinding> {
+    let mut findings = Vec::new();
+    if result.total_trades < 50 {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "WARN".to_string(),
+            code: "too_sparse".to_string(),
+            message: "Cell has fewer than 50 trades.".to_string(),
+        });
+    }
+    if result.max_drawdown_pct < Decimal::new(-10, 0) {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "WARN".to_string(),
+            code: "drawdown_gt_10_pct".to_string(),
+            message: "Max drawdown exceeds 10%.".to_string(),
+        });
+    }
+    if result.worst_window_pnl_pct < Decimal::new(-5, 0) {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "WARN".to_string(),
+            code: "worst_window_below_minus_5_pct".to_string(),
+            message: "Worst nested window is below -5%.".to_string(),
+        });
+    }
+    if result.max_symbol_concentration_pct > Decimal::new(50, 0) {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "WARN".to_string(),
+            code: "symbol_concentration_gt_50_pct".to_string(),
+            message: "One symbol contributes more than 50% of trades.".to_string(),
+        });
+    }
+    if result
+        .symbol_distribution
+        .get("BTCUSDT")
+        .copied()
+        .unwrap_or(0)
+        == 0
+    {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "INFO".to_string(),
+            code: "btc_zero_participation".to_string(),
+            message: "BTCUSDT produced zero selected trades in this cell.".to_string(),
+        });
+    }
+    if max_quarter_concentration_pct > Decimal::new(50, 0) && quarter_distribution.len() > 1 {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "WARN".to_string(),
+            code: "quarter_concentration_gt_50_pct".to_string(),
+            message: "One quarter contributes more than 50% of trades.".to_string(),
+        });
+    }
+    findings
+}
+
+pub fn rank_cross_asset_robustness_configs(
+    cells: &[CrossAssetRobustnessMatrixCell],
+) -> Vec<CrossAssetRobustnessRanking> {
+    let mut by_config = BTreeMap::<i32, Vec<CrossAssetRobustnessMatrixCell>>::new();
+    for cell in cells.iter().cloned() {
+        by_config.entry(cell.config_index).or_default().push(cell);
+    }
+    let mut rankings = Vec::with_capacity(by_config.len());
+    for (config_index, cells) in by_config {
+        let config = cells
+            .first()
+            .expect("grouped config cells must be non-empty")
+            .config
+            .clone();
+        let mut warnings = Vec::new();
+        let mut findings = Vec::new();
+        let total_trades = cells.iter().map(|cell| cell.total_trades).sum::<i32>();
+        let combined = cells
+            .iter()
+            .find(|cell| cell.window_label == "combined")
+            .or_else(|| cells.last())
+            .expect("grouped config cells must be non-empty");
+        let combined_pnl_pct = combined.compounded_pnl_pct;
+        let median_cell_pnl_pct = median_decimal_vec(
+            cells
+                .iter()
+                .map(|cell| cell.compounded_pnl_pct)
+                .collect::<Vec<_>>(),
+        );
+        let worst_window_pnl_pct = cells
+            .iter()
+            .map(|cell| cell.worst_window_pnl_pct.min(cell.compounded_pnl_pct))
+            .min()
+            .unwrap_or(Decimal::ZERO);
+        let max_drawdown_pct = cells
+            .iter()
+            .map(|cell| cell.max_drawdown_pct)
+            .min()
+            .unwrap_or(Decimal::ZERO);
+        let max_symbol_concentration_pct = cells
+            .iter()
+            .map(|cell| cell.max_symbol_concentration_pct)
+            .max()
+            .unwrap_or(Decimal::ZERO);
+        let btc_trade_count = cells
+            .iter()
+            .map(|cell| {
+                cell.symbol_distribution
+                    .get("BTCUSDT")
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .sum::<i32>();
+        let skipped_window_count = cells
+            .iter()
+            .filter(|cell| cell.status == CrossAssetRobustnessStatus::TooSparse)
+            .count() as i32;
+        let mut score = Decimal::new(50, 0);
+
+        for cell in &cells {
+            let is_late = cell.window_label.contains("2025") || cell.window_start.year() >= 2025;
+            if cell.compounded_pnl_pct > Decimal::ZERO {
+                score += if is_late {
+                    Decimal::new(20, 0)
+                } else {
+                    Decimal::new(15, 0)
+                };
+            } else if is_late {
+                score -= Decimal::new(35, 0);
+                warnings.push("2025_plus_negative".to_string());
+            } else {
+                score -= Decimal::new(15, 0);
+            }
+            if is_late && cell.status == CrossAssetRobustnessStatus::TooSparse {
+                score -= Decimal::new(30, 0);
+                warnings.push("2025_plus_too_sparse".to_string());
+            }
+            if cell.max_drawdown_pct < Decimal::new(-10, 0) {
+                score -= Decimal::new(20, 0);
+                warnings.push("drawdown_gt_10_pct".to_string());
+            } else {
+                score += Decimal::new(8, 0);
+            }
+            if cell.worst_window_pnl_pct < Decimal::new(-5, 0)
+                || cell.compounded_pnl_pct < Decimal::new(-5, 0)
+            {
+                score -= Decimal::new(15, 0);
+                warnings.push("worst_window_below_minus_5_pct".to_string());
+            }
+            if cell.max_symbol_concentration_pct > Decimal::new(50, 0) {
+                score -= Decimal::new(15, 0);
+                warnings.push("symbol_concentration_gt_50_pct".to_string());
+            } else {
+                score += Decimal::new(8, 0);
+            }
+            if cell.total_trades < 30 {
+                score -= Decimal::new(15, 0);
+            } else if cell.total_trades < 50 {
+                score -= Decimal::new(8, 0);
+            } else {
+                score += Decimal::new(10, 0);
+            }
+            score -= (cell.fee_slippage_drag_pct / Decimal::new(2, 0)).min(Decimal::new(10, 0));
+            findings.extend(cell.findings.clone());
+        }
+        if btc_trade_count == 0 {
+            score -= Decimal::new(5, 0);
+            warnings.push("btc_zero_participation".to_string());
+        }
+        if median_cell_pnl_pct > Decimal::ZERO {
+            score += Decimal::new(8, 0);
+        }
+        if one_window_dominates_pnl(&cells) {
+            score -= Decimal::new(15, 0);
+            warnings.push("one_window_dominates_pnl".to_string());
+        }
+
+        warnings.sort();
+        warnings.dedup();
+        findings.sort_by(|left, right| left.code.cmp(&right.code));
+        findings.dedup_by(|left, right| left.code == right.code && left.message == right.message);
+        let status = classify_cross_asset_robustness_ranking(
+            &cells,
+            score,
+            combined_pnl_pct,
+            median_cell_pnl_pct,
+            worst_window_pnl_pct,
+            max_drawdown_pct,
+            max_symbol_concentration_pct,
+        );
+        rankings.push(CrossAssetRobustnessRanking {
+            rank: 0,
+            config_index,
+            config,
+            status,
+            robustness_score: score,
+            total_trades,
+            combined_pnl_pct,
+            median_cell_pnl_pct,
+            worst_window_pnl_pct,
+            max_drawdown_pct,
+            max_symbol_concentration_pct,
+            btc_trade_count,
+            skipped_window_count,
+            warnings,
+            findings,
+        });
+    }
+    rankings.sort_by(|left, right| {
+        right
+            .robustness_score
+            .cmp(&left.robustness_score)
+            .then_with(|| left.config_index.cmp(&right.config_index))
+    });
+    for (index, ranking) in rankings.iter_mut().enumerate() {
+        ranking.rank = index as i32 + 1;
+    }
+    rankings
+}
+
+fn classify_cross_asset_robustness_ranking(
+    cells: &[CrossAssetRobustnessMatrixCell],
+    score: Decimal,
+    combined_pnl_pct: Decimal,
+    median_cell_pnl_pct: Decimal,
+    worst_window_pnl_pct: Decimal,
+    max_drawdown_pct: Decimal,
+    max_symbol_concentration_pct: Decimal,
+) -> CrossAssetRobustnessStatus {
+    let late = cells
+        .iter()
+        .find(|cell| cell.window_label.contains("2025") || cell.window_start.year() >= 2025);
+    if late.is_some_and(|cell| cell.status == CrossAssetRobustnessStatus::TooSparse) {
+        return CrossAssetRobustnessStatus::TooSparse;
+    }
+    if combined_pnl_pct <= Decimal::ZERO
+        || late.is_some_and(|cell| cell.compounded_pnl_pct <= Decimal::ZERO)
+    {
+        return CrossAssetRobustnessStatus::Negative;
+    }
+    if max_symbol_concentration_pct > Decimal::new(50, 0)
+        || median_cell_pnl_pct <= Decimal::ZERO
+        || one_window_dominates_pnl(cells)
+    {
+        return CrossAssetRobustnessStatus::OverfitRisk;
+    }
+    if max_drawdown_pct < Decimal::new(-10, 0) || worst_window_pnl_pct < Decimal::new(-5, 0) {
+        return CrossAssetRobustnessStatus::Weak;
+    }
+    if score >= Decimal::new(115, 0) {
+        CrossAssetRobustnessStatus::Robust
+    } else {
+        CrossAssetRobustnessStatus::Promising
+    }
+}
+
+fn cross_asset_robustness_recommendation(
+    status: CrossAssetRobustnessStatus,
+) -> CrossAssetRobustnessRecommendation {
+    match status {
+        CrossAssetRobustnessStatus::Robust => {
+            CrossAssetRobustnessRecommendation::ImplementResearchOnly
+        }
+        CrossAssetRobustnessStatus::Promising
+        | CrossAssetRobustnessStatus::Weak
+        | CrossAssetRobustnessStatus::OverfitRisk
+        | CrossAssetRobustnessStatus::TooSparse => {
+            CrossAssetRobustnessRecommendation::KeepResearchOnly
+        }
+        CrossAssetRobustnessStatus::Negative => CrossAssetRobustnessRecommendation::RejectFamily,
+    }
+}
+
+fn cross_asset_robustness_matrix_findings(
+    rankings: &[CrossAssetRobustnessRanking],
+    skipped_config_count: usize,
+) -> Vec<CrossAssetRobustnessFinding> {
+    let mut findings = Vec::new();
+    if skipped_config_count > 0 {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "INFO".to_string(),
+            code: "grid_capped".to_string(),
+            message: format!("{skipped_config_count} configs skipped by deterministic cap."),
+        });
+    }
+    if rankings
+        .first()
+        .is_some_and(|ranking| ranking.status == CrossAssetRobustnessStatus::TooSparse)
+    {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "WARN".to_string(),
+            code: "top_config_too_sparse".to_string(),
+            message: "Top-ranked config is still too sparse.".to_string(),
+        });
+    }
+    if rankings
+        .first()
+        .is_some_and(|ranking| ranking.btc_trade_count == 0)
+    {
+        findings.push(CrossAssetRobustnessFinding {
+            severity: "INFO".to_string(),
+            code: "top_config_btc_zero_participation".to_string(),
+            message: "Top-ranked config has zero BTCUSDT participation.".to_string(),
+        });
+    }
+    findings
+}
+
+fn cross_asset_robustness_matrix_recommendations(
+    status: CrossAssetRobustnessStatus,
+    rankings: &[CrossAssetRobustnessRanking],
+    skipped_config_count: usize,
+) -> Vec<CrossAssetRobustnessRecommendationItem> {
+    let mut recommendations = Vec::new();
+    match status {
+        CrossAssetRobustnessStatus::Robust => recommendations.push(
+            CrossAssetRobustnessRecommendationItem {
+                priority: "HIGH".to_string(),
+                code: "implementation_research_only_review".to_string(),
+                message: "Review deterministic implementation research only; do not create candidates automatically.".to_string(),
+            },
+        ),
+        CrossAssetRobustnessStatus::Promising => recommendations.push(
+            CrossAssetRobustnessRecommendationItem {
+                priority: "MEDIUM".to_string(),
+                code: "continue_parameter_stability_research".to_string(),
+                message: "Evidence is promising but should remain research-only until stability blockers clear.".to_string(),
+            },
+        ),
+        CrossAssetRobustnessStatus::Weak
+        | CrossAssetRobustnessStatus::OverfitRisk
+        | CrossAssetRobustnessStatus::TooSparse => recommendations.push(
+            CrossAssetRobustnessRecommendationItem {
+                priority: "HIGH".to_string(),
+                code: "keep_research_only".to_string(),
+                message: "Do not implement or promote; continue matrix and walk-forward breadth research.".to_string(),
+            },
+        ),
+        CrossAssetRobustnessStatus::Negative => recommendations.push(
+            CrossAssetRobustnessRecommendationItem {
+                priority: "HIGH".to_string(),
+                code: "reject_family".to_string(),
+                message: "Reject this parameter family unless a materially new hypothesis is introduced.".to_string(),
+            },
+        ),
+    }
+    if skipped_config_count > 0 {
+        recommendations.push(CrossAssetRobustnessRecommendationItem {
+            priority: "LOW".to_string(),
+            code: "expand_cap_if_needed".to_string(),
+            message:
+                "Increase max_configs only if the capped deterministic prefix is inconclusive."
+                    .to_string(),
+        });
+    }
+    if rankings.first().is_some_and(|ranking| {
+        ranking
+            .warnings
+            .iter()
+            .any(|warning| warning == "btc_zero_participation")
+    }) {
+        recommendations.push(CrossAssetRobustnessRecommendationItem {
+            priority: "MEDIUM".to_string(),
+            code: "investigate_btc_non_participation".to_string(),
+            message: "BTC zero participation is a warning for cross-asset generalization."
+                .to_string(),
+        });
+    }
+    recommendations
+}
+
+fn one_window_dominates_pnl(cells: &[CrossAssetRobustnessMatrixCell]) -> bool {
+    let positives = cells
+        .iter()
+        .filter(|cell| cell.window_label != "combined")
+        .map(|cell| cell.compounded_pnl_pct.max(Decimal::ZERO))
+        .collect::<Vec<_>>();
+    let total_positive = positives.iter().copied().sum::<Decimal>();
+    if total_positive <= Decimal::ZERO {
+        return false;
+    }
+    positives
+        .into_iter()
+        .max()
+        .is_some_and(|value| value / total_positive > Decimal::new(70, 2))
+}
+
+fn quarter_distribution(trades: &[CrossAssetPortfolioTrade]) -> BTreeMap<String, i32> {
+    let mut distribution = BTreeMap::new();
+    for trade in trades {
+        let quarter = ((trade.entry_time.month0() / 3) + 1) as i32;
+        let key = format!("{}-Q{quarter}", trade.entry_time.year());
+        *distribution.entry(key).or_insert(0) += 1;
+    }
+    distribution
+}
+
+fn max_quarter_concentration_pct(
+    distribution: &BTreeMap<String, i32>,
+    total_trades: usize,
+) -> Decimal {
+    max_symbol_concentration_pct(distribution, total_trades)
+}
+
 fn percentile_decimal(mut values: Vec<Decimal>, percentile_value: Decimal) -> Option<Decimal> {
     if values.is_empty() {
         return None;
@@ -14425,6 +15576,189 @@ mod cross_asset_research_tests {
         assert!(run.result.max_symbol_concentration_pct > Decimal::ZERO);
         assert!(run.result.window_count > 0);
         assert_eq!(run.result.total_trades, run.trades.len() as i32);
+    }
+
+    fn robustness_config() -> CrossAssetRobustnessConfig {
+        CrossAssetRobustnessConfig {
+            ranking_lookback_hours: 12,
+            rank_metric: CrossAssetRankMetric::RawReturn,
+            min_rank_spread_pct: Decimal::new(3, 0),
+            holding_hours: 12,
+            sizing_mode: CrossAssetSizingMode::EqualNotional,
+            market_filter: CrossAssetMarketFilter::None,
+            vol_filter: CrossAssetVolFilter::None,
+            overextension_filter: CrossAssetOverextensionFilter::None,
+            exit_rule: CrossAssetExitRule::FixedHold,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn robustness_cell(
+        config_index: i32,
+        label: &str,
+        trades: i32,
+        pnl: i64,
+        dd: i64,
+        concentration: i64,
+        btc_trades: i32,
+    ) -> CrossAssetRobustnessMatrixCell {
+        let mut symbol_distribution = BTreeMap::new();
+        symbol_distribution.insert("BTCUSDT".to_string(), btc_trades);
+        symbol_distribution.insert("ETHUSDT".to_string(), trades.saturating_sub(btc_trades));
+        CrossAssetRobustnessMatrixCell {
+            id: Uuid::new_v4(),
+            matrix_run_id: Uuid::new_v4(),
+            config_index,
+            config: robustness_config(),
+            window_label: label.to_string(),
+            window_start: if label.contains("2025") {
+                Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap()
+            } else {
+                Utc.with_ymd_and_hms(2023, 3, 25, 0, 0, 0).unwrap()
+            },
+            window_end: Utc.with_ymd_and_hms(2026, 5, 29, 0, 0, 0).unwrap(),
+            status: classify_cross_asset_robustness_cell(
+                trades,
+                Decimal::new(pnl, 0),
+                Decimal::new(1, 1),
+                Decimal::new(dd, 0),
+                Decimal::new(pnl.min(0), 0),
+                Decimal::new(concentration, 0),
+                Decimal::new(30, 0),
+            ),
+            total_trades: trades,
+            compounded_pnl_pct: Decimal::new(pnl, 0),
+            avg_trade_pnl_pct: Decimal::new(1, 1),
+            median_trade_pnl_pct: Decimal::new(1, 1),
+            win_rate: Decimal::new(55, 0),
+            max_drawdown_pct: Decimal::new(dd, 0),
+            worst_trade_pct: Decimal::new(-2, 0),
+            worst_window_pnl_pct: Decimal::new(pnl.min(0), 0),
+            fee_slippage_drag_pct: Decimal::ZERO,
+            symbol_distribution,
+            max_symbol_concentration_pct: Decimal::new(concentration, 0),
+            quarter_distribution: BTreeMap::from([("2024-Q1".to_string(), trades)]),
+            max_quarter_concentration_pct: Decimal::new(30, 0),
+            findings: Vec::new(),
+            error: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn robust_config_beats_headline_return_but_concentrated_config() {
+        let cells = vec![
+            robustness_cell(0, "2023_2024", 60, 4, -4, 45, 10),
+            robustness_cell(0, "2025_plus", 55, 3, -4, 45, 8),
+            robustness_cell(0, "combined", 115, 7, -5, 45, 18),
+            robustness_cell(1, "2023_2024", 80, 20, -4, 80, 0),
+            robustness_cell(1, "2025_plus", 55, 1, -4, 80, 0),
+            robustness_cell(1, "combined", 135, 25, -5, 80, 0),
+        ];
+        let rankings = rank_cross_asset_robustness_configs(&cells);
+        assert_eq!(rankings[0].config_index, 0);
+        assert_eq!(rankings[1].status, CrossAssetRobustnessStatus::OverfitRisk);
+    }
+
+    #[test]
+    fn robustness_ranking_penalizes_2025_plus_sparse_cells() {
+        let cells = vec![
+            robustness_cell(0, "2023_2024", 60, 4, -4, 45, 6),
+            robustness_cell(0, "2025_plus", 25, 2, -4, 45, 2),
+            robustness_cell(0, "combined", 85, 6, -5, 45, 8),
+        ];
+        let rankings = rank_cross_asset_robustness_configs(&cells);
+        assert_eq!(rankings[0].status, CrossAssetRobustnessStatus::TooSparse);
+        assert!(rankings[0]
+            .warnings
+            .iter()
+            .any(|warning| warning == "2025_plus_too_sparse"));
+    }
+
+    #[test]
+    fn robustness_ranking_penalizes_symbol_concentration() {
+        let concentrated = vec![
+            robustness_cell(0, "2023_2024", 60, 6, -4, 80, 0),
+            robustness_cell(0, "2025_plus", 60, 3, -4, 80, 0),
+            robustness_cell(0, "combined", 120, 10, -5, 80, 0),
+        ];
+        let balanced = vec![
+            robustness_cell(1, "2023_2024", 60, 4, -4, 45, 10),
+            robustness_cell(1, "2025_plus", 60, 3, -4, 45, 10),
+            robustness_cell(1, "combined", 120, 7, -5, 45, 20),
+        ];
+        let cells = concentrated.into_iter().chain(balanced).collect::<Vec<_>>();
+        let rankings = rank_cross_asset_robustness_configs(&cells);
+        assert_eq!(rankings[0].config_index, 1);
+        assert_eq!(rankings[1].status, CrossAssetRobustnessStatus::OverfitRisk);
+    }
+
+    #[test]
+    fn robustness_ranking_penalizes_drawdown() {
+        let cells = vec![
+            robustness_cell(0, "2023_2024", 60, 4, -12, 45, 8),
+            robustness_cell(0, "2025_plus", 60, 3, -4, 45, 8),
+            robustness_cell(0, "combined", 120, 7, -12, 45, 16),
+        ];
+        let rankings = rank_cross_asset_robustness_configs(&cells);
+        assert_eq!(rankings[0].status, CrossAssetRobustnessStatus::Weak);
+        assert!(rankings[0]
+            .warnings
+            .iter()
+            .any(|warning| warning == "drawdown_gt_10_pct"));
+    }
+
+    #[test]
+    fn robustness_ranking_order_is_deterministic_for_ties() {
+        let cells = vec![
+            robustness_cell(2, "2023_2024", 60, 4, -4, 45, 8),
+            robustness_cell(1, "2023_2024", 60, 4, -4, 45, 8),
+        ];
+        let rankings = rank_cross_asset_robustness_configs(&cells);
+        assert_eq!(rankings[0].config_index, 1);
+        assert_eq!(rankings[1].config_index, 2);
+    }
+
+    #[test]
+    fn robustness_grid_cap_skipped_count_is_deterministic() {
+        let mut request = CrossAssetRobustnessMatrixRequest {
+            strategy_kind: CrossAssetStrategyKind::RelativeStrengthContinuationV1Research,
+            symbols: vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()],
+            timeframe: "1h".to_string(),
+            windows: vec![CrossAssetRobustnessMatrixWindow {
+                label: "combined".to_string(),
+                start_time: ts(0),
+                end_time: ts(120),
+            }],
+            ranking_lookback_hours: vec![6, 12],
+            rank_metrics: vec![
+                CrossAssetRankMetric::RawReturn,
+                CrossAssetRankMetric::VolAdjustedReturn,
+            ],
+            min_top_return_pct: Decimal::ZERO,
+            min_rank_spread_pct: vec![Decimal::new(2, 0), Decimal::new(3, 0)],
+            holding_hours: vec![6, 12],
+            fee_bps: Decimal::ZERO,
+            slippage_bps: Decimal::ZERO,
+            one_active_position: true,
+            sizing_modes: vec![CrossAssetSizingMode::EqualNotional],
+            min_weight: Decimal::new(25, 2),
+            max_weight: Decimal::ONE,
+            market_filters: vec![CrossAssetMarketFilter::None],
+            vol_filters: vec![CrossAssetVolFilter::None],
+            overextension_filters: vec![CrossAssetOverextensionFilter::None],
+            exit_rules: vec![CrossAssetExitRule::FixedHold],
+            max_configs: 3,
+            correlation_id: None,
+        };
+        let full_count = request.full_config_count();
+        let (configs, skipped) = build_cross_asset_robustness_configs(&request).unwrap();
+        assert_eq!(configs.len(), 3);
+        assert_eq!(skipped, full_count - 3);
+        request.max_configs = 3;
+        let (again, again_skipped) = build_cross_asset_robustness_configs(&request).unwrap();
+        assert_eq!(again, configs);
+        assert_eq!(again_skipped, skipped);
     }
 }
 

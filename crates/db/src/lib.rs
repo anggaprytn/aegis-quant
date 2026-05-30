@@ -6,7 +6,9 @@ use aegis_core::{
     BacktestTrade, Candle, CandleAggregationRun, CandleBackfillProgress, CandleBackfillRequest,
     CandleBackfillResult, CandleBackfillStatus, CandleInterval, CrossAssetPortfolioRankingSnapshot,
     CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetResearchRecommendation,
-    CrossAssetResearchResult, CrossAssetResearchStatus, CrossAssetStrategyKind,
+    CrossAssetResearchResult, CrossAssetResearchStatus, CrossAssetRobustnessConfig,
+    CrossAssetRobustnessFinding, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixResult,
+    CrossAssetRobustnessRecommendation, CrossAssetRobustnessStatus, CrossAssetStrategyKind,
     DataFreshnessStatus, EventEnvelope, ExchangeReconciliationStatus,
     ExecutionReadinessBlockingReason, ExecutionReadinessCheck, ExecutionReadinessRecommendation,
     ExecutionReadinessSnapshot, ExecutionReadinessStatus, ExecutionReadinessTarget, ExecutionState,
@@ -572,6 +574,57 @@ pub struct CrossAssetResearchWindowRecord {
     pub worst_trade_pct: Decimal,
     pub best_trade_pct: Decimal,
     pub symbol_distribution: Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetRobustnessMatrixRunRecord {
+    pub id: Uuid,
+    pub strategy_kind: String,
+    pub timeframe: String,
+    pub symbols: Value,
+    pub request: Value,
+    pub status: String,
+    pub recommendation: String,
+    pub rankings: Value,
+    pub findings: Value,
+    pub recommendations: Value,
+    pub cell_count: i32,
+    pub evaluated_config_count: i32,
+    pub full_config_count: i32,
+    pub skipped_config_count: i32,
+    pub summary: Value,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetRobustnessMatrixCellRecord {
+    pub id: Uuid,
+    pub matrix_run_id: Uuid,
+    pub config_index: i32,
+    pub config: Value,
+    pub window_label: String,
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
+    pub status: String,
+    pub total_trades: i32,
+    pub compounded_pnl_pct: Decimal,
+    pub avg_trade_pnl_pct: Decimal,
+    pub median_trade_pnl_pct: Decimal,
+    pub win_rate: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub worst_trade_pct: Decimal,
+    pub worst_window_pnl_pct: Decimal,
+    pub fee_slippage_drag_pct: Decimal,
+    pub symbol_distribution: Value,
+    pub max_symbol_concentration_pct: Decimal,
+    pub quarter_distribution: Value,
+    pub max_quarter_concentration_pct: Decimal,
+    pub findings: Value,
+    pub error: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -5577,6 +5630,302 @@ pub async fn list_cross_asset_research_windows(
     .fetch_all(pool)
     .await?;
     Ok(rows.iter().map(map_cross_asset_research_window).collect())
+}
+
+pub async fn insert_cross_asset_robustness_matrix_run(
+    pool: &PgPool,
+    result: &CrossAssetRobustnessMatrixResult,
+) -> Result<CrossAssetRobustnessMatrixRunRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO cross_asset_robustness_matrix_runs (
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            request,
+            status,
+            recommendation,
+            rankings,
+            findings,
+            recommendations,
+            cell_count,
+            evaluated_config_count,
+            full_config_count,
+            skipped_config_count,
+            summary,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19
+        )
+        RETURNING
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            request,
+            status,
+            recommendation,
+            rankings,
+            findings,
+            recommendations,
+            cell_count,
+            evaluated_config_count,
+            full_config_count,
+            skipped_config_count,
+            summary,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        "#,
+    )
+    .bind(result.run_id)
+    .bind(result.request.strategy_kind.as_str())
+    .bind(&result.request.timeframe)
+    .bind(serde_json::to_value(&result.request.symbols)?)
+    .bind(serde_json::to_value(&result.request)?)
+    .bind(result.status.as_str())
+    .bind(result.recommendation.as_str())
+    .bind(serde_json::to_value(&result.rankings)?)
+    .bind(serde_json::to_value(&result.findings)?)
+    .bind(serde_json::to_value(&result.recommendations)?)
+    .bind(result.cell_count)
+    .bind(result.evaluated_config_count)
+    .bind(result.full_config_count)
+    .bind(result.skipped_config_count)
+    .bind(serde_json::to_value(result)?)
+    .bind(Option::<String>::None)
+    .bind(result.created_at)
+    .bind(result.completed_at)
+    .bind(result.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_cross_asset_robustness_matrix_run(&row))
+}
+
+pub async fn insert_cross_asset_robustness_matrix_cells(
+    pool: &PgPool,
+    cells: &[CrossAssetRobustnessMatrixCell],
+) -> Result<Vec<CrossAssetRobustnessMatrixCellRecord>> {
+    let mut records = Vec::with_capacity(cells.len());
+    for cell in cells {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO cross_asset_robustness_matrix_cells (
+                id,
+                matrix_run_id,
+                config_index,
+                config,
+                window_label,
+                window_start,
+                window_end,
+                status,
+                total_trades,
+                compounded_pnl_pct,
+                avg_trade_pnl_pct,
+                median_trade_pnl_pct,
+                win_rate,
+                max_drawdown_pct,
+                worst_trade_pct,
+                worst_window_pnl_pct,
+                fee_slippage_drag_pct,
+                symbol_distribution,
+                max_symbol_concentration_pct,
+                quarter_distribution,
+                max_quarter_concentration_pct,
+                findings,
+                error,
+                created_at
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9, $10, $11, $12, $13, $14, $15, $16,
+                $17, $18, $19, $20, $21, $22, $23, $24
+            )
+            RETURNING
+                id,
+                matrix_run_id,
+                config_index,
+                config,
+                window_label,
+                window_start,
+                window_end,
+                status,
+                total_trades,
+                compounded_pnl_pct,
+                avg_trade_pnl_pct,
+                median_trade_pnl_pct,
+                win_rate,
+                max_drawdown_pct,
+                worst_trade_pct,
+                worst_window_pnl_pct,
+                fee_slippage_drag_pct,
+                symbol_distribution,
+                max_symbol_concentration_pct,
+                quarter_distribution,
+                max_quarter_concentration_pct,
+                findings,
+                error,
+                created_at
+            "#,
+        )
+        .bind(cell.id)
+        .bind(cell.matrix_run_id)
+        .bind(cell.config_index)
+        .bind(serde_json::to_value(&cell.config)?)
+        .bind(&cell.window_label)
+        .bind(cell.window_start)
+        .bind(cell.window_end)
+        .bind(cell.status.as_str())
+        .bind(cell.total_trades)
+        .bind(cell.compounded_pnl_pct)
+        .bind(cell.avg_trade_pnl_pct)
+        .bind(cell.median_trade_pnl_pct)
+        .bind(cell.win_rate)
+        .bind(cell.max_drawdown_pct)
+        .bind(cell.worst_trade_pct)
+        .bind(cell.worst_window_pnl_pct)
+        .bind(cell.fee_slippage_drag_pct)
+        .bind(serde_json::to_value(&cell.symbol_distribution)?)
+        .bind(cell.max_symbol_concentration_pct)
+        .bind(serde_json::to_value(&cell.quarter_distribution)?)
+        .bind(cell.max_quarter_concentration_pct)
+        .bind(serde_json::to_value(&cell.findings)?)
+        .bind(&cell.error)
+        .bind(cell.created_at)
+        .fetch_one(pool)
+        .await?;
+        records.push(map_cross_asset_robustness_matrix_cell(&row));
+    }
+    Ok(records)
+}
+
+pub async fn get_cross_asset_robustness_matrix_run(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Option<CrossAssetRobustnessMatrixRunRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            request,
+            status,
+            recommendation,
+            rankings,
+            findings,
+            recommendations,
+            cell_count,
+            evaluated_config_count,
+            full_config_count,
+            skipped_config_count,
+            summary,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        FROM cross_asset_robustness_matrix_runs
+        WHERE id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.as_ref().map(map_cross_asset_robustness_matrix_run))
+}
+
+pub async fn list_cross_asset_robustness_matrix_runs(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<CrossAssetRobustnessMatrixRunRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            strategy_kind,
+            timeframe,
+            symbols,
+            request,
+            status,
+            recommendation,
+            rankings,
+            findings,
+            recommendations,
+            cell_count,
+            evaluated_config_count,
+            full_config_count,
+            skipped_config_count,
+            summary,
+            error,
+            created_at,
+            completed_at,
+            correlation_id
+        FROM cross_asset_robustness_matrix_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(map_cross_asset_robustness_matrix_run)
+        .collect())
+}
+
+pub async fn list_cross_asset_robustness_matrix_cells(
+    pool: &PgPool,
+    run_id: Uuid,
+) -> Result<Vec<CrossAssetRobustnessMatrixCellRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            matrix_run_id,
+            config_index,
+            config,
+            window_label,
+            window_start,
+            window_end,
+            status,
+            total_trades,
+            compounded_pnl_pct,
+            avg_trade_pnl_pct,
+            median_trade_pnl_pct,
+            win_rate,
+            max_drawdown_pct,
+            worst_trade_pct,
+            worst_window_pnl_pct,
+            fee_slippage_drag_pct,
+            symbol_distribution,
+            max_symbol_concentration_pct,
+            quarter_distribution,
+            max_quarter_concentration_pct,
+            findings,
+            error,
+            created_at
+        FROM cross_asset_robustness_matrix_cells
+        WHERE matrix_run_id = $1
+        ORDER BY config_index ASC, window_start ASC
+        "#,
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(map_cross_asset_robustness_matrix_cell)
+        .collect())
 }
 
 pub async fn count_candles_range(
@@ -11157,6 +11506,63 @@ fn map_cross_asset_research_window(row: &sqlx::postgres::PgRow) -> CrossAssetRes
     }
 }
 
+fn map_cross_asset_robustness_matrix_run(
+    row: &sqlx::postgres::PgRow,
+) -> CrossAssetRobustnessMatrixRunRecord {
+    CrossAssetRobustnessMatrixRunRecord {
+        id: row.get("id"),
+        strategy_kind: row.get("strategy_kind"),
+        timeframe: row.get("timeframe"),
+        symbols: row.get("symbols"),
+        request: row.get("request"),
+        status: row.get("status"),
+        recommendation: row.get("recommendation"),
+        rankings: row.get("rankings"),
+        findings: row.get("findings"),
+        recommendations: row.get("recommendations"),
+        cell_count: row.get("cell_count"),
+        evaluated_config_count: row.get("evaluated_config_count"),
+        full_config_count: row.get("full_config_count"),
+        skipped_config_count: row.get("skipped_config_count"),
+        summary: row.get("summary"),
+        error: row.get("error"),
+        created_at: row.get("created_at"),
+        completed_at: row.get("completed_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_cross_asset_robustness_matrix_cell(
+    row: &sqlx::postgres::PgRow,
+) -> CrossAssetRobustnessMatrixCellRecord {
+    CrossAssetRobustnessMatrixCellRecord {
+        id: row.get("id"),
+        matrix_run_id: row.get("matrix_run_id"),
+        config_index: row.get("config_index"),
+        config: row.get("config"),
+        window_label: row.get("window_label"),
+        window_start: row.get("window_start"),
+        window_end: row.get("window_end"),
+        status: row.get("status"),
+        total_trades: row.get("total_trades"),
+        compounded_pnl_pct: row.get("compounded_pnl_pct"),
+        avg_trade_pnl_pct: row.get("avg_trade_pnl_pct"),
+        median_trade_pnl_pct: row.get("median_trade_pnl_pct"),
+        win_rate: row.get("win_rate"),
+        max_drawdown_pct: row.get("max_drawdown_pct"),
+        worst_trade_pct: row.get("worst_trade_pct"),
+        worst_window_pnl_pct: row.get("worst_window_pnl_pct"),
+        fee_slippage_drag_pct: row.get("fee_slippage_drag_pct"),
+        symbol_distribution: row.get("symbol_distribution"),
+        max_symbol_concentration_pct: row.get("max_symbol_concentration_pct"),
+        quarter_distribution: row.get("quarter_distribution"),
+        max_quarter_concentration_pct: row.get("max_quarter_concentration_pct"),
+        findings: row.get("findings"),
+        error: row.get("error"),
+        created_at: row.get("created_at"),
+    }
+}
+
 fn map_candle_aggregation_run(row: &sqlx::postgres::PgRow) -> CandleAggregationRun {
     CandleAggregationRun {
         id: row.get("id"),
@@ -12050,6 +12456,51 @@ pub fn cross_asset_research_window_from_record(
         worst_trade_pct: record.worst_trade_pct,
         best_trade_pct: record.best_trade_pct,
         symbol_distribution: serde_json::from_value(record.symbol_distribution.clone())?,
+    })
+}
+
+pub fn cross_asset_robustness_matrix_result_from_record(
+    record: &CrossAssetRobustnessMatrixRunRecord,
+) -> Result<CrossAssetRobustnessMatrixResult> {
+    let mut result: CrossAssetRobustnessMatrixResult =
+        serde_json::from_value(record.summary.clone())?;
+    result.status = record.status.parse::<CrossAssetRobustnessStatus>()?;
+    result.recommendation = record
+        .recommendation
+        .parse::<CrossAssetRobustnessRecommendation>()?;
+    Ok(result)
+}
+
+pub fn cross_asset_robustness_matrix_cell_from_record(
+    record: &CrossAssetRobustnessMatrixCellRecord,
+) -> Result<CrossAssetRobustnessMatrixCell> {
+    Ok(CrossAssetRobustnessMatrixCell {
+        id: record.id,
+        matrix_run_id: record.matrix_run_id,
+        config_index: record.config_index,
+        config: serde_json::from_value::<CrossAssetRobustnessConfig>(record.config.clone())?,
+        window_label: record.window_label.clone(),
+        window_start: record.window_start,
+        window_end: record.window_end,
+        status: record.status.parse::<CrossAssetRobustnessStatus>()?,
+        total_trades: record.total_trades,
+        compounded_pnl_pct: record.compounded_pnl_pct,
+        avg_trade_pnl_pct: record.avg_trade_pnl_pct,
+        median_trade_pnl_pct: record.median_trade_pnl_pct,
+        win_rate: record.win_rate,
+        max_drawdown_pct: record.max_drawdown_pct,
+        worst_trade_pct: record.worst_trade_pct,
+        worst_window_pnl_pct: record.worst_window_pnl_pct,
+        fee_slippage_drag_pct: record.fee_slippage_drag_pct,
+        symbol_distribution: serde_json::from_value(record.symbol_distribution.clone())?,
+        max_symbol_concentration_pct: record.max_symbol_concentration_pct,
+        quarter_distribution: serde_json::from_value(record.quarter_distribution.clone())?,
+        max_quarter_concentration_pct: record.max_quarter_concentration_pct,
+        findings: serde_json::from_value::<Vec<CrossAssetRobustnessFinding>>(
+            record.findings.clone(),
+        )?,
+        error: record.error.clone(),
+        created_at: record.created_at,
     })
 }
 

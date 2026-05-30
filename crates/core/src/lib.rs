@@ -8651,6 +8651,10 @@ pub enum CoreError {
     UnsupportedCrossAssetExitRule(String),
     #[error("unsupported cross-asset research recommendation: {0}")]
     UnsupportedCrossAssetResearchRecommendation(String),
+    #[error("unsupported cross-asset robustness status: {0}")]
+    UnsupportedCrossAssetRobustnessStatus(String),
+    #[error("unsupported cross-asset robustness recommendation: {0}")]
+    UnsupportedCrossAssetRobustnessRecommendation(String),
     #[error("research campaign requires at least one strategy")]
     EmptyResearchCampaignStrategies,
     #[error("research campaign requires at least one symbol")]
@@ -8821,6 +8825,8 @@ pub enum CoreError {
     InvalidStrategyRobustnessMatrixThreshold(String),
     #[error("invalid cross-asset research request: {0}")]
     InvalidCrossAssetResearchRequest(String),
+    #[error("invalid cross-asset robustness matrix request: {0}")]
+    InvalidCrossAssetRobustnessMatrixRequest(String),
     #[error("candle backfill request limit must be greater than zero")]
     InvalidCandleBackfillLimit,
     #[error("market data repair max_ranges must be greater than zero")]

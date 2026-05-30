@@ -1,14 +1,14 @@
 use aegis_core::{
     CrossAssetExitRule, CrossAssetMarketFilter, CrossAssetOverextensionFilter,
-    CrossAssetResearchRequest, CrossAssetVolFilter, OperatorReportFormat, OperatorReportRequest,
-    PaperTradingPipelineRequest, ResearchCandidateDecisionRejection,
-    ResearchCandidateDecisionRequest, ResearchCandidateEvidenceBundle,
-    ResearchCandidateImportBundlePreviewRequest, ResearchCandidateImportBundleRequest,
-    ResearchCandidateImportReconciliationRequest, ResearchCandidateReviewRequest,
-    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunRequest,
-    ResearchHypothesisGenerationRequest, ResearchHypothesisIncludedSource,
-    ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest, TestnetShadowRunnerControlAction,
-    TestnetShadowRunnerControlRequest,
+    CrossAssetResearchRequest, CrossAssetRobustnessMatrixRequest, CrossAssetVolFilter,
+    OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
+    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
+    ResearchCandidateEvidenceBundle, ResearchCandidateImportBundlePreviewRequest,
+    ResearchCandidateImportBundleRequest, ResearchCandidateImportReconciliationRequest,
+    ResearchCandidateReviewRequest, ResearchExperimentPlanRunMode,
+    ResearchExperimentPlanRunRequest, ResearchHypothesisGenerationRequest,
+    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest,
+    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -34,6 +34,7 @@ use cli::cli::{
     MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
     ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
     ResearchCandidateCommands, ResearchCommands, ResearchCrossAssetCommands,
+    ResearchCrossAssetRobustnessMatrixCommands, ResearchCrossAssetRobustnessMatrixRunArgs,
     ResearchCrossAssetRunArgs, ResearchDataCommands, ResearchExperimentPlanCommands,
     ResearchHypothesisCommands, ResearchRegimeCalibrationCommands, ResearchRegimeDatasetCommands,
     ResearchRegimeDiscoveryCommands, ResearchRobustnessMatrixCommands,
@@ -144,6 +145,86 @@ fn build_cross_asset_research_request(
         vol_filter,
         overextension_filter,
         exit_rule,
+        correlation_id: args.correlation_id,
+    })
+}
+
+fn build_cross_asset_robustness_matrix_request(
+    args: &ResearchCrossAssetRobustnessMatrixRunArgs,
+) -> anyhow::Result<CrossAssetRobustnessMatrixRequest> {
+    if let Some(raw) = args.request_json.as_deref() {
+        return serde_json::from_str(raw).context("invalid --request-json");
+    }
+    Ok(CrossAssetRobustnessMatrixRequest {
+        strategy_kind: aegis_core::CrossAssetStrategyKind::RelativeStrengthContinuationV1Research,
+        symbols: vec![
+            "BTCUSDT".to_string(),
+            "ETHUSDT".to_string(),
+            "SOLUSDT".to_string(),
+            "BNBUSDT".to_string(),
+        ],
+        timeframe: "1h".to_string(),
+        windows: Vec::new(),
+        ranking_lookback_hours: vec![6, 12, 24],
+        rank_metrics: vec![
+            aegis_core::CrossAssetRankMetric::RawReturn,
+            aegis_core::CrossAssetRankMetric::VolAdjustedReturn,
+        ],
+        min_top_return_pct: rust_decimal::Decimal::ZERO,
+        min_rank_spread_pct: vec![
+            rust_decimal::Decimal::new(2, 0),
+            rust_decimal::Decimal::new(3, 0),
+            rust_decimal::Decimal::new(5, 0),
+        ],
+        holding_hours: vec![6, 12, 24],
+        fee_bps: args
+            .fee_bps
+            .unwrap_or_else(|| rust_decimal::Decimal::new(10, 0)),
+        slippage_bps: args
+            .slippage_bps
+            .unwrap_or_else(|| rust_decimal::Decimal::new(5, 0)),
+        one_active_position: true,
+        sizing_modes: vec![
+            aegis_core::CrossAssetSizingMode::EqualNotional,
+            aegis_core::CrossAssetSizingMode::VolatilityNormalized,
+        ],
+        min_weight: rust_decimal::Decimal::new(25, 2),
+        max_weight: rust_decimal::Decimal::ONE,
+        market_filters: vec![
+            CrossAssetMarketFilter::None,
+            CrossAssetMarketFilter::Basket72hReturnGt {
+                threshold_pct: rust_decimal::Decimal::new(-5, 0),
+            },
+            CrossAssetMarketFilter::AtLeastNSymbolsPositive24h { min_symbols: 2 },
+        ],
+        vol_filters: vec![
+            CrossAssetVolFilter::None,
+            CrossAssetVolFilter::AssetNotExtremeVsBasket {
+                max_ratio: rust_decimal::Decimal::new(15, 1),
+            },
+        ],
+        overextension_filters: vec![
+            CrossAssetOverextensionFilter::None,
+            CrossAssetOverextensionFilter::MaxReturn24hPct {
+                max_pct: rust_decimal::Decimal::new(8, 0),
+            },
+            CrossAssetOverextensionFilter::MaxReturn24hPct {
+                max_pct: rust_decimal::Decimal::new(10, 0),
+            },
+        ],
+        exit_rules: vec![
+            CrossAssetExitRule::FixedHold,
+            CrossAssetExitRule::StopPct {
+                stop_pct: rust_decimal::Decimal::new(3, 0),
+            },
+            CrossAssetExitRule::StopPct {
+                stop_pct: rust_decimal::Decimal::new(5, 0),
+            },
+            CrossAssetExitRule::TakeProfitPct {
+                take_profit_pct: rust_decimal::Decimal::new(5, 0),
+            },
+        ],
+        max_configs: args.max_configs.unwrap_or(256),
         correlation_id: args.correlation_id,
     })
 }
@@ -1733,6 +1814,43 @@ async fn main() -> anyhow::Result<()> {
                     let response = client.list_cross_asset_research_windows(run_id).await?;
                     output::print_json(&response)?;
                 }
+                ResearchCrossAssetCommands::RobustnessMatrix(command) => match command {
+                    ResearchCrossAssetRobustnessMatrixCommands::Run(args) => {
+                        let request = build_cross_asset_robustness_matrix_request(&args)?;
+                        let response = client.run_cross_asset_robustness_matrix(&request).await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_robustness_matrix(&response.matrix);
+                        }
+                    }
+                    ResearchCrossAssetRobustnessMatrixCommands::List(args) => {
+                        let response = client
+                            .list_cross_asset_robustness_matrix_runs(args.limit)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            for matrix in &response.matrices {
+                                output::print_cross_asset_robustness_matrix(matrix);
+                            }
+                        }
+                    }
+                    ResearchCrossAssetRobustnessMatrixCommands::Get { run_id } => {
+                        let response = client.get_cross_asset_robustness_matrix_run(run_id).await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_robustness_matrix(&response.matrix);
+                        }
+                    }
+                    ResearchCrossAssetRobustnessMatrixCommands::Cells { run_id } => {
+                        let response = client
+                            .list_cross_asset_robustness_matrix_cells(run_id)
+                            .await?;
+                        output::print_json(&response)?;
+                    }
+                },
             },
         },
         Commands::Backtest(command) => match command {

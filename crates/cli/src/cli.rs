@@ -899,15 +899,45 @@ pub enum ResearchCommands {
 pub enum ResearchCrossAssetCommands {
     Run(ResearchCrossAssetRunArgs),
     List(ResearchCrossAssetListArgs),
-    Get { run_id: Uuid },
-    Trades { run_id: Uuid },
-    Windows { run_id: Uuid },
+    Get {
+        run_id: Uuid,
+    },
+    Trades {
+        run_id: Uuid,
+    },
+    Windows {
+        run_id: Uuid,
+    },
+    #[command(name = "robustness-matrix", subcommand)]
+    RobustnessMatrix(ResearchCrossAssetRobustnessMatrixCommands),
 }
 
 #[derive(Debug, Args)]
 pub struct ResearchCrossAssetListArgs {
     #[arg(long, default_value_t = 20)]
     pub limit: i64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchCrossAssetRobustnessMatrixCommands {
+    Run(ResearchCrossAssetRobustnessMatrixRunArgs),
+    List(ResearchCrossAssetListArgs),
+    Get { run_id: Uuid },
+    Cells { run_id: Uuid },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetRobustnessMatrixRunArgs {
+    #[arg(long = "request-json")]
+    pub request_json: Option<String>,
+    #[arg(long = "max-configs")]
+    pub max_configs: Option<usize>,
+    #[arg(long = "fee-bps")]
+    pub fee_bps: Option<Decimal>,
+    #[arg(long = "slippage-bps")]
+    pub slippage_bps: Option<Decimal>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Args)]

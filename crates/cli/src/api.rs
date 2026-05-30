@@ -4,7 +4,8 @@ use aegis_core::{
     BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
     CandleBackfillRequest, CandleBackfillResult, CompressionBreakoutRefinementResult,
     CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetResearchRequest,
-    CrossAssetResearchResult, ExchangeTestnetPipelinePreview,
+    CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
+    CrossAssetRobustnessMatrixResult, ExchangeTestnetPipelinePreview,
     ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
     ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
     MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
@@ -2368,6 +2369,47 @@ impl ApiClient {
             .await
     }
 
+    pub async fn run_cross_asset_robustness_matrix(
+        &self,
+        request: &CrossAssetRobustnessMatrixRequest,
+    ) -> Result<CrossAssetRobustnessMatrixRunResponse, ApiClientError> {
+        self.post("/research/cross-asset/robustness-matrix/run", request)
+            .await
+    }
+
+    pub async fn list_cross_asset_robustness_matrix_runs(
+        &self,
+        limit: i64,
+    ) -> Result<CrossAssetRobustnessMatrixRunsResponse, ApiClientError> {
+        self.get(
+            "/research/cross-asset/robustness-matrix",
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    pub async fn get_cross_asset_robustness_matrix_run(
+        &self,
+        run_id: Uuid,
+    ) -> Result<CrossAssetRobustnessMatrixRunResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/robustness-matrix/{run_id}"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn list_cross_asset_robustness_matrix_cells(
+        &self,
+        run_id: Uuid,
+    ) -> Result<CrossAssetRobustnessMatrixCellsResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/robustness-matrix/{run_id}/cells"),
+            &[],
+        )
+        .await
+    }
+
     pub async fn strategy_robustness_matrix_runs(
         &self,
         limit: i64,
@@ -4400,6 +4442,31 @@ pub struct CrossAssetResearchTradesResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CrossAssetResearchWindowsResponse {
     pub windows: Vec<CrossAssetPortfolioWindow>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetRobustnessMatrixRunResponse {
+    pub matrix: CrossAssetRobustnessMatrixResult,
+    pub cells: Option<Vec<CrossAssetRobustnessMatrixCell>>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetRobustnessMatrixRunsResponse {
+    pub matrices: Vec<CrossAssetRobustnessMatrixResult>,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetRobustnessMatrixCellsResponse {
+    pub cells: Vec<CrossAssetRobustnessMatrixCell>,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -31,12 +31,14 @@ use aegis_core::{
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
     research_candidate_next_status, run_cross_asset_relative_strength_research,
-    score_strategy_research_candidate, validate_research_candidate_accept_for_shadow_apply,
-    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
-    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
-    CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
-    CandleBackfillRequest, CandleBackfillResult, CandleInterval, CrossAssetPortfolioTrade,
-    CrossAssetPortfolioWindow, CrossAssetResearchRequest, CrossAssetResearchResult, EventEnvelope,
+    run_cross_asset_robustness_matrix, score_strategy_research_candidate,
+    validate_research_candidate_accept_for_shadow_apply, validate_testnet_repair_transition,
+    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
+    AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
+    CandleAggregationStatusRow, CandleBackfillRequest, CandleBackfillResult, CandleInterval,
+    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetResearchRequest,
+    CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
+    CrossAssetRobustnessMatrixResult, CrossAssetRobustnessMatrixWindow, EventEnvelope,
     ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName,
     ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce,
     ExchangeOrderType, ExchangePrivateStreamSource, ExchangePrivateStreamState,
@@ -172,15 +174,16 @@ use db::{
     complete_research_batch_step, connect_pool, count_users, create_paper_order,
     create_research_candidate, cross_asset_research_result_from_record,
     cross_asset_research_trade_from_record, cross_asset_research_window_from_record,
-    decide_research_hypothesis, ensure_system_state,
-    find_research_candidate_id_by_import_or_proposal_config,
+    cross_asset_robustness_matrix_cell_from_record,
+    cross_asset_robustness_matrix_result_from_record, decide_research_hypothesis,
+    ensure_system_state, find_research_candidate_id_by_import_or_proposal_config,
     get_active_strategy_research_candidate_promotion,
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
     get_closed_1m_candles_range, get_closed_candles_range, get_cross_asset_research_run,
-    get_default_paper_account, get_exchange_private_stream_state,
-    get_exchange_testnet_order_by_client_order_id, get_latest_candle_aggregation_run,
-    get_latest_closed_candle_time, get_latest_market_tick,
+    get_cross_asset_robustness_matrix_run, get_default_paper_account,
+    get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
+    get_latest_candle_aggregation_run, get_latest_closed_candle_time, get_latest_market_tick,
     get_latest_research_candidate_qualification_evaluation,
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
@@ -201,7 +204,8 @@ use db::{
     get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
     get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
     insert_cross_asset_research_run, insert_cross_asset_research_trades,
-    insert_cross_asset_research_windows, insert_exchange_testnet_order,
+    insert_cross_asset_research_windows, insert_cross_asset_robustness_matrix_cells,
+    insert_cross_asset_robustness_matrix_run, insert_exchange_testnet_order,
     insert_exchange_testnet_repair_action, insert_market_data_repair_range,
     insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
     insert_research_batch, insert_research_batch_step, insert_research_campaign,
@@ -216,6 +220,7 @@ use db::{
     insert_testnet_shadow_promotion, insert_user, link_research_candidate_walk_forward_run,
     list_backtest_runs, list_candle_backfill_runs, list_candles, list_cross_asset_research_runs,
     list_cross_asset_research_trades, list_cross_asset_research_windows,
+    list_cross_asset_robustness_matrix_cells, list_cross_asset_robustness_matrix_runs,
     list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
     list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
     list_exchange_testnet_orders, list_exchange_testnet_repair_actions,
@@ -1599,6 +1604,31 @@ struct CrossAssetResearchTradesResponse {
 #[derive(Serialize)]
 struct CrossAssetResearchWindowsResponse {
     windows: Vec<CrossAssetPortfolioWindow>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetRobustnessMatrixRunResponse {
+    matrix: CrossAssetRobustnessMatrixResult,
+    cells: Option<Vec<CrossAssetRobustnessMatrixCell>>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetRobustnessMatrixRunsResponse {
+    matrices: Vec<CrossAssetRobustnessMatrixResult>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetRobustnessMatrixCellsResponse {
+    cells: Vec<CrossAssetRobustnessMatrixCell>,
     request_id: String,
     correlation_id: String,
     timestamp: DateTime<Utc>,
@@ -3215,6 +3245,22 @@ async fn main() {
         .route(
             "/research/cross-asset/run",
             post(run_cross_asset_research_handler),
+        )
+        .route(
+            "/research/cross-asset/robustness-matrix/run",
+            post(run_cross_asset_robustness_matrix_handler),
+        )
+        .route(
+            "/research/cross-asset/robustness-matrix",
+            get(list_cross_asset_robustness_matrix_runs_handler),
+        )
+        .route(
+            "/research/cross-asset/robustness-matrix/:id",
+            get(get_cross_asset_robustness_matrix_run_handler),
+        )
+        .route(
+            "/research/cross-asset/robustness-matrix/:id/cells",
+            get(list_cross_asset_robustness_matrix_cells_handler),
         )
         .route(
             "/research/cross-asset",
@@ -13231,6 +13277,381 @@ async fn list_cross_asset_research_windows_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_list_cross_asset_research_windows",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn run_cross_asset_robustness_matrix_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+    Json(mut payload): Json<CrossAssetRobustnessMatrixRequest>,
+) -> impl IntoResponse {
+    let request_context = request_context(request);
+    if payload.correlation_id.is_none() {
+        payload.correlation_id = Some(parse_correlation_id(&request_context.correlation_id));
+    }
+    if payload.windows.is_empty() {
+        match resolve_default_cross_asset_robustness_windows(&state, &payload).await {
+            Ok(windows) => payload.windows = windows,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "failed_to_resolve_cross_asset_robustness_windows",
+                        message: err.to_string(),
+                        request_id: request_context.request_id,
+                        correlation_id: request_context.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+    if let Err(err) = payload.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_cross_asset_robustness_matrix_request",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    let interval = match payload.timeframe.parse::<CandleInterval>() {
+        Ok(interval) => interval,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_cross_asset_robustness_timeframe",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let symbols = match payload
+        .symbols
+        .iter()
+        .map(|symbol| Symbol::new(symbol.clone()))
+        .collect::<std::result::Result<Vec<_>, _>>()
+    {
+        Ok(symbols) => symbols,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid_cross_asset_robustness_symbols",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let start_time = payload
+        .windows
+        .iter()
+        .map(|window| window.start_time)
+        .min()
+        .expect("validated windows");
+    let end_time = payload
+        .windows
+        .iter()
+        .map(|window| window.end_time)
+        .max()
+        .expect("validated windows");
+    let mut candles_by_symbol = BTreeMap::new();
+    for symbol in symbols {
+        match get_closed_candles_range(&state.db_pool, &symbol, interval, start_time, end_time)
+            .await
+        {
+            Ok(candles) => {
+                candles_by_symbol.insert(symbol.as_str().to_string(), candles);
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_load_cross_asset_robustness_candles",
+                        message: err.to_string(),
+                        request_id: request_context.request_id,
+                        correlation_id: request_context.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let execution = match run_cross_asset_robustness_matrix(payload, candles_by_symbol) {
+        Ok(execution) => execution,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "failed_to_run_cross_asset_robustness_matrix",
+                    message: err.to_string(),
+                    request_id: request_context.request_id,
+                    correlation_id: request_context.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) =
+        insert_cross_asset_robustness_matrix_run(&state.db_pool, &execution.result).await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_cross_asset_robustness_matrix_run",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    if let Err(err) =
+        insert_cross_asset_robustness_matrix_cells(&state.db_pool, &execution.cells).await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_cross_asset_robustness_matrix_cells",
+                message: err.to_string(),
+                request_id: request_context.request_id,
+                correlation_id: request_context.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(CrossAssetRobustnessMatrixRunResponse {
+            matrix: execution.result,
+            cells: Some(execution.cells),
+            request_id: request_context.request_id,
+            correlation_id: request_context.correlation_id,
+            timestamp: Utc::now(),
+        }),
+    )
+        .into_response()
+}
+
+async fn resolve_default_cross_asset_robustness_windows(
+    state: &AppState,
+    payload: &CrossAssetRobustnessMatrixRequest,
+) -> anyhow::Result<Vec<CrossAssetRobustnessMatrixWindow>> {
+    let interval = payload.timeframe.parse::<CandleInterval>()?;
+    let mut latest_end: Option<DateTime<Utc>> = None;
+    for raw_symbol in &payload.symbols {
+        let symbol = Symbol::new(raw_symbol.clone())?;
+        let latest = get_latest_closed_candle_time(
+            &state.db_pool,
+            MarketDataSource::Binance,
+            &symbol,
+            interval,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no closed candles for {}", symbol.as_str()))?;
+        let latest_open_boundary = latest + chrono::Duration::milliseconds(1) - interval.duration();
+        latest_end = Some(latest_end.map_or(latest_open_boundary, |current| {
+            current.min(latest_open_boundary)
+        }));
+    }
+    let end_time = latest_end.ok_or_else(|| anyhow::anyhow!("no symbols provided"))?;
+    let start_time = Utc.with_ymd_and_hms(2023, 3, 25, 0, 0, 0).unwrap();
+    let split_time = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+    if end_time <= split_time {
+        anyhow::bail!("latest closed aligned data does not reach 2025+ split");
+    }
+    Ok(vec![
+        CrossAssetRobustnessMatrixWindow {
+            label: "2023_2024".to_string(),
+            start_time,
+            end_time: split_time,
+        },
+        CrossAssetRobustnessMatrixWindow {
+            label: "2025_plus".to_string(),
+            start_time: split_time,
+            end_time,
+        },
+        CrossAssetRobustnessMatrixWindow {
+            label: "combined".to_string(),
+            start_time,
+            end_time,
+        },
+    ])
+}
+
+async fn list_cross_asset_robustness_matrix_runs_handler(
+    State(state): State<AppState>,
+    Query(query): Query<CrossAssetResearchRunsQuery>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_cross_asset_robustness_matrix_runs(&state.db_pool, bounded_limit(query.limit)).await
+    {
+        Ok(records) => {
+            let matrices = records
+                .iter()
+                .map(cross_asset_robustness_matrix_result_from_record)
+                .collect::<std::result::Result<Vec<_>, _>>();
+            match matrices {
+                Ok(matrices) => (
+                    StatusCode::OK,
+                    Json(CrossAssetRobustnessMatrixRunsResponse {
+                        matrices,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_cross_asset_robustness_matrix_runs",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_cross_asset_robustness_matrix_runs",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_cross_asset_robustness_matrix_run_handler(
+    State(state): State<AppState>,
+    Path(run_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match get_cross_asset_robustness_matrix_run(&state.db_pool, run_id).await {
+        Ok(Some(record)) => match cross_asset_robustness_matrix_result_from_record(&record) {
+            Ok(matrix) => (
+                StatusCode::OK,
+                Json(CrossAssetRobustnessMatrixRunResponse {
+                    matrix,
+                    cells: None,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_map_cross_asset_robustness_matrix_run",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: Utc::now(),
+                }),
+            )
+                .into_response(),
+        },
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "cross_asset_robustness_matrix_not_found",
+                message: "Cross-asset robustness matrix run was not found.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_get_cross_asset_robustness_matrix_run",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn list_cross_asset_robustness_matrix_cells_handler(
+    State(state): State<AppState>,
+    Path(run_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match list_cross_asset_robustness_matrix_cells(&state.db_pool, run_id).await {
+        Ok(records) => {
+            let cells = records
+                .iter()
+                .map(cross_asset_robustness_matrix_cell_from_record)
+                .collect::<std::result::Result<Vec<_>, _>>();
+            match cells {
+                Ok(cells) => (
+                    StatusCode::OK,
+                    Json(CrossAssetRobustnessMatrixCellsResponse {
+                        cells,
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: "failed_to_map_cross_asset_robustness_matrix_cells",
+                        message: err.to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: Utc::now(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_list_cross_asset_robustness_matrix_cells",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
@@ -33112,8 +33533,9 @@ mod tests {
         candidate_promotion_readiness, check_execution_readiness_handler,
         compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
         generate_operator_report_handler, generate_testnet_client_order_id,
-        get_cross_asset_research_run_handler, get_exchange_testnet_shadow_promotion_handler,
-        get_exchange_testnet_shadow_run_handler, get_execution_readiness_snapshot_handler,
+        get_cross_asset_research_run_handler, get_cross_asset_robustness_matrix_run_handler,
+        get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
+        get_execution_readiness_snapshot_handler,
         get_research_candidate_accept_shadow_preview_handler,
         get_research_candidate_observation_summary_handler,
         get_research_candidate_qualification_handler,
@@ -33126,23 +33548,25 @@ mod tests {
         is_allowed_research_import_reconciliation_status, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_cross_asset_research_runs_handler,
         list_cross_asset_research_trades_handler, list_cross_asset_research_windows_handler,
-        list_exchange_testnet_order_repairs, list_exchange_testnet_shadow_promotions_handler,
-        list_exchange_testnet_shadow_runs_handler, list_execution_readiness_snapshots_handler,
-        list_research_candidate_shadow_runs_handler, list_strategy_candidate_observations_handler,
-        list_strategy_research_candidates_handler, login, logout, metrics, normalize_route_label,
-        observation_rejection, observe_research_candidate_shadow_once_handler, order_view,
-        parse_correlation_id_filter, parse_cors_allowed_origins, parse_order_intent,
-        parse_risk_check_context, plan_shadow_observe_once, preview_exchange_testnet_pipeline,
+        list_cross_asset_robustness_matrix_cells_handler,
+        list_cross_asset_robustness_matrix_runs_handler, list_exchange_testnet_order_repairs,
+        list_exchange_testnet_shadow_promotions_handler, list_exchange_testnet_shadow_runs_handler,
+        list_execution_readiness_snapshots_handler, list_research_candidate_shadow_runs_handler,
+        list_strategy_candidate_observations_handler, list_strategy_research_candidates_handler,
+        login, logout, metrics, normalize_route_label, observation_rejection,
+        observe_research_candidate_shadow_once_handler, order_view, parse_correlation_id_filter,
+        parse_cors_allowed_origins, parse_order_intent, parse_risk_check_context,
+        plan_shadow_observe_once, preview_exchange_testnet_pipeline,
         preview_exchange_testnet_shadow_promotion_handler,
         promote_strategy_research_candidate_handler, ranked_research_batch_candidates,
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
         register_strategy_research_candidate_handler, repair_exchange_testnet_order,
         request_context_middleware, research_decision_ledger, risk_decision_not_found_error,
-        route_access, run_cross_asset_research_handler, run_exchange_testnet_shadow_handler,
-        run_strategy_experiment_handler, strategy_diagnostics_handler,
-        strategy_evidence_config_fingerprint, strategy_exit_attribution_handler,
-        strategy_family_status_summary, strategy_opportunity_analysis_handler,
-        strategy_opportunity_replay_consistency_handler,
+        route_access, run_cross_asset_research_handler, run_cross_asset_robustness_matrix_handler,
+        run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
+        strategy_diagnostics_handler, strategy_evidence_config_fingerprint,
+        strategy_exit_attribution_handler, strategy_family_status_summary,
+        strategy_opportunity_analysis_handler, strategy_opportunity_replay_consistency_handler,
         strategy_signal_feature_attribution_handler, submit_exchange_testnet_pipeline,
         submit_exchange_testnet_shadow_promotion_handler, AppConfig, AppState,
         ExchangeTestnetPipelinePreviewResponse, ExecutionReadinessResponse,
@@ -34465,6 +34889,22 @@ mod tests {
             .route(
                 "/research/cross-asset/run",
                 post(run_cross_asset_research_handler),
+            )
+            .route(
+                "/research/cross-asset/robustness-matrix/run",
+                post(run_cross_asset_robustness_matrix_handler),
+            )
+            .route(
+                "/research/cross-asset/robustness-matrix",
+                get(list_cross_asset_robustness_matrix_runs_handler),
+            )
+            .route(
+                "/research/cross-asset/robustness-matrix/:id",
+                get(get_cross_asset_robustness_matrix_run_handler),
+            )
+            .route(
+                "/research/cross-asset/robustness-matrix/:id/cells",
+                get(list_cross_asset_robustness_matrix_cells_handler),
             )
             .route(
                 "/research/cross-asset",
@@ -36017,6 +36457,101 @@ mod tests {
             windows["windows"].as_array().expect("windows array").len() > 0,
             "{windows}"
         );
+
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.3);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.5
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_asset_robustness_matrix_persists_cells_and_does_not_mutate_execution_tables() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        insert_cross_asset_test_candles(&test_db.pool).await;
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let before = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+
+        let payload = json!({
+            "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"],
+            "timeframe": "1h",
+            "windows": [{
+                "label": "combined",
+                "start_time": "2024-01-01T00:00:00Z",
+                "end_time": "2024-01-04T08:00:00Z"
+            }],
+            "ranking_lookback_hours": [6],
+            "rank_metrics": ["raw_return", "vol_adjusted_return"],
+            "min_top_return_pct": "0",
+            "min_rank_spread_pct": ["0"],
+            "holding_hours": [6],
+            "fee_bps": "0",
+            "slippage_bps": "0",
+            "one_active_position": true,
+            "sizing_modes": ["equal_notional"],
+            "min_weight": "0.25",
+            "max_weight": "1",
+            "market_filters": [{ "kind": "none" }],
+            "vol_filters": [{ "kind": "none" }],
+            "overextension_filters": [{ "kind": "none" }],
+            "exit_rules": [{ "kind": "fixed_hold" }],
+            "max_configs": 1
+        });
+        let response = app
+            .clone()
+            .oneshot(cli_request(
+                "POST",
+                "/research/cross-asset/robustness-matrix/run",
+                payload,
+            ))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let created = response_json::<Value>(response).await;
+        let run_id = created["matrix"]["run_id"].as_str().expect("run id");
+        assert_eq!(created["matrix"]["cell_count"].as_i64(), Some(1));
+        assert_eq!(created["cells"].as_array().expect("cells").len(), 1);
+
+        let get_response = app
+            .clone()
+            .oneshot(cli_request(
+                "GET",
+                &format!("/research/cross-asset/robustness-matrix/{run_id}"),
+                json!({}),
+            ))
+            .await
+            .expect("get response");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let fetched = response_json::<Value>(get_response).await;
+        assert_eq!(fetched["matrix"]["run_id"].as_str(), Some(run_id));
+
+        let cells_response = app
+            .oneshot(cli_request(
+                "GET",
+                &format!("/research/cross-asset/robustness-matrix/{run_id}/cells"),
+                json!({}),
+            ))
+            .await
+            .expect("cells response");
+        assert_eq!(cells_response.status(), StatusCode::OK);
+        let cells = response_json::<Value>(cells_response).await;
+        assert_eq!(cells["cells"].as_array().expect("cells array").len(), 1);
 
         assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
         assert_eq!(count_paper_positions(&test_db.pool).await, before.1);

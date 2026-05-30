@@ -14,6 +14,8 @@ const TEST_TABLES: &[&str] = &[
     "exchange_reconciliation_mismatches",
     "exchange_reconciliation_runs",
     "research_stale_run_recoveries",
+    "cross_asset_robustness_matrix_cells",
+    "cross_asset_robustness_matrix_runs",
     "cross_asset_research_windows",
     "cross_asset_research_trades",
     "cross_asset_research_runs",

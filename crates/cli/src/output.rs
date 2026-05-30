@@ -1,9 +1,9 @@
 use aegis_core::{
     CandleAggregationResult, CandleAggregationStatusRow, CrossAssetResearchResult,
-    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairPlan,
-    MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
-    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignResult,
-    ResearchCampaignSummary, ResearchCandidateAcceptForShadowApplyResult,
+    CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary, MarketDataQualityReport,
+    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
     ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
     ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
@@ -75,6 +75,36 @@ pub fn print_cross_asset_research_run(run: &CrossAssetResearchResult) {
         run.worst_window_pnl_pct, run.median_window_pnl_pct, run.max_symbol_concentration_pct
     );
     println!("Symbols: {:?}", run.symbol_distribution);
+}
+
+pub fn print_cross_asset_robustness_matrix(matrix: &CrossAssetRobustnessMatrixResult) {
+    println!("Cross-asset robustness matrix: {}", matrix.run_id);
+    println!(
+        "Status: {}  Recommendation: {}",
+        matrix.status.as_str(),
+        matrix.recommendation.as_str()
+    );
+    println!(
+        "Configs: {}/{} evaluated  Skipped: {}  Cells: {}",
+        matrix.evaluated_config_count,
+        matrix.full_config_count,
+        matrix.skipped_config_count,
+        matrix.cell_count
+    );
+    for ranking in matrix.rankings.iter().take(5) {
+        println!(
+            "#{:02} config={} score={} status={} trades={} pnl={} dd={} conc={} btc={}",
+            ranking.rank,
+            ranking.config_index,
+            ranking.robustness_score,
+            ranking.status.as_str(),
+            ranking.total_trades,
+            ranking.combined_pnl_pct,
+            ranking.max_drawdown_pct,
+            ranking.max_symbol_concentration_pct,
+            ranking.btc_trade_count
+        );
+    }
 }
 
 pub fn print_research_state_snapshot(response: &serde_json::Value) {
