@@ -1952,6 +1952,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     cli::cli::ResearchCrossAssetCandidateCommands::ShadowPreview {
                         candidate_id,
+                        research_observation_only: _,
                     } => {
                         let response = client
                             .get_cross_asset_candidate_shadow_observation_preview(candidate_id)

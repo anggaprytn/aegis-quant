@@ -933,6 +933,11 @@ pub enum ResearchCrossAssetCandidateCommands {
     #[command(name = "shadow-preview")]
     ShadowPreview {
         candidate_id: Uuid,
+        #[arg(
+            long = "research-observation-only",
+            help = "Acknowledge this is research observation-only intent; server SHADOW_OBSERVATION_ONLY=true is still required"
+        )]
+        research_observation_only: bool,
     },
     #[command(name = "shadow-run-once")]
     ShadowRunOnce(ResearchCrossAssetCandidateShadowRunOnceArgs),
