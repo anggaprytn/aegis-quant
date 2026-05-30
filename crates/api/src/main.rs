@@ -31221,7 +31221,7 @@ async fn run_cross_asset_candidate_shadow_observation_handler(
             Json(ErrorResponse {
                 error: "shadow_observation_only_required",
                 message: format!(
-                    "Cross-asset observation writes require server SHADOW_OBSERVATION_ONLY=true and request research_observation_only=true. server_observation_only_mode={} research_observation_only_acknowledged={}",
+                    "Cross-asset observation writes require server SHADOW_OBSERVATION_ONLY=true and request research_observation_only=true. server_observation_only_mode={} research_observation_only_acknowledged={} no_order_submission=true execution_authority=NONE",
                     state.config.shadow_observation_only,
                     payload.research_observation_only
                 ),
@@ -39410,6 +39410,14 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("server SHADOW_OBSERVATION_ONLY=true"));
+        assert!(disabled_payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no_order_submission=true"));
+        assert!(disabled_payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("execution_authority=NONE"));
         assert_eq!(
             count_table_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
             0
@@ -39453,6 +39461,14 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("research_observation_only=true"));
+        assert!(missing_ack_payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no_order_submission=true"));
+        assert!(missing_ack_payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("execution_authority=NONE"));
         assert_eq!(
             count_table_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
             0
