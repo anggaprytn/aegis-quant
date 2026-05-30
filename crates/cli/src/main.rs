@@ -1950,6 +1950,38 @@ async fn main() -> anyhow::Result<()> {
                             output::print_cross_asset_accept_shadow_preview(&response.preview);
                         }
                     }
+                    cli::cli::ResearchCrossAssetCandidateCommands::ShadowPreview {
+                        candidate_id,
+                    } => {
+                        let response = client
+                            .get_cross_asset_candidate_shadow_observation_preview(candidate_id)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_shadow_observation_preview(
+                                &response.preview,
+                            );
+                        }
+                    }
+                    cli::cli::ResearchCrossAssetCandidateCommands::ShadowRunOnce(args) => {
+                        let response = client
+                            .run_cross_asset_candidate_shadow_observation(
+                                args.candidate_id,
+                                &aegis_core::CrossAssetShadowObservationRunRequest {
+                                    research_observation_only: args.research_observation_only,
+                                    confirmation_text: Some(args.confirm),
+                                    allow_duplicate_same_candle: args.allow_duplicate_same_candle,
+                                    correlation_id: args.correlation_id,
+                                },
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_shadow_observation_run(&response.result);
+                        }
+                    }
                 },
                 ResearchCrossAssetCommands::RobustnessMatrix(command) => match command {
                     ResearchCrossAssetRobustnessMatrixCommands::Run(args) => {

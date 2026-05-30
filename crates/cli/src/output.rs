@@ -2,16 +2,17 @@ use aegis_core::{
     CandleAggregationResult, CandleAggregationStatusRow, CrossAssetAcceptShadowPreview,
     CrossAssetCandidateGatePreviewResult, CrossAssetCandidateQualification,
     CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchCandidateDossier,
-    CrossAssetResearchResult, CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary,
-    MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
-    ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
-    ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
-    ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowPreviewResult,
-    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
-    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
-    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
-    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
-    ResearchCandidateReview, ResearchCandidateReviewResult,
+    CrossAssetResearchResult, CrossAssetRobustnessMatrixResult,
+    CrossAssetShadowObservationPreviewResult, CrossAssetShadowObservationRunResult,
+    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairPlan,
+    MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignResult,
+    ResearchCampaignSummary, ResearchCandidateAcceptForShadowApplyResult,
+    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
+    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
+    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
+    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
+    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
     ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
@@ -443,6 +444,21 @@ pub fn print_cross_asset_research_candidate_dossier(dossier: &CrossAssetResearch
                 .unwrap_or_else(|| "n/a".to_string())
         );
     }
+    if let Some(shadow) = &dossier.shadow_performance {
+        println!(
+            "Shadow observations: total={} independent={} would_select={} no_signal={} skipped={} latest={} latest_selected={}",
+            shadow.total_shadow_observations,
+            shadow.independent_shadow_observations,
+            shadow.would_select_count,
+            shadow.no_signal_count,
+            shadow.skipped_count,
+            shadow
+                .latest_evaluated_candle_time
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "none".to_string()),
+            shadow.latest_selected_symbol.as_deref().unwrap_or("none")
+        );
+    }
     println!("Blockers:");
     for blocker in &dossier.blockers {
         println!("  - {}: {}", blocker.code, blocker.message);
@@ -472,6 +488,17 @@ pub fn print_cross_asset_candidate_qualification(qualification: &CrossAssetCandi
         qualification.readiness.testnet_ready,
         qualification.readiness.live_ready
     );
+    if let Some(shadow) = &qualification.shadow_performance {
+        println!(
+            "Shadow observations: total={} independent={} would_select={} no_signal={} skipped={} status={}",
+            shadow.total_shadow_observations,
+            shadow.independent_shadow_observations,
+            shadow.would_select_count,
+            shadow.no_signal_count,
+            shadow.skipped_count,
+            shadow.shadow_status.as_deref().unwrap_or("NONE")
+        );
+    }
     println!("Blockers:");
     for blocker in &qualification.blockers {
         println!("  - {}: {}", blocker.code, blocker.message);
@@ -497,6 +524,91 @@ pub fn print_cross_asset_accept_shadow_preview(preview: &CrossAssetAcceptShadowP
         println!("  - {}: {}", reason.code, reason.message);
     }
     println!("This preview is read-only and does not create shadow runs.");
+}
+
+pub fn print_cross_asset_shadow_observation_preview(
+    preview: &CrossAssetShadowObservationPreviewResult,
+) {
+    println!("Cross-asset shadow observation preview");
+    println!(
+        "Candidate: {} package={} status={} decision={} no_mutation={}",
+        preview.candidate_id,
+        preview.package_id,
+        preview.candidate_status.as_str(),
+        preview.decision.as_str(),
+        preview.no_mutation
+    );
+    println!(
+        "Latest aligned candle: {}  latest evaluated: {}",
+        preview
+            .latest_available_aligned_candle_time
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string()),
+        preview
+            .latest_evaluated_candle_time
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Selected: {}  rank_spread={}  market_filter={}  vol_filter={}",
+        preview.selected_symbol.as_deref().unwrap_or("none"),
+        preview
+            .rank_spread_pct
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        preview.market_filter_passed,
+        preview.vol_filter_passed
+    );
+    println!("Reason: {}", preview.reason);
+    println!("Ranking:");
+    for row in &preview.ranking_snapshot {
+        println!(
+            "  #{} {} score={} return={} return_24h={} vol_24h={}",
+            row.rank,
+            row.symbol,
+            row.score,
+            row.return_pct,
+            row.return_24h_pct
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            row.realized_vol_24h_pct
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        );
+    }
+    println!("Warnings: {:?}", preview.warnings);
+    println!("This preview is read-only and does not create orders.");
+}
+
+pub fn print_cross_asset_shadow_observation_run(result: &CrossAssetShadowObservationRunResult) {
+    println!("Cross-asset shadow observation run");
+    println!(
+        "Candidate: {} package={} status={} decision={} observation_created={} duplicate_same_candle={}",
+        result.candidate_id,
+        result.package_id,
+        result.status.as_str(),
+        result.decision.as_str(),
+        result.observation_created,
+        result.duplicate_same_candle
+    );
+    println!(
+        "Observation: {}  evaluated_candle={}",
+        result
+            .observation_id
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        result
+            .evaluated_candle_time
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Selected: {}  reason={}",
+        result.selected_symbol.as_deref().unwrap_or("none"),
+        result.reason
+    );
+    println!("Warnings: {:?}", result.warnings);
+    println!("No orders, paper positions, fills, testnet orders, or live orders are created.");
 }
 
 pub fn print_research_state_snapshot(response: &serde_json::Value) {

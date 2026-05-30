@@ -10,8 +10,10 @@ use uuid::Uuid;
 
 use aegis_core::{
     calculate_research_shadow_pnl_attribution, evaluate_research_candidate_shadow_performance,
-    Candle, CandleInterval, ExecutionReadinessStatus, MarketDataSource, ResearchBatchResult,
-    ResearchBatchStatus, ResearchBatchStep, ResearchBatchStepStatus, ResearchCampaignBatchPlan,
+    Candle, CandleInterval, CrossAssetShadowObservationPerformanceSummary,
+    CrossAssetShadowObservationPreviewResult, CrossAssetShadowObservationStatus,
+    ExecutionReadinessStatus, MarketDataSource, ResearchBatchResult, ResearchBatchStatus,
+    ResearchBatchStep, ResearchBatchStepStatus, ResearchCampaignBatchPlan,
     ResearchCampaignBatchResult, ResearchCampaignResult, ResearchCampaignStatus, ResearchCandidate,
     ResearchCandidateCreationDecision, ResearchCandidateDecision, ResearchCandidateLifecycleEvent,
     ResearchCandidateProposal, ResearchCandidateQualificationEvaluation,
@@ -98,6 +100,37 @@ pub struct ResearchBatchStepRecord {
     pub completed_at: Option<DateTime<Utc>>,
     pub result: Value,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetShadowObservationRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub package_id: String,
+    pub evaluated_candle_time: DateTime<Utc>,
+    pub decision: String,
+    pub status: String,
+    pub selected_symbol: Option<String>,
+    pub rank_snapshot_json: Value,
+    pub reason: String,
+    pub warnings_json: Value,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetShadowObservationRankingRecord {
+    pub id: Uuid,
+    pub observation_id: Uuid,
+    pub candidate_id: Uuid,
+    pub evaluated_candle_time: DateTime<Utc>,
+    pub symbol: String,
+    pub rank: i32,
+    pub score: Decimal,
+    pub return_pct: Decimal,
+    pub return_24h_pct: Option<Decimal>,
+    pub realized_vol_24h_pct: Option<Decimal>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4863,6 +4896,320 @@ pub async fn get_research_candidate(
     .await?;
 
     Ok(row.map(map_research_candidate))
+}
+
+fn map_cross_asset_shadow_observation(
+    row: sqlx::postgres::PgRow,
+) -> CrossAssetShadowObservationRecord {
+    CrossAssetShadowObservationRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        package_id: row.get("package_id"),
+        evaluated_candle_time: row.get("evaluated_candle_time"),
+        decision: row.get("decision"),
+        status: row.get("status"),
+        selected_symbol: row.get("selected_symbol"),
+        rank_snapshot_json: row.get("rank_snapshot_json"),
+        reason: row.get("reason"),
+        warnings_json: row.get("warnings_json"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
+fn map_cross_asset_shadow_observation_ranking(
+    row: sqlx::postgres::PgRow,
+) -> CrossAssetShadowObservationRankingRecord {
+    CrossAssetShadowObservationRankingRecord {
+        id: row.get("id"),
+        observation_id: row.get("observation_id"),
+        candidate_id: row.get("candidate_id"),
+        evaluated_candle_time: row.get("evaluated_candle_time"),
+        symbol: row.get("symbol"),
+        rank: row.get("rank"),
+        score: row.get("score"),
+        return_pct: row.get("return_pct"),
+        return_24h_pct: row.get("return_24h_pct"),
+        realized_vol_24h_pct: row.get("realized_vol_24h_pct"),
+        created_at: row.get("created_at"),
+    }
+}
+
+pub async fn get_latest_cross_asset_shadow_observation(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Option<CrossAssetShadowObservationRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            package_id,
+            evaluated_candle_time,
+            decision,
+            status,
+            selected_symbol,
+            rank_snapshot_json,
+            reason,
+            warnings_json,
+            created_at,
+            correlation_id
+        FROM cross_asset_candidate_shadow_observations
+        WHERE candidate_id = $1
+        ORDER BY evaluated_candle_time DESC, created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_cross_asset_shadow_observation))
+}
+
+pub async fn get_cross_asset_shadow_observation_by_candle(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    evaluated_candle_time: DateTime<Utc>,
+) -> Result<Option<CrossAssetShadowObservationRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            package_id,
+            evaluated_candle_time,
+            decision,
+            status,
+            selected_symbol,
+            rank_snapshot_json,
+            reason,
+            warnings_json,
+            created_at,
+            correlation_id
+        FROM cross_asset_candidate_shadow_observations
+        WHERE candidate_id = $1 AND evaluated_candle_time = $2
+        LIMIT 1
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(evaluated_candle_time)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_cross_asset_shadow_observation))
+}
+
+pub async fn insert_cross_asset_shadow_observation(
+    pool: &PgPool,
+    preview: &CrossAssetShadowObservationPreviewResult,
+    observation_id: Uuid,
+    created_at: DateTime<Utc>,
+    correlation_id: Option<Uuid>,
+) -> Result<CrossAssetShadowObservationRecord> {
+    let evaluated_candle_time = preview
+        .latest_available_aligned_candle_time
+        .context("cross-asset shadow observation requires an evaluated candle time")?;
+    let rank_snapshot_json = serde_json::to_value(&preview.ranking_snapshot)?;
+    let warnings_json = serde_json::to_value(&preview.warnings)?;
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        INSERT INTO cross_asset_candidate_shadow_observations (
+            id,
+            candidate_id,
+            package_id,
+            evaluated_candle_time,
+            decision,
+            status,
+            selected_symbol,
+            rank_snapshot_json,
+            reason,
+            warnings_json,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (candidate_id, evaluated_candle_time) DO NOTHING
+        RETURNING
+            id,
+            candidate_id,
+            package_id,
+            evaluated_candle_time,
+            decision,
+            status,
+            selected_symbol,
+            rank_snapshot_json,
+            reason,
+            warnings_json,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(observation_id)
+    .bind(preview.candidate_id)
+    .bind(&preview.package_id)
+    .bind(evaluated_candle_time)
+    .bind(preview.decision.as_str())
+    .bind(CrossAssetShadowObservationStatus::ObservationRecorded.as_str())
+    .bind(&preview.selected_symbol)
+    .bind(rank_snapshot_json)
+    .bind(&preview.reason)
+    .bind(warnings_json)
+    .bind(created_at)
+    .bind(correlation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some(row) = row else {
+        tx.rollback().await?;
+        return get_cross_asset_shadow_observation_by_candle(
+            pool,
+            preview.candidate_id,
+            evaluated_candle_time,
+        )
+        .await?
+        .context("conflicting cross-asset shadow observation was not found");
+    };
+
+    for ranking in &preview.ranking_snapshot {
+        sqlx::query(
+            r#"
+            INSERT INTO cross_asset_candidate_shadow_observation_rankings (
+                id,
+                observation_id,
+                candidate_id,
+                evaluated_candle_time,
+                symbol,
+                rank,
+                score,
+                return_pct,
+                return_24h_pct,
+                realized_vol_24h_pct,
+                created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (observation_id, symbol) DO NOTHING
+            "#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(observation_id)
+        .bind(preview.candidate_id)
+        .bind(evaluated_candle_time)
+        .bind(&ranking.symbol)
+        .bind(ranking.rank)
+        .bind(ranking.score)
+        .bind(ranking.return_pct)
+        .bind(ranking.return_24h_pct)
+        .bind(ranking.realized_vol_24h_pct)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(map_cross_asset_shadow_observation(row))
+}
+
+pub async fn list_cross_asset_shadow_observation_rankings(
+    pool: &PgPool,
+    observation_id: Uuid,
+) -> Result<Vec<CrossAssetShadowObservationRankingRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            observation_id,
+            candidate_id,
+            evaluated_candle_time,
+            symbol,
+            rank,
+            score,
+            return_pct,
+            return_24h_pct,
+            realized_vol_24h_pct,
+            created_at
+        FROM cross_asset_candidate_shadow_observation_rankings
+        WHERE observation_id = $1
+        ORDER BY rank ASC, symbol ASC
+        "#,
+    )
+    .bind(observation_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(map_cross_asset_shadow_observation_ranking)
+        .collect())
+}
+
+pub async fn summarize_cross_asset_shadow_observations(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<CrossAssetShadowObservationPerformanceSummary> {
+    let summary = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS total_shadow_observations,
+            COUNT(DISTINCT evaluated_candle_time)::BIGINT AS unique_evaluated_candle_count,
+            COUNT(*) FILTER (WHERE decision = 'WOULD_SELECT')::BIGINT AS would_select_count,
+            COUNT(*) FILTER (WHERE decision = 'NO_SIGNAL')::BIGINT AS no_signal_count,
+            COUNT(*) FILTER (WHERE decision LIKE 'SKIPPED_%')::BIGINT AS skipped_count,
+            MAX(evaluated_candle_time) AS latest_evaluated_candle_time
+        FROM cross_asset_candidate_shadow_observations
+        WHERE candidate_id = $1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_one(pool)
+    .await?;
+    let distribution_rows = sqlx::query(
+        r#"
+        SELECT selected_symbol, COUNT(*)::BIGINT AS count
+        FROM cross_asset_candidate_shadow_observations
+        WHERE candidate_id = $1 AND selected_symbol IS NOT NULL
+        GROUP BY selected_symbol
+        ORDER BY selected_symbol ASC
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_all(pool)
+    .await?;
+    let latest_selected_symbol: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT selected_symbol
+        FROM cross_asset_candidate_shadow_observations
+        WHERE candidate_id = $1 AND selected_symbol IS NOT NULL
+        ORDER BY evaluated_candle_time DESC, created_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let total_shadow_observations: i64 = summary.get("total_shadow_observations");
+    let unique_evaluated_candle_count: i64 = summary.get("unique_evaluated_candle_count");
+    let mut selected_symbol_distribution = std::collections::BTreeMap::new();
+    for row in distribution_rows {
+        let symbol: String = row.get("selected_symbol");
+        let count: i64 = row.get("count");
+        selected_symbol_distribution.insert(symbol, count);
+    }
+
+    Ok(CrossAssetShadowObservationPerformanceSummary {
+        total_shadow_observations,
+        independent_shadow_observations: unique_evaluated_candle_count,
+        unique_evaluated_candle_count,
+        would_select_count: summary.get("would_select_count"),
+        no_signal_count: summary.get("no_signal_count"),
+        skipped_count: summary.get("skipped_count"),
+        latest_evaluated_candle_time: summary.get("latest_evaluated_candle_time"),
+        latest_selected_symbol,
+        selected_symbol_distribution,
+        shadow_status: (total_shadow_observations > 0).then(|| "UNDER_OBSERVATION".to_string()),
+    })
 }
 
 pub async fn find_research_candidate_by_source_matrix_and_fingerprint(

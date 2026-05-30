@@ -10,15 +10,17 @@ use aegis_core::{
     CrossAssetResearchCandidateManualCreateRequest, CrossAssetResearchCandidateManualCreateResult,
     CrossAssetResearchRequest, CrossAssetResearchResult, CrossAssetRobustnessMatrixCell,
     CrossAssetRobustnessMatrixRequest, CrossAssetRobustnessMatrixResult,
-    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
-    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
-    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    CrossAssetShadowObservationPreviewResult, CrossAssetShadowObservationRunRequest,
+    CrossAssetShadowObservationRunResult, ExchangeTestnetPipelinePreview,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
+    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
+    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateEvidenceProvenance,
@@ -1455,6 +1457,29 @@ impl ApiClient {
         self.get(
             &format!("/research/cross-asset/candidates/{candidate_id}/accept-shadow/preview"),
             &[],
+        )
+        .await
+    }
+
+    pub async fn get_cross_asset_candidate_shadow_observation_preview(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<CrossAssetShadowObservationPreviewResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/candidates/{candidate_id}/shadow-observation/preview"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn run_cross_asset_candidate_shadow_observation(
+        &self,
+        candidate_id: Uuid,
+        request: &CrossAssetShadowObservationRunRequest,
+    ) -> Result<CrossAssetShadowObservationRunResponse, ApiClientError> {
+        self.post(
+            &format!("/research/cross-asset/candidates/{candidate_id}/shadow-observation/run"),
+            request,
         )
         .await
     }
@@ -3587,6 +3612,22 @@ pub struct CrossAssetCandidateQualificationResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossAssetAcceptShadowPreviewResponse {
     pub preview: CrossAssetAcceptShadowPreview,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetShadowObservationPreviewResponse {
+    pub preview: CrossAssetShadowObservationPreviewResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetShadowObservationRunResponse {
+    pub result: CrossAssetShadowObservationRunResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

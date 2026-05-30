@@ -930,6 +930,25 @@ pub enum ResearchCrossAssetCandidateCommands {
     AcceptShadowPreview {
         candidate_id: Uuid,
     },
+    #[command(name = "shadow-preview")]
+    ShadowPreview {
+        candidate_id: Uuid,
+    },
+    #[command(name = "shadow-run-once")]
+    ShadowRunOnce(ResearchCrossAssetCandidateShadowRunOnceArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetCandidateShadowRunOnceArgs {
+    pub candidate_id: Uuid,
+    #[arg(long)]
+    pub confirm: String,
+    #[arg(long = "research-observation-only", default_value_t = true)]
+    pub research_observation_only: bool,
+    #[arg(long = "allow-duplicate-same-candle")]
+    pub allow_duplicate_same_candle: bool,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Subcommand)]

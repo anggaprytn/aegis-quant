@@ -8232,6 +8232,8 @@ pub struct CrossAssetCandidateQualification {
     pub package_id: String,
     pub status: CrossAssetCandidateReviewStatus,
     pub readiness: CrossAssetCandidateReadiness,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_performance: Option<CrossAssetShadowObservationPerformanceSummary>,
     pub blockers: Vec<CrossAssetCandidateReviewBlocker>,
     pub warnings: Vec<CrossAssetCandidateReviewWarning>,
     pub allowed_next_actions: Vec<String>,
@@ -8254,6 +8256,8 @@ pub struct CrossAssetResearchCandidateDossier {
     pub policy_warnings_acknowledged: Vec<String>,
     pub lifecycle_status: CrossAssetCandidateReviewStatus,
     pub readiness: CrossAssetCandidateReadiness,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_performance: Option<CrossAssetShadowObservationPerformanceSummary>,
     pub blockers: Vec<CrossAssetCandidateReviewBlocker>,
     pub warnings: Vec<CrossAssetCandidateReviewWarning>,
     pub allowed_next_actions: Vec<String>,
@@ -8285,6 +8289,136 @@ pub struct CrossAssetAcceptShadowPreview {
     pub reasons: Vec<CrossAssetCandidateReviewBlocker>,
     pub no_mutation: bool,
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetShadowObservationDecision {
+    WouldSelect,
+    NoSignal,
+    SkippedNoNewCandle,
+    SkippedStaleCandles,
+    BlockedNotPromotedOrNotAccepted,
+    Error,
+}
+
+impl CrossAssetShadowObservationDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WouldSelect => "WOULD_SELECT",
+            Self::NoSignal => "NO_SIGNAL",
+            Self::SkippedNoNewCandle => "SKIPPED_NO_NEW_CANDLE",
+            Self::SkippedStaleCandles => "SKIPPED_STALE_CANDLES",
+            Self::BlockedNotPromotedOrNotAccepted => "BLOCKED_NOT_PROMOTED_OR_NOT_ACCEPTED",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetShadowObservationStatus {
+    PreviewOnly,
+    ObservationRecorded,
+    Skipped,
+    Blocked,
+    Error,
+}
+
+impl CrossAssetShadowObservationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PreviewOnly => "PREVIEW_ONLY",
+            Self::ObservationRecorded => "OBSERVATION_RECORDED",
+            Self::Skipped => "SKIPPED",
+            Self::Blocked => "BLOCKED",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetShadowObservationPreviewRequest {
+    pub candidate_id: Uuid,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetShadowObservationRunRequest {
+    #[serde(default)]
+    pub research_observation_only: bool,
+    pub confirmation_text: Option<String>,
+    #[serde(default)]
+    pub allow_duplicate_same_candle: bool,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetShadowObservationRankingRow {
+    pub symbol: String,
+    pub rank: i32,
+    pub score: Decimal,
+    pub return_pct: Decimal,
+    pub return_24h_pct: Option<Decimal>,
+    pub realized_vol_24h_pct: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetShadowObservationPreviewResult {
+    pub candidate_id: Uuid,
+    pub package_id: String,
+    pub candidate_status: ResearchCandidateStatus,
+    pub latest_available_aligned_candle_time: Option<DateTime<Utc>>,
+    pub latest_evaluated_candle_time: Option<DateTime<Utc>>,
+    pub would_create_observation: bool,
+    pub decision: CrossAssetShadowObservationDecision,
+    pub status: CrossAssetShadowObservationStatus,
+    pub selected_symbol: Option<String>,
+    pub ranking_snapshot: Vec<CrossAssetShadowObservationRankingRow>,
+    pub rank_spread_pct: Option<Decimal>,
+    pub market_filter_passed: bool,
+    pub vol_filter_passed: bool,
+    pub reason: String,
+    pub warnings: Vec<String>,
+    pub no_mutation: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetShadowObservationRunResult {
+    pub candidate_id: Uuid,
+    pub package_id: String,
+    pub candidate_status: ResearchCandidateStatus,
+    pub observation_id: Option<Uuid>,
+    pub observation_created: bool,
+    pub duplicate_same_candle: bool,
+    pub latest_available_aligned_candle_time: Option<DateTime<Utc>>,
+    pub latest_evaluated_candle_time: Option<DateTime<Utc>>,
+    pub evaluated_candle_time: Option<DateTime<Utc>>,
+    pub decision: CrossAssetShadowObservationDecision,
+    pub status: CrossAssetShadowObservationStatus,
+    pub selected_symbol: Option<String>,
+    pub ranking_snapshot: Vec<CrossAssetShadowObservationRankingRow>,
+    pub rank_spread_pct: Option<Decimal>,
+    pub market_filter_passed: bool,
+    pub vol_filter_passed: bool,
+    pub reason: String,
+    pub warnings: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetShadowObservationPerformanceSummary {
+    pub total_shadow_observations: i64,
+    pub independent_shadow_observations: i64,
+    pub unique_evaluated_candle_count: i64,
+    pub would_select_count: i64,
+    pub no_signal_count: i64,
+    pub skipped_count: i64,
+    pub latest_evaluated_candle_time: Option<DateTime<Utc>>,
+    pub latest_selected_symbol: Option<String>,
+    pub selected_symbol_distribution: BTreeMap<String, i64>,
+    pub shadow_status: Option<String>,
 }
 
 pub fn relative_strength_continuation_v1_identity() -> CrossAssetStrategyPackageIdentity {
@@ -8370,6 +8504,7 @@ pub fn evaluate_cross_asset_candidate_qualification(
     execution_authority: &str,
     policy_strictness_used: CrossAssetCandidateCreationPolicyStrictness,
     policy_warnings_acknowledged: &[String],
+    shadow_performance: Option<CrossAssetShadowObservationPerformanceSummary>,
     generated_at: DateTime<Utc>,
 ) -> CrossAssetCandidateQualification {
     let mut blockers = vec![
@@ -8382,22 +8517,25 @@ pub fn evaluate_cross_asset_candidate_qualification(
             "No cross-asset shadow runner support exists for portfolio strategy observation.",
         ),
         cross_asset_candidate_blocker(
-            "no_observation_path",
-            "No shadow observation path exists for cross-asset portfolio strategy candidates.",
-        ),
-        cross_asset_candidate_blocker(
             "not_accepted_for_shadow",
             "Candidate has not been accepted for shadow observation.",
-        ),
-        cross_asset_candidate_blocker(
-            "no_live_shadow_observations",
-            "No live shadow observations exist for this cross-asset candidate.",
         ),
         cross_asset_candidate_blocker(
             "not_marked_ready_for_testnet",
             "Candidate is not marked ready for testnet review.",
         ),
     ];
+
+    let independent_observations = shadow_performance
+        .as_ref()
+        .map(|summary| summary.independent_shadow_observations)
+        .unwrap_or(0);
+    if independent_observations < 30 {
+        blockers.push(cross_asset_candidate_blocker(
+            "not_enough_shadow_observations",
+            "At least 30 independent cross-asset shadow observations are required before any further review.",
+        ));
+    }
 
     if execution_authority != "NONE" {
         blockers.push(cross_asset_candidate_blocker(
@@ -8476,6 +8614,7 @@ pub fn evaluate_cross_asset_candidate_qualification(
         package_id,
         status,
         readiness,
+        shadow_performance,
         blockers,
         warnings,
         allowed_next_actions: relative_strength_continuation_v1_allowed_next_actions(),
@@ -8497,6 +8636,7 @@ pub fn build_cross_asset_research_candidate_dossier(
     matrix_metrics: Option<CrossAssetCandidateMatrixMetrics>,
     policy_strictness_used: CrossAssetCandidateCreationPolicyStrictness,
     policy_warnings_acknowledged: Vec<String>,
+    shadow_performance: Option<CrossAssetShadowObservationPerformanceSummary>,
     generated_at: DateTime<Utc>,
 ) -> CrossAssetResearchCandidateDossier {
     let qualification = evaluate_cross_asset_candidate_qualification(
@@ -8506,6 +8646,7 @@ pub fn build_cross_asset_research_candidate_dossier(
         &execution_authority,
         policy_strictness_used,
         &policy_warnings_acknowledged,
+        shadow_performance,
         generated_at,
     );
     CrossAssetResearchCandidateDossier {
@@ -8522,6 +8663,7 @@ pub fn build_cross_asset_research_candidate_dossier(
         policy_warnings_acknowledged,
         lifecycle_status: qualification.status,
         readiness: qualification.readiness,
+        shadow_performance: qualification.shadow_performance,
         blockers: qualification.blockers,
         warnings: qualification.warnings,
         allowed_next_actions: qualification.allowed_next_actions,
@@ -9783,6 +9925,293 @@ pub fn is_relative_strength_continuation_v1_default_matrix_ranking(
             }
         && ranking.config.overextension_filter == CrossAssetOverextensionFilter::None
         && ranking.config.exit_rule == CrossAssetExitRule::FixedHold
+}
+
+pub fn evaluate_cross_asset_shadow_observation_preview(
+    candidate_id: Uuid,
+    package_id: String,
+    candidate_status: ResearchCandidateStatus,
+    candles_by_symbol: BTreeMap<String, Vec<Candle>>,
+    latest_evaluated_candle_time: Option<DateTime<Utc>>,
+    generated_at: DateTime<Utc>,
+) -> CrossAssetShadowObservationPreviewResult {
+    let mut request =
+        relative_strength_continuation_v1_default_request(generated_at, generated_at, None);
+    request.correlation_id = None;
+    let symbols = request
+        .symbols
+        .iter()
+        .map(|symbol| symbol.trim().to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    let interval = match request.parsed_timeframe() {
+        Ok(value) => value,
+        Err(err) => {
+            return CrossAssetShadowObservationPreviewResult {
+                candidate_id,
+                package_id,
+                candidate_status,
+                latest_available_aligned_candle_time: None,
+                latest_evaluated_candle_time,
+                would_create_observation: false,
+                decision: CrossAssetShadowObservationDecision::Error,
+                status: CrossAssetShadowObservationStatus::Error,
+                selected_symbol: None,
+                ranking_snapshot: Vec::new(),
+                rank_spread_pct: None,
+                market_filter_passed: false,
+                vol_filter_passed: false,
+                reason: err.to_string(),
+                warnings: vec!["invalid_cross_asset_shadow_observation_config".to_string()],
+                no_mutation: true,
+                generated_at,
+            };
+        }
+    };
+    let required_lookback = match (
+        cross_asset_hours_to_candles(request.ranking_lookback_hours, interval),
+        cross_asset_hours_to_candles(6, interval),
+        cross_asset_hours_to_candles(24, interval),
+        cross_asset_hours_to_candles(72, interval),
+    ) {
+        (Ok(ranking), Ok(six), Ok(twenty_four), Ok(seventy_two)) => {
+            ranking.max(six).max(twenty_four).max(seventy_two)
+        }
+        _ => 0,
+    };
+
+    let mut aligned_times: Option<BTreeSet<DateTime<Utc>>> = None;
+    let mut normalized = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for symbol in &symbols {
+        let mut candles = candles_by_symbol
+            .get(symbol)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|candle| candle.interval == interval && candle.is_closed)
+            .collect::<Vec<_>>();
+        candles.sort_by_key(|candle| candle.open_time);
+        if candles.is_empty() {
+            warnings.push(format!("missing_closed_candles_{symbol}"));
+        }
+        let times = candles
+            .iter()
+            .map(|candle| candle.open_time)
+            .collect::<BTreeSet<_>>();
+        aligned_times = Some(match aligned_times {
+            Some(existing) => existing.intersection(&times).copied().collect(),
+            None => times,
+        });
+        normalized.insert(symbol.clone(), candles);
+    }
+
+    let aligned_times = aligned_times.unwrap_or_default();
+    let latest_aligned = aligned_times.iter().next_back().copied();
+    let Some(latest_aligned_time) = latest_aligned else {
+        return CrossAssetShadowObservationPreviewResult {
+            candidate_id,
+            package_id,
+            candidate_status,
+            latest_available_aligned_candle_time: None,
+            latest_evaluated_candle_time,
+            would_create_observation: false,
+            decision: CrossAssetShadowObservationDecision::SkippedStaleCandles,
+            status: CrossAssetShadowObservationStatus::Skipped,
+            selected_symbol: None,
+            ranking_snapshot: Vec::new(),
+            rank_spread_pct: None,
+            market_filter_passed: false,
+            vol_filter_passed: false,
+            reason: "No aligned closed 4h candle exists across the cross-asset basket.".to_string(),
+            warnings,
+            no_mutation: true,
+            generated_at,
+        };
+    };
+
+    if latest_evaluated_candle_time.is_some_and(|time| time >= latest_aligned_time) {
+        return CrossAssetShadowObservationPreviewResult {
+            candidate_id,
+            package_id,
+            candidate_status,
+            latest_available_aligned_candle_time: Some(latest_aligned_time),
+            latest_evaluated_candle_time,
+            would_create_observation: false,
+            decision: CrossAssetShadowObservationDecision::SkippedNoNewCandle,
+            status: CrossAssetShadowObservationStatus::Skipped,
+            selected_symbol: None,
+            ranking_snapshot: Vec::new(),
+            rank_spread_pct: None,
+            market_filter_passed: false,
+            vol_filter_passed: false,
+            reason: "Latest aligned candle has already been evaluated for this candidate."
+                .to_string(),
+            warnings,
+            no_mutation: true,
+            generated_at,
+        };
+    }
+
+    let needed = required_lookback + 1;
+    let times = aligned_times
+        .iter()
+        .copied()
+        .filter(|time| *time <= latest_aligned_time)
+        .collect::<Vec<_>>();
+    if needed == 0 || times.len() < needed {
+        warnings.push("insufficient_cross_asset_lookback".to_string());
+        return CrossAssetShadowObservationPreviewResult {
+            candidate_id,
+            package_id,
+            candidate_status,
+            latest_available_aligned_candle_time: Some(latest_aligned_time),
+            latest_evaluated_candle_time,
+            would_create_observation: false,
+            decision: CrossAssetShadowObservationDecision::SkippedStaleCandles,
+            status: CrossAssetShadowObservationStatus::Skipped,
+            selected_symbol: None,
+            ranking_snapshot: Vec::new(),
+            rank_spread_pct: None,
+            market_filter_passed: false,
+            vol_filter_passed: false,
+            reason: "Not enough aligned 4h candles for ranking, 24h basket return, and volatility features.".to_string(),
+            warnings,
+            no_mutation: true,
+            generated_at,
+        };
+    }
+    let times = times[times.len() - needed..].to_vec();
+    if times.windows(2).any(|pair| {
+        pair[1].signed_duration_since(pair[0]).num_seconds() != interval.duration().num_seconds()
+    }) {
+        warnings.push("latest_aligned_window_contains_gap".to_string());
+        return CrossAssetShadowObservationPreviewResult {
+            candidate_id,
+            package_id,
+            candidate_status,
+            latest_available_aligned_candle_time: Some(latest_aligned_time),
+            latest_evaluated_candle_time,
+            would_create_observation: false,
+            decision: CrossAssetShadowObservationDecision::SkippedStaleCandles,
+            status: CrossAssetShadowObservationStatus::Skipped,
+            selected_symbol: None,
+            ranking_snapshot: Vec::new(),
+            rank_spread_pct: None,
+            market_filter_passed: false,
+            vol_filter_passed: false,
+            reason: "Latest aligned 4h candle window contains a gap.".to_string(),
+            warnings,
+            no_mutation: true,
+            generated_at,
+        };
+    }
+
+    let mut candles = BTreeMap::new();
+    for symbol in &symbols {
+        let by_time = normalized
+            .remove(symbol)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|candle| (candle.open_time, candle))
+            .collect::<BTreeMap<_, _>>();
+        candles.insert(
+            symbol.clone(),
+            times
+                .iter()
+                .filter_map(|time| by_time.get(time).cloned())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    let feature_lookbacks = CrossAssetFeatureLookbacks {
+        ranking: cross_asset_hours_to_candles(request.ranking_lookback_hours, interval)
+            .unwrap_or(1),
+        six_hours: cross_asset_hours_to_candles(6, interval).unwrap_or(1),
+        twenty_four_hours: cross_asset_hours_to_candles(24, interval).unwrap_or(1),
+        seventy_two_hours: cross_asset_hours_to_candles(72, interval).unwrap_or(1),
+    };
+    let features = compute_cross_asset_features(&symbols, &candles, feature_lookbacks);
+    let index = times.len() - 1;
+    let market_filter_passed =
+        cross_asset_market_filter_passes(&request, &symbols, &features, index)
+            && basket_vol_filter_passes(
+                &request,
+                &symbols,
+                &features,
+                index,
+                match &request.vol_filter {
+                    CrossAssetVolFilter::BasketVolBelowPercentile { percentile } => {
+                        basket_vol_percentile(&symbols, &features, *percentile)
+                    }
+                    _ => None,
+                },
+            );
+    let ranking = cross_asset_ranking(&request, &symbols, &features, index);
+    let ranking_snapshot = ranking
+        .iter()
+        .enumerate()
+        .map(|(idx, row)| {
+            let feature = features.get(&row.symbol).and_then(|rows| rows.get(index));
+            CrossAssetShadowObservationRankingRow {
+                symbol: row.symbol.clone(),
+                rank: i32::try_from(idx + 1).unwrap_or(i32::MAX),
+                score: row.score,
+                return_pct: row.return_pct,
+                return_24h_pct: feature.and_then(|value| value.return_24h).map(percent),
+                realized_vol_24h_pct: feature.and_then(|value| value.vol_24h).map(percent),
+            }
+        })
+        .collect::<Vec<_>>();
+    let rank_spread_pct = ranking
+        .first()
+        .zip(ranking.get(1))
+        .map(|(top, second)| top.return_pct - second.return_pct);
+    let selected_symbol = ranking.first().map(|row| row.symbol.clone());
+    let vol_filter_passed = selected_symbol.as_deref().is_some_and(|symbol| {
+        cross_asset_vol_filter_passes(&request, &symbols, &features, index, symbol)
+            && cross_asset_overextension_filter_passes(&request, &features, index, symbol)
+    });
+    let signal_passed = market_filter_passed
+        && vol_filter_passed
+        && ranking.len() == symbols.len()
+        && ranking
+            .first()
+            .is_some_and(|top| top.return_pct > request.min_top_return_pct)
+        && rank_spread_pct.is_some_and(|spread| spread >= request.min_rank_spread_pct);
+    let decision = if signal_passed {
+        CrossAssetShadowObservationDecision::WouldSelect
+    } else {
+        CrossAssetShadowObservationDecision::NoSignal
+    };
+    let reason = if signal_passed {
+        "Hypothetical portfolio selection only; no order path is invoked.".to_string()
+    } else if !market_filter_passed {
+        "Market filter did not pass for the latest aligned candle.".to_string()
+    } else if !vol_filter_passed {
+        "Volatility or overextension filter did not pass for the top-ranked symbol.".to_string()
+    } else {
+        "Ranking thresholds did not produce a portfolio selection.".to_string()
+    };
+
+    CrossAssetShadowObservationPreviewResult {
+        candidate_id,
+        package_id,
+        candidate_status,
+        latest_available_aligned_candle_time: Some(latest_aligned_time),
+        latest_evaluated_candle_time,
+        would_create_observation: false,
+        decision,
+        status: CrossAssetShadowObservationStatus::PreviewOnly,
+        selected_symbol: signal_passed.then_some(selected_symbol).flatten(),
+        ranking_snapshot,
+        rank_spread_pct,
+        market_filter_passed,
+        vol_filter_passed,
+        reason,
+        warnings,
+        no_mutation: true,
+        generated_at,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -17976,6 +18405,7 @@ mod cross_asset_research_tests {
             None,
             CrossAssetCandidateCreationPolicyStrictness::Experimental,
             vec!["twenty_25_plus_median_trade_weak".to_string()],
+            None,
             Utc::now(),
         );
 
@@ -17997,6 +18427,7 @@ mod cross_asset_research_tests {
             "NONE",
             CrossAssetCandidateCreationPolicyStrictness::Experimental,
             &[],
+            None,
             Utc::now(),
         );
 
@@ -18013,6 +18444,95 @@ mod cross_asset_research_tests {
             .iter()
             .any(|warning| warning.code == "experimental_policy_strictness_used"));
         assert!(!qualification.readiness.shadow_ready);
+    }
+
+    fn shadow_4h_candles(symbol: &str, slope: i64) -> Vec<Candle> {
+        (0..32)
+            .map(|index| {
+                let open_time = ts(index * 4);
+                let base = 1000 + index * slope;
+                Candle {
+                    id: Uuid::new_v4(),
+                    exchange: MarketDataSource::Binance,
+                    symbol: Symbol::new(symbol).unwrap(),
+                    interval: CandleInterval::FourHours,
+                    open_time,
+                    close_time: open_time + Duration::hours(4) - Duration::milliseconds(1),
+                    open: Decimal::from(base),
+                    high: Decimal::from(base + slope.abs() + 10),
+                    low: Decimal::from(base - 10),
+                    close: Decimal::from(base + slope),
+                    volume: Decimal::from(1000),
+                    quote_volume: Some(Decimal::from(1000)),
+                    trade_count: 100,
+                    is_closed: true,
+                    created_at: open_time + Duration::hours(4),
+                    updated_at: open_time + Duration::hours(4),
+                }
+            })
+            .collect()
+    }
+
+    fn shadow_basket() -> BTreeMap<String, Vec<Candle>> {
+        BTreeMap::from([
+            ("BTCUSDT".to_string(), shadow_4h_candles("BTCUSDT", 1)),
+            ("ETHUSDT".to_string(), shadow_4h_candles("ETHUSDT", 2)),
+            ("SOLUSDT".to_string(), shadow_4h_candles("SOLUSDT", 8)),
+            ("BNBUSDT".to_string(), shadow_4h_candles("BNBUSDT", 3)),
+        ])
+    }
+
+    #[test]
+    fn cross_asset_shadow_preview_is_read_only_and_deterministic() {
+        let candidate_id = Uuid::new_v4();
+        let first = evaluate_cross_asset_shadow_observation_preview(
+            candidate_id,
+            RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            ResearchCandidateStatus::Discovered,
+            shadow_basket(),
+            None,
+            ts(200),
+        );
+        let second = evaluate_cross_asset_shadow_observation_preview(
+            candidate_id,
+            RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            ResearchCandidateStatus::Discovered,
+            shadow_basket(),
+            None,
+            ts(200),
+        );
+
+        assert!(first.no_mutation);
+        assert!(!first.would_create_observation);
+        assert_eq!(first.decision, second.decision);
+        assert_eq!(first.ranking_snapshot, second.ranking_snapshot);
+        assert_eq!(first.selected_symbol, second.selected_symbol);
+    }
+
+    #[test]
+    fn cross_asset_shadow_preview_skips_duplicate_latest_candle() {
+        let candidate_id = Uuid::new_v4();
+        let latest = shadow_basket()
+            .values()
+            .next()
+            .and_then(|candles| candles.last())
+            .map(|candle| candle.open_time)
+            .unwrap();
+        let preview = evaluate_cross_asset_shadow_observation_preview(
+            candidate_id,
+            RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            ResearchCandidateStatus::Discovered,
+            shadow_basket(),
+            Some(latest),
+            ts(200),
+        );
+
+        assert_eq!(
+            preview.decision,
+            CrossAssetShadowObservationDecision::SkippedNoNewCandle
+        );
+        assert!(preview.no_mutation);
+        assert!(preview.ranking_snapshot.is_empty());
     }
 
     #[test]

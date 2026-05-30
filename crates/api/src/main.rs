@@ -18,6 +18,7 @@ use accounting::{
 };
 use aegis_core::{
     aggregate_closed_1m_candles, candle_aggregation_status,
+    evaluate_cross_asset_shadow_observation_preview,
     expected_research_candidate_accept_shadow_confirmation,
     expected_research_candidate_import_confirmation,
     expected_research_candidate_import_reconciliation_confirmation,
@@ -53,25 +54,27 @@ use aegis_core::{
     CrossAssetResearchCandidateManualCreatePreview, CrossAssetResearchCandidateManualCreateRequest,
     CrossAssetResearchCandidateManualCreateResult, CrossAssetResearchRequest,
     CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
-    CrossAssetRobustnessMatrixResult, CrossAssetRobustnessMatrixWindow, EventEnvelope,
-    ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName,
-    ExchangeOrderAck, ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce,
-    ExchangeOrderType, ExchangePrivateStreamSource, ExchangePrivateStreamState,
-    ExchangePrivateStreamStatus, ExchangeRateLimitState, ExchangeReconciliationMismatch,
-    ExchangeReconciliationRequest, ExchangeReconciliationResult, ExchangeReconciliationRun,
-    ExchangeRequestMode, ExchangeSymbolInfo, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
-    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
-    ExecutionReadinessStatus, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataQualityRequest, MarketDataRepairPlan, MarketDataRepairPlanRequest,
-    MarketDataRepairRange, MarketDataRepairRunRequest, MarketDataRepairRunResult,
-    MarketDataRepairStatus, MarketDataSource, MarketMode, MarketProviderAttempt,
-    MarketProviderHealth, OperatorReport, OperatorReportRequest, OrderIntent, PaperCloseMode,
-    PaperClosePositionRequest, PaperCloseReason, PaperPositionCloseSummary,
-    PaperPositionStatusFilter, PaperPriceStatus, PaperTradingPipelineRequest,
-    ResearchBatchCandidateSummary, ResearchBatchCandidateTriage, ResearchBatchRecommendation,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus, ResearchBatchStep,
-    ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
+    CrossAssetRobustnessMatrixResult, CrossAssetRobustnessMatrixWindow,
+    CrossAssetShadowObservationDecision, CrossAssetShadowObservationPreviewResult,
+    CrossAssetShadowObservationRunRequest, CrossAssetShadowObservationRunResult,
+    CrossAssetShadowObservationStatus, EventEnvelope, ExchangeBalance, ExchangeCancelAck,
+    ExchangeCancelRequest, ExchangeEnvironment, ExchangeName, ExchangeOrderAck,
+    ExchangeOrderRequest, ExchangeOrderSide, ExchangeOrderTimeInForce, ExchangeOrderType,
+    ExchangePrivateStreamSource, ExchangePrivateStreamState, ExchangePrivateStreamStatus,
+    ExchangeRateLimitState, ExchangeReconciliationMismatch, ExchangeReconciliationRequest,
+    ExchangeReconciliationResult, ExchangeReconciliationRun, ExchangeRequestMode,
+    ExchangeSymbolInfo, ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
+    ExecutionReadinessSnapshot, ExecutionReadinessStatus, MarketCandleCoverageSummary,
+    MarketDataQualityReport, MarketDataQualityRequest, MarketDataRepairPlan,
+    MarketDataRepairPlanRequest, MarketDataRepairRange, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketDataRepairStatus, MarketDataSource, MarketMode,
+    MarketProviderAttempt, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    OrderIntent, PaperCloseMode, PaperClosePositionRequest, PaperCloseReason,
+    PaperPositionCloseSummary, PaperPositionStatusFilter, PaperPriceStatus,
+    PaperTradingPipelineRequest, ResearchBatchCandidateSummary, ResearchBatchCandidateTriage,
+    ResearchBatchRecommendation, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStatus,
+    ResearchBatchStep, ResearchBatchStepStatus, ResearchBatchTriage, ResearchBatchTriageStatus,
     ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
     ResearchCampaignResult, ResearchCampaignStatus, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRejection, ResearchCandidateAcceptForShadowApplyRequest,
@@ -198,10 +201,11 @@ use db::{
     get_active_testnet_shadow_promotion_for_shadow_run, get_aggregated_candle_coverage,
     get_backtest_equity_curve, get_backtest_run, get_backtest_trades, get_candle_backfill_run,
     get_closed_1m_candles_range, get_closed_candles_range, get_cross_asset_research_run,
-    get_cross_asset_robustness_matrix_run, get_default_paper_account,
-    get_exchange_private_stream_state, get_exchange_testnet_order_by_client_order_id,
-    get_latest_candle_aggregation_run, get_latest_closed_candle_time, get_latest_market_tick,
-    get_latest_research_candidate_qualification_evaluation,
+    get_cross_asset_robustness_matrix_run, get_cross_asset_shadow_observation_by_candle,
+    get_default_paper_account, get_exchange_private_stream_state,
+    get_exchange_testnet_order_by_client_order_id, get_latest_candle_aggregation_run,
+    get_latest_closed_candle_time, get_latest_cross_asset_shadow_observation,
+    get_latest_market_tick, get_latest_research_candidate_qualification_evaluation,
     get_latest_research_candidate_walk_forward_evidence, get_latest_strategy_candidate_observation,
     get_market_data_repair_run, get_order_by_id, get_paper_position_by_id,
     get_recent_closed_candles, get_research_batch, get_research_campaign, get_research_candidate,
@@ -222,11 +226,11 @@ use db::{
     get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
     insert_cross_asset_research_run, insert_cross_asset_research_trades,
     insert_cross_asset_research_windows, insert_cross_asset_robustness_matrix_cells,
-    insert_cross_asset_robustness_matrix_run, insert_exchange_testnet_order,
-    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
-    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
-    insert_research_batch, insert_research_batch_step, insert_research_campaign,
-    insert_research_campaign_batch, insert_research_candidate_proposal,
+    insert_cross_asset_robustness_matrix_run, insert_cross_asset_shadow_observation,
+    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
+    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
+    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
+    insert_research_campaign, insert_research_campaign_batch, insert_research_candidate_proposal,
     insert_research_candidate_qualification_evaluation, insert_research_experiment_plan,
     insert_research_experiment_plan_run, insert_research_hypothesis,
     insert_research_regime_calibration, insert_research_regime_dataset,
@@ -285,15 +289,16 @@ use db::{
     strategy_research_candidate_promotion_result_from_records,
     strategy_robustness_matrix_cell_from_record, strategy_robustness_matrix_result_from_record,
     strategy_walk_forward_result_from_records, strategy_walk_forward_window_from_record,
-    summarize_candle_continuity_report, update_research_batch_summary,
-    update_research_campaign_batch, update_research_campaign_summary,
-    update_research_candidate_status, update_research_experiment_plan_validation,
-    update_scheduled_research_job_definition, update_scheduled_research_job_status,
-    update_strategy_state, update_testnet_shadow_promotion_submission, update_user_last_login,
-    upsert_aggregated_candles, upsert_exchange_private_stream_state, upsert_paper_position,
-    upsert_research_candidate_import, upsert_risk_config, upsert_strategy_config, user_from_record,
-    BacktestEquityPointRecord, BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord,
-    CreateOrderError, DbConfig, ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
+    summarize_candle_continuity_report, summarize_cross_asset_shadow_observations,
+    update_research_batch_summary, update_research_campaign_batch,
+    update_research_campaign_summary, update_research_candidate_status,
+    update_research_experiment_plan_validation, update_scheduled_research_job_definition,
+    update_scheduled_research_job_status, update_strategy_state,
+    update_testnet_shadow_promotion_submission, update_user_last_login, upsert_aggregated_candles,
+    upsert_exchange_private_stream_state, upsert_paper_position, upsert_research_candidate_import,
+    upsert_risk_config, upsert_strategy_config, user_from_record, BacktestEquityPointRecord,
+    BacktestTradeRecord, CandleBackfillRunRecord, CandleRecord, CreateOrderError, DbConfig,
+    ExchangePrivateStreamEventRecord, ExchangePrivateStreamStateRecord,
     ExchangeTestnetOrderLifecycleEventRecord, ExchangeTestnetOrderRecord,
     ExchangeTestnetRepairActionRecord, InsertSignalOutcome, MarketFeedStatusRecord,
     MarketTickRecord, OrderRecord, PaperAccountRecord, PaperEquitySnapshotRecord,
@@ -2444,6 +2449,22 @@ struct CrossAssetAcceptShadowPreviewResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct CrossAssetShadowObservationPreviewResponse {
+    preview: CrossAssetShadowObservationPreviewResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CrossAssetShadowObservationRunResponse {
+    result: CrossAssetShadowObservationRunResult,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[derive(Serialize)]
 struct ResearchCandidateAcceptForShadowApplyResponse {
     result: ResearchCandidateAcceptForShadowApplyResult,
@@ -3387,6 +3408,14 @@ async fn main() {
         .route(
             "/research/cross-asset/candidates/:id/accept-shadow/preview",
             get(get_cross_asset_candidate_accept_shadow_preview_handler),
+        )
+        .route(
+            "/research/cross-asset/candidates/:id/shadow-observation/preview",
+            get(get_cross_asset_candidate_shadow_observation_preview_handler),
+        )
+        .route(
+            "/research/cross-asset/candidates/:id/shadow-observation/run",
+            post(run_cross_asset_candidate_shadow_observation_handler),
         )
         .route(
             "/research/cross-asset",
@@ -14466,6 +14495,10 @@ async fn build_cross_asset_research_candidate_dossier(
     } else {
         None
     };
+    let shadow_performance =
+        summarize_cross_asset_shadow_observations(&state.db_pool, candidate.id)
+            .await
+            .ok();
 
     Ok(aegis_core::build_cross_asset_research_candidate_dossier(
         candidate.id,
@@ -14479,6 +14512,7 @@ async fn build_cross_asset_research_candidate_dossier(
         matrix_metrics,
         policy_strictness,
         warnings_acknowledged,
+        shadow_performance,
         now,
     ))
 }
@@ -14494,12 +14528,77 @@ async fn build_cross_asset_candidate_qualification(
         package_id: dossier.package_id,
         status: dossier.lifecycle_status,
         readiness: dossier.readiness,
+        shadow_performance: dossier.shadow_performance,
         blockers: dossier.blockers,
         warnings: dossier.warnings,
         allowed_next_actions: dossier.allowed_next_actions,
         forbidden_actions: dossier.forbidden_actions,
         generated_at: dossier.generated_at,
     })
+}
+
+async fn build_cross_asset_shadow_observation_preview(
+    state: &AppState,
+    record: &ResearchCandidateRecord,
+    now: DateTime<Utc>,
+) -> anyhow::Result<CrossAssetShadowObservationPreviewResult> {
+    let candidate = research_candidate_from_record(record)?;
+    let latest_observation =
+        get_latest_cross_asset_shadow_observation(&state.db_pool, candidate.id).await?;
+    let latest_evaluated_candle_time = latest_observation
+        .as_ref()
+        .map(|record| record.evaluated_candle_time);
+    let request = relative_strength_continuation_v1_default_request(now, now, None);
+    let interval = request.parsed_timeframe()?;
+    let mut candles_by_symbol = BTreeMap::new();
+    for symbol in request.parsed_symbols()? {
+        let candles = get_recent_closed_candles(&state.db_pool, &symbol, interval, 96).await?;
+        candles_by_symbol.insert(symbol.as_str().to_string(), candles);
+    }
+
+    Ok(evaluate_cross_asset_shadow_observation_preview(
+        candidate.id,
+        candidate.strategy_id,
+        candidate.status,
+        candles_by_symbol,
+        latest_evaluated_candle_time,
+        now,
+    ))
+}
+
+fn expected_cross_asset_shadow_observation_confirmation(candidate_id: Uuid) -> String {
+    format!("RUN CROSS-ASSET SHADOW OBSERVATION {candidate_id}")
+}
+
+fn cross_asset_shadow_observation_run_result_from_preview(
+    preview: CrossAssetShadowObservationPreviewResult,
+    observation_id: Option<Uuid>,
+    observation_created: bool,
+    duplicate_same_candle: bool,
+    status: CrossAssetShadowObservationStatus,
+    created_at: DateTime<Utc>,
+) -> CrossAssetShadowObservationRunResult {
+    CrossAssetShadowObservationRunResult {
+        candidate_id: preview.candidate_id,
+        package_id: preview.package_id,
+        candidate_status: preview.candidate_status,
+        observation_id,
+        observation_created,
+        duplicate_same_candle,
+        latest_available_aligned_candle_time: preview.latest_available_aligned_candle_time,
+        latest_evaluated_candle_time: preview.latest_evaluated_candle_time,
+        evaluated_candle_time: preview.latest_available_aligned_candle_time,
+        decision: preview.decision,
+        status,
+        selected_symbol: preview.selected_symbol,
+        ranking_snapshot: preview.ranking_snapshot,
+        rank_spread_pct: preview.rank_spread_pct,
+        market_filter_passed: preview.market_filter_passed,
+        vol_filter_passed: preview.vol_filter_passed,
+        reason: preview.reason,
+        warnings: preview.warnings,
+        created_at,
+    }
 }
 
 async fn run_cross_asset_robustness_matrix_handler(
@@ -30986,6 +31085,371 @@ async fn get_cross_asset_candidate_accept_shadow_preview_handler(
         .into_response()
 }
 
+async fn get_cross_asset_candidate_shadow_observation_preview_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "forbidden",
+                message:
+                    "Only VIEWER, OPERATOR, or OWNER can preview cross-asset shadow observation."
+                        .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+    let record = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "cross_asset_candidate_not_found",
+                    message: "Cross-asset research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_cross_asset_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    if record.strategy_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID
+        || !record.symbol.eq_ignore_ascii_case("CROSS_ASSET_BASKET")
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "not_cross_asset_relative_strength_candidate",
+                message: "Candidate is not a relative_strength_continuation_v1 cross-asset research candidate.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    match build_cross_asset_shadow_observation_preview(&state, &record, now).await {
+        Ok(preview) => (
+            StatusCode::OK,
+            Json(CrossAssetShadowObservationPreviewResponse {
+                preview,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_cross_asset_shadow_observation_preview",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn run_cross_asset_candidate_shadow_observation_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<CrossAssetShadowObservationRunRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can run cross-asset shadow observation."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+    if !state.config.shadow_observation_only || !payload.research_observation_only {
+        return (
+            StatusCode::PRECONDITION_FAILED,
+            Json(ErrorResponse {
+                error: "shadow_observation_only_required",
+                message: "SHADOW_OBSERVATION_ONLY=true and research_observation_only=true are required for cross-asset observation writes.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+    let expected = expected_cross_asset_shadow_observation_confirmation(candidate_id);
+    if payload.confirmation_text.as_deref() != Some(expected.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid_cross_asset_shadow_observation_confirmation",
+                message: format!("Confirmation must exactly match: {expected}"),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let record = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "cross_asset_candidate_not_found",
+                    message: "Cross-asset research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_cross_asset_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    if record.strategy_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID
+        || !record.symbol.eq_ignore_ascii_case("CROSS_ASSET_BASKET")
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "not_cross_asset_relative_strength_candidate",
+                message: "Candidate is not a relative_strength_continuation_v1 cross-asset research candidate.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+    if record.status != ResearchCandidateStatus::Discovered.as_str() {
+        let preview = CrossAssetShadowObservationPreviewResult {
+            candidate_id,
+            package_id: record.strategy_id.clone(),
+            candidate_status: research_candidate_from_record(&record)
+                .map(|candidate| candidate.status)
+                .unwrap_or(ResearchCandidateStatus::Rejected),
+            latest_available_aligned_candle_time: None,
+            latest_evaluated_candle_time: None,
+            would_create_observation: false,
+            decision: CrossAssetShadowObservationDecision::BlockedNotPromotedOrNotAccepted,
+            status: CrossAssetShadowObservationStatus::Blocked,
+            selected_symbol: None,
+            ranking_snapshot: Vec::new(),
+            rank_spread_pct: None,
+            market_filter_passed: false,
+            vol_filter_passed: false,
+            reason: "Run path currently allows DISCOVERED candidates only in explicit research observation mode.".to_string(),
+            warnings: vec!["candidate_status_not_discovered".to_string()],
+            no_mutation: true,
+            generated_at: now,
+        };
+        let result = cross_asset_shadow_observation_run_result_from_preview(
+            preview,
+            None,
+            false,
+            false,
+            CrossAssetShadowObservationStatus::Blocked,
+            now,
+        );
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(CrossAssetShadowObservationRunResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let preview = match build_cross_asset_shadow_observation_preview(&state, &record, now).await {
+        Ok(preview) => preview,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_build_cross_asset_shadow_observation_preview",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    if !matches!(
+        preview.decision,
+        CrossAssetShadowObservationDecision::WouldSelect
+            | CrossAssetShadowObservationDecision::NoSignal
+    ) {
+        let result = cross_asset_shadow_observation_run_result_from_preview(
+            preview,
+            None,
+            false,
+            false,
+            CrossAssetShadowObservationStatus::Skipped,
+            now,
+        );
+        return (
+            StatusCode::OK,
+            Json(CrossAssetShadowObservationRunResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+    let Some(evaluated_candle_time) = preview.latest_available_aligned_candle_time else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "cross_asset_shadow_observation_missing_candle_time",
+                message: "Preview produced an observable decision without a candle time."
+                    .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    };
+    if let Ok(Some(existing)) = get_cross_asset_shadow_observation_by_candle(
+        &state.db_pool,
+        candidate_id,
+        evaluated_candle_time,
+    )
+    .await
+    {
+        let result = cross_asset_shadow_observation_run_result_from_preview(
+            preview,
+            Some(existing.id),
+            false,
+            true,
+            CrossAssetShadowObservationStatus::Skipped,
+            now,
+        );
+        return (
+            StatusCode::OK,
+            Json(CrossAssetShadowObservationRunResponse {
+                result,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let observation_id = Uuid::new_v4();
+    match insert_cross_asset_shadow_observation(
+        &state.db_pool,
+        &preview,
+        observation_id,
+        now,
+        payload
+            .correlation_id
+            .or_else(|| Some(parse_correlation_id(&request.correlation_id))),
+    )
+    .await
+    {
+        Ok(record) => {
+            let result = cross_asset_shadow_observation_run_result_from_preview(
+                preview,
+                Some(record.id),
+                record.id == observation_id,
+                false,
+                CrossAssetShadowObservationStatus::ObservationRecorded,
+                record.created_at,
+            );
+            (
+                StatusCode::OK,
+                Json(CrossAssetShadowObservationRunResponse {
+                    result,
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_cross_asset_shadow_observation",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn research_governance_execution_counts(
     pool: &PgPool,
 ) -> anyhow::Result<BTreeMap<String, i64>> {
@@ -35009,6 +35473,7 @@ mod tests {
         generate_operator_report_handler, generate_testnet_client_order_id,
         get_cross_asset_candidate_accept_shadow_preview_handler,
         get_cross_asset_candidate_dossier_handler, get_cross_asset_candidate_qualification_handler,
+        get_cross_asset_candidate_shadow_observation_preview_handler,
         get_cross_asset_relative_strength_v1_candidate_create_preview_handler,
         get_cross_asset_relative_strength_v1_candidate_creation_policy_preview_handler,
         get_cross_asset_relative_strength_v1_candidate_gate_preview_handler,
@@ -35042,7 +35507,8 @@ mod tests {
         reconcile_exchange_testnet_orders_handler, reconcile_testnet_orders, refresh,
         register_strategy_research_candidate_handler, repair_exchange_testnet_order,
         request_context_middleware, research_decision_ledger, risk_decision_not_found_error,
-        route_access, run_cross_asset_research_handler, run_cross_asset_robustness_matrix_handler,
+        route_access, run_cross_asset_candidate_shadow_observation_handler,
+        run_cross_asset_research_handler, run_cross_asset_robustness_matrix_handler,
         run_exchange_testnet_shadow_handler, run_strategy_experiment_handler,
         strategy_diagnostics_handler, strategy_evidence_config_fingerprint,
         strategy_exit_attribution_handler, strategy_family_status_summary,
@@ -36418,6 +36884,14 @@ mod tests {
             .route(
                 "/research/cross-asset/candidates/:id/accept-shadow/preview",
                 get(get_cross_asset_candidate_accept_shadow_preview_handler),
+            )
+            .route(
+                "/research/cross-asset/candidates/:id/shadow-observation/preview",
+                get(get_cross_asset_candidate_shadow_observation_preview_handler),
+            )
+            .route(
+                "/research/cross-asset/candidates/:id/shadow-observation/run",
+                post(run_cross_asset_candidate_shadow_observation_handler),
             )
             .route(
                 "/research/cross-asset",
