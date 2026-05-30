@@ -1,14 +1,15 @@
 use aegis_core::{
-    CandleAggregationResult, CandleAggregationStatusRow, CrossAssetResearchResult,
-    CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidateAcceptForShadowApplyResult,
-    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
+    CandleAggregationResult, CandleAggregationStatusRow, CrossAssetRelativeStrengthV1Dossier,
+    CrossAssetResearchResult, CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary,
+    MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
+    ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
+    ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
+    ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowPreviewResult,
+    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewResult,
     ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
@@ -105,6 +106,54 @@ pub fn print_cross_asset_robustness_matrix(matrix: &CrossAssetRobustnessMatrixRe
             ranking.btc_trade_count
         );
     }
+}
+
+pub fn print_cross_asset_relative_strength_v1_dossier(
+    dossier: &CrossAssetRelativeStrengthV1Dossier,
+) {
+    println!("Cross-asset relative strength v1 dossier");
+    println!("Strategy: {}", dossier.strategy_identity.strategy_id);
+    println!(
+        "Scope: {}  paper={} testnet={} live={}",
+        dossier.strategy_identity.scope,
+        dossier.strategy_identity.paper_executable,
+        dossier.strategy_identity.testnet_executable,
+        dossier.strategy_identity.live_executable
+    );
+    println!(
+        "Latest run: {}  Latest matrix: {}",
+        dossier
+            .latest_supporting_run_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        dossier
+            .latest_matrix_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Robustness: {}  Recommendation: {}",
+        dossier
+            .robustness_status
+            .map(|status| status.as_str())
+            .unwrap_or("unknown"),
+        dossier
+            .robustness_recommendation
+            .map(|recommendation| recommendation.as_str())
+            .unwrap_or("unknown")
+    );
+    if let Some(run) = &dossier.evidence_combined {
+        println!(
+            "Combined: trades={} pnl={} dd={} status={}",
+            run.total_trades,
+            run.compounded_pnl_pct,
+            run.max_drawdown_pct,
+            run.portfolio_status.as_str()
+        );
+    }
+    println!("Blockers: {:?}", dossier.blockers);
+    println!("Allowed next actions: {:?}", dossier.allowed_next_actions);
+    println!("Forbidden actions: {:?}", dossier.forbidden_actions);
 }
 
 pub fn print_research_state_snapshot(response: &serde_json::Value) {

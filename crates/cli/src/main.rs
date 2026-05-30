@@ -1,14 +1,16 @@
 use aegis_core::{
-    CrossAssetExitRule, CrossAssetMarketFilter, CrossAssetOverextensionFilter,
-    CrossAssetResearchRequest, CrossAssetRobustnessMatrixRequest, CrossAssetVolFilter,
-    OperatorReportFormat, OperatorReportRequest, PaperTradingPipelineRequest,
-    ResearchCandidateDecisionRejection, ResearchCandidateDecisionRequest,
-    ResearchCandidateEvidenceBundle, ResearchCandidateImportBundlePreviewRequest,
-    ResearchCandidateImportBundleRequest, ResearchCandidateImportReconciliationRequest,
-    ResearchCandidateReviewRequest, ResearchExperimentPlanRunMode,
-    ResearchExperimentPlanRunRequest, ResearchHypothesisGenerationRequest,
-    ResearchHypothesisIncludedSource, ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest,
-    TestnetShadowRunnerControlAction, TestnetShadowRunnerControlRequest,
+    relative_strength_continuation_v1_default_request,
+    relative_strength_continuation_v1_default_robustness_matrix_request, CrossAssetExitRule,
+    CrossAssetMarketFilter, CrossAssetOverextensionFilter, CrossAssetResearchRequest,
+    CrossAssetRobustnessMatrixRequest, CrossAssetVolFilter, OperatorReportFormat,
+    OperatorReportRequest, PaperTradingPipelineRequest, ResearchCandidateDecisionRejection,
+    ResearchCandidateDecisionRequest, ResearchCandidateEvidenceBundle,
+    ResearchCandidateImportBundlePreviewRequest, ResearchCandidateImportBundleRequest,
+    ResearchCandidateImportReconciliationRequest, ResearchCandidateReviewRequest,
+    ResearchExperimentPlanRunMode, ResearchExperimentPlanRunRequest,
+    ResearchHypothesisGenerationRequest, ResearchHypothesisIncludedSource,
+    ResearchHypothesisStatus, ResearchStaleRunRecoveryRequest, TestnetShadowRunnerControlAction,
+    TestnetShadowRunnerControlRequest,
 };
 use anyhow::Context;
 use chrono::Utc;
@@ -1788,6 +1790,19 @@ async fn main() -> anyhow::Result<()> {
                         output::print_cross_asset_research_run(&response.run);
                     }
                 }
+                ResearchCrossAssetCommands::RunRelativeStrengthV1(args) => {
+                    let request = relative_strength_continuation_v1_default_request(
+                        args.start_time,
+                        args.end_time,
+                        args.correlation_id,
+                    );
+                    let response = client.run_cross_asset_research(&request).await?;
+                    if cli.json {
+                        output::print_json(&response)?;
+                    } else {
+                        output::print_cross_asset_research_run(&response.run);
+                    }
+                }
                 ResearchCrossAssetCommands::List(args) => {
                     let response = client.list_cross_asset_research_runs(args.limit).await?;
                     if cli.json {
@@ -1814,9 +1829,39 @@ async fn main() -> anyhow::Result<()> {
                     let response = client.list_cross_asset_research_windows(run_id).await?;
                     output::print_json(&response)?;
                 }
+                ResearchCrossAssetCommands::RelativeStrengthV1(command) => match command {
+                    cli::cli::ResearchCrossAssetRelativeStrengthV1Commands::Dossier => {
+                        let response = client
+                            .get_cross_asset_relative_strength_v1_dossier()
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_relative_strength_v1_dossier(
+                                &response.dossier,
+                            );
+                        }
+                    }
+                },
                 ResearchCrossAssetCommands::RobustnessMatrix(command) => match command {
                     ResearchCrossAssetRobustnessMatrixCommands::Run(args) => {
                         let request = build_cross_asset_robustness_matrix_request(&args)?;
+                        let response = client.run_cross_asset_robustness_matrix(&request).await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_robustness_matrix(&response.matrix);
+                        }
+                    }
+                    ResearchCrossAssetRobustnessMatrixCommands::RunRelativeStrengthV1(args) => {
+                        let request = if let Some(raw) = args.request_json.as_deref() {
+                            serde_json::from_str(raw).context("invalid --request-json")?
+                        } else {
+                            relative_strength_continuation_v1_default_robustness_matrix_request(
+                                Vec::new(),
+                                args.correlation_id,
+                            )
+                        };
                         let response = client.run_cross_asset_robustness_matrix(&request).await?;
                         if cli.json {
                             output::print_json(&response)?;

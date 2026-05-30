@@ -24,19 +24,25 @@ use aegis_core::{
     expected_research_candidate_shadow_promotion_confirmation,
     expected_strategy_research_promotion_confirmation, expected_testnet_pipeline_confirmation,
     expected_testnet_shadow_promotion_confirmation,
+    is_relative_strength_continuation_v1_default_matrix_ranking,
+    is_relative_strength_continuation_v1_default_request,
     is_valid_research_candidate_accept_shadow_confirmation,
     is_valid_research_candidate_import_confirmation,
     is_valid_research_candidate_import_reconciliation_confirmation,
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
-    research_candidate_next_status, run_cross_asset_relative_strength_research,
-    run_cross_asset_robustness_matrix, score_strategy_research_candidate,
-    validate_research_candidate_accept_for_shadow_apply, validate_testnet_repair_transition,
-    AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
-    AuthenticatedActor, BacktestRequest, CandleAggregationRequest, CandleAggregationResult,
-    CandleAggregationStatusRow, CandleBackfillRequest, CandleBackfillResult, CandleInterval,
-    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetResearchRequest,
+    relative_strength_continuation_v1_allowed_next_actions,
+    relative_strength_continuation_v1_default_request,
+    relative_strength_continuation_v1_forbidden_actions,
+    relative_strength_continuation_v1_identity, research_candidate_next_status,
+    run_cross_asset_relative_strength_research, run_cross_asset_robustness_matrix,
+    score_strategy_research_candidate, validate_research_candidate_accept_for_shadow_apply,
+    validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
+    AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
+    CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
+    CandleBackfillRequest, CandleBackfillResult, CandleInterval, CrossAssetPortfolioTrade,
+    CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchRequest,
     CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
     CrossAssetRobustnessMatrixResult, CrossAssetRobustnessMatrixWindow, EventEnvelope,
     ExchangeBalance, ExchangeCancelAck, ExchangeCancelRequest, ExchangeEnvironment, ExchangeName,
@@ -1604,6 +1610,14 @@ struct CrossAssetResearchTradesResponse {
 #[derive(Serialize)]
 struct CrossAssetResearchWindowsResponse {
     windows: Vec<CrossAssetPortfolioWindow>,
+    request_id: String,
+    correlation_id: String,
+    timestamp: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetRelativeStrengthV1DossierResponse {
+    dossier: CrossAssetRelativeStrengthV1Dossier,
     request_id: String,
     correlation_id: String,
     timestamp: DateTime<Utc>,
@@ -3261,6 +3275,10 @@ async fn main() {
         .route(
             "/research/cross-asset/robustness-matrix/:id/cells",
             get(list_cross_asset_robustness_matrix_cells_handler),
+        )
+        .route(
+            "/research/cross-asset/relative-strength-v1/dossier",
+            get(get_cross_asset_relative_strength_v1_dossier_handler),
         )
         .route(
             "/research/cross-asset",
@@ -13285,6 +13303,124 @@ async fn list_cross_asset_research_windows_handler(
         )
             .into_response(),
     }
+}
+
+async fn get_cross_asset_relative_strength_v1_dossier_handler(
+    State(state): State<AppState>,
+    request: Option<Extension<RequestContext>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    match build_cross_asset_relative_strength_v1_dossier(&state).await {
+        Ok(dossier) => (
+            StatusCode::OK,
+            Json(CrossAssetRelativeStrengthV1DossierResponse {
+                dossier,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_cross_asset_relative_strength_v1_dossier",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: Utc::now(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn build_cross_asset_relative_strength_v1_dossier(
+    state: &AppState,
+) -> anyhow::Result<CrossAssetRelativeStrengthV1Dossier> {
+    let start_2023 = Utc.with_ymd_and_hms(2023, 3, 25, 0, 0, 0).unwrap();
+    let split_2025 = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+    let latest_runs = list_cross_asset_research_runs(&state.db_pool, 200).await?;
+
+    let mut evidence_2023_2024 = None;
+    let mut evidence_2025_plus = None;
+    let mut evidence_combined = None;
+    for record in latest_runs {
+        let run = cross_asset_research_result_from_record(&record)?;
+        if !is_relative_strength_continuation_v1_default_request(&run.request) {
+            continue;
+        }
+        if run.request.start_time == start_2023
+            && run.request.end_time == split_2025
+            && evidence_2023_2024.is_none()
+        {
+            evidence_2023_2024 = Some(run);
+        } else if run.request.start_time == split_2025 && evidence_2025_plus.is_none() {
+            evidence_2025_plus = Some(run);
+        } else if run.request.start_time == start_2023
+            && run.request.end_time > split_2025
+            && evidence_combined.is_none()
+        {
+            evidence_combined = Some(run);
+        }
+    }
+
+    let latest_matrices = list_cross_asset_robustness_matrix_runs(&state.db_pool, 100).await?;
+    let mut latest_matrix = None;
+    for record in latest_matrices {
+        let matrix = cross_asset_robustness_matrix_result_from_record(&record)?;
+        if matrix.request.timeframe == "4h"
+            && matrix
+                .rankings
+                .iter()
+                .any(is_relative_strength_continuation_v1_default_matrix_ranking)
+        {
+            latest_matrix = Some(matrix);
+            break;
+        }
+    }
+
+    let latest_supporting_run_id = evidence_combined.as_ref().map(|run| run.run_id);
+    let (latest_matrix_id, robustness_status, robustness_recommendation) = latest_matrix
+        .as_ref()
+        .map(|matrix| {
+            (
+                Some(matrix.run_id),
+                Some(matrix.status),
+                Some(matrix.recommendation),
+            )
+        })
+        .unwrap_or((None, None, None));
+    let default_end_time = evidence_combined
+        .as_ref()
+        .map(|run| run.request.end_time)
+        .or_else(|| evidence_2025_plus.as_ref().map(|run| run.request.end_time))
+        .unwrap_or(split_2025);
+
+    Ok(CrossAssetRelativeStrengthV1Dossier {
+        strategy_identity: relative_strength_continuation_v1_identity(),
+        default_config: relative_strength_continuation_v1_default_request(
+            start_2023,
+            default_end_time,
+            None,
+        ),
+        latest_supporting_run_id,
+        latest_matrix_id,
+        evidence_2023_2024,
+        evidence_2025_plus,
+        evidence_combined,
+        robustness_status,
+        robustness_recommendation,
+        blockers: vec![
+            "not_candidate_ready".to_string(),
+            "not_testnet_ready".to_string(),
+            "btc_participation_weak".to_string(),
+            "2025_plus_fixed_run_still_overfit_risk_despite_matrix_robust".to_string(),
+        ],
+        allowed_next_actions: relative_strength_continuation_v1_allowed_next_actions(),
+        forbidden_actions: relative_strength_continuation_v1_forbidden_actions(),
+        generated_at: Utc::now(),
+    })
 }
 
 async fn run_cross_asset_robustness_matrix_handler(
@@ -33533,7 +33669,8 @@ mod tests {
         candidate_promotion_readiness, check_execution_readiness_handler,
         compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
         generate_operator_report_handler, generate_testnet_client_order_id,
-        get_cross_asset_research_run_handler, get_cross_asset_robustness_matrix_run_handler,
+        get_cross_asset_relative_strength_v1_dossier_handler, get_cross_asset_research_run_handler,
+        get_cross_asset_robustness_matrix_run_handler,
         get_exchange_testnet_shadow_promotion_handler, get_exchange_testnet_shadow_run_handler,
         get_execution_readiness_snapshot_handler,
         get_research_candidate_accept_shadow_preview_handler,
@@ -34905,6 +35042,10 @@ mod tests {
             .route(
                 "/research/cross-asset/robustness-matrix/:id/cells",
                 get(list_cross_asset_robustness_matrix_cells_handler),
+            )
+            .route(
+                "/research/cross-asset/relative-strength-v1/dossier",
+                get(get_cross_asset_relative_strength_v1_dossier_handler),
             )
             .route(
                 "/research/cross-asset",
@@ -36552,6 +36693,75 @@ mod tests {
         assert_eq!(cells_response.status(), StatusCode::OK);
         let cells = response_json::<Value>(cells_response).await;
         assert_eq!(cells["cells"].as_array().expect("cells array").len(), 1);
+
+        assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
+        assert_eq!(count_paper_positions(&test_db.pool).await, before.1);
+        assert_eq!(count_paper_fills(&test_db.pool).await, before.2);
+        assert_eq!(count_exchange_testnet_orders(&test_db.pool).await, before.3);
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before.5
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_asset_relative_strength_v1_dossier_is_research_only() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let before = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+
+        let response = app
+            .oneshot(cli_request(
+                "GET",
+                "/research/cross-asset/relative-strength-v1/dossier",
+                json!({}),
+            ))
+            .await
+            .expect("dossier response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        assert_eq!(
+            payload["dossier"]["strategy_identity"]["strategy_id"],
+            "relative_strength_continuation_v1"
+        );
+        assert_eq!(
+            payload["dossier"]["default_config"]["timeframe"].as_str(),
+            Some("4h")
+        );
+        assert_eq!(
+            payload["dossier"]["default_config"]["market_filter"]["kind"].as_str(),
+            Some("basket_24h_return_gt")
+        );
+        assert_eq!(
+            payload["dossier"]["default_config"]["market_filter"]["threshold_pct"].as_str(),
+            Some("-2")
+        );
+        assert_eq!(
+            payload["dossier"]["strategy_identity"]["paper_executable"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            payload["dossier"]["strategy_identity"]["testnet_executable"].as_bool(),
+            Some(false)
+        );
+        assert!(payload["dossier"]["blockers"]
+            .as_array()
+            .expect("blockers")
+            .iter()
+            .any(|value| value == "not_testnet_ready"));
 
         assert_eq!(count_paper_orders(&test_db.pool).await, before.0);
         assert_eq!(count_paper_positions(&test_db.pool).await, before.1);

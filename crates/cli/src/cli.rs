@@ -898,6 +898,8 @@ pub enum ResearchCommands {
 #[derive(Debug, Subcommand)]
 pub enum ResearchCrossAssetCommands {
     Run(ResearchCrossAssetRunArgs),
+    #[command(name = "run-relative-strength-v1")]
+    RunRelativeStrengthV1(ResearchCrossAssetPresetRunArgs),
     List(ResearchCrossAssetListArgs),
     Get {
         run_id: Uuid,
@@ -908,8 +910,15 @@ pub enum ResearchCrossAssetCommands {
     Windows {
         run_id: Uuid,
     },
+    #[command(name = "relative-strength-v1", subcommand)]
+    RelativeStrengthV1(ResearchCrossAssetRelativeStrengthV1Commands),
     #[command(name = "robustness-matrix", subcommand)]
     RobustnessMatrix(ResearchCrossAssetRobustnessMatrixCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchCrossAssetRelativeStrengthV1Commands {
+    Dossier,
 }
 
 #[derive(Debug, Args)]
@@ -918,12 +927,36 @@ pub struct ResearchCrossAssetListArgs {
     pub limit: i64,
 }
 
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetPresetRunArgs {
+    #[arg(long = "start")]
+    pub start_time: DateTime<Utc>,
+    #[arg(long = "end")]
+    pub end_time: DateTime<Utc>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum ResearchCrossAssetRobustnessMatrixCommands {
     Run(ResearchCrossAssetRobustnessMatrixRunArgs),
+    #[command(name = "run-relative-strength-v1")]
+    RunRelativeStrengthV1(ResearchCrossAssetRobustnessMatrixPresetRunArgs),
     List(ResearchCrossAssetListArgs),
-    Get { run_id: Uuid },
-    Cells { run_id: Uuid },
+    Get {
+        run_id: Uuid,
+    },
+    Cells {
+        run_id: Uuid,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetRobustnessMatrixPresetRunArgs {
+    #[arg(long = "request-json")]
+    pub request_json: Option<String>,
+    #[arg(long = "correlation-id")]
+    pub correlation_id: Option<Uuid>,
 }
 
 #[derive(Debug, Args)]
