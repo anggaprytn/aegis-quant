@@ -8153,6 +8153,140 @@ pub struct CrossAssetResearchCandidateManualCreateResult {
     pub generated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetCandidateReviewStatus {
+    CandidateReviewReady,
+    NeedsHumanReview,
+    Blocked,
+    NotApplicable,
+}
+
+impl CrossAssetCandidateReviewStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CandidateReviewReady => "CANDIDATE_REVIEW_READY",
+            Self::NeedsHumanReview => "NEEDS_HUMAN_REVIEW",
+            Self::Blocked => "BLOCKED",
+            Self::NotApplicable => "NOT_APPLICABLE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetCandidateReviewBlocker {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetCandidateReviewWarning {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetCandidateFixedRunMetrics {
+    pub run_id: Uuid,
+    pub status: CrossAssetResearchStatus,
+    pub portfolio_status: CrossAssetPortfolioStatus,
+    pub recommendation: CrossAssetResearchRecommendation,
+    pub total_trades: i32,
+    pub compounded_pnl_pct: Decimal,
+    pub max_drawdown_pct: Decimal,
+    pub max_symbol_concentration_pct: Decimal,
+    pub worst_window_pnl_pct: Decimal,
+    pub symbol_distribution: BTreeMap<String, i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetCandidateMatrixMetrics {
+    pub matrix_id: Uuid,
+    pub status: CrossAssetRobustnessStatus,
+    pub recommendation: CrossAssetRobustnessRecommendation,
+    pub cell_count: i32,
+    pub evaluated_config_count: i32,
+    pub full_config_count: i32,
+    pub skipped_config_count: i32,
+    pub top_config_index: Option<i32>,
+    pub top_total_trades: Option<i32>,
+    pub top_compounded_pnl_pct: Option<Decimal>,
+    pub top_median_trade_pnl_pct: Option<Decimal>,
+    pub top_max_drawdown_pct: Option<Decimal>,
+    pub top_worst_window_pnl_pct: Option<Decimal>,
+    pub top_btc_trade_count: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetCandidateReadiness {
+    pub candidate_review_ready: bool,
+    pub shadow_ready: bool,
+    pub paper_ready: bool,
+    pub testnet_ready: bool,
+    pub live_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetCandidateQualification {
+    pub candidate_id: Uuid,
+    pub package_id: String,
+    pub status: CrossAssetCandidateReviewStatus,
+    pub readiness: CrossAssetCandidateReadiness,
+    pub blockers: Vec<CrossAssetCandidateReviewBlocker>,
+    pub warnings: Vec<CrossAssetCandidateReviewWarning>,
+    pub allowed_next_actions: Vec<String>,
+    pub forbidden_actions: Vec<String>,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetResearchCandidateDossier {
+    pub candidate_id: Uuid,
+    pub package_id: String,
+    pub candidate_status: ResearchCandidateStatus,
+    pub scope: String,
+    pub execution_authority: String,
+    pub source_run_id: Option<Uuid>,
+    pub source_matrix_id: Option<Uuid>,
+    pub fixed_run_metrics: Option<CrossAssetCandidateFixedRunMetrics>,
+    pub matrix_metrics: Option<CrossAssetCandidateMatrixMetrics>,
+    pub policy_strictness_used: CrossAssetCandidateCreationPolicyStrictness,
+    pub policy_warnings_acknowledged: Vec<String>,
+    pub lifecycle_status: CrossAssetCandidateReviewStatus,
+    pub readiness: CrossAssetCandidateReadiness,
+    pub blockers: Vec<CrossAssetCandidateReviewBlocker>,
+    pub warnings: Vec<CrossAssetCandidateReviewWarning>,
+    pub allowed_next_actions: Vec<String>,
+    pub forbidden_actions: Vec<String>,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CrossAssetAcceptShadowPreviewStatus {
+    Blocked,
+    NotApplicable,
+}
+
+impl CrossAssetAcceptShadowPreviewStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocked => "BLOCKED",
+            Self::NotApplicable => "NOT_APPLICABLE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetAcceptShadowPreview {
+    pub candidate_id: Uuid,
+    pub package_id: String,
+    pub status: CrossAssetAcceptShadowPreviewStatus,
+    pub reasons: Vec<CrossAssetCandidateReviewBlocker>,
+    pub no_mutation: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
 pub fn relative_strength_continuation_v1_identity() -> CrossAssetStrategyPackageIdentity {
     CrossAssetStrategyPackageIdentity {
         strategy_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
@@ -8174,6 +8308,254 @@ pub fn relative_strength_continuation_v1_forbidden_actions() -> Vec<String> {
         "no_testnet".to_string(),
         "no_live".to_string(),
     ]
+}
+
+fn cross_asset_candidate_blocker(code: &str, message: &str) -> CrossAssetCandidateReviewBlocker {
+    CrossAssetCandidateReviewBlocker {
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+fn cross_asset_candidate_warning(code: &str, message: &str) -> CrossAssetCandidateReviewWarning {
+    CrossAssetCandidateReviewWarning {
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+pub fn cross_asset_fixed_run_metrics(
+    run: &CrossAssetResearchResult,
+) -> CrossAssetCandidateFixedRunMetrics {
+    CrossAssetCandidateFixedRunMetrics {
+        run_id: run.run_id,
+        status: run.status,
+        portfolio_status: run.portfolio_status,
+        recommendation: run.recommendation,
+        total_trades: run.total_trades,
+        compounded_pnl_pct: run.compounded_pnl_pct,
+        max_drawdown_pct: run.max_drawdown_pct,
+        max_symbol_concentration_pct: run.max_symbol_concentration_pct,
+        worst_window_pnl_pct: run.worst_window_pnl_pct,
+        symbol_distribution: run.symbol_distribution.clone(),
+    }
+}
+
+pub fn cross_asset_matrix_metrics(
+    matrix: &CrossAssetRobustnessMatrixResult,
+) -> CrossAssetCandidateMatrixMetrics {
+    let top = matrix.rankings.first();
+    CrossAssetCandidateMatrixMetrics {
+        matrix_id: matrix.run_id,
+        status: matrix.status,
+        recommendation: matrix.recommendation,
+        cell_count: matrix.cell_count,
+        evaluated_config_count: matrix.evaluated_config_count,
+        full_config_count: matrix.full_config_count,
+        skipped_config_count: matrix.skipped_config_count,
+        top_config_index: top.map(|value| value.config_index),
+        top_total_trades: top.map(|value| value.total_trades),
+        top_compounded_pnl_pct: top.map(|value| value.combined_pnl_pct),
+        top_median_trade_pnl_pct: top.map(|value| value.median_cell_pnl_pct),
+        top_max_drawdown_pct: top.map(|value| value.max_drawdown_pct),
+        top_worst_window_pnl_pct: top.map(|value| value.worst_window_pnl_pct),
+        top_btc_trade_count: top.map(|value| value.btc_trade_count),
+    }
+}
+
+pub fn evaluate_cross_asset_candidate_qualification(
+    candidate_id: Uuid,
+    package_id: String,
+    candidate_status: ResearchCandidateStatus,
+    execution_authority: &str,
+    policy_strictness_used: CrossAssetCandidateCreationPolicyStrictness,
+    policy_warnings_acknowledged: &[String],
+    generated_at: DateTime<Utc>,
+) -> CrossAssetCandidateQualification {
+    let mut blockers = vec![
+        cross_asset_candidate_blocker(
+            "direct_execution_unsupported",
+            "Direct execution is unsupported for cross-asset implementation research.",
+        ),
+        cross_asset_candidate_blocker(
+            "no_cross_asset_shadow_runner_support",
+            "No cross-asset shadow runner support exists for portfolio strategy observation.",
+        ),
+        cross_asset_candidate_blocker(
+            "no_observation_path",
+            "No shadow observation path exists for cross-asset portfolio strategy candidates.",
+        ),
+        cross_asset_candidate_blocker(
+            "not_accepted_for_shadow",
+            "Candidate has not been accepted for shadow observation.",
+        ),
+        cross_asset_candidate_blocker(
+            "no_live_shadow_observations",
+            "No live shadow observations exist for this cross-asset candidate.",
+        ),
+        cross_asset_candidate_blocker(
+            "not_marked_ready_for_testnet",
+            "Candidate is not marked ready for testnet review.",
+        ),
+    ];
+
+    if execution_authority != "NONE" {
+        blockers.push(cross_asset_candidate_blocker(
+            "execution_authority_not_none",
+            "Cross-asset research candidates must have execution authority NONE.",
+        ));
+    }
+
+    let mut warnings = vec![
+        cross_asset_candidate_warning(
+            "twenty_25_plus_median_trade_weak",
+            "2025+ median trade evidence is weak and must stay visible during review.",
+        ),
+        cross_asset_candidate_warning(
+            "trade_count_barely_above_threshold",
+            "2025+ trade count is barely above the minimum evidence threshold.",
+        ),
+        cross_asset_candidate_warning(
+            "btc_participation_below_5_pct",
+            "BTC participation is below 5%, limiting cross-asset generalization confidence.",
+        ),
+        cross_asset_candidate_warning(
+            "implementation_research_only",
+            "Package remains implementation-research only.",
+        ),
+    ];
+
+    if policy_strictness_used == CrossAssetCandidateCreationPolicyStrictness::Experimental {
+        warnings.push(cross_asset_candidate_warning(
+            "experimental_policy_strictness_used",
+            "Candidate was created under experimental policy strictness.",
+        ));
+    }
+    for warning in policy_warnings_acknowledged {
+        if !warnings.iter().any(|value| value.code == *warning) {
+            warnings.push(cross_asset_candidate_warning(
+                warning,
+                "Policy warning was acknowledged during manual candidate creation.",
+            ));
+        }
+    }
+
+    let candidate_review_ready = matches!(
+        candidate_status,
+        ResearchCandidateStatus::Discovered
+            | ResearchCandidateStatus::Observing
+            | ResearchCandidateStatus::AcceptedForShadow
+            | ResearchCandidateStatus::PromotedToShadowConfig
+    ) && execution_authority == "NONE";
+    let readiness = CrossAssetCandidateReadiness {
+        candidate_review_ready,
+        shadow_ready: false,
+        paper_ready: false,
+        testnet_ready: false,
+        live_ready: false,
+    };
+    let status = if package_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID {
+        CrossAssetCandidateReviewStatus::NotApplicable
+    } else if candidate_review_ready {
+        CrossAssetCandidateReviewStatus::NeedsHumanReview
+    } else {
+        CrossAssetCandidateReviewStatus::Blocked
+    };
+    let mut forbidden_actions = relative_strength_continuation_v1_forbidden_actions();
+    forbidden_actions.extend([
+        "no_runner_config_change".to_string(),
+        "no_scheduled_jobs".to_string(),
+        "no_shadow_runs".to_string(),
+        "no_ready_for_testnet".to_string(),
+    ]);
+    forbidden_actions.sort();
+    forbidden_actions.dedup();
+
+    CrossAssetCandidateQualification {
+        candidate_id,
+        package_id,
+        status,
+        readiness,
+        blockers,
+        warnings,
+        allowed_next_actions: relative_strength_continuation_v1_allowed_next_actions(),
+        forbidden_actions,
+        generated_at,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_cross_asset_research_candidate_dossier(
+    candidate_id: Uuid,
+    package_id: String,
+    candidate_status: ResearchCandidateStatus,
+    scope: String,
+    execution_authority: String,
+    source_run_id: Option<Uuid>,
+    source_matrix_id: Option<Uuid>,
+    fixed_run_metrics: Option<CrossAssetCandidateFixedRunMetrics>,
+    matrix_metrics: Option<CrossAssetCandidateMatrixMetrics>,
+    policy_strictness_used: CrossAssetCandidateCreationPolicyStrictness,
+    policy_warnings_acknowledged: Vec<String>,
+    generated_at: DateTime<Utc>,
+) -> CrossAssetResearchCandidateDossier {
+    let qualification = evaluate_cross_asset_candidate_qualification(
+        candidate_id,
+        package_id.clone(),
+        candidate_status,
+        &execution_authority,
+        policy_strictness_used,
+        &policy_warnings_acknowledged,
+        generated_at,
+    );
+    CrossAssetResearchCandidateDossier {
+        candidate_id,
+        package_id,
+        candidate_status,
+        scope,
+        execution_authority,
+        source_run_id,
+        source_matrix_id,
+        fixed_run_metrics,
+        matrix_metrics,
+        policy_strictness_used,
+        policy_warnings_acknowledged,
+        lifecycle_status: qualification.status,
+        readiness: qualification.readiness,
+        blockers: qualification.blockers,
+        warnings: qualification.warnings,
+        allowed_next_actions: qualification.allowed_next_actions,
+        forbidden_actions: qualification.forbidden_actions,
+        generated_at,
+    }
+}
+
+pub fn preview_cross_asset_accept_shadow(
+    candidate_id: Uuid,
+    package_id: String,
+    generated_at: DateTime<Utc>,
+) -> CrossAssetAcceptShadowPreview {
+    CrossAssetAcceptShadowPreview {
+        candidate_id,
+        package_id,
+        status: CrossAssetAcceptShadowPreviewStatus::NotApplicable,
+        reasons: vec![
+            cross_asset_candidate_blocker(
+                "no_cross_asset_shadow_runner_support",
+                "No cross-asset shadow runner support exists.",
+            ),
+            cross_asset_candidate_blocker(
+                "direct_execution_unsupported",
+                "Direct execution is unsupported for this research package.",
+            ),
+            cross_asset_candidate_blocker(
+                "no_observation_path",
+                "No observation path exists for cross-asset portfolio strategy candidates.",
+            ),
+        ],
+        no_mutation: true,
+        generated_at,
+    }
 }
 
 pub fn relative_strength_continuation_v1_allowed_next_actions() -> Vec<String> {
@@ -17577,6 +17959,83 @@ mod cross_asset_research_tests {
         assert!(preview.blockers.is_empty());
         assert!(preview_warning_codes(&preview)
             .contains(&"twenty_25_plus_median_trade_weak".to_string()));
+    }
+
+    #[test]
+    fn cross_asset_candidate_dossier_keeps_execution_readiness_false() {
+        let candidate_id = Uuid::new_v4();
+        let dossier = build_cross_asset_research_candidate_dossier(
+            candidate_id,
+            RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            ResearchCandidateStatus::Discovered,
+            "cross_asset_research".to_string(),
+            "NONE".to_string(),
+            Some(Uuid::new_v4()),
+            Some(Uuid::new_v4()),
+            None,
+            None,
+            CrossAssetCandidateCreationPolicyStrictness::Experimental,
+            vec!["twenty_25_plus_median_trade_weak".to_string()],
+            Utc::now(),
+        );
+
+        assert_eq!(dossier.candidate_id, candidate_id);
+        assert!(dossier.readiness.candidate_review_ready);
+        assert!(!dossier.readiness.shadow_ready);
+        assert!(!dossier.readiness.paper_ready);
+        assert!(!dossier.readiness.testnet_ready);
+        assert!(!dossier.readiness.live_ready);
+        assert_eq!(dossier.execution_authority, "NONE");
+    }
+
+    #[test]
+    fn cross_asset_candidate_qualification_blocks_shadow_runner_support() {
+        let qualification = evaluate_cross_asset_candidate_qualification(
+            Uuid::new_v4(),
+            RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            ResearchCandidateStatus::Discovered,
+            "NONE",
+            CrossAssetCandidateCreationPolicyStrictness::Experimental,
+            &[],
+            Utc::now(),
+        );
+
+        assert_eq!(
+            qualification.status,
+            CrossAssetCandidateReviewStatus::NeedsHumanReview
+        );
+        assert!(qualification
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "no_cross_asset_shadow_runner_support"));
+        assert!(qualification
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "experimental_policy_strictness_used"));
+        assert!(!qualification.readiness.shadow_ready);
+    }
+
+    #[test]
+    fn cross_asset_accept_shadow_preview_blocks_without_mutation() {
+        let preview = preview_cross_asset_accept_shadow(
+            Uuid::new_v4(),
+            RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            Utc::now(),
+        );
+
+        assert_eq!(
+            preview.status,
+            CrossAssetAcceptShadowPreviewStatus::NotApplicable
+        );
+        assert!(preview.no_mutation);
+        assert!(preview
+            .reasons
+            .iter()
+            .any(|reason| reason.code == "direct_execution_unsupported"));
+        assert!(preview
+            .reasons
+            .iter()
+            .any(|reason| reason.code == "no_observation_path"));
     }
 
     #[test]

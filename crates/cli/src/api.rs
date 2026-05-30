@@ -3,21 +3,22 @@ use aegis_core::{
     AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse, AuthRefreshResponse, AuthUserResponse,
     BacktestRequest, CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
     CandleBackfillRequest, CandleBackfillResult, CompressionBreakoutRefinementResult,
-    CrossAssetCandidateCreationPolicyPreviewResult, CrossAssetCandidateGatePreviewResult,
+    CrossAssetAcceptShadowPreview, CrossAssetCandidateCreationPolicyPreviewResult,
+    CrossAssetCandidateGatePreviewResult, CrossAssetCandidateQualification,
     CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier,
-    CrossAssetResearchCandidateManualCreatePreview, CrossAssetResearchCandidateManualCreateRequest,
-    CrossAssetResearchCandidateManualCreateResult, CrossAssetResearchRequest,
-    CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
-    CrossAssetRobustnessMatrixResult, ExchangeTestnetPipelinePreview,
-    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
-    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
-    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
-    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
-    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
-    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
-    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
-    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
-    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    CrossAssetResearchCandidateDossier, CrossAssetResearchCandidateManualCreatePreview,
+    CrossAssetResearchCandidateManualCreateRequest, CrossAssetResearchCandidateManualCreateResult,
+    CrossAssetResearchRequest, CrossAssetResearchResult, CrossAssetRobustnessMatrixCell,
+    CrossAssetRobustnessMatrixRequest, CrossAssetRobustnessMatrixResult,
+    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
+    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
+    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
+    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
+    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
+    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
+    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
+    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
+    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateEvidenceProvenance,
@@ -1420,6 +1421,39 @@ impl ApiClient {
     ) -> Result<ResearchCandidateAcceptForShadowPreviewResponse, ApiClientError> {
         self.get(
             &format!("/research/candidates/{candidate_id}/accept-shadow/preview"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_cross_asset_candidate_dossier(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<CrossAssetResearchCandidateDossierResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/candidates/{candidate_id}/dossier"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_cross_asset_candidate_qualification(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<CrossAssetCandidateQualificationResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/candidates/{candidate_id}/qualification"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn get_cross_asset_candidate_accept_shadow_preview(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<CrossAssetAcceptShadowPreviewResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/candidates/{candidate_id}/accept-shadow/preview"),
             &[],
         )
         .await
@@ -3529,6 +3563,30 @@ pub struct ResearchCandidateTestnetReviewDossierResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCandidateAcceptForShadowPreviewResponse {
     pub preview: ResearchCandidateAcceptForShadowPreviewResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetResearchCandidateDossierResponse {
+    pub dossier: CrossAssetResearchCandidateDossier,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetCandidateQualificationResponse {
+    pub qualification: CrossAssetCandidateQualification,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetAcceptShadowPreviewResponse {
+    pub preview: CrossAssetAcceptShadowPreview,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

@@ -32,8 +32,8 @@ use aegis_core::{
     is_valid_research_candidate_shadow_promotion_confirmation,
     is_valid_strategy_research_promotion_confirmation, is_valid_testnet_pipeline_confirmation,
     is_valid_testnet_shadow_promotion_confirmation, plan_market_data_repair,
-    preview_cross_asset_candidate_creation_policy, preview_cross_asset_candidate_gate,
-    relative_strength_continuation_v1_allowed_next_actions,
+    preview_cross_asset_accept_shadow, preview_cross_asset_candidate_creation_policy,
+    preview_cross_asset_candidate_gate, relative_strength_continuation_v1_allowed_next_actions,
     relative_strength_continuation_v1_default_request,
     relative_strength_continuation_v1_forbidden_actions,
     relative_strength_continuation_v1_identity, research_candidate_next_status,
@@ -42,13 +42,14 @@ use aegis_core::{
     validate_testnet_repair_transition, AuthLoginRequest, AuthLoginResponse, AuthLogoutResponse,
     AuthRefreshResponse, AuthUserResponse, AuthenticatedActor, BacktestRequest,
     CandleAggregationRequest, CandleAggregationResult, CandleAggregationStatusRow,
-    CandleBackfillRequest, CandleBackfillResult, CandleInterval,
+    CandleBackfillRequest, CandleBackfillResult, CandleInterval, CrossAssetAcceptShadowPreview,
     CrossAssetCandidateCreationPolicyDossierSummary,
     CrossAssetCandidateCreationPolicyPreviewRequest,
     CrossAssetCandidateCreationPolicyPreviewResult, CrossAssetCandidateCreationPolicyStatus,
     CrossAssetCandidateCreationPolicyStrictness, CrossAssetCandidateGateCheckStatus,
     CrossAssetCandidateGatePreviewRequest, CrossAssetCandidateGatePreviewResult,
-    CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier,
+    CrossAssetCandidateQualification, CrossAssetPortfolioTrade, CrossAssetPortfolioWindow,
+    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchCandidateDossier,
     CrossAssetResearchCandidateManualCreatePreview, CrossAssetResearchCandidateManualCreateRequest,
     CrossAssetResearchCandidateManualCreateResult, CrossAssetResearchRequest,
     CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
@@ -2420,6 +2421,30 @@ struct ResearchCandidateAcceptForShadowPreviewResponse {
 }
 
 #[derive(Serialize)]
+struct CrossAssetResearchCandidateDossierResponse {
+    dossier: CrossAssetResearchCandidateDossier,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetCandidateQualificationResponse {
+    qualification: CrossAssetCandidateQualification,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct CrossAssetAcceptShadowPreviewResponse {
+    preview: CrossAssetAcceptShadowPreview,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
 struct ResearchCandidateAcceptForShadowApplyResponse {
     result: ResearchCandidateAcceptForShadowApplyResult,
     request_id: String,
@@ -3350,6 +3375,18 @@ async fn main() {
         .route(
             "/research/cross-asset/relative-strength-v1/candidate-create",
             post(apply_cross_asset_relative_strength_v1_candidate_create_handler),
+        )
+        .route(
+            "/research/cross-asset/candidates/:id/dossier",
+            get(get_cross_asset_candidate_dossier_handler),
+        )
+        .route(
+            "/research/cross-asset/candidates/:id/qualification",
+            get(get_cross_asset_candidate_qualification_handler),
+        )
+        .route(
+            "/research/cross-asset/candidates/:id/accept-shadow/preview",
+            get(get_cross_asset_candidate_accept_shadow_preview_handler),
         )
         .route(
             "/research/cross-asset",
@@ -14307,6 +14344,161 @@ async fn build_cross_asset_relative_strength_v1_dossier_base(
         allowed_next_actions: relative_strength_continuation_v1_allowed_next_actions(),
         forbidden_actions: relative_strength_continuation_v1_forbidden_actions(),
         generated_at: Utc::now(),
+    })
+}
+
+fn json_uuid(value: Option<&Value>) -> Option<Uuid> {
+    value
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+}
+
+fn json_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+fn json_string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn latest_cross_asset_candidate_creation_payload(
+    state: &AppState,
+    candidate_id: Uuid,
+) -> anyhow::Result<Option<Value>> {
+    let records = list_research_candidate_events(&state.db_pool, candidate_id).await?;
+    Ok(records
+        .into_iter()
+        .map(|record| record.payload)
+        .find(|payload| {
+            payload.get("source").and_then(Value::as_str) == Some("cross_asset_research")
+                || payload.get("candidate_scope").and_then(Value::as_str)
+                    == Some("cross_asset_research")
+        }))
+}
+
+async fn build_cross_asset_research_candidate_dossier(
+    state: &AppState,
+    record: &ResearchCandidateRecord,
+    now: DateTime<Utc>,
+) -> anyhow::Result<CrossAssetResearchCandidateDossier> {
+    let candidate = research_candidate_from_record(record)?;
+    let event_payload = latest_cross_asset_candidate_creation_payload(state, candidate.id).await?;
+    let evidence = record.evidence_status_summary.as_ref();
+    let source_run_id = json_uuid(
+        evidence.and_then(|value| value.get("source_cross_asset_run_id")),
+    )
+    .or_else(|| {
+        json_uuid(
+            event_payload
+                .as_ref()
+                .and_then(|value| value.get("source_cross_asset_run_id")),
+        )
+    });
+    let source_matrix_id = record.source_robustness_matrix_run_id.or_else(|| {
+        json_uuid(evidence.and_then(|value| value.get("source_matrix_id"))).or_else(|| {
+            json_uuid(
+                event_payload
+                    .as_ref()
+                    .and_then(|value| value.get("source_robustness_matrix_run_id")),
+            )
+        })
+    });
+    let policy_strictness = json_string(evidence.and_then(|value| value.get("policy_strictness")))
+        .or_else(|| {
+            json_string(
+                event_payload
+                    .as_ref()
+                    .and_then(|value| value.get("policy_strictness")),
+            )
+        })
+        .and_then(|value| CrossAssetCandidateCreationPolicyStrictness::parse(&value))
+        .unwrap_or(CrossAssetCandidateCreationPolicyStrictness::Experimental);
+    let warnings_acknowledged = json_string_array(
+        event_payload
+            .as_ref()
+            .and_then(|value| value.get("warnings_acknowledged")),
+    );
+    let scope = json_string(
+        event_payload
+            .as_ref()
+            .and_then(|value| value.get("candidate_scope")),
+    )
+    .unwrap_or_else(|| "cross_asset_research".to_string());
+    let execution_authority =
+        json_string(evidence.and_then(|value| value.get("execution_authority")))
+            .or_else(|| {
+                json_string(
+                    event_payload
+                        .as_ref()
+                        .and_then(|value| value.get("execution_authority")),
+                )
+            })
+            .unwrap_or_else(|| "NONE".to_string());
+
+    let fixed_run_metrics = if let Some(run_id) = source_run_id {
+        get_cross_asset_research_run(&state.db_pool, run_id)
+            .await?
+            .map(|record| {
+                cross_asset_research_result_from_record(&record)
+                    .map(|run| aegis_core::cross_asset_fixed_run_metrics(&run))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let matrix_metrics = if let Some(matrix_id) = source_matrix_id {
+        get_cross_asset_robustness_matrix_run(&state.db_pool, matrix_id)
+            .await?
+            .map(|record| {
+                cross_asset_robustness_matrix_result_from_record(&record)
+                    .map(|matrix| aegis_core::cross_asset_matrix_metrics(&matrix))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+
+    Ok(aegis_core::build_cross_asset_research_candidate_dossier(
+        candidate.id,
+        candidate.strategy_id,
+        candidate.status,
+        scope,
+        execution_authority,
+        source_run_id,
+        source_matrix_id,
+        fixed_run_metrics,
+        matrix_metrics,
+        policy_strictness,
+        warnings_acknowledged,
+        now,
+    ))
+}
+
+async fn build_cross_asset_candidate_qualification(
+    state: &AppState,
+    record: &ResearchCandidateRecord,
+    now: DateTime<Utc>,
+) -> anyhow::Result<CrossAssetCandidateQualification> {
+    let dossier = build_cross_asset_research_candidate_dossier(state, record, now).await?;
+    Ok(CrossAssetCandidateQualification {
+        candidate_id: dossier.candidate_id,
+        package_id: dossier.package_id,
+        status: dossier.lifecycle_status,
+        readiness: dossier.readiness,
+        blockers: dossier.blockers,
+        warnings: dossier.warnings,
+        allowed_next_actions: dossier.allowed_next_actions,
+        forbidden_actions: dossier.forbidden_actions,
+        generated_at: dossier.generated_at,
     })
 }
 
@@ -30537,6 +30729,263 @@ async fn get_research_candidate_accept_shadow_preview_handler(
     }
 }
 
+async fn get_cross_asset_candidate_dossier_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message:
+                        "Only VIEWER, OPERATOR, or OWNER can read cross-asset candidate dossiers."
+                            .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let record = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "cross_asset_candidate_not_found",
+                    message: "Cross-asset research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_cross_asset_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    if record.strategy_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID
+        || !record.symbol.eq_ignore_ascii_case("CROSS_ASSET_BASKET")
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "not_cross_asset_relative_strength_candidate",
+                message: "Candidate is not a relative_strength_continuation_v1 cross-asset research candidate.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    match build_cross_asset_research_candidate_dossier(&state, &record, now).await {
+        Ok(dossier) => (
+            StatusCode::OK,
+            Json(CrossAssetResearchCandidateDossierResponse {
+                dossier,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_cross_asset_candidate_dossier",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_cross_asset_candidate_qualification_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "forbidden",
+                message:
+                    "Only VIEWER, OPERATOR, or OWNER can read cross-asset candidate qualification."
+                        .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+
+    let record = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "cross_asset_candidate_not_found",
+                    message: "Cross-asset research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_cross_asset_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match build_cross_asset_candidate_qualification(&state, &record, now).await {
+        Ok(qualification) => (
+            StatusCode::OK,
+            Json(CrossAssetCandidateQualificationResponse {
+                qualification,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_cross_asset_candidate_qualification",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_cross_asset_candidate_accept_shadow_preview_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message:
+                        "Only VIEWER, OPERATOR, or OWNER can preview cross-asset shadow acceptance."
+                            .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+    let record = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "cross_asset_candidate_not_found",
+                    message: "Cross-asset research candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_cross_asset_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    let preview = preview_cross_asset_accept_shadow(record.id, record.strategy_id, now);
+    (
+        StatusCode::OK,
+        Json(CrossAssetAcceptShadowPreviewResponse {
+            preview,
+            request_id: request.request_id,
+            correlation_id: request.correlation_id,
+            timestamp: now,
+        }),
+    )
+        .into_response()
+}
+
 async fn research_governance_execution_counts(
     pool: &PgPool,
 ) -> anyhow::Result<BTreeMap<String, i64>> {
@@ -34558,6 +35007,8 @@ mod tests {
         candidate_promotion_readiness, check_execution_readiness_handler,
         compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
         generate_operator_report_handler, generate_testnet_client_order_id,
+        get_cross_asset_candidate_accept_shadow_preview_handler,
+        get_cross_asset_candidate_dossier_handler, get_cross_asset_candidate_qualification_handler,
         get_cross_asset_relative_strength_v1_candidate_create_preview_handler,
         get_cross_asset_relative_strength_v1_candidate_creation_policy_preview_handler,
         get_cross_asset_relative_strength_v1_candidate_gate_preview_handler,
@@ -35955,6 +36406,18 @@ mod tests {
             .route(
                 "/research/cross-asset/relative-strength-v1/candidate-create",
                 post(apply_cross_asset_relative_strength_v1_candidate_create_handler),
+            )
+            .route(
+                "/research/cross-asset/candidates/:id/dossier",
+                get(get_cross_asset_candidate_dossier_handler),
+            )
+            .route(
+                "/research/cross-asset/candidates/:id/qualification",
+                get(get_cross_asset_candidate_qualification_handler),
+            )
+            .route(
+                "/research/cross-asset/candidates/:id/accept-shadow/preview",
+                get(get_cross_asset_candidate_accept_shadow_preview_handler),
             )
             .route(
                 "/research/cross-asset",
@@ -38101,6 +38564,7 @@ mod tests {
         assert_eq!(repeat_payload["result"]["idempotent"].as_bool(), Some(true));
 
         let dossier_response = app
+            .clone()
             .oneshot(cli_request(
                 "GET",
                 "/research/cross-asset/relative-strength-v1/dossier",
@@ -38122,6 +38586,155 @@ mod tests {
         assert_eq!(dossier["dossier"]["testnet_ready"].as_bool(), Some(false));
         assert_eq!(dossier["dossier"]["paper_ready"].as_bool(), Some(false));
         assert_eq!(dossier["dossier"]["live_ready"].as_bool(), Some(false));
+
+        let before_read_only_candidates = (
+            count_research_candidates(&test_db.pool).await,
+            sqlx::query("SELECT COUNT(*) AS count FROM strategy_research_candidates")
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("strategy candidate count")
+                .get::<i64, _>("count"),
+        );
+        let before_read_only_execution = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+        let viewer = AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "cross-asset-viewer@example.com".to_string(),
+            role: UserRole::Viewer,
+            session_id: None,
+        };
+
+        let mut candidate_dossier_request = cli_request(
+            "GET",
+            &format!("/research/cross-asset/candidates/{candidate_id}/dossier"),
+            json!({}),
+        );
+        candidate_dossier_request
+            .extensions_mut()
+            .insert(viewer.clone());
+        let candidate_dossier_response = app
+            .clone()
+            .oneshot(candidate_dossier_request)
+            .await
+            .expect("cross asset candidate dossier");
+        assert_eq!(candidate_dossier_response.status(), StatusCode::OK);
+        let candidate_dossier = response_json::<Value>(candidate_dossier_response).await;
+        assert_eq!(
+            candidate_dossier["dossier"]["candidate_id"].as_str(),
+            Some(candidate_id.as_str())
+        );
+        assert_eq!(
+            candidate_dossier["dossier"]["execution_authority"].as_str(),
+            Some("NONE")
+        );
+        assert_eq!(
+            candidate_dossier["dossier"]["readiness"]["paper_ready"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            candidate_dossier["dossier"]["readiness"]["testnet_ready"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            candidate_dossier["dossier"]["readiness"]["live_ready"].as_bool(),
+            Some(false)
+        );
+
+        let mut qualification_request = cli_request(
+            "GET",
+            &format!("/research/cross-asset/candidates/{candidate_id}/qualification"),
+            json!({}),
+        );
+        qualification_request
+            .extensions_mut()
+            .insert(viewer.clone());
+        let qualification_response = app
+            .clone()
+            .oneshot(qualification_request)
+            .await
+            .expect("cross asset candidate qualification");
+        assert_eq!(qualification_response.status(), StatusCode::OK);
+        let qualification = response_json::<Value>(qualification_response).await;
+        assert_eq!(
+            qualification["qualification"]["readiness"]["shadow_ready"].as_bool(),
+            Some(false)
+        );
+        assert!(qualification["qualification"]["blockers"]
+            .as_array()
+            .expect("blockers")
+            .iter()
+            .any(|blocker| blocker["code"] == "no_cross_asset_shadow_runner_support"));
+        assert!(qualification["qualification"]["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning["code"] == "experimental_policy_strictness_used"));
+
+        let mut preview_request = cli_request(
+            "GET",
+            &format!("/research/cross-asset/candidates/{candidate_id}/accept-shadow/preview"),
+            json!({}),
+        );
+        preview_request.extensions_mut().insert(viewer);
+        let preview_response = app
+            .clone()
+            .oneshot(preview_request)
+            .await
+            .expect("cross asset accept-shadow preview");
+        assert_eq!(preview_response.status(), StatusCode::OK);
+        let preview = response_json::<Value>(preview_response).await;
+        assert_eq!(preview["preview"]["no_mutation"].as_bool(), Some(true));
+        assert_eq!(
+            preview["preview"]["status"].as_str(),
+            Some("NOT_APPLICABLE")
+        );
+        assert!(preview["preview"]["reasons"]
+            .as_array()
+            .expect("reasons")
+            .iter()
+            .any(|reason| reason["code"] == "no_observation_path"));
+
+        assert_eq!(
+            (
+                count_research_candidates(&test_db.pool).await,
+                sqlx::query("SELECT COUNT(*) AS count FROM strategy_research_candidates")
+                    .fetch_one(&test_db.pool)
+                    .await
+                    .expect("strategy candidate count")
+                    .get::<i64, _>("count"),
+            ),
+            before_read_only_candidates
+        );
+        assert_eq!(
+            count_paper_orders(&test_db.pool).await,
+            before_read_only_execution.0
+        );
+        assert_eq!(
+            count_paper_positions(&test_db.pool).await,
+            before_read_only_execution.1
+        );
+        assert_eq!(
+            count_paper_fills(&test_db.pool).await,
+            before_read_only_execution.2
+        );
+        assert_eq!(
+            count_exchange_testnet_orders(&test_db.pool).await,
+            before_read_only_execution.3
+        );
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before_read_only_execution.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before_read_only_execution.5
+        );
 
         assert_eq!(
             count_research_candidates(&test_db.pool).await,

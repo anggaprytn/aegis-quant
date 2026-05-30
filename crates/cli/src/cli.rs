@@ -912,8 +912,24 @@ pub enum ResearchCrossAssetCommands {
     },
     #[command(name = "relative-strength-v1", subcommand)]
     RelativeStrengthV1(ResearchCrossAssetRelativeStrengthV1Commands),
+    #[command(name = "candidates", subcommand)]
+    Candidates(ResearchCrossAssetCandidateCommands),
     #[command(name = "robustness-matrix", subcommand)]
     RobustnessMatrix(ResearchCrossAssetRobustnessMatrixCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchCrossAssetCandidateCommands {
+    Dossier {
+        candidate_id: Uuid,
+    },
+    Qualification {
+        candidate_id: Uuid,
+    },
+    #[command(name = "accept-shadow-preview")]
+    AcceptShadowPreview {
+        candidate_id: Uuid,
+    },
 }
 
 #[derive(Debug, Subcommand)]

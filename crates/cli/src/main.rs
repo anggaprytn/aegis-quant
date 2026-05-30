@@ -1913,6 +1913,44 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 },
+                ResearchCrossAssetCommands::Candidates(command) => match command {
+                    cli::cli::ResearchCrossAssetCandidateCommands::Dossier { candidate_id } => {
+                        let response = client.get_cross_asset_candidate_dossier(candidate_id).await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_research_candidate_dossier(
+                                &response.dossier,
+                            );
+                        }
+                    }
+                    cli::cli::ResearchCrossAssetCandidateCommands::Qualification {
+                        candidate_id,
+                    } => {
+                        let response = client
+                            .get_cross_asset_candidate_qualification(candidate_id)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_candidate_qualification(
+                                &response.qualification,
+                            );
+                        }
+                    }
+                    cli::cli::ResearchCrossAssetCandidateCommands::AcceptShadowPreview {
+                        candidate_id,
+                    } => {
+                        let response = client
+                            .get_cross_asset_candidate_accept_shadow_preview(candidate_id)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_accept_shadow_preview(&response.preview);
+                        }
+                    }
+                },
                 ResearchCrossAssetCommands::RobustnessMatrix(command) => match command {
                     ResearchCrossAssetRobustnessMatrixCommands::Run(args) => {
                         let request = build_cross_asset_robustness_matrix_request(&args)?;

@@ -1,15 +1,17 @@
 use aegis_core::{
-    CandleAggregationResult, CandleAggregationStatusRow, CrossAssetCandidateGatePreviewResult,
-    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchResult,
-    CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidateAcceptForShadowApplyResult,
-    ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRejection,
-    ResearchCandidateObservationHistoryItem, ResearchCandidateObservationSummaryView,
-    ResearchCandidateQualificationChange, ResearchCandidateQualificationEvaluation,
-    ResearchCandidateQualificationHistory, ResearchCandidateQualificationResult,
-    ResearchCandidateQualificationTrend, ResearchCandidateReview, ResearchCandidateReviewResult,
+    CandleAggregationResult, CandleAggregationStatusRow, CrossAssetAcceptShadowPreview,
+    CrossAssetCandidateGatePreviewResult, CrossAssetCandidateQualification,
+    CrossAssetRelativeStrengthV1Dossier, CrossAssetResearchCandidateDossier,
+    CrossAssetResearchResult, CrossAssetRobustnessMatrixResult, MarketCandleCoverageSummary,
+    MarketDataQualityReport, MarketDataRepairPlan, MarketDataRepairRunResult, ResearchBatchResult,
+    ResearchBatchStep, ResearchBatchTriage, ResearchCampaignBatchResult,
+    ResearchCampaignFailureAttribution, ResearchCampaignResult, ResearchCampaignSummary,
+    ResearchCandidateAcceptForShadowApplyResult, ResearchCandidateAcceptForShadowPreviewResult,
+    ResearchCandidateDecisionRejection, ResearchCandidateObservationHistoryItem,
+    ResearchCandidateObservationSummaryView, ResearchCandidateQualificationChange,
+    ResearchCandidateQualificationEvaluation, ResearchCandidateQualificationHistory,
+    ResearchCandidateQualificationResult, ResearchCandidateQualificationTrend,
+    ResearchCandidateReview, ResearchCandidateReviewResult,
     ResearchCandidateShadowObserveOnceResult, ResearchCandidateShadowPerformance,
     ResearchCandidateShadowPromotionPreview, ResearchCandidateShadowPromotionResult,
     ResearchCandidateShadowRunLink, ResearchCandidateTestnetReviewDossier,
@@ -382,6 +384,119 @@ pub fn print_cross_asset_candidate_create_result(
     );
     println!("Warnings acknowledged: {:?}", result.warnings_acknowledged);
     println!("Forbidden actions: {:?}", result.forbidden_actions);
+}
+
+pub fn print_cross_asset_research_candidate_dossier(dossier: &CrossAssetResearchCandidateDossier) {
+    println!("Cross-asset research candidate dossier");
+    println!(
+        "Candidate: {} status={} package={} scope={} execution_authority={}",
+        dossier.candidate_id,
+        dossier.candidate_status.as_str(),
+        dossier.package_id,
+        dossier.scope,
+        dossier.execution_authority
+    );
+    println!(
+        "Source run: {}  Source matrix: {}",
+        dossier
+            .source_run_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        dossier
+            .source_matrix_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Lifecycle: {}  policy_strictness={}",
+        dossier.lifecycle_status.as_str(),
+        dossier.policy_strictness_used.as_str()
+    );
+    println!(
+        "Ready: candidate_review={} shadow={} paper={} testnet={} live={}",
+        dossier.readiness.candidate_review_ready,
+        dossier.readiness.shadow_ready,
+        dossier.readiness.paper_ready,
+        dossier.readiness.testnet_ready,
+        dossier.readiness.live_ready
+    );
+    if let Some(metrics) = &dossier.fixed_run_metrics {
+        println!(
+            "Fixed run: status={} portfolio={} trades={} pnl={} dd={} recommendation={}",
+            metrics.status.as_str(),
+            metrics.portfolio_status.as_str(),
+            metrics.total_trades,
+            metrics.compounded_pnl_pct,
+            metrics.max_drawdown_pct,
+            metrics.recommendation.as_str()
+        );
+    }
+    if let Some(metrics) = &dossier.matrix_metrics {
+        println!(
+            "Matrix: status={} recommendation={} cells={} top_trades={}",
+            metrics.status.as_str(),
+            metrics.recommendation.as_str(),
+            metrics.cell_count,
+            metrics
+                .top_total_trades
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        );
+    }
+    println!("Blockers:");
+    for blocker in &dossier.blockers {
+        println!("  - {}: {}", blocker.code, blocker.message);
+    }
+    println!("Warnings:");
+    for warning in &dossier.warnings {
+        println!("  - {}: {}", warning.code, warning.message);
+    }
+    println!("Allowed next actions: {:?}", dossier.allowed_next_actions);
+    println!("Forbidden actions: {:?}", dossier.forbidden_actions);
+    println!("This is read-only and does not submit orders.");
+}
+
+pub fn print_cross_asset_candidate_qualification(qualification: &CrossAssetCandidateQualification) {
+    println!("Cross-asset candidate qualification");
+    println!(
+        "Candidate: {} package={} status={}",
+        qualification.candidate_id,
+        qualification.package_id,
+        qualification.status.as_str()
+    );
+    println!(
+        "Ready: candidate_review={} shadow={} paper={} testnet={} live={}",
+        qualification.readiness.candidate_review_ready,
+        qualification.readiness.shadow_ready,
+        qualification.readiness.paper_ready,
+        qualification.readiness.testnet_ready,
+        qualification.readiness.live_ready
+    );
+    println!("Blockers:");
+    for blocker in &qualification.blockers {
+        println!("  - {}: {}", blocker.code, blocker.message);
+    }
+    println!("Warnings:");
+    for warning in &qualification.warnings {
+        println!("  - {}: {}", warning.code, warning.message);
+    }
+    println!("Forbidden actions: {:?}", qualification.forbidden_actions);
+}
+
+pub fn print_cross_asset_accept_shadow_preview(preview: &CrossAssetAcceptShadowPreview) {
+    println!("Cross-asset accept-shadow preview");
+    println!(
+        "Candidate: {} package={} status={} no_mutation={}",
+        preview.candidate_id,
+        preview.package_id,
+        preview.status.as_str(),
+        preview.no_mutation
+    );
+    println!("Reasons:");
+    for reason in &preview.reasons {
+        println!("  - {}: {}", reason.code, reason.message);
+    }
+    println!("This preview is read-only and does not create shadow runs.");
 }
 
 pub fn print_research_state_snapshot(response: &serde_json::Value) {
