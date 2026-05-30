@@ -7900,6 +7900,24 @@ pub struct CrossAssetRelativeStrengthV1Dossier {
     pub candidate_creation_policy_status: Option<CrossAssetCandidateCreationPolicyStatus>,
     pub candidate_creation_policy_summaries: Vec<CrossAssetCandidateCreationPolicyDossierSummary>,
     pub candidate_creation_policy_recommended_next_action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_candidate_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_candidate_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_scope: Option<String>,
+    #[serde(default)]
+    pub execution_authority: String,
+    #[serde(default)]
+    pub paper_ready: bool,
+    #[serde(default)]
+    pub shadow_ready: bool,
+    #[serde(default)]
+    pub testnet_ready: bool,
+    #[serde(default)]
+    pub live_ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action_after_candidate_creation: Option<String>,
     pub blockers: Vec<String>,
     pub allowed_next_actions: Vec<String>,
     pub forbidden_actions: Vec<String>,
@@ -8089,6 +8107,52 @@ pub struct CrossAssetCandidateCreationPolicyDossierSummary {
     pub recommended_action: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetResearchCandidateManualCreatePreview {
+    pub package_id: String,
+    pub run_id: Option<Uuid>,
+    pub matrix_id: Option<Uuid>,
+    pub strictness: CrossAssetCandidateCreationPolicyStrictness,
+    pub policy_status: CrossAssetCandidateCreationPolicyStatus,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub candidate_would_be_created: bool,
+    pub proposed_candidate_status: String,
+    pub candidate_scope: String,
+    pub execution_authority: String,
+    pub exact_confirmation_required: String,
+    pub forbidden_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_candidate_id: Option<Uuid>,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CrossAssetResearchCandidateManualCreateRequest {
+    pub strictness: CrossAssetCandidateCreationPolicyStrictness,
+    #[serde(alias = "confirm")]
+    pub confirmation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CrossAssetResearchCandidateManualCreateResult {
+    pub package_id: String,
+    pub run_id: Option<Uuid>,
+    pub matrix_id: Option<Uuid>,
+    pub strictness: CrossAssetCandidateCreationPolicyStrictness,
+    pub policy_status: CrossAssetCandidateCreationPolicyStatus,
+    pub candidate_id: Uuid,
+    pub candidate_status: String,
+    pub candidate_scope: String,
+    pub implementation_research_only: bool,
+    pub execution_authority: String,
+    pub created: bool,
+    pub idempotent: bool,
+    pub forbidden_actions: Vec<String>,
+    pub warnings_acknowledged: Vec<String>,
+    pub generated_at: DateTime<Utc>,
+}
+
 pub fn relative_strength_continuation_v1_identity() -> CrossAssetStrategyPackageIdentity {
     CrossAssetStrategyPackageIdentity {
         strategy_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
@@ -8104,6 +8168,8 @@ pub fn relative_strength_continuation_v1_identity() -> CrossAssetStrategyPackage
 
 pub fn relative_strength_continuation_v1_forbidden_actions() -> Vec<String> {
     vec![
+        "no_accept_shadow".to_string(),
+        "no_promote_shadow".to_string(),
         "no_paper".to_string(),
         "no_testnet".to_string(),
         "no_live".to_string(),

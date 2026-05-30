@@ -1871,6 +1871,47 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     }
+                    cli::cli::ResearchCrossAssetRelativeStrengthV1Commands::CandidateCreatePreview(args) => {
+                        if aegis_core::CrossAssetCandidateCreationPolicyStrictness::parse(&args.strictness).is_none() {
+                            anyhow::bail!(
+                                "strictness must be conservative, balanced, or experimental"
+                            );
+                        }
+                        let response = client
+                            .get_cross_asset_relative_strength_v1_candidate_create_preview(
+                                &args.strictness,
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_candidate_create_preview(&response.preview);
+                        }
+                    }
+                    cli::cli::ResearchCrossAssetRelativeStrengthV1Commands::CandidateCreate(args) => {
+                        let strictness =
+                            aegis_core::CrossAssetCandidateCreationPolicyStrictness::parse(
+                                &args.strictness,
+                            )
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "strictness must be conservative, balanced, or experimental"
+                                )
+                            })?;
+                        let response = client
+                            .create_cross_asset_relative_strength_v1_candidate(
+                                &aegis_core::CrossAssetResearchCandidateManualCreateRequest {
+                                    strictness,
+                                    confirmation: args.confirm,
+                                },
+                            )
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_candidate_create_result(&response.result);
+                        }
+                    }
                 },
                 ResearchCrossAssetCommands::RobustnessMatrix(command) => match command {
                     ResearchCrossAssetRobustnessMatrixCommands::Run(args) => {

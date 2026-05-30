@@ -923,12 +923,24 @@ pub enum ResearchCrossAssetRelativeStrengthV1Commands {
     CandidateGatePreview,
     #[command(name = "candidate-creation-policy-preview")]
     CandidateCreationPolicyPreview(ResearchCrossAssetCandidateCreationPolicyPreviewArgs),
+    #[command(name = "candidate-create-preview")]
+    CandidateCreatePreview(ResearchCrossAssetCandidateCreationPolicyPreviewArgs),
+    #[command(name = "candidate-create")]
+    CandidateCreate(ResearchCrossAssetCandidateCreateArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct ResearchCrossAssetCandidateCreationPolicyPreviewArgs {
     #[arg(long, default_value = "conservative")]
     pub strictness: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchCrossAssetCandidateCreateArgs {
+    #[arg(long, default_value = "conservative")]
+    pub strictness: String,
+    #[arg(long)]
+    pub confirm: String,
 }
 
 #[derive(Debug, Args)]

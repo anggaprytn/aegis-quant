@@ -4865,6 +4865,64 @@ pub async fn get_research_candidate(
     Ok(row.map(map_research_candidate))
 }
 
+pub async fn find_research_candidate_by_source_matrix_and_fingerprint(
+    pool: &PgPool,
+    strategy_id: &str,
+    source_robustness_matrix_run_id: Uuid,
+    config_fingerprint: &str,
+) -> Result<Option<ResearchCandidateRecord>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            experiment_id,
+            experiment_run_id,
+            source_experiment_run_id,
+            source_walk_forward_run_id,
+            source_robustness_matrix_run_id,
+            source_robustness_matrix_cell_id,
+            source_batch_id,
+            source_campaign_id,
+            source_proposal_id,
+            candidate_creation_mode,
+            gate_status,
+            config_fingerprint,
+            gate_decision,
+            evidence_status_summary,
+            strategy_id,
+            symbol,
+            timeframe,
+            config,
+            score,
+            pnl_pct,
+            max_drawdown_pct,
+            trade_count,
+            win_rate,
+            fee_drag,
+            status,
+            rejection_reason,
+            notes,
+            created_at,
+            updated_at,
+            correlation_id
+        FROM research_candidates
+        WHERE strategy_id = $1
+          AND source_robustness_matrix_run_id = $2
+          AND config_fingerprint = $3
+          AND candidate_creation_mode = 'cross_asset_manual_create'
+        ORDER BY created_at ASC
+        LIMIT 1
+        "#,
+    )
+    .bind(strategy_id)
+    .bind(source_robustness_matrix_run_id)
+    .bind(config_fingerprint)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(map_research_candidate))
+}
+
 pub async fn update_research_candidate_status(
     pool: &PgPool,
     candidate_id: Uuid,

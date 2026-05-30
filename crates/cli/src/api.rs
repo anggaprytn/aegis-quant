@@ -5,17 +5,19 @@ use aegis_core::{
     CandleBackfillRequest, CandleBackfillResult, CompressionBreakoutRefinementResult,
     CrossAssetCandidateCreationPolicyPreviewResult, CrossAssetCandidateGatePreviewResult,
     CrossAssetPortfolioTrade, CrossAssetPortfolioWindow, CrossAssetRelativeStrengthV1Dossier,
-    CrossAssetResearchRequest, CrossAssetResearchResult, CrossAssetRobustnessMatrixCell,
-    CrossAssetRobustnessMatrixRequest, CrossAssetRobustnessMatrixResult,
-    ExchangeTestnetPipelinePreview, ExchangeTestnetPipelinePreviewRequest,
-    ExchangeTestnetPipelineSubmitRequest, ExecutionReadinessRequest, ExecutionReadinessResult,
-    ExecutionReadinessSnapshot, MarketCandleCoverageSummary, MarketDataQualityReport,
-    MarketDataRepairMode, MarketDataRepairPlan, MarketDataRepairPlanRequest,
-    MarketDataRepairRunRequest, MarketDataRepairRunResult, MarketProviderHealth, OperatorReport,
-    OperatorReportRequest, PaperTradingPipelineRequest, PaperTradingPipelineResult,
-    ReplaySuppressionCount, ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep,
-    ResearchBatchTriage, ResearchCampaignBatchResult, ResearchCampaignFailureAttribution,
-    ResearchCampaignRequest, ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
+    CrossAssetResearchCandidateManualCreatePreview, CrossAssetResearchCandidateManualCreateRequest,
+    CrossAssetResearchCandidateManualCreateResult, CrossAssetResearchRequest,
+    CrossAssetResearchResult, CrossAssetRobustnessMatrixCell, CrossAssetRobustnessMatrixRequest,
+    CrossAssetRobustnessMatrixResult, ExchangeTestnetPipelinePreview,
+    ExchangeTestnetPipelinePreviewRequest, ExchangeTestnetPipelineSubmitRequest,
+    ExecutionReadinessRequest, ExecutionReadinessResult, ExecutionReadinessSnapshot,
+    MarketCandleCoverageSummary, MarketDataQualityReport, MarketDataRepairMode,
+    MarketDataRepairPlan, MarketDataRepairPlanRequest, MarketDataRepairRunRequest,
+    MarketDataRepairRunResult, MarketProviderHealth, OperatorReport, OperatorReportRequest,
+    PaperTradingPipelineRequest, PaperTradingPipelineResult, ReplaySuppressionCount,
+    ResearchBatchRequest, ResearchBatchResult, ResearchBatchStep, ResearchBatchTriage,
+    ResearchCampaignBatchResult, ResearchCampaignFailureAttribution, ResearchCampaignRequest,
+    ResearchCampaignResult, ResearchCampaignSummary, ResearchCandidate,
     ResearchCandidateAcceptForShadowApplyRequest, ResearchCandidateAcceptForShadowApplyResult,
     ResearchCandidateAcceptForShadowPreviewResult, ResearchCandidateDecisionRequest,
     ResearchCandidateEvidenceBundle, ResearchCandidateEvidenceProvenance,
@@ -2398,6 +2400,28 @@ impl ApiClient {
         .await
     }
 
+    pub async fn get_cross_asset_relative_strength_v1_candidate_create_preview(
+        &self,
+        strictness: &str,
+    ) -> Result<CrossAssetResearchCandidateManualCreatePreviewResponse, ApiClientError> {
+        self.get(
+            "/research/cross-asset/relative-strength-v1/candidate-create-preview",
+            &[("strictness", strictness.to_string())],
+        )
+        .await
+    }
+
+    pub async fn create_cross_asset_relative_strength_v1_candidate(
+        &self,
+        request: &CrossAssetResearchCandidateManualCreateRequest,
+    ) -> Result<CrossAssetResearchCandidateManualCreateResponse, ApiClientError> {
+        self.post(
+            "/research/cross-asset/relative-strength-v1/candidate-create",
+            request,
+        )
+        .await
+    }
+
     pub async fn run_cross_asset_robustness_matrix(
         &self,
         request: &CrossAssetRobustnessMatrixRequest,
@@ -4495,6 +4519,22 @@ pub struct CrossAssetCandidateGatePreviewResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CrossAssetCandidateCreationPolicyPreviewResponse {
     pub preview: CrossAssetCandidateCreationPolicyPreviewResult,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetResearchCandidateManualCreatePreviewResponse {
+    pub preview: CrossAssetResearchCandidateManualCreatePreview,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CrossAssetResearchCandidateManualCreateResponse {
+    pub result: CrossAssetResearchCandidateManualCreateResult,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,

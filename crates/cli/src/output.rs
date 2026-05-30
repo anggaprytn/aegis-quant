@@ -186,6 +186,29 @@ pub fn print_cross_asset_relative_strength_v1_dossier(
             summary.recommended_action
         );
     }
+    if let Some(candidate_id) = dossier.research_candidate_id {
+        println!(
+            "Research candidate: {} status={} scope={} execution_authority={}",
+            candidate_id,
+            dossier
+                .research_candidate_status
+                .as_deref()
+                .unwrap_or("unknown"),
+            dossier.candidate_scope.as_deref().unwrap_or("unknown"),
+            dossier.execution_authority
+        );
+        println!(
+            "Ready: shadow={} paper={} testnet={} live={} next={}",
+            dossier.shadow_ready,
+            dossier.paper_ready,
+            dossier.testnet_ready,
+            dossier.live_ready,
+            dossier
+                .next_action_after_candidate_creation
+                .as_deref()
+                .unwrap_or("unknown")
+        );
+    }
     println!("Allowed next actions: {:?}", dossier.allowed_next_actions);
     println!("Forbidden actions: {:?}", dossier.forbidden_actions);
 }
@@ -297,6 +320,68 @@ pub fn print_cross_asset_candidate_creation_policy_preview(
         }
     }
     println!("Forbidden actions: {:?}", preview.forbidden_actions);
+}
+
+pub fn print_cross_asset_candidate_create_preview(
+    preview: &aegis_core::CrossAssetResearchCandidateManualCreatePreview,
+) {
+    println!("Cross-asset research candidate manual create preview");
+    println!(
+        "Package: {}  Strictness: {}  Policy: {}",
+        preview.package_id,
+        preview.strictness.as_str(),
+        preview.policy_status.as_str()
+    );
+    println!(
+        "Run: {}  Matrix: {}",
+        preview
+            .run_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        preview
+            .matrix_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Would create: {}  Proposed status: {}  Scope: {}  Execution authority: {}",
+        preview.candidate_would_be_created,
+        preview.proposed_candidate_status,
+        preview.candidate_scope,
+        preview.execution_authority
+    );
+    if let Some(candidate_id) = preview.existing_candidate_id {
+        println!("Existing candidate: {candidate_id}");
+    }
+    println!(
+        "Exact confirmation required: {}",
+        preview.exact_confirmation_required
+    );
+    println!("Blockers: {:?}", preview.blockers);
+    println!("Warnings: {:?}", preview.warnings);
+    println!("Forbidden actions: {:?}", preview.forbidden_actions);
+}
+
+pub fn print_cross_asset_candidate_create_result(
+    result: &aegis_core::CrossAssetResearchCandidateManualCreateResult,
+) {
+    println!("Cross-asset research candidate manual create result");
+    println!(
+        "Candidate: {}  Status: {}  Created: {}  Idempotent: {}",
+        result.candidate_id, result.candidate_status, result.created, result.idempotent
+    );
+    println!(
+        "Package: {}  Strictness: {}  Policy: {}",
+        result.package_id,
+        result.strictness.as_str(),
+        result.policy_status.as_str()
+    );
+    println!(
+        "Scope: {}  Implementation research only: {}  Execution authority: {}",
+        result.candidate_scope, result.implementation_research_only, result.execution_authority
+    );
+    println!("Warnings acknowledged: {:?}", result.warnings_acknowledged);
+    println!("Forbidden actions: {:?}", result.forbidden_actions);
 }
 
 pub fn print_research_state_snapshot(response: &serde_json::Value) {
