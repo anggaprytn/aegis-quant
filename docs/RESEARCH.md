@@ -134,6 +134,8 @@ Shadow observation is observation-only:
 
 - `SHADOW_OBSERVATION_ONLY=false` fails closed for candidate shadow observation.
 - `SHADOW_OBSERVATION_ONLY=true` allows observation-only shadow rows.
+- Cross-asset shadow observation uses the same server-side guard. CLI request flags are operator
+  intent acknowledgements only; they do not enable observation-only mode on the server.
 - `POST /research/candidates/:id/shadow-observe-once` creates at most one independent observation for the newest closed candle.
 - CLI equivalent: `aegis research candidates shadow-observe-once <candidate_id>`.
 - Duplicate same-candle observations are duplicate operational checks, not independent evidence.

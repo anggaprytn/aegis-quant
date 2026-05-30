@@ -770,6 +770,24 @@ async fn execute_job_kind(
             })
         }
         ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce => {
+            if !state.config.shadow_observation_only {
+                return Ok(ScheduledJobExecution {
+                    status: ScheduledResearchJobRunStatus::Failed,
+                    result: json!({
+                        "error": "shadow_observation_only_required",
+                        "message": "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE requires server SHADOW_OBSERVATION_ONLY=true.",
+                        "server_observation_only_mode": false,
+                        "research_observation_only_acknowledged": true,
+                        "no_order_submission": true,
+                        "execution_authority": "NONE"
+                    }),
+                    error: Some(
+                        "failed to run CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE job".to_string(),
+                    ),
+                    artifact_type: None,
+                    artifact_id: None,
+                });
+            }
             let result = observe_cross_asset_candidate_shadow_once_for_scheduled_job(
                 state,
                 job,
@@ -1139,6 +1157,7 @@ async fn build_cross_asset_shadow_observation_preview_for_scheduled_job(
         candidate.status,
         candles_by_symbol,
         latest_evaluated_candle_time,
+        state.config.shadow_observation_only,
         now,
     ))
 }
@@ -1155,6 +1174,10 @@ fn cross_asset_shadow_observation_run_result_from_preview_for_scheduled_job(
         candidate_id: preview.candidate_id,
         package_id: preview.package_id,
         candidate_status: preview.candidate_status,
+        server_observation_only_mode: preview.server_observation_only_mode,
+        research_observation_only_acknowledged: true,
+        no_order_submission: preview.no_order_submission,
+        execution_authority: preview.execution_authority,
         observation_id,
         observation_created,
         duplicate_same_candle,

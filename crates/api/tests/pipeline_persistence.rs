@@ -339,6 +339,12 @@ async fn scheduled_cross_asset_candidate_shadow_observe_once_is_unique_candle_an
         .expect("first cross-asset run should observe latest aligned candle");
     assert_eq!(first.status.as_str(), "COMPLETED");
     assert_eq!(first.result["payload"]["observation_created"], true);
+    assert_eq!(
+        first.result["payload"]["server_observation_only_mode"],
+        true
+    );
+    assert_eq!(first.result["payload"]["no_order_submission"], true);
+    assert_eq!(first.result["payload"]["execution_authority"], "NONE");
     assert!(matches!(
         first.result["payload"]["decision"].as_str(),
         Some("NO_SIGNAL" | "WOULD_SELECT")

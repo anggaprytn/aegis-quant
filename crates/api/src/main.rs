@@ -14562,6 +14562,7 @@ async fn build_cross_asset_shadow_observation_preview(
         candidate.status,
         candles_by_symbol,
         latest_evaluated_candle_time,
+        state.config.shadow_observation_only,
         now,
     ))
 }
@@ -14575,6 +14576,7 @@ fn cross_asset_shadow_observation_run_result_from_preview(
     observation_id: Option<Uuid>,
     observation_created: bool,
     duplicate_same_candle: bool,
+    research_observation_only_acknowledged: bool,
     status: CrossAssetShadowObservationStatus,
     created_at: DateTime<Utc>,
 ) -> CrossAssetShadowObservationRunResult {
@@ -14582,6 +14584,10 @@ fn cross_asset_shadow_observation_run_result_from_preview(
         candidate_id: preview.candidate_id,
         package_id: preview.package_id,
         candidate_status: preview.candidate_status,
+        server_observation_only_mode: preview.server_observation_only_mode,
+        research_observation_only_acknowledged,
+        no_order_submission: preview.no_order_submission,
+        execution_authority: preview.execution_authority,
         observation_id,
         observation_created,
         duplicate_same_candle,
@@ -31214,7 +31220,11 @@ async fn run_cross_asset_candidate_shadow_observation_handler(
             StatusCode::PRECONDITION_FAILED,
             Json(ErrorResponse {
                 error: "shadow_observation_only_required",
-                message: "SHADOW_OBSERVATION_ONLY=true and research_observation_only=true are required for cross-asset observation writes.".to_string(),
+                message: format!(
+                    "Cross-asset observation writes require server SHADOW_OBSERVATION_ONLY=true and request research_observation_only=true. server_observation_only_mode={} research_observation_only_acknowledged={}",
+                    state.config.shadow_observation_only,
+                    payload.research_observation_only
+                ),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: now,
@@ -31288,6 +31298,9 @@ async fn run_cross_asset_candidate_shadow_observation_handler(
             candidate_status: research_candidate_from_record(&record)
                 .map(|candidate| candidate.status)
                 .unwrap_or(ResearchCandidateStatus::Rejected),
+            server_observation_only_mode: state.config.shadow_observation_only,
+            no_order_submission: true,
+            execution_authority: "NONE".to_string(),
             latest_available_aligned_candle_time: None,
             latest_evaluated_candle_time: None,
             would_create_observation: false,
@@ -31308,6 +31321,7 @@ async fn run_cross_asset_candidate_shadow_observation_handler(
             None,
             false,
             false,
+            payload.research_observation_only,
             CrossAssetShadowObservationStatus::Blocked,
             now,
         );
@@ -31349,6 +31363,7 @@ async fn run_cross_asset_candidate_shadow_observation_handler(
             None,
             false,
             false,
+            payload.research_observation_only,
             CrossAssetShadowObservationStatus::Skipped,
             now,
         );
@@ -31389,6 +31404,7 @@ async fn run_cross_asset_candidate_shadow_observation_handler(
             Some(existing.id),
             false,
             true,
+            payload.research_observation_only,
             CrossAssetShadowObservationStatus::Skipped,
             now,
         );
@@ -31422,6 +31438,7 @@ async fn run_cross_asset_candidate_shadow_observation_handler(
                 Some(record.id),
                 record.id == observation_id,
                 false,
+                payload.research_observation_only,
                 CrossAssetShadowObservationStatus::ObservationRecorded,
                 record.created_at,
             );
@@ -37558,6 +37575,15 @@ mod tests {
             .get::<i64, _>("count")
     }
 
+    async fn count_table_rows(pool: &PgPool, table: &str) -> i64 {
+        let query = format!("SELECT COUNT(*) AS count FROM {table}");
+        sqlx::query(&query)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|err| panic!("{table} count: {err}"))
+            .get::<i64, _>("count")
+    }
+
     async fn count_signals(pool: &PgPool) -> i64 {
         sqlx::query("SELECT COUNT(*) AS count FROM signals")
             .fetch_one(pool)
@@ -38499,6 +38525,97 @@ mod tests {
         .expect("cross-asset matrix cells should persist");
     }
 
+    async fn insert_cross_asset_shadow_observation_fixture_candles(pool: &PgPool) {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let request = aegis_core::relative_strength_continuation_v1_default_request(
+            Utc::now(),
+            Utc::now(),
+            None,
+        );
+        let symbols = request.parsed_symbols().expect("cross-asset symbols");
+        for symbol in symbols {
+            for index in 0..100_i64 {
+                let open_time = start + chrono::Duration::hours(4 * index);
+                let symbol_offset = symbol
+                    .as_str()
+                    .bytes()
+                    .fold(0_i64, |acc, item| acc.saturating_add(i64::from(item)))
+                    % 1_000;
+                let close = 10_000_i64 + symbol_offset + index * 10;
+                upsert_candle(
+                    pool,
+                    &Candle {
+                        id: Uuid::new_v4(),
+                        exchange: MarketDataSource::Binance,
+                        symbol: symbol.clone(),
+                        interval: CandleInterval::FourHours,
+                        open_time,
+                        close_time: open_time + chrono::Duration::hours(4),
+                        open: Decimal::new(close - 5, 0),
+                        high: Decimal::new(close + 10, 0),
+                        low: Decimal::new(close - 15, 0),
+                        close: Decimal::new(close, 0),
+                        volume: Decimal::new(100 + index, 0),
+                        quote_volume: Some(Decimal::new(close * (100 + index), 0)),
+                        trade_count: 10,
+                        is_closed: true,
+                        created_at: open_time + chrono::Duration::hours(4),
+                        updated_at: open_time + chrono::Duration::hours(4),
+                    },
+                )
+                .await
+                .expect("cross-asset shadow fixture candle");
+            }
+        }
+    }
+
+    async fn insert_cross_asset_shadow_observation_candidate(pool: &PgPool) -> ResearchCandidate {
+        insert_cross_asset_shadow_observation_fixture_candles(pool).await;
+        let now = Utc::now();
+        let config = serde_json::to_value(
+            aegis_core::relative_strength_continuation_v1_default_request(now, now, None),
+        )
+        .expect("cross-asset config");
+        let candidate = ResearchCandidate {
+            id: Uuid::new_v4(),
+            experiment_id: None,
+            experiment_run_id: None,
+            strategy_id: aegis_core::RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+            symbol: "CROSS_ASSET_BASKET".to_string(),
+            timeframe: "4h".to_string(),
+            config,
+            score: None,
+            pnl_pct: None,
+            max_drawdown_pct: None,
+            trade_count: None,
+            win_rate: None,
+            fee_drag: None,
+            status: ResearchCandidateStatus::Discovered,
+            rejection_reason: None,
+            notes: Some("cross-asset shadow observation safety fixture".to_string()),
+            created_at: now,
+            updated_at: now,
+            correlation_id: Some(Uuid::new_v4()),
+        };
+        create_research_candidate(
+            pool,
+            &candidate,
+            None,
+            ResearchCandidateDecision::Reopen,
+            Some("cross_asset_manual_create"),
+            candidate.notes.as_deref(),
+            &json!({
+                "candidate_creation_mode": "cross_asset_manual_create",
+                "candidate_scope": "cross_asset_research",
+                "execution_authority": "NONE",
+                "implementation_research_only": true
+            }),
+        )
+        .await
+        .expect("cross-asset shadow candidate");
+        candidate
+    }
+
     #[tokio::test]
     async fn cross_asset_research_run_persists_reads_and_does_not_mutate_execution_tables() {
         let Some(test_db) = setup_optional_test_db().await else {
@@ -39221,6 +39338,236 @@ mod tests {
                 .expect("lifecycle candidate count")
                 .get::<i64, _>("count"),
             before_candidates.1 + 1
+        );
+        assert_eq!(count_paper_orders(&test_db.pool).await, before_execution.0);
+        assert_eq!(
+            count_paper_positions(&test_db.pool).await,
+            before_execution.1
+        );
+        assert_eq!(count_paper_fills(&test_db.pool).await, before_execution.2);
+        assert_eq!(
+            count_exchange_testnet_orders(&test_db.pool).await,
+            before_execution.3
+        );
+        assert_eq!(
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            before_execution.4
+        );
+        assert_eq!(
+            count_testnet_shadow_promotions(&test_db.pool).await,
+            before_execution.5
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_asset_shadow_observation_requires_server_mode_and_explicit_ack() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let candidate = insert_cross_asset_shadow_observation_candidate(&test_db.pool).await;
+        let actor = AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "cross-asset-shadow-operator@example.com".to_string(),
+            role: UserRole::Operator,
+            session_id: None,
+        };
+        let confirmation = format!("RUN CROSS-ASSET SHADOW OBSERVATION {}", candidate.id);
+        let before_execution = (
+            count_paper_orders(&test_db.pool).await,
+            count_paper_positions(&test_db.pool).await,
+            count_paper_fills(&test_db.pool).await,
+            count_exchange_testnet_orders(&test_db.pool).await,
+            count_exchange_testnet_lifecycle_events(&test_db.pool).await,
+            count_testnet_shadow_promotions(&test_db.pool).await,
+        );
+
+        let mut disabled_state = auth_test_state(test_db.pool.clone(), None, None);
+        disabled_state.config.shadow_observation_only = false;
+        let disabled_app = research_test_router(disabled_state);
+        let mut disabled_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/shadow-observation/run",
+                candidate.id
+            ),
+            json!({
+                "research_observation_only": true,
+                "confirmation_text": confirmation
+            }),
+        );
+        disabled_request.extensions_mut().insert(actor.clone());
+        let disabled_response = disabled_app
+            .oneshot(disabled_request)
+            .await
+            .expect("disabled response");
+        assert_eq!(disabled_response.status(), StatusCode::PRECONDITION_FAILED);
+        let disabled_payload = response_json::<Value>(disabled_response).await;
+        assert_eq!(
+            disabled_payload["error"].as_str(),
+            Some("shadow_observation_only_required")
+        );
+        assert!(disabled_payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("server SHADOW_OBSERVATION_ONLY=true"));
+        assert_eq!(
+            count_table_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+            0
+        );
+        assert_eq!(
+            count_table_rows(
+                &test_db.pool,
+                "cross_asset_candidate_shadow_observation_rankings"
+            )
+            .await,
+            0
+        );
+
+        let enabled_app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let mut missing_ack_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/shadow-observation/run",
+                candidate.id
+            ),
+            json!({
+                "confirmation_text": confirmation
+            }),
+        );
+        missing_ack_request.extensions_mut().insert(actor.clone());
+        let missing_ack_response = enabled_app
+            .clone()
+            .oneshot(missing_ack_request)
+            .await
+            .expect("missing ack response");
+        assert_eq!(
+            missing_ack_response.status(),
+            StatusCode::PRECONDITION_FAILED
+        );
+        let missing_ack_payload = response_json::<Value>(missing_ack_response).await;
+        assert_eq!(
+            missing_ack_payload["error"].as_str(),
+            Some("shadow_observation_only_required")
+        );
+        assert!(missing_ack_payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("research_observation_only=true"));
+        assert_eq!(
+            count_table_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+            0
+        );
+
+        let mut preview_request = cli_request(
+            "GET",
+            &format!(
+                "/research/cross-asset/candidates/{}/shadow-observation/preview",
+                candidate.id
+            ),
+            json!({}),
+        );
+        preview_request.extensions_mut().insert(actor.clone());
+        let preview_response = enabled_app
+            .clone()
+            .oneshot(preview_request)
+            .await
+            .expect("preview response");
+        assert_eq!(preview_response.status(), StatusCode::OK);
+        let preview_payload = response_json::<Value>(preview_response).await;
+        assert_eq!(
+            preview_payload["preview"]["server_observation_only_mode"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            preview_payload["preview"]["no_order_submission"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            preview_payload["preview"]["execution_authority"].as_str(),
+            Some("NONE")
+        );
+
+        let mut run_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/shadow-observation/run",
+                candidate.id
+            ),
+            json!({
+                "research_observation_only": true,
+                "confirmation_text": confirmation
+            }),
+        );
+        run_request.extensions_mut().insert(actor.clone());
+        let run_response = enabled_app
+            .clone()
+            .oneshot(run_request)
+            .await
+            .expect("run response");
+        assert_eq!(run_response.status(), StatusCode::OK);
+        let run_payload = response_json::<Value>(run_response).await;
+        assert_eq!(
+            run_payload["result"]["server_observation_only_mode"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            run_payload["result"]["research_observation_only_acknowledged"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            run_payload["result"]["no_order_submission"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            run_payload["result"]["execution_authority"].as_str(),
+            Some("NONE")
+        );
+        assert_eq!(
+            run_payload["result"]["observation_created"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            count_table_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+            1
+        );
+        assert!(
+            count_table_rows(
+                &test_db.pool,
+                "cross_asset_candidate_shadow_observation_rankings"
+            )
+            .await
+                > 0
+        );
+
+        let mut duplicate_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/shadow-observation/run",
+                candidate.id
+            ),
+            json!({
+                "research_observation_only": true,
+                "confirmation_text": confirmation
+            }),
+        );
+        duplicate_request.extensions_mut().insert(actor);
+        let duplicate_response = enabled_app
+            .oneshot(duplicate_request)
+            .await
+            .expect("duplicate response");
+        assert_eq!(duplicate_response.status(), StatusCode::OK);
+        let duplicate_payload = response_json::<Value>(duplicate_response).await;
+        assert_eq!(
+            duplicate_payload["result"]["decision"].as_str(),
+            Some("SKIPPED_NO_NEW_CANDLE")
+        );
+        assert_eq!(
+            duplicate_payload["result"]["observation_created"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            count_table_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+            1
         );
         assert_eq!(count_paper_orders(&test_db.pool).await, before_execution.0);
         assert_eq!(

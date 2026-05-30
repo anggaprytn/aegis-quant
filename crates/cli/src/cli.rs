@@ -943,7 +943,10 @@ pub struct ResearchCrossAssetCandidateShadowRunOnceArgs {
     pub candidate_id: Uuid,
     #[arg(long)]
     pub confirm: String,
-    #[arg(long = "research-observation-only", default_value_t = true)]
+    #[arg(
+        long = "research-observation-only",
+        help = "Acknowledge this is research observation-only intent; server SHADOW_OBSERVATION_ONLY=true is still required"
+    )]
     pub research_observation_only: bool,
     #[arg(long = "allow-duplicate-same-candle")]
     pub allow_duplicate_same_candle: bool,
@@ -2587,6 +2590,55 @@ mod tests {
 
         assert_eq!(args.candidate_id, candidate_id);
         assert!(args.allow_duplicate_operational_check);
+    }
+
+    #[test]
+    fn cross_asset_shadow_run_once_requires_explicit_observation_only_ack() {
+        let candidate_id =
+            Uuid::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("valid uuid");
+        let base = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "cross-asset",
+            "candidates",
+            "shadow-run-once",
+            &candidate_id.to_string(),
+            "--confirm",
+            "RUN CROSS-ASSET SHADOW OBSERVATION bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        ])
+        .expect("cli parses");
+
+        let Commands::Research(super::ResearchCommands::CrossAsset(
+            super::ResearchCrossAssetCommands::Candidates(
+                super::ResearchCrossAssetCandidateCommands::ShadowRunOnce(args),
+            ),
+        )) = base.command
+        else {
+            panic!("expected cross-asset shadow run command");
+        };
+        assert!(!args.research_observation_only);
+
+        let acknowledged = Cli::try_parse_from([
+            "aegis",
+            "research",
+            "cross-asset",
+            "candidates",
+            "shadow-run-once",
+            &candidate_id.to_string(),
+            "--confirm",
+            "RUN CROSS-ASSET SHADOW OBSERVATION bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "--research-observation-only",
+        ])
+        .expect("cli parses");
+        let Commands::Research(super::ResearchCommands::CrossAsset(
+            super::ResearchCrossAssetCommands::Candidates(
+                super::ResearchCrossAssetCandidateCommands::ShadowRunOnce(args),
+            ),
+        )) = acknowledged.command
+        else {
+            panic!("expected cross-asset shadow run command");
+        };
+        assert!(args.research_observation_only);
     }
 
     #[test]

@@ -539,6 +539,12 @@ pub fn print_cross_asset_shadow_observation_preview(
         preview.no_mutation
     );
     println!(
+        "Safety: server_observation_only_mode={} no_order_submission={} execution_authority={}",
+        preview.server_observation_only_mode,
+        preview.no_order_submission,
+        preview.execution_authority
+    );
+    println!(
         "Latest aligned candle: {}  latest evaluated: {}",
         preview
             .latest_available_aligned_candle_time
@@ -590,6 +596,13 @@ pub fn print_cross_asset_shadow_observation_run(result: &CrossAssetShadowObserva
         result.decision.as_str(),
         result.observation_created,
         result.duplicate_same_candle
+    );
+    println!(
+        "Safety: server_observation_only_mode={} research_observation_only_acknowledged={} no_order_submission={} execution_authority={}",
+        result.server_observation_only_mode,
+        result.research_observation_only_acknowledged,
+        result.no_order_submission,
+        result.execution_authority
     );
     println!(
         "Observation: {}  evaluated_candle={}",

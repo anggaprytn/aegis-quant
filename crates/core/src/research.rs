@@ -8376,6 +8376,9 @@ pub struct CrossAssetShadowObservationPreviewResult {
     pub candidate_id: Uuid,
     pub package_id: String,
     pub candidate_status: ResearchCandidateStatus,
+    pub server_observation_only_mode: bool,
+    pub no_order_submission: bool,
+    pub execution_authority: String,
     pub latest_available_aligned_candle_time: Option<DateTime<Utc>>,
     pub latest_evaluated_candle_time: Option<DateTime<Utc>>,
     pub would_create_observation: bool,
@@ -8397,6 +8400,10 @@ pub struct CrossAssetShadowObservationRunResult {
     pub candidate_id: Uuid,
     pub package_id: String,
     pub candidate_status: ResearchCandidateStatus,
+    pub server_observation_only_mode: bool,
+    pub research_observation_only_acknowledged: bool,
+    pub no_order_submission: bool,
+    pub execution_authority: String,
     pub observation_id: Option<Uuid>,
     pub observation_created: bool,
     pub duplicate_same_candle: bool,
@@ -9941,6 +9948,7 @@ pub fn evaluate_cross_asset_shadow_observation_preview(
     candidate_status: ResearchCandidateStatus,
     candles_by_symbol: BTreeMap<String, Vec<Candle>>,
     latest_evaluated_candle_time: Option<DateTime<Utc>>,
+    server_observation_only_mode: bool,
     generated_at: DateTime<Utc>,
 ) -> CrossAssetShadowObservationPreviewResult {
     let mut request =
@@ -9958,6 +9966,9 @@ pub fn evaluate_cross_asset_shadow_observation_preview(
                 candidate_id,
                 package_id,
                 candidate_status,
+                server_observation_only_mode,
+                no_order_submission: true,
+                execution_authority: "NONE".to_string(),
                 latest_available_aligned_candle_time: None,
                 latest_evaluated_candle_time,
                 would_create_observation: false,
@@ -10020,6 +10031,9 @@ pub fn evaluate_cross_asset_shadow_observation_preview(
             candidate_id,
             package_id,
             candidate_status,
+            server_observation_only_mode,
+            no_order_submission: true,
+            execution_authority: "NONE".to_string(),
             latest_available_aligned_candle_time: None,
             latest_evaluated_candle_time,
             would_create_observation: false,
@@ -10042,6 +10056,9 @@ pub fn evaluate_cross_asset_shadow_observation_preview(
             candidate_id,
             package_id,
             candidate_status,
+            server_observation_only_mode,
+            no_order_submission: true,
+            execution_authority: "NONE".to_string(),
             latest_available_aligned_candle_time: Some(latest_aligned_time),
             latest_evaluated_candle_time,
             would_create_observation: false,
@@ -10072,6 +10089,9 @@ pub fn evaluate_cross_asset_shadow_observation_preview(
             candidate_id,
             package_id,
             candidate_status,
+            server_observation_only_mode,
+            no_order_submission: true,
+            execution_authority: "NONE".to_string(),
             latest_available_aligned_candle_time: Some(latest_aligned_time),
             latest_evaluated_candle_time,
             would_create_observation: false,
@@ -10097,6 +10117,9 @@ pub fn evaluate_cross_asset_shadow_observation_preview(
             candidate_id,
             package_id,
             candidate_status,
+            server_observation_only_mode,
+            no_order_submission: true,
+            execution_authority: "NONE".to_string(),
             latest_available_aligned_candle_time: Some(latest_aligned_time),
             latest_evaluated_candle_time,
             would_create_observation: false,
@@ -10205,6 +10228,9 @@ pub fn evaluate_cross_asset_shadow_observation_preview(
         candidate_id,
         package_id,
         candidate_status,
+        server_observation_only_mode,
+        no_order_submission: true,
+        execution_authority: "NONE".to_string(),
         latest_available_aligned_candle_time: Some(latest_aligned_time),
         latest_evaluated_candle_time,
         would_create_observation: false,
@@ -18499,6 +18525,7 @@ mod cross_asset_research_tests {
             ResearchCandidateStatus::Discovered,
             shadow_basket(),
             None,
+            true,
             ts(200),
         );
         let second = evaluate_cross_asset_shadow_observation_preview(
@@ -18507,10 +18534,14 @@ mod cross_asset_research_tests {
             ResearchCandidateStatus::Discovered,
             shadow_basket(),
             None,
+            true,
             ts(200),
         );
 
         assert!(first.no_mutation);
+        assert!(first.server_observation_only_mode);
+        assert!(first.no_order_submission);
+        assert_eq!(first.execution_authority, "NONE");
         assert!(!first.would_create_observation);
         assert_eq!(first.decision, second.decision);
         assert_eq!(first.ranking_snapshot, second.ranking_snapshot);
@@ -18532,6 +18563,7 @@ mod cross_asset_research_tests {
             ResearchCandidateStatus::Discovered,
             shadow_basket(),
             Some(latest),
+            true,
             ts(200),
         );
 
