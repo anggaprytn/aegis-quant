@@ -1,17 +1,24 @@
+use std::collections::BTreeMap;
+
 use aegis_core::{
-    candle_aggregation_status, scheduled_research_next_run_at, CandleInterval,
-    MarketDataQualityRequest, MarketDataSource, ResearchCandidateShadowObserveOnceDecision,
-    ResearchCandidateShadowObserveOnceRequest, ResearchCandidateShadowObserveOnceResult,
-    ResearchCandidateStatus, ScheduledResearchBootstrapSafePlanItem,
-    ScheduledResearchBootstrapSafeRequest, ScheduledResearchJob, ScheduledResearchJobKind,
-    ScheduledResearchJobRequest, ScheduledResearchJobRun, ScheduledResearchJobRunStatus,
-    ScheduledResearchJobStatus, Symbol, TestnetShadowRunRequest, TestnetShadowRunnerConfig,
+    candle_aggregation_status, evaluate_cross_asset_shadow_observation_preview,
+    relative_strength_continuation_v1_default_request, scheduled_research_next_run_at,
+    CandleInterval, CrossAssetShadowObservationDecision, CrossAssetShadowObservationRunResult,
+    CrossAssetShadowObservationStatus, MarketDataQualityRequest, MarketDataSource,
+    ResearchCandidateShadowObserveOnceDecision, ResearchCandidateShadowObserveOnceRequest,
+    ResearchCandidateShadowObserveOnceResult, ResearchCandidateStatus,
+    ScheduledResearchBootstrapSafePlanItem, ScheduledResearchBootstrapSafeRequest,
+    ScheduledResearchJob, ScheduledResearchJobKind, ScheduledResearchJobRequest,
+    ScheduledResearchJobRun, ScheduledResearchJobRunStatus, ScheduledResearchJobStatus, Symbol,
+    TestnetShadowRunRequest, TestnetShadowRunnerConfig, RELATIVE_STRENGTH_CONTINUATION_V1_ID,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use db::{
-    get_latest_candle_aggregation_run, get_latest_closed_candle_time, get_recent_closed_candles,
-    get_research_candidate, get_research_candidate_shadow_performance, get_scheduled_research_job,
+    get_cross_asset_shadow_observation_by_candle, get_latest_candle_aggregation_run,
+    get_latest_closed_candle_time, get_latest_cross_asset_shadow_observation,
+    get_recent_closed_candles, get_research_candidate, get_research_candidate_shadow_performance,
+    get_scheduled_research_job, insert_cross_asset_shadow_observation,
     insert_scheduled_research_job_run, list_due_scheduled_research_jobs, list_market_feed_statuses,
     mark_scheduled_research_job_after_run, research_candidate_from_record,
     scheduled_research_job_from_record, scheduled_research_job_run_from_record,
@@ -72,6 +79,11 @@ struct CandidateShadowObserveOnceScheduledRequest {
     candidate_id: Uuid,
     #[serde(default)]
     allow_duplicate_operational_check: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CrossAssetCandidateShadowObserveOnceScheduledRequest {
+    candidate_id: Uuid,
 }
 
 pub fn build_safe_bootstrap_scheduled_research_jobs(
@@ -719,12 +731,16 @@ async fn execute_job_kind(
                 Utc::now() - Duration::hours(24),
             )
             .await?;
+            let scheduled_jobs =
+                scheduled_research_report_rows(&state.db_pool, Utc::now() - Duration::hours(24))
+                    .await?;
             Ok(ScheduledJobExecution {
                 status: ScheduledResearchJobRunStatus::Completed,
                 result: json!({
                     "scheduled_research": {
                         "recent_runs_24h": total_runs,
-                        "failed_runs_24h": failed_runs
+                        "failed_runs_24h": failed_runs,
+                        "jobs": scheduled_jobs
                     }
                 }),
                 error: None,
@@ -751,6 +767,42 @@ async fn execute_job_kind(
                 error: None,
                 artifact_type: artifact_id.map(|_| "testnet_shadow_run".to_string()),
                 artifact_id,
+            })
+        }
+        ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce => {
+            let result = observe_cross_asset_candidate_shadow_once_for_scheduled_job(
+                state,
+                job,
+                _correlation_id,
+            )
+            .await
+            .context("failed to run CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE job")?;
+            let status = if matches!(
+                result.decision,
+                CrossAssetShadowObservationDecision::SkippedNoNewCandle
+                    | CrossAssetShadowObservationDecision::SkippedStaleCandles
+            ) || result.duplicate_same_candle
+            {
+                ScheduledResearchJobRunStatus::Skipped
+            } else {
+                ScheduledResearchJobRunStatus::Completed
+            };
+            Ok(ScheduledJobExecution {
+                status,
+                result: serde_json::to_value(&result)?,
+                error: None,
+                artifact_type: result
+                    .observation_created
+                    .then(|| "cross_asset_candidate_shadow_observation".to_string()),
+                artifact_id: if result.observation_created {
+                    Some(
+                        result
+                            .observation_id
+                            .context("created cross-asset observation missing id")?,
+                    )
+                } else {
+                    None
+                },
             })
         }
         ScheduledResearchJobKind::ResearchBatch
@@ -961,6 +1013,167 @@ async fn observe_candidate_shadow_once_for_scheduled_job(
     })
 }
 
+async fn observe_cross_asset_candidate_shadow_once_for_scheduled_job(
+    state: &AppState,
+    job: &ScheduledResearchJob,
+    correlation_id: Uuid,
+) -> Result<CrossAssetShadowObservationRunResult> {
+    if !state.config.shadow_observation_only {
+        anyhow::bail!(
+            "SHADOW_OBSERVATION_ONLY=true is required before recording cross-asset shadow observations."
+        );
+    }
+
+    let scheduled_request: CrossAssetCandidateShadowObserveOnceScheduledRequest =
+        serde_json::from_value(job.request.clone())
+            .context("CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE request requires candidate_id")?;
+    let record = get_research_candidate(&state.db_pool, scheduled_request.candidate_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("cross-asset research candidate was not found"))?;
+    let candidate =
+        research_candidate_from_record(&record).context("failed to map research candidate")?;
+
+    if candidate.strategy_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID
+        || !candidate.symbol.eq_ignore_ascii_case("CROSS_ASSET_BASKET")
+    {
+        anyhow::bail!(
+            "Candidate is not a relative_strength_continuation_v1 cross-asset research candidate."
+        );
+    }
+    if candidate.status != ResearchCandidateStatus::Discovered {
+        anyhow::bail!(
+            "Cross-asset scheduled shadow observation currently allows DISCOVERED candidates only."
+        );
+    }
+    if record.candidate_creation_mode.as_deref() != Some("cross_asset_manual_create") {
+        anyhow::bail!("Cross-asset scheduled shadow observation requires cross_asset_manual_create provenance.");
+    }
+
+    let now = Utc::now();
+    let preview =
+        build_cross_asset_shadow_observation_preview_for_scheduled_job(state, &candidate, now)
+            .await?;
+
+    if !matches!(
+        preview.decision,
+        CrossAssetShadowObservationDecision::WouldSelect
+            | CrossAssetShadowObservationDecision::NoSignal
+    ) {
+        return Ok(
+            cross_asset_shadow_observation_run_result_from_preview_for_scheduled_job(
+                preview,
+                None,
+                false,
+                false,
+                CrossAssetShadowObservationStatus::Skipped,
+                now,
+            ),
+        );
+    }
+
+    let evaluated_candle_time = preview
+        .latest_available_aligned_candle_time
+        .context("preview produced observable cross-asset decision without candle time")?;
+    if let Some(existing) = get_cross_asset_shadow_observation_by_candle(
+        &state.db_pool,
+        candidate.id,
+        evaluated_candle_time,
+    )
+    .await?
+    {
+        return Ok(
+            cross_asset_shadow_observation_run_result_from_preview_for_scheduled_job(
+                preview,
+                Some(existing.id),
+                false,
+                true,
+                CrossAssetShadowObservationStatus::Skipped,
+                now,
+            ),
+        );
+    }
+
+    let observation_id = Uuid::new_v4();
+    let record = insert_cross_asset_shadow_observation(
+        &state.db_pool,
+        &preview,
+        observation_id,
+        now,
+        Some(correlation_id),
+    )
+    .await?;
+
+    Ok(
+        cross_asset_shadow_observation_run_result_from_preview_for_scheduled_job(
+            preview,
+            Some(record.id),
+            record.id == observation_id,
+            false,
+            CrossAssetShadowObservationStatus::ObservationRecorded,
+            record.created_at,
+        ),
+    )
+}
+
+async fn build_cross_asset_shadow_observation_preview_for_scheduled_job(
+    state: &AppState,
+    candidate: &aegis_core::ResearchCandidate,
+    now: DateTime<Utc>,
+) -> Result<aegis_core::CrossAssetShadowObservationPreviewResult> {
+    let latest_observation =
+        get_latest_cross_asset_shadow_observation(&state.db_pool, candidate.id).await?;
+    let latest_evaluated_candle_time = latest_observation
+        .as_ref()
+        .map(|record| record.evaluated_candle_time);
+    let request = relative_strength_continuation_v1_default_request(now, now, None);
+    let interval = request.parsed_timeframe()?;
+    let mut candles_by_symbol = BTreeMap::new();
+    for symbol in request.parsed_symbols()? {
+        let candles = get_recent_closed_candles(&state.db_pool, &symbol, interval, 96).await?;
+        candles_by_symbol.insert(symbol.as_str().to_string(), candles);
+    }
+
+    Ok(evaluate_cross_asset_shadow_observation_preview(
+        candidate.id,
+        candidate.strategy_id.clone(),
+        candidate.status,
+        candles_by_symbol,
+        latest_evaluated_candle_time,
+        now,
+    ))
+}
+
+fn cross_asset_shadow_observation_run_result_from_preview_for_scheduled_job(
+    preview: aegis_core::CrossAssetShadowObservationPreviewResult,
+    observation_id: Option<Uuid>,
+    observation_created: bool,
+    duplicate_same_candle: bool,
+    status: CrossAssetShadowObservationStatus,
+    created_at: DateTime<Utc>,
+) -> CrossAssetShadowObservationRunResult {
+    CrossAssetShadowObservationRunResult {
+        candidate_id: preview.candidate_id,
+        package_id: preview.package_id,
+        candidate_status: preview.candidate_status,
+        observation_id,
+        observation_created,
+        duplicate_same_candle,
+        latest_available_aligned_candle_time: preview.latest_available_aligned_candle_time,
+        latest_evaluated_candle_time: preview.latest_evaluated_candle_time,
+        evaluated_candle_time: preview.latest_available_aligned_candle_time,
+        decision: preview.decision,
+        status,
+        selected_symbol: preview.selected_symbol,
+        ranking_snapshot: preview.ranking_snapshot,
+        rank_spread_pct: preview.rank_spread_pct,
+        market_filter_passed: preview.market_filter_passed,
+        vol_filter_passed: preview.vol_filter_passed,
+        reason: preview.reason,
+        warnings: preview.warnings,
+        created_at,
+    }
+}
+
 fn market_data_quality_request_from_scheduled_job(
     job: &ScheduledResearchJob,
 ) -> Result<MarketDataQualityRequest> {
@@ -1061,6 +1274,82 @@ fn before_counts_json(counts: &ExecutionTableCounts) -> Value {
         "exchange_testnet_order_lifecycle_events": counts.exchange_testnet_order_lifecycle_events,
         "testnet_shadow_promotions": counts.testnet_shadow_promotions
     })
+}
+
+async fn scheduled_research_report_rows(
+    pool: &db::PgPool,
+    since: DateTime<Utc>,
+) -> Result<Vec<Value>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            j.id,
+            j.name,
+            j.kind,
+            j.enabled,
+            j.status AS job_status,
+            (
+                SELECT r.status
+                FROM scheduled_research_job_runs r
+                WHERE r.job_id = j.id
+                ORDER BY r.started_at DESC
+                LIMIT 1
+            ) AS last_run_status,
+            (
+                SELECT COALESCE(
+                    r.result #>> '{payload,decision}',
+                    r.result #>> '{payload,status}',
+                    r.result #>> '{payload,reason}'
+                )
+                FROM scheduled_research_job_runs r
+                WHERE r.job_id = j.id
+                ORDER BY r.started_at DESC
+                LIMIT 1
+            ) AS last_decision,
+            COUNT(r.id)::BIGINT AS recent_run_count,
+            COUNT(r.id) FILTER (WHERE r.status = 'COMPLETED')::BIGINT AS completed_count,
+            COUNT(r.id) FILTER (WHERE r.status LIKE 'SKIPPED%')::BIGINT AS skipped_count,
+            COUNT(r.id) FILTER (WHERE r.status = 'FAILED')::BIGINT AS failed_count,
+            COUNT(r.id) FILTER (
+                WHERE r.result #>> '{payload,observation_created}' = 'true'
+                   OR r.result #>> '{payload,decision}' IN ('OBSERVED', 'WOULD_SELECT', 'NO_SIGNAL')
+            )::BIGINT AS observed_count,
+            MAX(r.started_at) AS last_run_at,
+            MAX(r.error) FILTER (WHERE r.status = 'FAILED') AS latest_failure
+        FROM scheduled_research_jobs j
+        LEFT JOIN scheduled_research_job_runs r
+            ON r.job_id = j.id
+           AND r.started_at >= $1
+        GROUP BY j.id, j.name, j.kind, j.enabled, j.status
+        ORDER BY j.name ASC
+        "#,
+    )
+    .bind(since)
+    .fetch_all(pool)
+    .await?;
+
+    use sqlx::Row;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "job_id": row.get::<Uuid, _>("id"),
+                "name": row.get::<String, _>("name"),
+                "kind": row.get::<String, _>("kind"),
+                "enabled": row.get::<bool, _>("enabled"),
+                "job_status": row.get::<String, _>("job_status"),
+                "last_run_status": row.get::<Option<String>, _>("last_run_status"),
+                "last_decision": row.get::<Option<String>, _>("last_decision"),
+                "recent_run_count": row.get::<i64, _>("recent_run_count"),
+                "completed_count": row.get::<i64, _>("completed_count"),
+                "observed_count": row.get::<i64, _>("observed_count"),
+                "skipped_count": row.get::<i64, _>("skipped_count"),
+                "failed_count": row.get::<i64, _>("failed_count"),
+                "last_run_at": row.get::<Option<DateTime<Utc>>, _>("last_run_at"),
+                "latest_failure": row.get::<Option<String>, _>("latest_failure")
+            })
+        })
+        .collect())
 }
 
 pub fn runner_interval_from_env() -> Result<u64> {
@@ -1278,10 +1567,48 @@ mod tests {
         )));
         assert!(!jobs.iter().any(|job| matches!(
             job.kind,
+            ScheduledResearchJobKind::CandidateShadowObserveOnce
+                | ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
+                | ScheduledResearchJobKind::ResearchBatch
+                | ScheduledResearchJobKind::ResearchCampaign
+                | ScheduledResearchJobKind::RegimeDiscovery
+                | ScheduledResearchJobKind::RobustnessMatrix
+        )));
+    }
+
+    #[test]
+    fn cross_asset_candidate_shadow_observe_once_is_not_bootstrap_safe_monitoring() {
+        assert!(!is_safe_monitoring_job_kind(
+            ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
+        ));
+        assert!("CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE"
+            .parse::<ScheduledResearchJobKind>()
+            .is_ok());
+    }
+
+    #[test]
+    fn safe_bootstrap_excludes_all_candidate_specific_jobs() {
+        let request = ScheduledResearchBootstrapSafeRequest {
+            enable: true,
+            symbols: vec!["BTCUSDT".to_string()],
+            intervals: vec!["1h".to_string()],
+            dry_run: false,
+            replace_existing: false,
+        };
+        let jobs = build_safe_bootstrap_scheduled_research_jobs(
+            &request,
+            MarketDataSource::Binance,
+            &[Symbol::new("BTCUSDT").unwrap()],
+        )
+        .unwrap();
+        assert!(!jobs.iter().any(|job| matches!(
+            job.kind,
             ScheduledResearchJobKind::ResearchBatch
                 | ScheduledResearchJobKind::ResearchCampaign
                 | ScheduledResearchJobKind::RegimeDiscovery
                 | ScheduledResearchJobKind::RobustnessMatrix
+                | ScheduledResearchJobKind::CandidateShadowObserveOnce
+                | ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
         )));
     }
 

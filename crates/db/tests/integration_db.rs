@@ -207,6 +207,36 @@ async fn scheduled_research_job_and_run_persist_without_execution_mutation() {
 
 #[tokio::test]
 #[ignore = "requires Postgres test database"]
+async fn cross_asset_scheduled_research_job_kind_persists() {
+    let db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let candidate_id = Uuid::new_v4();
+    let request = ScheduledResearchJobRequest {
+        name: "rs-v1-cross-asset-shadow-observe".to_string(),
+        kind: ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce,
+        enabled: false,
+        interval_seconds: 900,
+        request: json!({ "candidate_id": candidate_id }),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    };
+
+    let job_record = insert_scheduled_research_job(&db.pool, &request)
+        .await
+        .expect("cross-asset scheduled job should persist");
+    let job = scheduled_research_job_from_record(&job_record).expect("job should map");
+
+    assert_eq!(
+        job.kind,
+        ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce
+    );
+    assert_eq!(job.request["candidate_id"], candidate_id.to_string());
+    assert!(!job.enabled);
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres test database"]
 async fn scheduled_research_job_claim_prevents_double_run() {
     let db = TestDatabase::setup()
         .await

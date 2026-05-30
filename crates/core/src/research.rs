@@ -161,6 +161,7 @@ pub enum ScheduledResearchJobKind {
     MarketDataQuality,
     AggregationStatus,
     CandidateShadowObserveOnce,
+    CrossAssetCandidateShadowObserveOnce,
     ResearchBatch,
     ResearchCampaign,
     RegimeDiscovery,
@@ -175,6 +176,9 @@ impl ScheduledResearchJobKind {
             Self::MarketDataQuality => "MARKET_DATA_QUALITY",
             Self::AggregationStatus => "AGGREGATION_STATUS",
             Self::CandidateShadowObserveOnce => "CANDIDATE_SHADOW_OBSERVE_ONCE",
+            Self::CrossAssetCandidateShadowObserveOnce => {
+                "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE"
+            }
             Self::ResearchBatch => "RESEARCH_BATCH",
             Self::ResearchCampaign => "RESEARCH_CAMPAIGN",
             Self::RegimeDiscovery => "REGIME_DISCOVERY",
@@ -190,6 +194,7 @@ impl ScheduledResearchJobKind {
                 | Self::MarketDataQuality
                 | Self::AggregationStatus
                 | Self::CandidateShadowObserveOnce
+                | Self::CrossAssetCandidateShadowObserveOnce
                 | Self::ResearchBatch
                 | Self::ResearchCampaign
                 | Self::RegimeDiscovery
@@ -208,6 +213,9 @@ impl std::str::FromStr for ScheduledResearchJobKind {
             "MARKET_DATA_QUALITY" => Ok(Self::MarketDataQuality),
             "AGGREGATION_STATUS" => Ok(Self::AggregationStatus),
             "CANDIDATE_SHADOW_OBSERVE_ONCE" => Ok(Self::CandidateShadowObserveOnce),
+            "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE" => {
+                Ok(Self::CrossAssetCandidateShadowObserveOnce)
+            }
             "RESEARCH_BATCH" => Ok(Self::ResearchBatch),
             "RESEARCH_CAMPAIGN" => Ok(Self::ResearchCampaign),
             "REGIME_DISCOVERY" => Ok(Self::RegimeDiscovery),

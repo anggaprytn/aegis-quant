@@ -8,7 +8,7 @@ use aegis_core::{
     ResearchCandidateStatus, ScheduledResearchJobKind, ScheduledResearchJobRequest, StrategyConfig,
     StrategyId, StrategyMode, Symbol, TestnetShadowRunnerConfigInput,
     TestnetShadowRunnerControlAction, TestnetShadowRunnerStaleFeedPolicy,
-    TestnetShadowRunnerStatus,
+    TestnetShadowRunnerStatus, RELATIVE_STRENGTH_CONTINUATION_V1_ID,
 };
 use api::{
     close_paper_position,
@@ -23,7 +23,7 @@ use api::{
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use db::{
     create_research_candidate, get_default_paper_account, get_order_by_id, get_paper_position,
-    get_recent_closed_candles, get_risk_decision, insert_market_tick,
+    get_recent_closed_candles, get_research_candidate, get_risk_decision, insert_market_tick,
     insert_research_candidate_shadow_run_link, insert_scheduled_research_job,
     insert_testnet_shadow_run, list_open_paper_positions, list_orders, list_paper_equity_snapshots,
     list_paper_positions, list_paper_trade_journal, list_recent_signals, list_recent_system_events,
@@ -304,6 +304,139 @@ async fn scheduled_candidate_shadow_observe_once_skips_then_records_only_on_new_
     );
 }
 
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn scheduled_cross_asset_candidate_shadow_observe_once_is_unique_candle_and_execution_isolated(
+) {
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let state = app_state(test_db.pool.clone());
+    let candidate = seed_cross_asset_candidate_fixture(&test_db.pool).await;
+    let before_execution = execution_table_counts(&test_db.pool).await;
+    let before_candidate_status = get_research_candidate(&test_db.pool, candidate.id)
+        .await
+        .expect("candidate query should succeed")
+        .expect("candidate should exist")
+        .status;
+
+    let request = ScheduledResearchJobRequest {
+        name: "rs-v1-cross-asset-shadow-observe".to_string(),
+        kind: ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce,
+        enabled: false,
+        interval_seconds: 900,
+        request: serde_json::json!({ "candidate_id": candidate.id }),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    };
+    let job_record = insert_scheduled_research_job(&test_db.pool, &request)
+        .await
+        .expect("scheduled job should persist");
+    let job = scheduled_research_job_from_record(&job_record).expect("job should map");
+
+    let first = run_scheduled_research_job_once(&state, &job)
+        .await
+        .expect("first cross-asset run should observe latest aligned candle");
+    assert_eq!(first.status.as_str(), "COMPLETED");
+    assert_eq!(first.result["payload"]["observation_created"], true);
+    assert!(matches!(
+        first.result["payload"]["decision"].as_str(),
+        Some("NO_SIGNAL" | "WOULD_SELECT")
+    ));
+    assert_eq!(
+        count_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+        1
+    );
+    assert!(
+        count_rows(
+            &test_db.pool,
+            "cross_asset_candidate_shadow_observation_rankings"
+        )
+        .await
+            > 0
+    );
+
+    let duplicate = run_scheduled_research_job_once(&state, &job)
+        .await
+        .expect("same-candle rerun should skip");
+    assert_eq!(duplicate.status.as_str(), "SKIPPED");
+    assert_eq!(
+        duplicate.result["payload"]["decision"],
+        "SKIPPED_NO_NEW_CANDLE"
+    );
+    assert_eq!(
+        count_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+        1
+    );
+
+    append_cross_asset_fixture_candle(&test_db.pool).await;
+    let second = run_scheduled_research_job_once(&state, &job)
+        .await
+        .expect("new aligned candle should create one more observation");
+    assert_eq!(second.status.as_str(), "COMPLETED");
+    assert_eq!(second.result["payload"]["observation_created"], true);
+    assert_eq!(
+        count_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+        2
+    );
+    assert_eq!(
+        execution_table_counts(&test_db.pool).await,
+        before_execution
+    );
+    assert_eq!(
+        get_research_candidate(&test_db.pool, candidate.id)
+            .await
+            .expect("candidate query should succeed")
+            .expect("candidate should exist")
+            .status,
+        before_candidate_status
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL or DATABASE_URL pointing to a test database"]
+async fn scheduled_cross_asset_candidate_shadow_observe_once_fails_closed_without_observation_only()
+{
+    let test_db = TestDatabase::setup()
+        .await
+        .expect("test database should setup");
+    let mut state = app_state(test_db.pool.clone());
+    state.config.shadow_observation_only = false;
+    let candidate = seed_cross_asset_candidate_fixture(&test_db.pool).await;
+    let before_execution = execution_table_counts(&test_db.pool).await;
+    let request = ScheduledResearchJobRequest {
+        name: "rs-v1-cross-asset-shadow-observe-disabled".to_string(),
+        kind: ScheduledResearchJobKind::CrossAssetCandidateShadowObserveOnce,
+        enabled: false,
+        interval_seconds: 900,
+        request: serde_json::json!({ "candidate_id": candidate.id }),
+        max_runs_per_tick: 1,
+        next_run_at: None,
+    };
+    let job_record = insert_scheduled_research_job(&test_db.pool, &request)
+        .await
+        .expect("scheduled job should persist");
+    let job = scheduled_research_job_from_record(&job_record).expect("job should map");
+
+    let failed = run_scheduled_research_job_once(&state, &job)
+        .await
+        .expect("failed-closed run should still record scheduled run");
+    assert_eq!(failed.status.as_str(), "FAILED");
+    assert!(failed
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("SHADOW_OBSERVATION_ONLY=true"));
+    assert_eq!(
+        count_rows(&test_db.pool, "cross_asset_candidate_shadow_observations").await,
+        0
+    );
+    assert_eq!(
+        execution_table_counts(&test_db.pool).await,
+        before_execution
+    );
+}
+
 async fn seed_pipeline_happy_path(pool: &db::PgPool) {
     let symbol = Symbol::new("BTCUSDT").expect("valid symbol");
     upsert_strategy_config(pool, &strategy_config())
@@ -436,6 +569,106 @@ async fn seed_fresh_shadow_candidate_fixture(pool: &db::PgPool) -> ResearchCandi
     .await
     .expect("candidate should persist");
     candidate
+}
+
+async fn seed_cross_asset_candidate_fixture(pool: &db::PgPool) -> ResearchCandidate {
+    let base_open = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    seed_cross_asset_candles_through(pool, base_open, 100).await;
+
+    let now = Utc::now();
+    let config = serde_json::to_value(
+        aegis_core::relative_strength_continuation_v1_default_request(now, now, None),
+    )
+    .expect("cross-asset config should serialize");
+    let candidate = ResearchCandidate {
+        id: Uuid::new_v4(),
+        experiment_id: None,
+        experiment_run_id: None,
+        strategy_id: RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string(),
+        symbol: "CROSS_ASSET_BASKET".to_string(),
+        timeframe: "4h".to_string(),
+        config,
+        score: None,
+        pnl_pct: None,
+        max_drawdown_pct: None,
+        trade_count: None,
+        win_rate: None,
+        fee_drag: None,
+        status: ResearchCandidateStatus::Discovered,
+        rejection_reason: None,
+        notes: Some("cross-asset scheduled observation fixture".to_string()),
+        created_at: now,
+        updated_at: now,
+        correlation_id: Some(Uuid::new_v4()),
+    };
+    create_research_candidate(
+        pool,
+        &candidate,
+        None,
+        ResearchCandidateDecision::Reopen,
+        Some("cross_asset_manual_create"),
+        candidate.notes.as_deref(),
+        &serde_json::json!({
+            "candidate_creation_mode": "cross_asset_manual_create",
+            "candidate_scope": "cross_asset_research",
+            "execution_authority": "NONE",
+            "implementation_research_only": true
+        }),
+    )
+    .await
+    .expect("cross-asset candidate should persist");
+    candidate
+}
+
+async fn seed_cross_asset_candles_through(
+    pool: &db::PgPool,
+    base_open: chrono::DateTime<Utc>,
+    candle_count: i64,
+) {
+    let request =
+        aegis_core::relative_strength_continuation_v1_default_request(Utc::now(), Utc::now(), None);
+    let symbols = request
+        .parsed_symbols()
+        .expect("default cross-asset symbols should parse");
+    for symbol in symbols {
+        for index in 0..candle_count {
+            let open_time = base_open + ChronoDuration::hours(4 * index);
+            let symbol_offset = symbol
+                .as_str()
+                .bytes()
+                .fold(0_i64, |acc, item| acc.saturating_add(i64::from(item)))
+                % 1_000;
+            let close = 10_000_i64 + symbol_offset + index * 10;
+            upsert_candle(
+                pool,
+                &Candle {
+                    id: Uuid::new_v4(),
+                    exchange: MarketDataSource::Binance,
+                    symbol: symbol.clone(),
+                    interval: CandleInterval::FourHours,
+                    open_time,
+                    close_time: open_time + ChronoDuration::hours(4),
+                    open: Decimal::new(close - 5, 0),
+                    high: Decimal::new(close + 10, 0),
+                    low: Decimal::new(close - 15, 0),
+                    close: Decimal::new(close, 0),
+                    volume: Decimal::new(100 + index, 0),
+                    quote_volume: Some(Decimal::new(close * (100 + index), 0)),
+                    trade_count: 10,
+                    is_closed: true,
+                    created_at: open_time + ChronoDuration::hours(4),
+                    updated_at: open_time + ChronoDuration::hours(4),
+                },
+            )
+            .await
+            .expect("cross-asset candle should persist");
+        }
+    }
+}
+
+async fn append_cross_asset_fixture_candle(pool: &db::PgPool) {
+    let next_open = Utc.with_ymd_and_hms(2026, 1, 17, 16, 0, 0).unwrap();
+    seed_cross_asset_candles_through(pool, next_open, 1).await;
 }
 
 fn sample_market_tick(price: Decimal, received_at: chrono::DateTime<Utc>) -> MarketTick {
