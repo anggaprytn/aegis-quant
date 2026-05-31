@@ -19,6 +19,7 @@ import type {
   CandleAggregationStatusRow,
   CandleBackfillRequest,
   CandleBackfillResult,
+  CandleRecord,
   CandleCoverageSummary,
   MarketDataQualityReport,
   MarketDataQualityRequest,
@@ -29,6 +30,7 @@ import type {
   ExecutionReadinessSnapshot,
   ExecutionReadinessTarget,
   MarketFeedStatusRecord,
+  MarketTickRecord,
   OrderRecord,
   OperatorReport,
   OperatorReportRequest,
@@ -1391,6 +1393,7 @@ function AuthenticatedDashboard({
     queryFn: api.getMarketSymbols,
     refetchInterval: 30_000,
   });
+  const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const feedQuery = useQuery({
     queryKey: ["feed-status"],
     queryFn: api.getMarketFeedStatus,
@@ -1610,17 +1613,19 @@ function AuthenticatedDashboard({
   });
 
   const tickQueries = useQueries({
-    queries: DEFAULT_SYMBOLS.map((symbol) => ({
+    queries: dataSymbols.map((symbol) => ({
       queryKey: ["latest-tick", symbol],
       queryFn: () => api.getLatestTick(symbol),
       refetchInterval: 5_000,
     })),
   });
 
-  const candlesQuery = useQuery({
-    queryKey: ["candles", selectedSymbol],
-    queryFn: () => api.getMarketCandles(selectedSymbol, "1m", 25),
-    refetchInterval: 10_000,
+  const candleQueries = useQueries({
+    queries: dataSymbols.map((symbol) => ({
+      queryKey: ["candles", symbol, "1m"],
+      queryFn: () => api.getMarketCandles(symbol, "1m", 25),
+      refetchInterval: 10_000,
+    })),
   });
   const candleCoverageQuery = useQuery({
     queryKey: ["candle-coverage", selectedSymbol],
@@ -3354,7 +3359,6 @@ function AuthenticatedDashboard({
     decideResearchCandidateMutation.error,
   );
   const feeds = feedQuery.data?.feeds ?? [];
-  const dataSymbols = symbolsQuery.data?.symbols ?? DEFAULT_SYMBOLS;
   const telemetrySnapshot = useMemo<TelemetrySnapshot>(
     () => ({
       reachable: Boolean(metricsQuery.data),
@@ -3375,11 +3379,17 @@ function AuthenticatedDashboard({
     [metricsQuery.data],
   );
 
-  const latestTicks = DEFAULT_SYMBOLS.map((symbol, index) => ({
+  const latestTicks = dataSymbols.map((symbol, index) => ({
     symbol,
     data: tickQueries[index]?.data?.tick,
     error: tickQueries[index]?.error,
     isLoading: tickQueries[index]?.isLoading,
+  }));
+  const recentCandleSummaries = dataSymbols.map((symbol, index) => ({
+    symbol,
+    candles: candleQueries[index]?.data?.candles ?? [],
+    error: candleQueries[index]?.error,
+    isLoading: candleQueries[index]?.isLoading,
   }));
 
   const headerFeedState = summarizeFeedState(feeds);
@@ -3579,7 +3589,12 @@ function AuthenticatedDashboard({
               </Panel>
 
               <Panel className="xl:col-span-4" title="Feed Status">
-                <FeedTable feeds={feeds} loading={feedQuery.isLoading} error={getErrorMessage(feedQuery.error)} />
+                <FeedTable
+                  symbols={dataSymbols}
+                  feeds={feeds}
+                  loading={feedQuery.isLoading}
+                  error={getErrorMessage(feedQuery.error)}
+                />
               </Panel>
 
               <Panel className="xl:col-span-8" title="Telemetry">
@@ -3919,23 +3934,18 @@ function AuthenticatedDashboard({
                 <SimpleList items={dataSymbols} />
               </Panel>
               <Panel className="xl:col-span-4" title="Feed Status">
-                <FeedTable feeds={feeds} loading={feedQuery.isLoading} error={getErrorMessage(feedQuery.error)} />
+                <FeedTable
+                  symbols={dataSymbols}
+                  feeds={feeds}
+                  loading={feedQuery.isLoading}
+                  error={getErrorMessage(feedQuery.error)}
+                />
               </Panel>
               <Panel className="xl:col-span-5" title="Latest Ticks">
                 <TicksTable ticks={latestTicks} />
               </Panel>
               <Panel className="xl:col-span-12" title="Recent 1m Candles">
-                <div className="mb-3 flex max-w-xs">
-                  <Field
-                    label="Symbol"
-                    as="select"
-                    value={selectedSymbol}
-                    onChange={setSelectedSymbol}
-                    options={dataSymbols}
-                  />
-                </div>
-                <CandlesTable candles={candlesQuery.data?.candles ?? []} />
-                <InlineStatus error={getErrorMessage(candlesQuery.error)} />
+                <SymbolCandlesTable summaries={recentCandleSummaries} />
               </Panel>
               <Panel className="xl:col-span-5" title="Candle Coverage">
                 <div className="mb-3 flex max-w-xs">
@@ -10663,10 +10673,12 @@ function AnalyticsPnlBreakdownCard({
 }
 
 function FeedTable({
+  symbols,
   feeds,
   loading,
   error,
 }: {
+  symbols: string[];
   feeds: MarketFeedStatusRecord[];
   loading?: boolean;
   error?: string;
@@ -10677,20 +10689,25 @@ function FeedTable({
   if (error && error !== "Unknown error") {
     return <EmptyState label={error} tone="danger" />;
   }
-  if (!feeds.length) {
+  if (!symbols.length) {
     return <EmptyState label="No feed status rows." />;
   }
+
+  const feedsBySymbol = new Map(feeds.map((feed) => [feed.symbol, feed]));
 
   return (
     <Table
       headers={["Symbol", "Status", "Freshness", "Last Event", "Reconnects"]}
-      rows={feeds.map((feed) => [
-        feed.symbol,
-        badge(feed.status),
-        badge(feed.freshness_status),
-        formatRelativeAge(feed.last_event_at),
-        String(feed.reconnect_count),
-      ])}
+      rows={symbols.map((symbol) => {
+        const feed = feedsBySymbol.get(symbol);
+        return [
+          symbol,
+          badge(feed?.status ?? "missing"),
+          badge(feed?.freshness_status ?? "missing"),
+          feed ? formatRelativeAge(feed.last_event_at) : "Missing",
+          feed ? String(feed.reconnect_count) : "0",
+        ];
+      })}
     />
   );
 }
@@ -10700,7 +10717,7 @@ function TicksTable({
 }: {
   ticks: Array<{
     symbol: string;
-    data?: { price: string; quantity: string; trade_time: string };
+    data?: MarketTickRecord;
     error: unknown;
     isLoading: boolean;
   }>;
@@ -10712,43 +10729,80 @@ function TicksTable({
         tick.symbol,
         tick.isLoading ? "Loading..." : formatNumber(tick.data?.price),
         tick.isLoading ? "Loading..." : formatNumber(tick.data?.quantity),
-        tick.error ? getErrorMessage(tick.error) : formatRelativeAge(tick.data?.trade_time),
+        tick.isLoading
+          ? "Loading..."
+          : tick.error
+            ? getErrorMessage(tick.error)
+            : tick.data
+              ? formatRelativeAge(tick.data.trade_time)
+              : "Missing",
       ])}
     />
   );
 }
 
-function CandlesTable({
-  candles,
+function SymbolCandlesTable({
+  summaries,
 }: {
-  candles: Array<{
-    open_time: string;
-    close_time: string;
-    open: string;
-    high: string;
-    low: string;
-    close: string;
-    volume: string;
-    trade_count: number;
-    is_closed: boolean;
+  summaries: Array<{
+    symbol: string;
+    candles: CandleRecord[];
+    error: unknown;
+    isLoading: boolean;
   }>;
 }) {
-  if (!candles.length) {
-    return <EmptyState label="No candles found." />;
+  if (!summaries.length) {
+    return <EmptyState label="No configured symbols." />;
   }
 
   return (
     <Table
-      headers={["Open Time", "Close", "High", "Low", "Volume", "Trades", "State"]}
-      rows={candles.map((candle) => [
-        formatDateTime(candle.open_time),
-        formatNumber(candle.close),
-        formatNumber(candle.high),
-        formatNumber(candle.low),
-        formatNumber(candle.volume),
-        String(candle.trade_count),
-        candle.is_closed ? "closed" : "open",
-      ])}
+      headers={["Symbol", "Latest Open", "Close", "Volume", "Trades", "Age", "State"]}
+      rows={summaries.map((summary) => {
+        const candle = summary.candles[0];
+        if (summary.isLoading) {
+          return [
+            summary.symbol,
+            "Loading...",
+            "Loading...",
+            "Loading...",
+            "Loading...",
+            "Loading...",
+            "Loading...",
+          ];
+        }
+        if (summary.error) {
+          return [
+            summary.symbol,
+            "Missing",
+            "Missing",
+            "Missing",
+            "Missing",
+            getErrorMessage(summary.error) ?? "Error",
+            badge("missing"),
+          ];
+        }
+        if (!candle) {
+          return [
+            summary.symbol,
+            "Missing",
+            "Missing",
+            "Missing",
+            "Missing",
+            "Missing",
+            badge("missing"),
+          ];
+        }
+        return [
+          summary.symbol,
+          formatDateTime(candle.open_time),
+          formatNumber(candle.close),
+          formatNumber(candle.volume),
+          String(candle.trade_count),
+          formatRelativeAge(candle.close_time),
+          candle.is_closed ? "closed" : "open",
+        ];
+      })}
     />
   );
 }
