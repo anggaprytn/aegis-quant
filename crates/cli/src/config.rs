@@ -10,7 +10,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const DEFAULT_API_BASE_URL: &str = "http://127.0.0.1:3000";
+const DEFAULT_API_BASE_URL: &str = "http://127.0.0.1:3100";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliConfig {
@@ -203,7 +203,7 @@ mod tests {
     fn base_url_falls_back_when_env_missing() {
         assert_eq!(
             resolve_api_base_url(None),
-            "http://127.0.0.1:3000".to_string()
+            "http://127.0.0.1:3100".to_string()
         );
     }
 
@@ -211,7 +211,15 @@ mod tests {
     fn base_url_falls_back_when_env_blank() {
         assert_eq!(
             resolve_api_base_url(Some("   ")),
-            "http://127.0.0.1:3000".to_string()
+            "http://127.0.0.1:3100".to_string()
+        );
+    }
+
+    #[test]
+    fn base_url_env_overrides_default() {
+        assert_eq!(
+            resolve_api_base_url(Some("http://127.0.0.1:3100")),
+            "http://127.0.0.1:3100".to_string()
         );
     }
 
@@ -245,7 +253,7 @@ mod tests {
         let session = sample_session();
         save_token_file(&token_path, &session).expect("session should save");
 
-        env::set_var("AEGIS_API_BASE_URL", "http://127.0.0.1:3000");
+        env::set_var("AEGIS_API_BASE_URL", "http://127.0.0.1:3100");
         env::set_var("AEGIS_ACCESS_TOKEN", "env-access-token");
         env::set_var("XDG_CONFIG_HOME", config_root.to_string_lossy().to_string());
 

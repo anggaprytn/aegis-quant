@@ -2140,6 +2140,18 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     }
+                    cli::cli::ResearchCrossAssetCandidateCommands::EvidenceReview {
+                        candidate_id,
+                    } => {
+                        let response = client
+                            .get_cross_asset_candidate_evidence_review(candidate_id)
+                            .await?;
+                        if cli.json {
+                            output::print_json(&response)?;
+                        } else {
+                            output::print_cross_asset_evidence_review(&response.report);
+                        }
+                    }
                     cli::cli::ResearchCrossAssetCandidateCommands::ObservationHealth {
                         candidate_id,
                     } => {

@@ -34,19 +34,20 @@ use serde::Serialize;
 use crate::api::{
     BacktestResult, BacktestRunAcceptedResponse, CandleBackfillRunResponse,
     CandleBackfillRunsResponse, CompressionBreakoutRefinementResponse,
-    ExchangePrivateStreamEventRecord, ExchangePrivateStreamListenKeyResponse,
-    ExchangePrivateStreamStatusResponse, ExchangeReconciliationMismatchRecord,
-    ExchangeReconciliationResult, ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse,
-    ExchangeTestnetOrderResponse, ExchangeTestnetPipelineSubmitResponse,
-    ExchangeTestnetRepairActionRecord, ExchangeTestnetRepairResponse,
-    ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse, ExecutionReadinessResponse,
-    ExecutionReadinessSnapshotsResponse, FeedStatusResponse, HealthResponse,
-    MarketDataRepairRunsResponse, OperatorReportResponse, OperatorReportsListResponse, OrderRecord,
-    PaperAccountResponse, PaperClosePositionResponse, PaperEquityResponse, PaperPnlResponse,
-    PaperPositionRecord, PaperPositionsResponse, PaperTradeJournalResponse, RecentEventsResponse,
-    RiskActionResponse, RiskConfigAuditResponse, RiskConfigResponse, RiskConfigValidationResponse,
-    RiskConfigVersionsResponse, RiskDecisionsResponse, RiskStatusResponse, StatusResponse,
-    StrategyConfigAuditResponse, StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
+    CrossAssetEvidenceReviewReport, ExchangePrivateStreamEventRecord,
+    ExchangePrivateStreamListenKeyResponse, ExchangePrivateStreamStatusResponse,
+    ExchangeReconciliationMismatchRecord, ExchangeReconciliationResult,
+    ExchangeReconciliationRunRecord, ExchangeTestnetBalancesResponse, ExchangeTestnetOrderResponse,
+    ExchangeTestnetPipelineSubmitResponse, ExchangeTestnetRepairActionRecord,
+    ExchangeTestnetRepairResponse, ExchangeTestnetStatusResponse, ExchangeTestnetSymbolsResponse,
+    ExecutionReadinessResponse, ExecutionReadinessSnapshotsResponse, FeedStatusResponse,
+    HealthResponse, MarketDataRepairRunsResponse, OperatorReportResponse,
+    OperatorReportsListResponse, OrderRecord, PaperAccountResponse, PaperClosePositionResponse,
+    PaperEquityResponse, PaperPnlResponse, PaperPositionRecord, PaperPositionsResponse,
+    PaperTradeJournalResponse, RecentEventsResponse, RiskActionResponse, RiskConfigAuditResponse,
+    RiskConfigResponse, RiskConfigValidationResponse, RiskConfigVersionsResponse,
+    RiskDecisionsResponse, RiskStatusResponse, StatusResponse, StrategyConfigAuditResponse,
+    StrategyConfigValidationResponse, StrategyConfigVersionsResponse,
     StrategyDecisionBreakdownResponse, StrategyDiagnosticsResponse, StrategyDryRunResponse,
     StrategyExitAttributionResponse, StrategyListResponse, StrategyOpportunityAnalysisResponse,
     StrategyPerformanceRankingsResponse, StrategyPerformanceSummaryResponse,
@@ -586,6 +587,67 @@ pub fn print_cross_asset_observation_health(report: &CrossAssetObservationHealth
         "Execution safety counts: {:?}",
         report.execution_safety_counts
     );
+    println!("No mutation: {}", report.no_mutation);
+}
+
+pub fn print_cross_asset_evidence_review(report: &CrossAssetEvidenceReviewReport) {
+    println!("{}", report.readiness_status);
+    println!(
+        "Candidate: {} status={}",
+        report.candidate_id, report.candidate_status
+    );
+    println!(
+        "Observations: total={} required={} independent={} WOULD_SELECT={} NO_SIGNAL={} skipped={}",
+        report.observation_count,
+        report.required_independent_observation_count,
+        report.independent_observation_count,
+        report.would_select_count,
+        report.no_signal_count,
+        report.skipped_count
+    );
+    println!(
+        "Candles: latest_evaluated={} latest_aligned={}",
+        report
+            .latest_evaluated_candle
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string()),
+        report
+            .latest_aligned_candle
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "Data refresh: {} scheduler_enabled={} rs_job_enabled={}",
+        report.data_refresh_health, report.scheduler_enabled, report.rs_job_enabled
+    );
+    println!(
+        "Derivatives freshness: healthy={} missing={} stale={}",
+        report.derivatives_healthy,
+        report.derivatives_freshness.missing_count,
+        report.derivatives_freshness.stale_count
+    );
+    println!(
+        "Execution safety: clear={} counts={:?}",
+        report.execution_safety_clear, report.execution_safety
+    );
+    println!("Recommendation: {}", report.recommendation);
+    println!(
+        "Blockers: {}",
+        if report.blockers.is_empty() {
+            "none".to_string()
+        } else {
+            report.blockers.join(" | ")
+        }
+    );
+    println!(
+        "Warnings: {}",
+        if report.warnings.is_empty() {
+            "none".to_string()
+        } else {
+            report.warnings.join(" | ")
+        }
+    );
+    println!("Next action: {}", report.next_action);
     println!("No mutation: {}", report.no_mutation);
 }
 

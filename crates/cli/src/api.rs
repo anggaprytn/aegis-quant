@@ -1461,6 +1461,17 @@ impl ApiClient {
         .await
     }
 
+    pub async fn get_cross_asset_candidate_evidence_review(
+        &self,
+        candidate_id: Uuid,
+    ) -> Result<CrossAssetEvidenceReviewResponse, ApiClientError> {
+        self.get(
+            &format!("/research/cross-asset/candidates/{candidate_id}/evidence-review"),
+            &[],
+        )
+        .await
+    }
+
     pub async fn get_cross_asset_candidate_accept_shadow_preview(
         &self,
         candidate_id: Uuid,
@@ -3623,6 +3634,42 @@ pub struct CrossAssetCandidateQualificationResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossAssetObservationHealthResponse {
     pub report: CrossAssetObservationHealthReport,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetEvidenceReviewReport {
+    pub candidate_id: Uuid,
+    pub candidate_status: String,
+    pub required_independent_observation_count: i64,
+    pub observation_count: i64,
+    pub independent_observation_count: i64,
+    pub would_select_count: i64,
+    pub no_signal_count: i64,
+    pub skipped_count: i64,
+    pub latest_evaluated_candle: Option<DateTime<Utc>>,
+    pub latest_aligned_candle: Option<DateTime<Utc>>,
+    pub data_refresh_health: String,
+    pub derivatives_freshness: db::DerivativesFreshnessReport,
+    pub derivatives_healthy: bool,
+    pub execution_safety: std::collections::BTreeMap<String, i64>,
+    pub execution_safety_clear: bool,
+    pub scheduler_enabled: bool,
+    pub rs_job_enabled: bool,
+    pub readiness_status: String,
+    pub recommendation: String,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub next_action: String,
+    pub no_mutation: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossAssetEvidenceReviewResponse {
+    pub report: CrossAssetEvidenceReviewReport,
     pub request_id: String,
     pub correlation_id: String,
     pub timestamp: DateTime<Utc>,
