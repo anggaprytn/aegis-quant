@@ -1,4 +1,4 @@
-use std::cmp::Reverse;
+use std::{cmp::Reverse, future::Future, time::Instant};
 
 use aegis_core::{
     candle_aggregation_status, AuthenticatedActor, CandleAggregationStatusRow, CandleInterval,
@@ -36,6 +36,9 @@ use db::{
 };
 
 const DEFAULT_REPORT_WINDOW_HOURS: i64 = 24;
+const DEFAULT_SECTION_TIMEOUT_MS: u64 = 5_000;
+const MIN_SECTION_TIMEOUT_MS: u64 = 250;
+const MAX_SECTION_TIMEOUT_MS: u64 = 30_000;
 const REPORT_LIST_DEFAULT_LIMIT: i64 = 20;
 const REPORT_LIST_MAX_LIMIT: i64 = 100;
 const REPORT_RESEARCH_CANDIDATE_LIMIT: i64 = 250;
@@ -199,6 +202,39 @@ struct ResearchControlPlaneReportSnapshot {
     warning: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ExecutionSafetyReportSnapshot {
+    orders: i64,
+    paper_positions: i64,
+    paper_fills: i64,
+    exchange_testnet_orders: i64,
+    exchange_testnet_order_lifecycle_events: i64,
+    testnet_shadow_promotions: i64,
+    read_status: String,
+    warning: Option<String>,
+}
+
+impl ExecutionSafetyReportSnapshot {
+    fn all_zero(&self) -> bool {
+        self.orders == 0
+            && self.paper_positions == 0
+            && self.paper_fills == 0
+            && self.exchange_testnet_orders == 0
+            && self.exchange_testnet_order_lifecycle_events == 0
+            && self.testnet_shadow_promotions == 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct OperatorReportSectionTiming {
+    key: String,
+    title: String,
+    started_at: DateTime<Utc>,
+    duration_ms: u128,
+    status: String,
+    warning: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -257,6 +293,98 @@ pub fn bounded_report_list_limit(limit: Option<i64>) -> i64 {
     }
 }
 
+fn operator_report_section_timeout_ms(request: &OperatorReportRequest) -> u64 {
+    request
+        .section_timeout_ms
+        .unwrap_or(DEFAULT_SECTION_TIMEOUT_MS)
+        .clamp(MIN_SECTION_TIMEOUT_MS, MAX_SECTION_TIMEOUT_MS)
+}
+
+async fn run_report_step<T, Fut, Fallback>(
+    key: &'static str,
+    title: &'static str,
+    timeout_ms: u64,
+    future: Fut,
+    fallback: Fallback,
+) -> (T, OperatorReportSectionTiming)
+where
+    Fut: Future<Output = Result<T>>,
+    Fallback: FnOnce() -> T,
+{
+    let started_at = Utc::now();
+    let started = Instant::now();
+    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), future).await {
+        Ok(Ok(value)) => (
+            value,
+            OperatorReportSectionTiming {
+                key: key.to_string(),
+                title: title.to_string(),
+                started_at,
+                duration_ms: started.elapsed().as_millis(),
+                status: "COMPLETED".to_string(),
+                warning: None,
+            },
+        ),
+        Ok(Err(err)) => {
+            let warning = format!("{title} failed: {err:#}");
+            (
+                fallback(),
+                OperatorReportSectionTiming {
+                    key: key.to_string(),
+                    title: title.to_string(),
+                    started_at,
+                    duration_ms: started.elapsed().as_millis(),
+                    status: "FAILED".to_string(),
+                    warning: Some(warning),
+                },
+            )
+        }
+        Err(_) => {
+            let warning = format!("{title} timed out after {timeout_ms}ms");
+            (
+                fallback(),
+                OperatorReportSectionTiming {
+                    key: key.to_string(),
+                    title: title.to_string(),
+                    started_at,
+                    duration_ms: started.elapsed().as_millis(),
+                    status: "TIMED_OUT".to_string(),
+                    warning: Some(warning),
+                },
+            )
+        }
+    }
+}
+
+async fn timed_or_skipped<T, Fut, Fallback>(
+    skip: bool,
+    key: &'static str,
+    title: &'static str,
+    timeout_ms: u64,
+    future: Fut,
+    fallback: Fallback,
+) -> (T, OperatorReportSectionTiming)
+where
+    Fut: Future<Output = Result<T>>,
+    Fallback: FnOnce() -> T,
+{
+    if skip {
+        return (
+            fallback(),
+            OperatorReportSectionTiming {
+                key: key.to_string(),
+                title: title.to_string(),
+                started_at: Utc::now(),
+                duration_ms: 0,
+                status: "SKIPPED".to_string(),
+                warning: Some("Skipped by --lite operator report mode.".to_string()),
+            },
+        );
+    }
+
+    run_report_step(key, title, timeout_ms, future, fallback).await
+}
+
 pub async fn generate_operator_report(
     state: &AppState,
     request: &OperatorReportRequest,
@@ -265,57 +393,267 @@ pub async fn generate_operator_report(
     request.validate()?;
     let window = resolve_window(request);
     let correlation_id = request.correlation_id.unwrap_or_else(Uuid::new_v4);
+    let section_timeout_ms = operator_report_section_timeout_ms(request);
+    let mut timings = Vec::new();
 
-    let system_market = load_system_and_market_data(state, request, &window).await?;
-    let strategy = load_strategy_behavior(&state.db_pool, request, &window).await?;
-    let risk = load_risk_snapshot(&state.db_pool, request, &window).await?;
-    let paper = load_paper_snapshot(&state.db_pool, request, &window).await?;
-    let shadow = load_shadow_snapshot(&state.db_pool, request, &window).await?;
-    let promotion = load_promotion_snapshot(&state.db_pool, request, &window).await?;
-    let testnet = load_testnet_snapshot(&state.db_pool, request, &window).await?;
-    let research_qualification =
-        load_research_candidate_qualification_snapshot(state, request, &window).await?;
-    let shadow_pnl =
-        load_candidate_shadow_pnl_snapshot(state, &research_qualification, request, &window)
-            .await?;
-    let backtest = load_backtest_activity(&state.db_pool, request, &window).await?;
-    let research_batches = load_research_batch_snapshot(&state.db_pool, &window).await?;
-    let research_campaigns = load_research_campaign_snapshot(&state.db_pool, &window).await?;
-    let robustness_matrix =
-        load_strategy_robustness_matrix_snapshot(&state.db_pool, &window).await?;
-    let regime_datasets = load_research_regime_dataset_snapshot(&state.db_pool, &window).await?;
-    let regime_discoveries =
-        load_research_regime_discovery_snapshot(&state.db_pool, &window).await?;
-    let regime_calibrations =
-        load_research_regime_calibration_snapshot(&state.db_pool, &window).await?;
-    let research_hypotheses = load_research_hypothesis_snapshot(&state.db_pool, &window).await?;
-    let research_experiment_plans =
-        load_research_experiment_plan_snapshot(&state.db_pool, &window).await?;
-    let scheduled_research = load_scheduled_research_snapshot(&state.db_pool, &window).await?;
-    let research_control_plane =
-        load_research_control_plane_snapshot(&state.db_pool, window.generated_at).await?;
+    let (system_market, timing) = run_report_step(
+        "system_market",
+        "System and Market Health",
+        section_timeout_ms,
+        load_system_and_market_data(state, request, &window),
+        || fallback_system_market(state, &window),
+    )
+    .await;
+    timings.push(timing);
 
-    let mut findings = build_findings(
-        &system_market,
-        &strategy,
-        &risk,
-        &paper,
-        &shadow,
-        &promotion,
-        &testnet,
-        &research_qualification,
-        shadow_pnl.as_ref(),
-        &backtest,
-        &research_batches,
-        &research_campaigns,
-        &robustness_matrix,
-        &regime_datasets,
-        &regime_discoveries,
-        &regime_calibrations,
-        &research_hypotheses,
-        &research_experiment_plans,
-        &scheduled_research,
-    );
+    let (execution_safety, timing) = run_report_step(
+        "execution_safety",
+        "Execution Safety",
+        section_timeout_ms,
+        load_execution_safety_snapshot(&state.db_pool),
+        fallback_execution_safety,
+    )
+    .await;
+    timings.push(timing);
+
+    let (strategy, timing) = timed_or_skipped(
+        request.lite,
+        "strategy_behavior",
+        "Strategy Behavior",
+        section_timeout_ms,
+        load_strategy_behavior(&state.db_pool, request, &window),
+        fallback_strategy,
+    )
+    .await;
+    timings.push(timing);
+
+    let (risk, timing) = timed_or_skipped(
+        request.lite,
+        "risk",
+        "Risk",
+        section_timeout_ms,
+        load_risk_snapshot(&state.db_pool, request, &window),
+        fallback_risk,
+    )
+    .await;
+    timings.push(timing);
+
+    let (paper, timing) = timed_or_skipped(
+        request.lite,
+        "paper_trading",
+        "Paper Trading",
+        section_timeout_ms,
+        load_paper_snapshot(&state.db_pool, request, &window),
+        fallback_paper,
+    )
+    .await;
+    timings.push(timing);
+
+    let (shadow, timing) = timed_or_skipped(
+        request.lite,
+        "shadow_mode",
+        "Shadow Mode",
+        section_timeout_ms,
+        load_shadow_snapshot(&state.db_pool, request, &window),
+        fallback_shadow,
+    )
+    .await;
+    timings.push(timing);
+
+    let (promotion, timing) = timed_or_skipped(
+        request.lite,
+        "promotion_funnel",
+        "Promotion Funnel",
+        section_timeout_ms,
+        load_promotion_snapshot(&state.db_pool, request, &window),
+        fallback_promotion,
+    )
+    .await;
+    timings.push(timing);
+
+    let (testnet, timing) = timed_or_skipped(
+        request.lite,
+        "testnet_execution",
+        "Testnet Execution",
+        section_timeout_ms,
+        load_testnet_snapshot(&state.db_pool, request, &window),
+        fallback_testnet,
+    )
+    .await;
+    timings.push(timing);
+
+    let (research_qualification, timing) = timed_or_skipped(
+        request.lite,
+        "research_candidate_qualification",
+        "Research Candidate Qualification",
+        section_timeout_ms,
+        load_research_candidate_qualification_snapshot(state, request, &window),
+        fallback_research_qualification,
+    )
+    .await;
+    timings.push(timing);
+
+    let (shadow_pnl, timing) = timed_or_skipped(
+        request.lite,
+        "candidate_shadow_pnl_attribution",
+        "Candidate Shadow PnL Attribution",
+        section_timeout_ms,
+        load_candidate_shadow_pnl_snapshot(state, &research_qualification, request, &window),
+        || None,
+    )
+    .await;
+    timings.push(timing);
+
+    let (backtest, timing) = timed_or_skipped(
+        request.lite,
+        "backtest_activity",
+        "Backtest Activity",
+        section_timeout_ms,
+        load_backtest_activity(&state.db_pool, request, &window),
+        || BacktestActivity { run_count: 0 },
+    )
+    .await;
+    timings.push(timing);
+
+    let (research_batches, timing) = timed_or_skipped(
+        request.lite,
+        "research_batches",
+        "Research Batches",
+        section_timeout_ms,
+        load_research_batch_snapshot(&state.db_pool, &window),
+        ResearchBatchReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (research_campaigns, timing) = timed_or_skipped(
+        request.lite,
+        "research_campaigns",
+        "Research Campaigns",
+        section_timeout_ms,
+        load_research_campaign_snapshot(&state.db_pool, &window),
+        ResearchCampaignReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (robustness_matrix, timing) = timed_or_skipped(
+        request.lite,
+        "strategy_robustness_matrix",
+        "Strategy Robustness Matrix",
+        section_timeout_ms,
+        load_strategy_robustness_matrix_snapshot(&state.db_pool, &window),
+        StrategyRobustnessMatrixReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (regime_datasets, timing) = timed_or_skipped(
+        request.lite,
+        "research_regime_datasets",
+        "Research Regime Datasets",
+        section_timeout_ms,
+        load_research_regime_dataset_snapshot(&state.db_pool, &window),
+        ResearchRegimeDatasetReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (regime_discoveries, timing) = timed_or_skipped(
+        request.lite,
+        "research_regime_discovery",
+        "Research Regime Discovery",
+        section_timeout_ms,
+        load_research_regime_discovery_snapshot(&state.db_pool, &window),
+        ResearchRegimeDiscoveryReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (regime_calibrations, timing) = timed_or_skipped(
+        request.lite,
+        "research_regime_calibration",
+        "Research Regime Calibration",
+        section_timeout_ms,
+        load_research_regime_calibration_snapshot(&state.db_pool, &window),
+        ResearchRegimeCalibrationReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (research_hypotheses, timing) = timed_or_skipped(
+        request.lite,
+        "research_hypotheses",
+        "Research Hypotheses",
+        section_timeout_ms,
+        load_research_hypothesis_snapshot(&state.db_pool, &window),
+        ResearchHypothesisReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (research_experiment_plans, timing) = timed_or_skipped(
+        request.lite,
+        "research_experiment_plans",
+        "Research Experiment Plans",
+        section_timeout_ms,
+        load_research_experiment_plan_snapshot(&state.db_pool, &window),
+        ResearchExperimentPlanReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (scheduled_research, timing) = run_report_step(
+        "scheduled_research",
+        "Scheduled Research",
+        section_timeout_ms,
+        load_scheduled_research_snapshot(&state.db_pool, &window),
+        ScheduledResearchReportSnapshot::default,
+    )
+    .await;
+    timings.push(timing);
+
+    let (research_control_plane, timing) = run_report_step(
+        "research_control_plane",
+        "Research Control Plane",
+        section_timeout_ms,
+        load_research_control_plane_snapshot(&state.db_pool, window.generated_at),
+        fallback_research_control_plane,
+    )
+    .await;
+    timings.push(timing);
+
+    let mut findings = if request.lite {
+        build_lite_findings(
+            &system_market,
+            &scheduled_research,
+            &research_control_plane,
+            &execution_safety,
+        )
+    } else {
+        build_findings(
+            &system_market,
+            &strategy,
+            &risk,
+            &paper,
+            &shadow,
+            &promotion,
+            &testnet,
+            &research_qualification,
+            shadow_pnl.as_ref(),
+            &backtest,
+            &research_batches,
+            &research_campaigns,
+            &robustness_matrix,
+            &regime_datasets,
+            &regime_discoveries,
+            &regime_calibrations,
+            &research_hypotheses,
+            &research_experiment_plans,
+            &scheduled_research,
+        )
+    };
+    findings.extend(operator_report_timing_findings(&timings, &execution_safety));
     findings.sort_by_key(|finding| Reverse(finding.severity.sort_weight()));
 
     let recommendations = build_recommendations(&findings);
@@ -330,6 +668,45 @@ pub async fn generate_operator_report(
         promotion.reconciliation_required_count,
     );
 
+    let mut sections = build_sections(
+        &system_market.system,
+        &system_market.market,
+        &strategy,
+        &risk,
+        &paper,
+        &shadow,
+        &promotion,
+        &testnet,
+        &research_qualification,
+        shadow_pnl.as_ref(),
+        &research_batches,
+        &research_campaigns,
+        &robustness_matrix,
+        &regime_datasets,
+        &regime_discoveries,
+        &regime_calibrations,
+        &research_hypotheses,
+        &research_experiment_plans,
+        &scheduled_research,
+        &research_control_plane,
+        &execution_safety,
+    )?;
+    attach_section_timings(&mut sections, &timings)?;
+    if request.lite {
+        sections.retain(|section| {
+            matches!(
+                section.key.as_str(),
+                "system_health"
+                    | "market_health"
+                    | "market_data_aggregation"
+                    | "scheduled_research"
+                    | "research_control_plane"
+                    | "execution_safety"
+                    | "operator_report_timings"
+            )
+        });
+    }
+
     let mut report = OperatorReport {
         report_id: Uuid::new_v4(),
         window_start: window.start,
@@ -339,28 +716,7 @@ pub async fn generate_operator_report(
         summary,
         findings,
         recommendations,
-        sections: build_sections(
-            &system_market.system,
-            &system_market.market,
-            &strategy,
-            &risk,
-            &paper,
-            &shadow,
-            &promotion,
-            &testnet,
-            &research_qualification,
-            shadow_pnl.as_ref(),
-            &research_batches,
-            &research_campaigns,
-            &robustness_matrix,
-            &regime_datasets,
-            &regime_discoveries,
-            &regime_calibrations,
-            &research_hypotheses,
-            &research_experiment_plans,
-            &scheduled_research,
-            &research_control_plane,
-        )?,
+        sections,
         format: request.format,
         persisted: false,
         correlation_id,
@@ -441,13 +797,168 @@ pub async fn get_operator_report(pool: &PgPool, report_id: Uuid) -> Result<Optio
 fn resolve_window(request: &OperatorReportRequest) -> ReportWindow {
     let generated_at = Utc::now();
     let end = request.end_time.unwrap_or(generated_at);
-    let start = request
-        .start_time
-        .unwrap_or_else(|| end - Duration::hours(DEFAULT_REPORT_WINDOW_HOURS));
+    let start = request.start_time.unwrap_or_else(|| {
+        let report_window = request
+            .window_minutes
+            .map(Duration::minutes)
+            .unwrap_or_else(|| Duration::hours(DEFAULT_REPORT_WINDOW_HOURS));
+        end - report_window
+    });
     ReportWindow {
         start,
         end,
         generated_at,
+    }
+}
+
+fn fallback_system_market(state: &AppState, window: &ReportWindow) -> SystemAndMarketData {
+    SystemAndMarketData {
+        system: OperatorReportSystemSnapshot {
+            api_healthy: true,
+            db_healthy: false,
+            kill_switch_active: false,
+            auth_enabled: !state.auth_config.disabled,
+            metrics_available: false,
+            uptime_seconds: window
+                .generated_at
+                .signed_duration_since(state.started_at)
+                .num_seconds()
+                .max(0),
+        },
+        market: OperatorReportMarketSnapshot {
+            feeds: Vec::new(),
+            stale_feed_count: 0,
+            degraded_feed_count: 0,
+            backfill_completed_count: 0,
+            backfill_failed_count: 0,
+            candle_count_in_window: 0,
+            data_quality: None,
+            repair_completed_count: 0,
+            repair_failed_count: 0,
+            repair_partial_count: 0,
+            repair_degraded_after_count: 0,
+            aggregation: Vec::new(),
+        },
+        stale_threshold_seconds: 10,
+    }
+}
+
+fn fallback_strategy() -> StrategyBehaviorData {
+    StrategyBehaviorData {
+        total_strategy_evaluations: 0,
+        total_signals: 0,
+        risk_rejection_rate_pct: Decimal::ZERO,
+        strategy_analytics_summary: None,
+        top_rejected_pairs: Vec::new(),
+        enabled_strategy_count: 0,
+    }
+}
+
+fn fallback_risk() -> OperatorReportRiskSnapshot {
+    OperatorReportRiskSnapshot {
+        approved_decisions: 0,
+        rejected_decisions: 0,
+        top_rejection_reasons: Vec::new(),
+        kill_switch_change_count: 0,
+        risk_config_version: None,
+    }
+}
+
+fn fallback_paper() -> OperatorReportPaperSnapshot {
+    OperatorReportPaperSnapshot {
+        paper_equity: Decimal::ZERO,
+        realized_pnl: Decimal::ZERO,
+        unrealized_pnl: Decimal::ZERO,
+        daily_pnl: Decimal::ZERO,
+        open_position_count: 0,
+        closed_position_count: 0,
+        manual_close_count: 0,
+    }
+}
+
+fn fallback_shadow() -> OperatorReportShadowSnapshot {
+    OperatorReportShadowSnapshot {
+        shadow_run_count: 0,
+        would_submit_count: 0,
+        no_signal_count: 0,
+        risk_rejected_count: 0,
+        skipped_count: 0,
+        runner_status: "UNKNOWN".to_string(),
+        runner_last_tick_age_seconds: None,
+    }
+}
+
+fn fallback_promotion() -> OperatorReportPromotionSnapshot {
+    OperatorReportPromotionSnapshot {
+        shadow_would_submit_count: 0,
+        previewed_count: 0,
+        submitted_count: 0,
+        acked_count: 0,
+        filled_count: 0,
+        reconciliation_required_count: 0,
+        preview_rate_pct: Decimal::ZERO,
+        submit_rate_pct: Decimal::ZERO,
+        ack_rate_pct: Decimal::ZERO,
+        fill_rate_pct: Decimal::ZERO,
+    }
+}
+
+fn fallback_testnet() -> OperatorReportTestnetSnapshot {
+    OperatorReportTestnetSnapshot {
+        testnet_orders_created: 0,
+        active_order_count: 0,
+        terminal_order_count: 0,
+        unknown_order_count: 0,
+        reconciliation_run_count: 0,
+        mismatch_count: 0,
+        repair_action_count: 0,
+        private_stream_status: "UNKNOWN".to_string(),
+        private_stream_last_event_age_seconds: None,
+    }
+}
+
+fn fallback_research_qualification() -> OperatorReportResearchQualificationSnapshot {
+    OperatorReportResearchQualificationSnapshot {
+        total_candidates: 0,
+        accepted_for_shadow_count: 0,
+        qualified_count: 0,
+        needs_more_data_count: 0,
+        not_qualified_count: 0,
+        degraded_count: 0,
+        unknown_count: 0,
+        stale_observation_count: 0,
+        runner_mismatch_count: 0,
+        readiness_degraded_count: 0,
+        readiness_not_ready_count: 0,
+        degraded_or_not_ready_readiness_count: 0,
+        below_default_threshold_override_count: 0,
+        latest_evaluated_candidates_count: 0,
+        newly_qualified_count: 0,
+        lost_qualification_count: 0,
+        needs_attention_count: 0,
+        stale_evaluation_count: 0,
+        reviews_in_window: 0,
+        ready_for_testnet_review_count: 0,
+        ready_for_testnet_review_dossier_count: 0,
+        blocked_testnet_review_dossier_count: 0,
+        marked_ready_but_dossier_not_ready_count: 0,
+        dossier_needs_more_shadow_data_count: 0,
+        rejected_from_watchlist_count: 0,
+        archived_from_watchlist_count: 0,
+        candidates_needing_review_count: 0,
+        walk_forward_overfit_risk_count: 0,
+        walk_forward_missing_count: 0,
+        walk_forward_robust_count: 0,
+        top_candidate: None,
+    }
+}
+
+fn fallback_research_control_plane() -> ResearchControlPlaneReportSnapshot {
+    ResearchControlPlaneReportSnapshot {
+        derivatives_status: "ATTENTION_REQUIRED".to_string(),
+        execution_authority: "NONE".to_string(),
+        warning: "Research control-plane snapshot unavailable.".to_string(),
+        ..ResearchControlPlaneReportSnapshot::default()
     }
 }
 
@@ -832,6 +1343,44 @@ async fn load_strategy_behavior(
             .collect(),
         enabled_strategy_count,
     })
+}
+
+async fn load_execution_safety_snapshot(pool: &PgPool) -> Result<ExecutionSafetyReportSnapshot> {
+    let row = query(
+        r#"
+        SELECT
+            (SELECT COUNT(*)::BIGINT FROM orders) AS orders,
+            (SELECT COUNT(*)::BIGINT FROM paper_positions) AS paper_positions,
+            (SELECT COUNT(*)::BIGINT FROM paper_fills) AS paper_fills,
+            (SELECT COUNT(*)::BIGINT FROM exchange_testnet_orders) AS exchange_testnet_orders,
+            (
+                SELECT COUNT(*)::BIGINT
+                FROM exchange_testnet_order_lifecycle_events
+            ) AS exchange_testnet_order_lifecycle_events,
+            (SELECT COUNT(*)::BIGINT FROM testnet_shadow_promotions) AS testnet_shadow_promotions
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(ExecutionSafetyReportSnapshot {
+        orders: row.get("orders"),
+        paper_positions: row.get("paper_positions"),
+        paper_fills: row.get("paper_fills"),
+        exchange_testnet_orders: row.get("exchange_testnet_orders"),
+        exchange_testnet_order_lifecycle_events: row.get("exchange_testnet_order_lifecycle_events"),
+        testnet_shadow_promotions: row.get("testnet_shadow_promotions"),
+        read_status: "COMPLETED".to_string(),
+        warning: None,
+    })
+}
+
+fn fallback_execution_safety() -> ExecutionSafetyReportSnapshot {
+    ExecutionSafetyReportSnapshot {
+        read_status: "UNAVAILABLE".to_string(),
+        warning: Some("Execution safety counts could not be read.".to_string()),
+        ..ExecutionSafetyReportSnapshot::default()
+    }
 }
 
 async fn load_risk_snapshot(
@@ -3198,6 +3747,85 @@ fn build_findings(
     findings
 }
 
+fn build_lite_findings(
+    system_market: &SystemAndMarketData,
+    scheduled_research: &ScheduledResearchReportSnapshot,
+    research_control_plane: &ResearchControlPlaneReportSnapshot,
+    _execution_safety: &ExecutionSafetyReportSnapshot,
+) -> Vec<OperatorReportFinding> {
+    let mut findings = Vec::new();
+    if system_market.system.kill_switch_active {
+        findings.push(finding(
+            "kill_switch_active",
+            OperatorReportSeverity::Critical,
+            "Kill switch active",
+            "Execution remains halted until an operator explicitly resumes the system.",
+            "system_health",
+        ));
+    }
+    if system_market.market.stale_feed_count > 0 {
+        findings.push(finding(
+            "stale_market_feeds",
+            OperatorReportSeverity::Medium,
+            "Stale market feeds detected",
+            "One or more market feeds are stale for the selected symbols.",
+            "market_health",
+        ));
+    }
+    if scheduled_research.auto_paused_jobs > 0 {
+        findings.push(finding(
+            "scheduled_research_job_auto_paused",
+            OperatorReportSeverity::High,
+            "Scheduled research job auto-paused after repeated failures",
+            &format!(
+                "{} scheduled research jobs are auto-paused after repeated failures.",
+                scheduled_research.auto_paused_jobs
+            ),
+            "scheduled_research",
+        ));
+    } else if scheduled_research.backing_off_jobs > 0 {
+        findings.push(finding(
+            "scheduled_research_job_backing_off",
+            OperatorReportSeverity::Medium,
+            "Scheduled research job backing off",
+            &format!(
+                "{} scheduled research jobs are backing off after repeated failures.",
+                scheduled_research.backing_off_jobs
+            ),
+            "scheduled_research",
+        ));
+    } else if scheduled_research.enabled_jobs == 0 {
+        findings.push(finding(
+            "no_scheduled_research_jobs_enabled",
+            OperatorReportSeverity::Medium,
+            "No scheduled research jobs enabled",
+            "Research automation is configured but no scheduled jobs are enabled.",
+            "scheduled_research",
+        ));
+    }
+    if research_control_plane.derivatives_status != "HEALTHY"
+        || !research_control_plane.derivatives_refresh_job_enabled
+    {
+        findings.push(finding(
+            "derivatives_context_attention_required",
+            OperatorReportSeverity::Medium,
+            "Derivatives context needs attention",
+            "Derivatives context freshness or refresh-job status is not healthy.",
+            "research_control_plane",
+        ));
+    }
+    if findings.is_empty() {
+        findings.push(finding(
+            "lite_operator_report_healthy",
+            OperatorReportSeverity::Info,
+            "Lite operator report checks are healthy",
+            "Execution safety, scheduled research, and research control-plane checks completed without material findings.",
+            "summary",
+        ));
+    }
+    findings
+}
+
 fn build_recommendations(findings: &[OperatorReportFinding]) -> Vec<OperatorReportRecommendation> {
     let mut recommendations = Vec::new();
 
@@ -3357,6 +3985,7 @@ fn build_sections(
     research_experiment_plans: &ResearchExperimentPlanReportSnapshot,
     scheduled_research: &ScheduledResearchReportSnapshot,
     research_control_plane: &ResearchControlPlaneReportSnapshot,
+    execution_safety: &ExecutionSafetyReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -4151,6 +4780,45 @@ fn build_sections(
             ],
             research_control_plane,
         )?,
+        section(
+            "execution_safety",
+            "Execution Safety",
+            if execution_safety.read_status != "COMPLETED" {
+                OperatorReportStatus::Critical
+            } else if execution_safety.all_zero() {
+                OperatorReportStatus::Ok
+            } else {
+                OperatorReportStatus::Critical
+            },
+            if execution_safety.read_status != "COMPLETED" {
+                "Execution safety counts could not be read."
+            } else if execution_safety.all_zero() {
+                "Execution safety counts are all zero."
+            } else {
+                "Execution safety counts are non-zero and require immediate review."
+            },
+            vec![
+                highlight("Read Status", execution_safety.read_status.clone()),
+                highlight("Orders", execution_safety.orders.to_string()),
+                highlight("Paper Positions", execution_safety.paper_positions.to_string()),
+                highlight("Paper Fills", execution_safety.paper_fills.to_string()),
+                highlight(
+                    "Exchange Testnet Orders",
+                    execution_safety.exchange_testnet_orders.to_string(),
+                ),
+                highlight(
+                    "Exchange Testnet Lifecycle Events",
+                    execution_safety
+                        .exchange_testnet_order_lifecycle_events
+                        .to_string(),
+                ),
+                highlight(
+                    "Testnet Shadow Promotions",
+                    execution_safety.testnet_shadow_promotions.to_string(),
+                ),
+            ],
+            execution_safety,
+        )?,
     ];
 
     if let Some(quality) = market.data_quality.as_ref() {
@@ -4394,6 +5062,160 @@ fn build_summary(
     }
 }
 
+fn operator_report_timing_findings(
+    timings: &[OperatorReportSectionTiming],
+    execution_safety: &ExecutionSafetyReportSnapshot,
+) -> Vec<OperatorReportFinding> {
+    let mut findings = Vec::new();
+    if execution_safety.read_status != "COMPLETED" {
+        findings.push(finding(
+            "execution_safety_unavailable",
+            OperatorReportSeverity::Critical,
+            "Execution safety counts unavailable",
+            execution_safety
+                .warning
+                .as_deref()
+                .unwrap_or("Execution safety counts could not be read."),
+            "execution_safety",
+        ));
+    } else if !execution_safety.all_zero() {
+        findings.push(finding(
+            "execution_safety_non_zero",
+            OperatorReportSeverity::Critical,
+            "Execution safety counts are non-zero",
+            "One or more execution safety tables contain rows.",
+            "execution_safety",
+        ));
+    }
+
+    for timing in timings {
+        match timing.status.as_str() {
+            "TIMED_OUT" => findings.push(finding(
+                &format!("operator_report_{}_timed_out", timing.key),
+                if timing.key == "execution_safety" {
+                    OperatorReportSeverity::Critical
+                } else {
+                    OperatorReportSeverity::Medium
+                },
+                &format!("Operator report section timed out: {}", timing.title),
+                timing
+                    .warning
+                    .as_deref()
+                    .unwrap_or("Operator report section timed out."),
+                &timing.key,
+            )),
+            "FAILED" => findings.push(finding(
+                &format!("operator_report_{}_failed", timing.key),
+                if timing.key == "execution_safety" {
+                    OperatorReportSeverity::Critical
+                } else {
+                    OperatorReportSeverity::Medium
+                },
+                &format!("Operator report section failed: {}", timing.title),
+                timing
+                    .warning
+                    .as_deref()
+                    .unwrap_or("Operator report section failed."),
+                &timing.key,
+            )),
+            _ => {}
+        }
+    }
+
+    findings
+}
+
+fn attach_section_timings(
+    sections: &mut Vec<OperatorReportSection>,
+    timings: &[OperatorReportSectionTiming],
+) -> Result<()> {
+    for section in sections.iter_mut() {
+        if let Some(timing) = timings.iter().find(|timing| timing.key == section.key) {
+            section
+                .highlights
+                .push(highlight("Timing Status", timing.status.clone()));
+            section
+                .highlights
+                .push(highlight("Duration Ms", timing.duration_ms.to_string()));
+            if let Some(warning) = timing.warning.as_ref() {
+                section
+                    .highlights
+                    .push(highlight("Timing Warning", warning.clone()));
+            }
+            if matches!(timing.status.as_str(), "FAILED" | "TIMED_OUT") {
+                section.status = if section.key == "execution_safety" {
+                    OperatorReportStatus::Critical
+                } else {
+                    OperatorReportStatus::Warning
+                };
+                section.summary = format!(
+                    "{} Section degraded: {}",
+                    section.summary,
+                    timing.warning.as_deref().unwrap_or("timing failure")
+                );
+            }
+            if let Some(object) = section.snapshot.as_object_mut() {
+                object.insert("timing".to_string(), serde_json::to_value(timing)?);
+            } else {
+                section.snapshot = serde_json::json!({
+                    "value": section.snapshot,
+                    "timing": timing,
+                });
+            }
+        }
+    }
+    sections.push(section(
+        "operator_report_timings",
+        "Operator Report Timings",
+        if timings
+            .iter()
+            .any(|timing| matches!(timing.status.as_str(), "FAILED" | "TIMED_OUT"))
+        {
+            OperatorReportStatus::Warning
+        } else {
+            OperatorReportStatus::Ok
+        },
+        "Section-level operator report generation timings.",
+        vec![
+            highlight("Sections", timings.len().to_string()),
+            highlight(
+                "Completed",
+                timings
+                    .iter()
+                    .filter(|timing| timing.status == "COMPLETED")
+                    .count()
+                    .to_string(),
+            ),
+            highlight(
+                "Skipped",
+                timings
+                    .iter()
+                    .filter(|timing| timing.status == "SKIPPED")
+                    .count()
+                    .to_string(),
+            ),
+            highlight(
+                "Timed Out",
+                timings
+                    .iter()
+                    .filter(|timing| timing.status == "TIMED_OUT")
+                    .count()
+                    .to_string(),
+            ),
+            highlight(
+                "Failed",
+                timings
+                    .iter()
+                    .filter(|timing| timing.status == "FAILED")
+                    .count()
+                    .to_string(),
+            ),
+        ],
+        &timings,
+    )?);
+    Ok(())
+}
+
 fn status_from_findings(findings: &[OperatorReportFinding]) -> OperatorReportStatus {
     if findings
         .iter()
@@ -4557,19 +5379,23 @@ fn yes_no(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_findings, build_recommendations, status_from_findings, BacktestActivity,
-        ResearchBatchReportSnapshot, ResearchCampaignReportSnapshot,
-        ResearchExperimentPlanReportSnapshot, ResearchHypothesisReportSnapshot,
-        ResearchRegimeCalibrationReportSnapshot, ResearchRegimeDatasetReportSnapshot,
-        ResearchRegimeDiscoveryReportSnapshot, ScheduledResearchReportSnapshot,
-        StrategyBehaviorData, StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
+        attach_section_timings, build_findings, build_recommendations,
+        operator_report_timing_findings, run_report_step, status_from_findings, BacktestActivity,
+        ExecutionSafetyReportSnapshot, OperatorReportSectionTiming, ResearchBatchReportSnapshot,
+        ResearchCampaignReportSnapshot, ResearchExperimentPlanReportSnapshot,
+        ResearchHypothesisReportSnapshot, ResearchRegimeCalibrationReportSnapshot,
+        ResearchRegimeDatasetReportSnapshot, ResearchRegimeDiscoveryReportSnapshot,
+        ScheduledResearchReportSnapshot, StrategyBehaviorData,
+        StrategyRobustnessMatrixReportSnapshot, SystemAndMarketData,
     };
     use aegis_core::{
         OperatorReportMarketSnapshot, OperatorReportPaperSnapshot, OperatorReportPromotionSnapshot,
         OperatorReportReasonCount, OperatorReportResearchQualificationSnapshot,
-        OperatorReportRiskSnapshot, OperatorReportSeverity, OperatorReportShadowSnapshot,
-        OperatorReportStatus, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
+        OperatorReportRiskSnapshot, OperatorReportSection, OperatorReportSeverity,
+        OperatorReportShadowSnapshot, OperatorReportStatus, OperatorReportSystemSnapshot,
+        OperatorReportTestnetSnapshot,
     };
+    use chrono::Utc;
     use rust_decimal::Decimal;
 
     fn base_system_market() -> SystemAndMarketData {
@@ -4598,6 +5424,88 @@ mod tests {
             },
             stale_threshold_seconds: 10,
         }
+    }
+
+    #[tokio::test]
+    async fn report_step_times_out_and_returns_fallback() {
+        let (value, timing) = run_report_step(
+            "slow_section",
+            "Slow Section",
+            5,
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok::<_, anyhow::Error>(7_i32)
+            },
+            || 42_i32,
+        )
+        .await;
+
+        assert_eq!(value, 42);
+        assert_eq!(timing.status, "TIMED_OUT");
+        assert!(timing.warning.unwrap().contains("timed out"));
+    }
+
+    #[test]
+    fn timing_findings_mark_execution_safety_unavailable_critical() {
+        let findings = operator_report_timing_findings(
+            &[OperatorReportSectionTiming {
+                key: "market_health".to_string(),
+                title: "Market Health".to_string(),
+                started_at: Utc::now(),
+                duration_ms: 5_000,
+                status: "TIMED_OUT".to_string(),
+                warning: Some("Market Health timed out after 5000ms".to_string()),
+            }],
+            &ExecutionSafetyReportSnapshot {
+                read_status: "UNAVAILABLE".to_string(),
+                warning: Some("Execution safety unavailable".to_string()),
+                ..ExecutionSafetyReportSnapshot::default()
+            },
+        );
+
+        assert!(findings.iter().any(|finding| {
+            finding.code == "execution_safety_unavailable"
+                && finding.severity == OperatorReportSeverity::Critical
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.code == "operator_report_market_health_timed_out"
+                && finding.severity == OperatorReportSeverity::Medium
+        }));
+    }
+
+    #[test]
+    fn attach_section_timings_adds_json_timing_metadata() {
+        let mut sections = vec![OperatorReportSection {
+            key: "scheduled_research".to_string(),
+            title: "Scheduled Research".to_string(),
+            status: OperatorReportStatus::Ok,
+            summary: "Scheduled research jobs are healthy.".to_string(),
+            highlights: Vec::new(),
+            snapshot: serde_json::json!({"enabled_jobs": 14}),
+        }];
+        let timings = vec![OperatorReportSectionTiming {
+            key: "scheduled_research".to_string(),
+            title: "Scheduled Research".to_string(),
+            started_at: Utc::now(),
+            duration_ms: 12,
+            status: "COMPLETED".to_string(),
+            warning: None,
+        }];
+
+        attach_section_timings(&mut sections, &timings).expect("attach timings");
+
+        let scheduled = sections
+            .iter()
+            .find(|section| section.key == "scheduled_research")
+            .expect("scheduled section");
+        assert_eq!(scheduled.snapshot["timing"]["status"], "COMPLETED");
+        assert!(scheduled
+            .highlights
+            .iter()
+            .any(|highlight| highlight.label == "Duration Ms" && highlight.value == "12"));
+        assert!(sections
+            .iter()
+            .any(|section| section.key == "operator_report_timings"));
     }
 
     fn base_strategy() -> StrategyBehaviorData {

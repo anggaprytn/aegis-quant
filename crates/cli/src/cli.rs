@@ -264,12 +264,18 @@ pub struct OperatorReportDailyArgs {
     pub start_time: Option<chrono::DateTime<chrono::Utc>>,
     #[arg(long = "end")]
     pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    #[arg(long = "window-minutes")]
+    pub window_minutes: Option<i64>,
     #[arg(long)]
     pub symbol: Option<String>,
     #[arg(long)]
     pub interval: Option<String>,
     #[arg(long = "strategy")]
     pub strategy_id: Option<String>,
+    #[arg(long = "section-timeout-ms")]
+    pub section_timeout_ms: Option<u64>,
+    #[arg(long, default_value_t = false)]
+    pub lite: bool,
     #[arg(long, default_value = "json")]
     pub format: String,
     #[arg(long, default_value_t = false)]
@@ -285,9 +291,12 @@ impl TryFrom<&OperatorReportDailyArgs> for OperatorReportRequest {
         Ok(OperatorReportRequest {
             start_time: value.start_time,
             end_time: value.end_time,
+            window_minutes: value.window_minutes,
             symbol: value.symbol.clone(),
             interval: value.interval.clone(),
             strategy_id: value.strategy_id.clone(),
+            section_timeout_ms: value.section_timeout_ms,
+            lite: value.lite,
             format: value.format.parse::<OperatorReportFormat>()?,
             persist: value.persist,
             correlation_id: value.correlation_id,

@@ -4750,9 +4750,15 @@ impl OperatorReportSeverity {
 pub struct OperatorReportRequest {
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub window_minutes: Option<i64>,
     pub symbol: Option<String>,
     pub interval: Option<String>,
     pub strategy_id: Option<String>,
+    #[serde(default)]
+    pub section_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub lite: bool,
     #[serde(default)]
     pub format: OperatorReportFormat,
     #[serde(default)]
@@ -4765,9 +4771,12 @@ impl Default for OperatorReportRequest {
         Self {
             start_time: None,
             end_time: None,
+            window_minutes: None,
             symbol: None,
             interval: None,
             strategy_id: None,
+            section_timeout_ms: None,
+            lite: false,
             format: OperatorReportFormat::Json,
             persist: false,
             correlation_id: None,
@@ -4779,6 +4788,11 @@ impl OperatorReportRequest {
     pub fn validate(&self) -> Result<(), CoreError> {
         if let (Some(start_time), Some(end_time)) = (self.start_time, self.end_time) {
             if end_time < start_time {
+                return Err(CoreError::InvalidOperatorReportTimeRange);
+            }
+        }
+        if let Some(window_minutes) = self.window_minutes {
+            if window_minutes <= 0 {
                 return Err(CoreError::InvalidOperatorReportTimeRange);
             }
         }
