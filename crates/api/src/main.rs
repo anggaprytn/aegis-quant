@@ -378,6 +378,8 @@ const DEFAULT_CORS_ALLOWED_ORIGINS: [&str; 2] = ["http://localhost:3001", "http:
 const CROSS_ASSET_RS_OBSERVATION_JOB_ID: &str = "31e35959-ae50-4cf4-be31-ae141d3af9ff";
 const CROSS_ASSET_DATA_REFRESH_JOB_ID: &str = "8e938ccf-8e1b-4dc5-a45b-e77e00198740";
 const CROSS_ASSET_OBSERVATION_STALE_AFTER_HOURS: i64 = 8;
+const DERIVATIVES_CONTEXT_REFRESH_JOB_KIND: &str = "DERIVATIVES_CONTEXT_REFRESH";
+const DERIVATIVES_CONTEXT_SYMBOLS: [&str; 4] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"];
 
 #[derive(Debug, Clone)]
 struct PreparedExchangeTestnetPipelinePreview {
@@ -18944,6 +18946,14 @@ async fn build_research_state_snapshot(
     now: DateTime<Utc>,
 ) -> anyhow::Result<Value> {
     let execution_safety_counts = load_execution_safety_counts(&state.db_pool).await?;
+    let cross_asset_research_candidates =
+        build_cross_asset_research_candidates_snapshot(state, now).await?;
+    let cross_asset_observation_health = cross_asset_research_candidates
+        .iter()
+        .filter_map(|candidate| candidate.get("observation_health").cloned())
+        .collect::<Vec<_>>();
+    let rs_observation = cross_asset_observation_health.first().cloned();
+    let derivatives_context = build_derivatives_context_freshness_snapshot(state, now).await?;
     let candidate_rows = sqlx::query(
         r#"
         SELECT
@@ -19320,6 +19330,10 @@ async fn build_research_state_snapshot(
         },
         "active_research_candidates": active_candidates.clone(),
         "active_candidates": active_candidates.clone(),
+        "cross_asset_research_candidates": cross_asset_research_candidates,
+        "cross_asset_observation_health": cross_asset_observation_health,
+        "rs_observation": rs_observation,
+        "derivatives_context": derivatives_context,
         "execution_eligible_candidates": execution_eligible_candidates,
         "imported_candidates_provenance_only": imported_candidates.clone(),
         "imported_research_candidates": imported_candidates,
@@ -19346,12 +19360,205 @@ async fn build_research_state_snapshot(
         "latest_operator_report_summary": latest_operator_report,
         "execution_safety_counts": execution_safety_counts,
         "recommended_next_actions": [
-            "Consolidate research state and keep FBR shadow-only.",
-            "Continue unique-candle shadow observation for ETHUSDT 1h until thresholds are met.",
+            "Keep RS candidate in passive observation.",
+            "Collect at least 30 independent RS observations before any lifecycle decision.",
+            "Monitor WOULD_SELECT versus NO_SIGNAL while evidence accumulates.",
+            "Keep derivatives context refresh enabled for forward attribution.",
             "Do not start paper, testnet, or live execution.",
-            "Do not add another strategy family until the current research state is reviewed."
+            "Do not create a new candidate until the RS observation evidence threshold is met."
         ],
         "read_only": true,
+    }))
+}
+
+async fn build_cross_asset_research_candidates_snapshot(
+    state: &AppState,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Vec<Value>> {
+    let records = list_research_candidates(
+        &state.db_pool,
+        &ResearchCandidateListFilters {
+            strategy_id: Some(aegis_core::RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string()),
+            ..ResearchCandidateListFilters::default()
+        },
+        50,
+    )
+    .await?;
+    let mut candidates = Vec::new();
+    for record in records.iter().filter(|record| {
+        record.candidate_creation_mode.as_deref() == Some("cross_asset_manual_create")
+    }) {
+        let dossier = build_cross_asset_research_candidate_dossier(state, record, now).await?;
+        let health = build_cross_asset_observation_health_report(state, record, now).await?;
+        let next_action = cross_asset_snapshot_next_action(health.status);
+        candidates.push(json!({
+            "candidate_id": dossier.candidate_id,
+            "package_id": dossier.package_id,
+            "status": dossier.candidate_status.as_str(),
+            "scope": dossier.scope,
+            "execution_authority": dossier.execution_authority,
+            "source_run_id": dossier.source_run_id,
+            "source_matrix_id": dossier.source_matrix_id,
+            "observation_count": health.observation_count,
+            "independent_observations": health.independent_observation_count,
+            "would_select_count": health.would_select_count,
+            "no_signal_count": health.no_signal_count,
+            "latest_evaluated_candle": health.latest_evaluated_candle,
+            "readiness": {
+                "candidate_review": dossier.readiness.candidate_review_ready,
+                "shadow": dossier.readiness.shadow_ready,
+                "paper": dossier.readiness.paper_ready,
+                "testnet": dossier.readiness.testnet_ready,
+                "live": dossier.readiness.live_ready,
+            },
+            "next_action": next_action,
+            "observation_health": cross_asset_observation_health_snapshot(&health),
+        }));
+    }
+    Ok(candidates)
+}
+
+fn cross_asset_observation_health_snapshot(report: &CrossAssetObservationHealthReport) -> Value {
+    json!({
+        "candidate_id": report.candidate_id,
+        "health_status": report.status.as_str(),
+        "latest_aligned_4h_candle": report.latest_aligned_4h_candle,
+        "latest_evaluated_candle": report.latest_evaluated_candle,
+        "observation_count": report.observation_count,
+        "independent_observation_count": report.independent_observation_count,
+        "would_select_count": report.would_select_count,
+        "no_signal_count": report.no_signal_count,
+        "latest_selected_symbol": report.latest_selected_symbol,
+        "rs_observation_job_status": report.rs_observation_job_status,
+        "data_refresh_job_status": report.data_refresh_job_status,
+        "scheduler_enabled": report.scheduler_enabled,
+        "execution_safety_counts": report.execution_safety_counts,
+        "readiness": report.readiness,
+        "no_mutation": report.no_mutation,
+        "generated_at": report.generated_at,
+    })
+}
+
+fn cross_asset_snapshot_next_action(status: CrossAssetObservationHealthStatus) -> &'static str {
+    match status {
+        CrossAssetObservationHealthStatus::HealthyAccumulating => "KEEP_OBSERVING",
+        CrossAssetObservationHealthStatus::WaitingForNewCandle => "WAIT_FOR_NEW_4H_CANDLE",
+        CrossAssetObservationHealthStatus::DataStale => "RESTORE_DATA_REFRESH",
+        CrossAssetObservationHealthStatus::JobDisabled => "ENABLE_REQUIRED_OBSERVATION_JOBS",
+        CrossAssetObservationHealthStatus::SchedulerDisabled => "ENABLE_SCHEDULED_RESEARCH_RUNNER",
+        CrossAssetObservationHealthStatus::ExecutionSafetyViolation => {
+            "INVESTIGATE_EXECUTION_SAFETY_COUNTS"
+        }
+    }
+}
+
+async fn build_derivatives_context_freshness_snapshot(
+    state: &AppState,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Value> {
+    let symbols = DERIVATIVES_CONTEXT_SYMBOLS
+        .iter()
+        .map(|symbol| (*symbol).to_string())
+        .collect::<Vec<_>>();
+    let report =
+        db::derivatives_freshness_report(&state.db_pool, &symbols, "4h", "4h", now).await?;
+    let refresh_job =
+        latest_scheduled_job_by_kind(&state.db_pool, DERIVATIVES_CONTEXT_REFRESH_JOB_KIND).await?;
+    let healthy = report.missing_count == 0
+        && report.stale_count == 0
+        && refresh_job
+            .as_ref()
+            .map(|job| {
+                job.get("enabled").and_then(Value::as_bool).unwrap_or(false)
+                    && matches!(
+                        job.get("status").and_then(Value::as_str),
+                        Some("ENABLED" | "RUNNING" | "BACKING_OFF" | "ERROR")
+                    )
+            })
+            .unwrap_or(false);
+    Ok(json!({
+        "status": if healthy { "HEALTHY" } else { "ATTENTION_REQUIRED" },
+        "execution_authority": report.execution_authority,
+        "missing_count": report.missing_count,
+        "stale_count": report.stale_count,
+        "rows": report.rows,
+        "latest_by_metric": derivatives_latest_by_metric(&report.rows),
+        "derivatives_refresh_job_status": refresh_job,
+        "warning": "OI/positioning are recent/forward-only due Binance public retention.",
+    }))
+}
+
+fn derivatives_latest_by_metric(rows: &[db::DerivativesFreshnessRow]) -> Value {
+    let mut funding = serde_json::Map::new();
+    let mut open_interest = serde_json::Map::new();
+    let mut global_long_short = serde_json::Map::new();
+    let mut taker_buy_sell = serde_json::Map::new();
+    for row in rows {
+        let value = json!(row.latest_timestamp);
+        match row.metric.as_str() {
+            "funding" => {
+                funding.insert(row.symbol.clone(), value);
+            }
+            "open_interest" => {
+                open_interest.insert(row.symbol.clone(), value);
+            }
+            "global-long-short" => {
+                global_long_short.insert(row.symbol.clone(), value);
+            }
+            "taker-buy-sell" => {
+                taker_buy_sell.insert(row.symbol.clone(), value);
+            }
+            _ => {}
+        }
+    }
+    json!({
+        "funding": funding,
+        "open_interest": open_interest,
+        "global_long_short": global_long_short,
+        "taker_buy_sell": taker_buy_sell,
+    })
+}
+
+async fn latest_scheduled_job_by_kind(pool: &PgPool, kind: &str) -> anyhow::Result<Option<Value>> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            id,
+            name,
+            kind,
+            enabled,
+            status,
+            last_success_at,
+            last_failure_at,
+            last_failure_reason,
+            next_run_at,
+            backoff_until,
+            consecutive_failure_count,
+            auto_paused_reason
+        FROM scheduled_research_jobs
+        WHERE kind = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(kind)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| {
+        json!({
+            "job_id": row.get::<Uuid, _>("id"),
+            "name": row.get::<String, _>("name"),
+            "kind": row.get::<String, _>("kind"),
+            "enabled": row.get::<bool, _>("enabled"),
+            "status": row.get::<String, _>("status"),
+            "last_success_at": row.get::<Option<DateTime<Utc>>, _>("last_success_at"),
+            "last_failure_at": row.get::<Option<DateTime<Utc>>, _>("last_failure_at"),
+            "last_failure_reason": row.get::<Option<String>, _>("last_failure_reason"),
+            "next_run_at": row.get::<Option<DateTime<Utc>>, _>("next_run_at"),
+            "backoff_until": row.get::<Option<DateTime<Utc>>, _>("backoff_until"),
+            "consecutive_failure_count": row.get::<i32, _>("consecutive_failure_count"),
+            "auto_paused_reason": row.get::<Option<String>, _>("auto_paused_reason"),
+        })
     }))
 }
 
@@ -35805,10 +36012,11 @@ mod tests {
         get_research_candidate_qualification_handler,
         get_research_candidate_shadow_performance_handler,
         get_research_candidate_shadow_pnl_attribution_handler,
-        get_research_candidate_testnet_review_dossier_handler, get_risk_decisions,
-        get_strategy_candidate_observation_handler, get_strategy_config_handler, get_strategy_list,
-        get_strategy_research_candidate_handler, imported_candidate_provenance_reason,
-        imported_candidate_provenance_status, is_allowed_research_import_recommended_action,
+        get_research_candidate_testnet_review_dossier_handler, get_research_state_snapshot_handler,
+        get_risk_decisions, get_strategy_candidate_observation_handler,
+        get_strategy_config_handler, get_strategy_list, get_strategy_research_candidate_handler,
+        imported_candidate_provenance_reason, imported_candidate_provenance_status,
+        is_allowed_research_import_recommended_action,
         is_allowed_research_import_reconciliation_status, is_valid_resume_confirmation,
         is_valid_testnet_order_confirmation, list_cross_asset_research_runs_handler,
         list_cross_asset_research_trades_handler, list_cross_asset_research_windows_handler,
@@ -35841,7 +36049,8 @@ mod tests {
         CLI_AUTH_MODE_HEADER, CLI_AUTH_MODE_VALUE, CROSS_ASSET_DATA_REFRESH_JOB_ID,
         CROSS_ASSET_RS_OBSERVATION_JOB_ID, DEFAULT_RECENT_EVENTS_LIMIT,
         DEFAULT_RESEARCH_CANDIDATE_OBSERVATION_MAX_AGE_SECONDS, DEFAULT_RISK_DECISIONS_LIMIT,
-        MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT, MULTIPLE_IMPORTED_CONFIGS_WARNING,
+        DERIVATIVES_CONTEXT_REFRESH_JOB_KIND, MAX_RECENT_EVENTS_LIMIT, MAX_RISK_DECISIONS_LIMIT,
+        MULTIPLE_IMPORTED_CONFIGS_WARNING,
     };
     use crate::auth::{decode_access_token, hash_password, AuthConfig};
     use crate::{CreatePaperOrderRequest, RiskEvaluateRequest};
@@ -37089,6 +37298,10 @@ mod tests {
     fn research_test_router(state: AppState) -> Router {
         Router::new()
             .route("/auth/login", post(login))
+            .route(
+                "/research/state-snapshot",
+                get(get_research_state_snapshot_handler),
+            )
             .route(
                 "/research/candidates/register",
                 post(register_strategy_research_candidate_handler),
@@ -39022,6 +39235,91 @@ mod tests {
         .await;
     }
 
+    async fn upsert_derivatives_context_refresh_job(pool: &PgPool) {
+        upsert_observation_health_job(
+            pool,
+            "2eb87189-4cdc-47cd-ad1d-bfd56e7a9448",
+            "derivatives-context-refresh",
+            DERIVATIVES_CONTEXT_REFRESH_JOB_KIND,
+            true,
+            "ENABLED",
+        )
+        .await;
+    }
+
+    async fn insert_derivatives_freshness_fixtures(pool: &PgPool) {
+        let timestamp = Utc::now() - chrono::Duration::hours(4);
+        for symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"] {
+            sqlx::query(
+                r#"
+                INSERT INTO derivatives_funding_rates (
+                    id, exchange, symbol, funding_time, funding_rate, mark_price, fetched_at, raw_payload
+                )
+                VALUES ($1, 'binance', $2, $3, $4, $5, $6, '{}'::jsonb)
+                ON CONFLICT (exchange, symbol, funding_time) DO NOTHING
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(symbol)
+            .bind(timestamp)
+            .bind(Decimal::new(1, 4))
+            .bind(Decimal::new(100_000, 0))
+            .bind(timestamp)
+            .execute(pool)
+            .await
+            .expect("insert funding fixture");
+            sqlx::query(
+                r#"
+                INSERT INTO derivatives_open_interest_snapshots (
+                    id, exchange, symbol, period, timestamp, open_interest, open_interest_value, fetched_at, raw_payload
+                )
+                VALUES ($1, 'binance', $2, '4h', $3, $4, $5, $6, '{}'::jsonb)
+                ON CONFLICT (exchange, symbol, period, timestamp) DO NOTHING
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(symbol)
+            .bind(timestamp)
+            .bind(Decimal::new(1000, 0))
+            .bind(Decimal::new(100_000, 0))
+            .bind(timestamp)
+            .execute(pool)
+            .await
+            .expect("insert oi fixture");
+            for metric in ["global-long-short", "taker-buy-sell"] {
+                sqlx::query(
+                    r#"
+                    INSERT INTO derivatives_positioning_snapshots (
+                        id, exchange, symbol, metric, period, timestamp,
+                        long_short_ratio, long_account, short_account,
+                        buy_sell_ratio, buy_vol, sell_vol, fetched_at, raw_payload
+                    )
+                    VALUES (
+                        $1, 'binance', $2, $3, '4h', $4,
+                        $5, $6, $7,
+                        $8, $9, $10, $11, '{}'::jsonb
+                    )
+                    ON CONFLICT (exchange, symbol, metric, period, timestamp) DO NOTHING
+                    "#,
+                )
+                .bind(Uuid::new_v4())
+                .bind(symbol)
+                .bind(metric)
+                .bind(timestamp)
+                .bind(Decimal::new(12, 1))
+                .bind(Decimal::new(55, 2))
+                .bind(Decimal::new(45, 2))
+                .bind(Decimal::new(11, 1))
+                .bind(Decimal::new(1000, 0))
+                .bind(Decimal::new(900, 0))
+                .bind(timestamp)
+                .execute(pool)
+                .await
+                .expect("insert positioning fixture");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn cross_asset_research_run_persists_reads_and_does_not_mutate_execution_tables() {
         let Some(test_db) = setup_optional_test_db().await else {
@@ -40210,6 +40508,120 @@ mod tests {
         assert_eq!(
             payload["report"]["execution_safety_counts"]["orders"].as_i64(),
             Some(1)
+        );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before).await;
+    }
+
+    #[tokio::test]
+    async fn research_state_snapshot_includes_cross_asset_and_derivatives_without_execution_mutation(
+    ) {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let candidate = insert_cross_asset_shadow_observation_candidate(&test_db.pool).await;
+        upsert_enabled_observation_health_jobs(&test_db.pool).await;
+        upsert_derivatives_context_refresh_job(&test_db.pool).await;
+        insert_derivatives_freshness_fixtures(&test_db.pool).await;
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let before = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let mut request = cli_request("GET", "/research/state-snapshot", json!({}));
+        request.extensions_mut().insert(AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "state-snapshot-viewer@example.com".to_string(),
+            role: UserRole::Viewer,
+            session_id: None,
+        });
+        let response = app.oneshot(request).await.expect("state snapshot");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        let snapshot = &payload["snapshot"];
+        assert!(snapshot["imported_candidates_provenance_only"].is_array());
+        assert!(snapshot["imported_research_candidates"].is_array());
+        let cross_asset = snapshot["cross_asset_research_candidates"]
+            .as_array()
+            .expect("cross asset candidates");
+        let candidate_id = candidate.id.to_string();
+        assert!(cross_asset
+            .iter()
+            .any(|item| { item["candidate_id"].as_str() == Some(candidate_id.as_str()) }));
+        assert_eq!(
+            snapshot["cross_asset_observation_health"][0]["health_status"].as_str(),
+            Some("DATA_STALE")
+        );
+        assert_eq!(
+            snapshot["derivatives_context"]["status"].as_str(),
+            Some("HEALTHY")
+        );
+        assert_eq!(
+            snapshot["derivatives_context"]["missing_count"].as_i64(),
+            Some(0)
+        );
+        assert_eq!(
+            snapshot["derivatives_context"]["stale_count"].as_i64(),
+            Some(0)
+        );
+        assert_eq!(
+            snapshot["derivatives_context"]["derivatives_refresh_job_status"]["enabled"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            snapshot["execution_safety_counts"]["orders"].as_i64(),
+            Some(0)
+        );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before).await;
+    }
+
+    #[tokio::test]
+    async fn research_state_snapshot_reports_waiting_for_new_candle_after_latest_aligned_observed()
+    {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let candidate = insert_cross_asset_shadow_observation_candidate(&test_db.pool).await;
+        insert_cross_asset_shadow_observation_fresh_fixture_candles(&test_db.pool).await;
+        upsert_enabled_observation_health_jobs(&test_db.pool).await;
+        upsert_derivatives_context_refresh_job(&test_db.pool).await;
+        insert_derivatives_freshness_fixtures(&test_db.pool).await;
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let mut run_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/shadow-observation/run",
+                candidate.id
+            ),
+            json!({
+                "research_observation_only": true,
+                "confirmation_text": format!("RUN CROSS-ASSET SHADOW OBSERVATION {}", candidate.id)
+            }),
+        );
+        run_request.extensions_mut().insert(AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "state-snapshot-operator@example.com".to_string(),
+            role: UserRole::Operator,
+            session_id: None,
+        });
+        let run_response = app
+            .clone()
+            .oneshot(run_request)
+            .await
+            .expect("shadow observation run");
+        assert_eq!(run_response.status(), StatusCode::OK);
+        let before = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let mut request = cli_request("GET", "/research/state-snapshot", json!({}));
+        request.extensions_mut().insert(AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "state-snapshot-viewer-waiting@example.com".to_string(),
+            role: UserRole::Viewer,
+            session_id: None,
+        });
+        let response = app.oneshot(request).await.expect("state snapshot");
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json::<Value>(response).await;
+        let rs = &payload["snapshot"]["rs_observation"];
+        assert_eq!(rs["health_status"].as_str(), Some("WAITING_FOR_NEW_CANDLE"));
+        assert_eq!(
+            rs["latest_aligned_4h_candle"],
+            rs["latest_evaluated_candle"]
         );
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before).await;
     }

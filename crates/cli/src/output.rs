@@ -62,6 +62,10 @@ pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn compact_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
 pub fn print_cross_asset_research_run(run: &CrossAssetResearchResult) {
     println!("Cross-asset run: {}", run.run_id);
     println!(
@@ -730,6 +734,11 @@ pub fn print_research_state_snapshot(response: &serde_json::Value) {
         "Imported provenance-only candidates: {}",
         imported_candidates.map(|items| items.len()).unwrap_or(0)
     );
+    let cross_asset_candidates = snapshot["cross_asset_research_candidates"].as_array();
+    println!(
+        "Cross-asset research candidates: {}",
+        cross_asset_candidates.map(|items| items.len()).unwrap_or(0)
+    );
     println!(
         "Active candidates: {}",
         active_candidates.map(|items| items.len()).unwrap_or(0)
@@ -740,6 +749,79 @@ pub fn print_research_state_snapshot(response: &serde_json::Value) {
             .map(|items| items.len())
             .unwrap_or(0)
     );
+
+    if let Some(rs) = snapshot["rs_observation"].as_object() {
+        println!("\nRS observation:");
+        println!(
+            "  candidate: {}",
+            rs.get("candidate_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+        );
+        println!(
+            "  status: {}",
+            rs.get("health_status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+        );
+        println!(
+            "  observations: {}/30",
+            rs.get("independent_observation_count")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0)
+        );
+        println!(
+            "  would_select: {}",
+            rs.get("would_select_count")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0)
+        );
+        println!(
+            "  latest evaluated: {}",
+            rs.get("latest_evaluated_candle")
+                .and_then(|value| value.as_str())
+                .unwrap_or("none")
+        );
+        println!(
+            "  latest aligned: {}",
+            rs.get("latest_aligned_4h_candle")
+                .and_then(|value| value.as_str())
+                .unwrap_or("none")
+        );
+        let data_refresh = &rs["data_refresh_job_status"];
+        let observation = &rs["rs_observation_job_status"];
+        println!(
+            "  jobs: data_refresh={} observation={}",
+            data_refresh["status"].as_str().unwrap_or("unknown"),
+            observation["status"].as_str().unwrap_or("unknown")
+        );
+    }
+
+    let derivatives = &snapshot["derivatives_context"];
+    if derivatives.is_object() {
+        println!("\nDerivatives context:");
+        println!(
+            "  status: {}",
+            derivatives["status"].as_str().unwrap_or("unknown")
+        );
+        println!(
+            "  funding latest: {}",
+            compact_json(&derivatives["latest_by_metric"]["funding"])
+        );
+        println!(
+            "  oi latest: {}",
+            compact_json(&derivatives["latest_by_metric"]["open_interest"])
+        );
+        println!(
+            "  positioning latest: global={} taker={}",
+            compact_json(&derivatives["latest_by_metric"]["global_long_short"]),
+            compact_json(&derivatives["latest_by_metric"]["taker_buy_sell"])
+        );
+        println!(
+            "  warning: {}",
+            derivatives["warning"].as_str().unwrap_or("")
+        );
+    }
 
     println!("\nActive candidates:");
     if let Some(candidates) = active_candidates {

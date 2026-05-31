@@ -183,6 +183,22 @@ struct ScheduledResearchReportSnapshot {
     stale_jobs: i64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+struct ResearchControlPlaneReportSnapshot {
+    cross_asset_candidate_count: i64,
+    cross_asset_observation_count: i64,
+    cross_asset_would_select_count: i64,
+    cross_asset_no_signal_count: i64,
+    latest_cross_asset_evaluated_candle: Option<DateTime<Utc>>,
+    derivatives_missing_count: i32,
+    derivatives_stale_count: i32,
+    derivatives_status: String,
+    derivatives_refresh_job_enabled: bool,
+    derivatives_refresh_job_status: Option<String>,
+    execution_authority: String,
+    warning: String,
+}
+
 #[derive(Debug, Clone)]
 struct SystemAndMarketData {
     system: OperatorReportSystemSnapshot,
@@ -276,6 +292,8 @@ pub async fn generate_operator_report(
     let research_experiment_plans =
         load_research_experiment_plan_snapshot(&state.db_pool, &window).await?;
     let scheduled_research = load_scheduled_research_snapshot(&state.db_pool, &window).await?;
+    let research_control_plane =
+        load_research_control_plane_snapshot(&state.db_pool, window.generated_at).await?;
 
     let mut findings = build_findings(
         &system_market,
@@ -341,6 +359,7 @@ pub async fn generate_operator_report(
             &research_hypotheses,
             &research_experiment_plans,
             &scheduled_research,
+            &research_control_plane,
         )?,
         format: request.format,
         persisted: false,
@@ -2080,6 +2099,89 @@ async fn load_scheduled_research_snapshot(
     })
 }
 
+async fn load_research_control_plane_snapshot(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+) -> Result<ResearchControlPlaneReportSnapshot> {
+    let row = query(
+        r#"
+        SELECT
+            (
+                SELECT COUNT(*)::BIGINT
+                FROM research_candidates
+                WHERE strategy_id = 'relative_strength_continuation_v1'
+                  AND candidate_creation_mode = 'cross_asset_manual_create'
+            ) AS cross_asset_candidate_count,
+            (
+                SELECT COUNT(*)::BIGINT
+                FROM cross_asset_candidate_shadow_observations
+            ) AS cross_asset_observation_count,
+            (
+                SELECT COUNT(*)::BIGINT
+                FROM cross_asset_candidate_shadow_observations
+                WHERE decision = 'WOULD_SELECT'
+            ) AS cross_asset_would_select_count,
+            (
+                SELECT COUNT(*)::BIGINT
+                FROM cross_asset_candidate_shadow_observations
+                WHERE decision = 'NO_SIGNAL'
+            ) AS cross_asset_no_signal_count,
+            (
+                SELECT MAX(evaluated_candle_time)
+                FROM cross_asset_candidate_shadow_observations
+            ) AS latest_cross_asset_evaluated_candle,
+            (
+                SELECT enabled
+                FROM scheduled_research_jobs
+                WHERE kind = 'DERIVATIVES_CONTEXT_REFRESH'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ) AS derivatives_refresh_job_enabled,
+            (
+                SELECT status
+                FROM scheduled_research_jobs
+                WHERE kind = 'DERIVATIVES_CONTEXT_REFRESH'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            ) AS derivatives_refresh_job_status
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    let symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+        .iter()
+        .map(|symbol| (*symbol).to_string())
+        .collect::<Vec<_>>();
+    let derivatives = db::derivatives_freshness_report(pool, &symbols, "4h", "4h", now).await?;
+    let derivatives_refresh_job_enabled = row
+        .get::<Option<bool>, _>("derivatives_refresh_job_enabled")
+        .unwrap_or(false);
+    let derivatives_refresh_job_status =
+        row.get::<Option<String>, _>("derivatives_refresh_job_status");
+    let derivatives_status = if derivatives.missing_count == 0
+        && derivatives.stale_count == 0
+        && derivatives_refresh_job_enabled
+    {
+        "HEALTHY"
+    } else {
+        "ATTENTION_REQUIRED"
+    };
+    Ok(ResearchControlPlaneReportSnapshot {
+        cross_asset_candidate_count: row.get("cross_asset_candidate_count"),
+        cross_asset_observation_count: row.get("cross_asset_observation_count"),
+        cross_asset_would_select_count: row.get("cross_asset_would_select_count"),
+        cross_asset_no_signal_count: row.get("cross_asset_no_signal_count"),
+        latest_cross_asset_evaluated_candle: row.get("latest_cross_asset_evaluated_candle"),
+        derivatives_missing_count: derivatives.missing_count,
+        derivatives_stale_count: derivatives.stale_count,
+        derivatives_status: derivatives_status.to_string(),
+        derivatives_refresh_job_enabled,
+        derivatives_refresh_job_status,
+        execution_authority: "NONE".to_string(),
+        warning: "OI/positioning are recent/forward-only due Binance public retention.".to_string(),
+    })
+}
+
 fn build_findings(
     system_market: &SystemAndMarketData,
     strategy: &StrategyBehaviorData,
@@ -3254,6 +3356,7 @@ fn build_sections(
     research_hypotheses: &ResearchHypothesisReportSnapshot,
     research_experiment_plans: &ResearchExperimentPlanReportSnapshot,
     scheduled_research: &ScheduledResearchReportSnapshot,
+    research_control_plane: &ResearchControlPlaneReportSnapshot,
 ) -> Result<Vec<OperatorReportSection>> {
     let mut sections = vec![
         section(
@@ -3992,6 +4095,61 @@ fn build_sections(
                 ),
             ],
             scheduled_research,
+        )?,
+        section(
+            "research_control_plane",
+            "Research Control Plane",
+            if research_control_plane.derivatives_status == "HEALTHY"
+                && research_control_plane.derivatives_refresh_job_enabled
+            {
+                OperatorReportStatus::Ok
+            } else {
+                OperatorReportStatus::Warning
+            },
+            "Passive RS observation and derivatives context collection are reporting-only with execution authority NONE.",
+            vec![
+                highlight(
+                    "Cross-Asset Candidates",
+                    research_control_plane.cross_asset_candidate_count.to_string(),
+                ),
+                highlight(
+                    "RS Observations",
+                    research_control_plane.cross_asset_observation_count.to_string(),
+                ),
+                highlight(
+                    "Would Select",
+                    research_control_plane.cross_asset_would_select_count.to_string(),
+                ),
+                highlight(
+                    "No Signal",
+                    research_control_plane.cross_asset_no_signal_count.to_string(),
+                ),
+                highlight(
+                    "Latest Evaluated Candle",
+                    research_control_plane
+                        .latest_cross_asset_evaluated_candle
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| "N/A".to_string()),
+                ),
+                highlight(
+                    "Derivatives Status",
+                    research_control_plane.derivatives_status.clone(),
+                ),
+                highlight(
+                    "Derivatives Missing",
+                    research_control_plane.derivatives_missing_count.to_string(),
+                ),
+                highlight(
+                    "Derivatives Stale",
+                    research_control_plane.derivatives_stale_count.to_string(),
+                ),
+                highlight(
+                    "Derivatives Job Enabled",
+                    yes_no(research_control_plane.derivatives_refresh_job_enabled),
+                ),
+                highlight("Execution Authority", "NONE"),
+            ],
+            research_control_plane,
         )?,
     ];
 
