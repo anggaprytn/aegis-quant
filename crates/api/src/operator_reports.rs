@@ -10,12 +10,10 @@ use aegis_core::{
     OperatorReportRiskSnapshot, OperatorReportSection, OperatorReportSeverity,
     OperatorReportShadowSnapshot, OperatorReportStatus, OperatorReportStrategySnapshot,
     OperatorReportSummary, OperatorReportSystemSnapshot, OperatorReportTestnetSnapshot,
-    OperatorReportTopPairCount, ResearchCandidateQualificationStatus,
-    ResearchCandidateQualificationThresholds, ResearchCandidateStatus,
-    ResearchCandidateTestnetReviewStatus, ResearchShadowPnlAttributionRequest,
-    ResearchShadowPnlAttributionResult, ResearchShadowPnlRecommendation, StrategyPerformanceMode,
-    StrategyPerformanceRequest, StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus,
-    TestnetPromotionFunnelRequest,
+    OperatorReportTopPairCount, ResearchCandidateQualificationStatus, ResearchCandidateStatus,
+    ResearchShadowPnlAttributionRequest, ResearchShadowPnlAttributionResult,
+    ResearchShadowPnlRecommendation, StrategyPerformanceMode, StrategyPerformanceRequest,
+    StrategyRobustnessMatrixResult, StrategyRobustnessMatrixStatus, TestnetPromotionFunnelRequest,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -1068,14 +1066,18 @@ async fn load_system_and_market_data(
         r#"
         SELECT COUNT(*)
         FROM candles
-        WHERE close_time >= $1
-          AND close_time <= $2
-          AND ($3::text IS NULL OR symbol = $3)
+        WHERE exchange = $1
+          AND open_time >= $2
+          AND open_time <= $3
+          AND ($4::text IS NULL OR symbol = $4)
+          AND ($5::text IS NULL OR interval = $5)
         "#,
     )
+    .bind(state.market_config.exchange.as_str())
     .bind(window.start)
     .bind(window.end)
     .bind(request.symbol.as_deref())
+    .bind(request.interval.as_deref())
     .fetch_one(&state.db_pool)
     .await?;
 
@@ -1407,35 +1409,42 @@ async fn load_risk_snapshot(
     .fetch_one(pool)
     .await?;
 
-    let reason_rows = query(
-        r#"
-        SELECT reason, COUNT(*) AS reason_count
-        FROM (
-            SELECT jsonb_array_elements_text(COALESCE(rationale::jsonb -> 'reasons', '[]'::jsonb)) AS reason
-            FROM risk_decisions
-            WHERE decision = 'REJECTED'
-              AND decided_at >= $1
-              AND decided_at <= $2
-              AND ($3::text IS NULL OR COALESCE(rationale::jsonb ->> 'symbol', '') = $3)
-              AND ($4::text IS NULL OR COALESCE(rationale::jsonb ->> 'strategy_id', '') = $4)
-        ) reasons
-        GROUP BY reason
-        ORDER BY reason_count DESC, reason ASC
-        LIMIT 5
-        "#,
-    )
-    .bind(window.start)
-    .bind(window.end)
-    .bind(request.symbol.as_deref())
-    .bind(request.strategy_id.as_deref())
-    .fetch_all(pool)
-    .await?;
+    let rejected_decisions = counts.get::<i64, _>("rejected_count");
+    let reason_rows = if rejected_decisions > 0 {
+        query(
+            r#"
+            SELECT reason, COUNT(*) AS reason_count
+            FROM (
+                SELECT jsonb_array_elements_text(COALESCE(rationale::jsonb -> 'reasons', '[]'::jsonb)) AS reason
+                FROM risk_decisions
+                WHERE decision = 'REJECTED'
+                  AND decided_at >= $1
+                  AND decided_at <= $2
+                  AND ($3::text IS NULL OR COALESCE(rationale::jsonb ->> 'symbol', '') = $3)
+                  AND ($4::text IS NULL OR COALESCE(rationale::jsonb ->> 'strategy_id', '') = $4)
+            ) reasons
+            GROUP BY reason
+            ORDER BY reason_count DESC, reason ASC
+            LIMIT 5
+            "#,
+        )
+        .bind(window.start)
+        .bind(window.end)
+        .bind(request.symbol.as_deref())
+        .bind(request.strategy_id.as_deref())
+        .fetch_all(pool)
+        .await?
+    } else {
+        Vec::new()
+    };
 
     let kill_switch_change_count: i64 = query_scalar(
         r#"
         SELECT COUNT(*)
         FROM system_events
         WHERE event_type IN ('risk.kill_switch.activate', 'risk.kill_switch.resume')
+          AND created_at >= $1
+          AND created_at <= $2
           AND occurred_at >= $1
           AND occurred_at <= $2
         "#,
@@ -1451,7 +1460,7 @@ async fn load_risk_snapshot(
 
     Ok(OperatorReportRiskSnapshot {
         approved_decisions: counts.get("approved_count"),
-        rejected_decisions: counts.get("rejected_count"),
+        rejected_decisions,
         top_rejection_reasons: reason_rows
             .into_iter()
             .map(|row| OperatorReportReasonCount {
@@ -1748,7 +1757,6 @@ async fn load_research_candidate_qualification_snapshot(
         timeframe: None,
         status: None,
     };
-    let default_thresholds = ResearchCandidateQualificationThresholds::default();
     let records =
         list_research_candidates(&state.db_pool, &filters, REPORT_RESEARCH_CANDIDATE_LIMIT).await?;
 
@@ -1792,59 +1800,6 @@ async fn load_research_candidate_qualification_snapshot(
             summary.accepted_for_shadow_count += 1;
         }
 
-        let qualification = crate::build_research_candidate_qualification(
-            state,
-            &candidate,
-            default_thresholds.clone(),
-            window.generated_at,
-        )
-        .await?;
-
-        match qualification.status {
-            ResearchCandidateQualificationStatus::Qualified => summary.qualified_count += 1,
-            ResearchCandidateQualificationStatus::NeedsMoreData => {
-                summary.needs_more_data_count += 1
-            }
-            ResearchCandidateQualificationStatus::NotQualified => summary.not_qualified_count += 1,
-            ResearchCandidateQualificationStatus::Degraded => summary.degraded_count += 1,
-            ResearchCandidateQualificationStatus::Unknown => summary.unknown_count += 1,
-        }
-
-        if !qualification.fresh_observation {
-            summary.stale_observation_count += 1;
-        }
-        if !qualification.runner_alignment_valid {
-            summary.runner_mismatch_count += 1;
-        }
-        match qualification.latest_readiness_status {
-            Some(aegis_core::ExecutionReadinessStatus::Degraded) => {
-                summary.readiness_degraded_count += 1;
-                summary.degraded_or_not_ready_readiness_count += 1;
-            }
-            Some(aegis_core::ExecutionReadinessStatus::NotReady) => {
-                summary.readiness_not_ready_count += 1;
-                summary.degraded_or_not_ready_readiness_count += 1;
-            }
-            _ => {}
-        }
-        if qualification.threshold_override_below_default {
-            summary.below_default_threshold_override_count += 1;
-        }
-        match qualification.walk_forward_status {
-            Some(aegis_core::StrategyWalkForwardRobustnessStatus::OverfitRisk) => {
-                summary.walk_forward_overfit_risk_count += 1;
-                summary.candidates_needing_review_count += 1;
-            }
-            Some(aegis_core::StrategyWalkForwardRobustnessStatus::Robust) => {
-                summary.walk_forward_robust_count += 1;
-            }
-            None => {
-                summary.walk_forward_missing_count += 1;
-                summary.candidates_needing_review_count += 1;
-            }
-            _ => {}
-        }
-
         let evaluation_history =
             list_research_candidate_qualification_evaluations(&state.db_pool, candidate.id, 2)
                 .await?;
@@ -1852,8 +1807,64 @@ async fn load_research_candidate_qualification_snapshot(
             .iter()
             .map(research_candidate_qualification_evaluation_from_record)
             .collect::<Result<Vec<_>>>()?;
-        if let Some(latest_evaluation) = evaluations.first() {
+        let latest_evaluation = evaluations.first();
+
+        if let Some(latest_evaluation) = latest_evaluation {
             summary.latest_evaluated_candidates_count += 1;
+
+            match latest_evaluation.status {
+                ResearchCandidateQualificationStatus::Qualified => summary.qualified_count += 1,
+                ResearchCandidateQualificationStatus::NeedsMoreData => {
+                    summary.needs_more_data_count += 1;
+                    summary.dossier_needs_more_shadow_data_count += 1;
+                }
+                ResearchCandidateQualificationStatus::NotQualified => {
+                    summary.not_qualified_count += 1;
+                    summary.blocked_testnet_review_dossier_count += 1;
+                }
+                ResearchCandidateQualificationStatus::Degraded => {
+                    summary.degraded_count += 1;
+                    summary.blocked_testnet_review_dossier_count += 1;
+                }
+                ResearchCandidateQualificationStatus::Unknown => summary.unknown_count += 1,
+            }
+
+            match latest_evaluation.latest_readiness_status {
+                Some(aegis_core::ExecutionReadinessStatus::Degraded) => {
+                    summary.readiness_degraded_count += 1;
+                    summary.degraded_or_not_ready_readiness_count += 1;
+                }
+                Some(aegis_core::ExecutionReadinessStatus::NotReady) => {
+                    summary.readiness_not_ready_count += 1;
+                    summary.degraded_or_not_ready_readiness_count += 1;
+                }
+                _ => {}
+            }
+
+            if latest_evaluation
+                .warnings
+                .iter()
+                .chain(latest_evaluation.blockers.iter())
+                .any(|value| value.contains("threshold_override_below_default"))
+            {
+                summary.below_default_threshold_override_count += 1;
+            }
+
+            match latest_evaluation.walk_forward_status {
+                Some(aegis_core::StrategyWalkForwardRobustnessStatus::OverfitRisk) => {
+                    summary.walk_forward_overfit_risk_count += 1;
+                    summary.candidates_needing_review_count += 1;
+                }
+                Some(aegis_core::StrategyWalkForwardRobustnessStatus::Robust) => {
+                    summary.walk_forward_robust_count += 1;
+                }
+                None => {
+                    summary.walk_forward_missing_count += 1;
+                    summary.candidates_needing_review_count += 1;
+                }
+                _ => {}
+            }
+
             if aegis_core::is_research_candidate_evaluation_stale(
                 latest_evaluation,
                 window.generated_at,
@@ -1883,6 +1894,33 @@ async fn load_research_candidate_qualification_snapshot(
                 }
                 _ => {}
             }
+
+            if latest_evaluation.status == ResearchCandidateQualificationStatus::Qualified
+                && latest_evaluation.blockers.is_empty()
+            {
+                summary.ready_for_testnet_review_dossier_count += 1;
+            }
+
+            let replace_top = summary
+                .top_candidate
+                .as_ref()
+                .map(|current| latest_evaluation.score > current.score)
+                .unwrap_or(true);
+            if replace_top {
+                summary.top_candidate = Some(OperatorReportResearchQualificationTopCandidate {
+                    candidate_id: candidate.id,
+                    strategy_id: candidate.strategy_id.clone(),
+                    symbol: candidate.symbol.clone(),
+                    timeframe: candidate.timeframe.clone(),
+                    status: latest_evaluation.status,
+                    score: latest_evaluation.score,
+                    readiness_status: latest_evaluation.latest_readiness_status,
+                });
+            }
+        } else {
+            summary.unknown_count += 1;
+            summary.walk_forward_missing_count += 1;
+            summary.candidates_needing_review_count += 1;
         }
 
         let candidate_reviews = list_research_candidate_reviews(&state.db_pool, candidate.id)
@@ -1893,47 +1931,15 @@ async fn load_research_candidate_qualification_snapshot(
         let ready_review_marked = candidate_reviews.iter().any(|review| {
             review.action == aegis_core::ResearchCandidateReviewAction::MarkReadyForTestnetReview
         });
-
-        let dossier = crate::build_research_candidate_testnet_review_dossier(
-            state,
-            &candidate,
-            window.generated_at,
-            Uuid::new_v4(),
-        )
-        .await?;
-        match dossier.status {
-            ResearchCandidateTestnetReviewStatus::ReadyForReview => {
-                summary.ready_for_testnet_review_dossier_count += 1;
-            }
-            ResearchCandidateTestnetReviewStatus::NeedsMoreShadowData => {
-                summary.dossier_needs_more_shadow_data_count += 1;
-            }
-            ResearchCandidateTestnetReviewStatus::Blocked => {
-                summary.blocked_testnet_review_dossier_count += 1;
-            }
-            _ => {}
-        }
         if ready_review_marked
-            && dossier.status != ResearchCandidateTestnetReviewStatus::ReadyForReview
+            && latest_evaluation
+                .map(|evaluation| {
+                    evaluation.status != ResearchCandidateQualificationStatus::Qualified
+                        || !evaluation.blockers.is_empty()
+                })
+                .unwrap_or(true)
         {
             summary.marked_ready_but_dossier_not_ready_count += 1;
-        }
-
-        let replace_top = summary
-            .top_candidate
-            .as_ref()
-            .map(|current| qualification.score > current.score)
-            .unwrap_or(true);
-        if replace_top {
-            summary.top_candidate = Some(OperatorReportResearchQualificationTopCandidate {
-                candidate_id: candidate.id,
-                strategy_id: candidate.strategy_id.clone(),
-                symbol: candidate.symbol.clone(),
-                timeframe: candidate.timeframe.clone(),
-                status: qualification.status,
-                score: qualification.score,
-                readiness_status: qualification.latest_readiness_status,
-            });
         }
     }
 

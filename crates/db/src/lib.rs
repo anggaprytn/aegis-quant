@@ -6082,20 +6082,22 @@ pub async fn get_latest_closed_candle_time(
     symbol: &Symbol,
     interval: CandleInterval,
 ) -> Result<Option<DateTime<Utc>>> {
-    let latest = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+    let latest = sqlx::query_scalar::<_, DateTime<Utc>>(
         r#"
-        SELECT MAX(close_time)
+        SELECT close_time
         FROM candles
         WHERE exchange = $1
           AND symbol = $2
           AND interval = $3
           AND is_closed = TRUE
+        ORDER BY open_time DESC
+        LIMIT 1
         "#,
     )
     .bind(exchange.as_str())
     .bind(symbol.as_str())
     .bind(interval.as_str())
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?;
 
     Ok(latest)
