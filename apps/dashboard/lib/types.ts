@@ -4076,11 +4076,89 @@ export type ScheduledResearchJobKind =
   | "AGGREGATION_STATUS"
   | "CANDIDATE_SHADOW_OBSERVE_ONCE"
   | "CROSS_ASSET_CANDIDATE_SHADOW_OBSERVE_ONCE"
+  | "CROSS_ASSET_MARKET_DATA_REFRESH"
+  | "DERIVATIVES_CONTEXT_REFRESH"
   | "RESEARCH_BATCH"
   | "RESEARCH_CAMPAIGN"
   | "REGIME_DISCOVERY"
   | "ROBUSTNESS_MATRIX"
   | "OPERATOR_REPORT";
+
+export type EvidenceDigestStatus =
+  | "KEEP_OBSERVING"
+  | "STALLED_DATA"
+  | "SCHEDULER_DISABLED"
+  | "JOB_DISABLED"
+  | "DERIVATIVES_STALE"
+  | "EXECUTION_SAFETY_BLOCKED"
+  | "READY_FOR_HUMAN_REVIEW";
+
+export type EvidenceDigestNextAction =
+  | "WAIT_FOR_NEXT_CANDLE"
+  | "RUN_DERIVATIVES_REFRESH_ONCE"
+  | "RUN_RS_OBSERVE_ONCE"
+  | "CHECK_SCHEDULER"
+  | "INVESTIGATE_EXECUTION_SAFETY"
+  | "READY_FOR_REVIEW";
+
+export type EvidenceDigestJobStatus = {
+  job_id: string;
+  name: string | null;
+  kind: string | null;
+  enabled: boolean;
+  status: string;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  next_run_at: string | null;
+  missing?: boolean;
+  backoff_until?: string | null;
+  consecutive_failure_count?: number;
+  auto_paused_reason?: string | null;
+};
+
+export type EvidenceDigest = {
+  overall_status: EvidenceDigestStatus;
+  candidate: {
+    candidate_id: string;
+    candidate_status: string;
+    package_id: string;
+  };
+  evidence_progress: {
+    independent_observations: number;
+    required_observations: number;
+    progress_percentage: number;
+    would_select_count: number;
+    no_signal_count: number;
+    skipped_count: number;
+    latest_evaluated_candle: string | null;
+    latest_aligned_candle: string | null;
+  };
+  health: {
+    scheduler_enabled: boolean;
+    rs_observation_job_status: EvidenceDigestJobStatus;
+    cross_asset_data_refresh_job_status: EvidenceDigestJobStatus;
+    derivatives_refresh_job_status: EvidenceDigestJobStatus | null;
+    derivatives_healthy: boolean;
+    derivatives_missing_count: number;
+    derivatives_stale_count: number;
+    execution_safety_clear: boolean;
+    execution_safety_counts: Record<string, number>;
+    execution_authority: string;
+  };
+  next_action: EvidenceDigestNextAction;
+  blockers: string[];
+  warnings: string[];
+  no_mutation: boolean;
+  generated_at: string;
+};
+
+export type EvidenceDigestResponse = {
+  digest: EvidenceDigest;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
 
 export type ScheduledResearchJobRunStatus =
   | "COMPLETED"

@@ -45,6 +45,7 @@ import type {
   ExchangeTestnetRepairsResponse,
   ExchangeTestnetStatusResponse,
   ExchangeTestnetSymbolsResponse,
+  EvidenceDigestResponse,
   ExecutionReadinessRequest,
   ExecutionReadinessResponse,
   ExecutionReadinessSnapshotsResponse,
@@ -1288,6 +1289,10 @@ export const api = {
     request<OperatorReportsListResponse>("/reports/operator", undefined, { limit }),
   getOperatorReport: (reportId: string) =>
     request<OperatorReportResponse>(`/reports/operator/${reportId}`),
+  getEvidenceDigest: (candidateId?: string) =>
+    request<EvidenceDigestResponse>("/reports/evidence-digest", undefined, {
+      candidate_id: candidateId,
+    }),
   checkExecutionReadiness: (payload: ExecutionReadinessRequest) =>
     request<ExecutionReadinessResponse>("/readiness/check", {
       method: "POST",

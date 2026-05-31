@@ -41,6 +41,8 @@ import type {
   ResearchBatchCandidateSummary,
   ResearchBatchResult,
   ResearchBatchTriage,
+  EvidenceDigest,
+  EvidenceDigestStatus,
   ResearchCampaignBatchResult,
   ResearchCampaignFailureAttribution,
   ResearchCampaignRequest,
@@ -161,7 +163,6 @@ const SECTIONS: Array<{ id: SectionId; label: string }> = [
 const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT"];
 const TIMEFRAME_OPTIONS = ["1m", "5m", "15m", "1h"];
 const AGGREGATION_TARGET_OPTIONS = ["5m", "15m", "1h"];
-
 const DEFAULT_BACKTEST_FORM: BacktestRequest = {
   strategy_id: "momentum_v1",
   symbol: "BTCUSDT",
@@ -1988,6 +1989,13 @@ function AuthenticatedDashboard({
       user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
     refetchInterval: 15_000,
   });
+  const evidenceDigestQuery = useQuery({
+    queryKey: ["evidenceops-digest"],
+    queryFn: () => api.getEvidenceDigest(),
+    enabled:
+      user.role === "OWNER" || user.role === "OPERATOR" || user.role === "VIEWER",
+    refetchInterval: 30_000,
+  });
   const selectedOperatorReportQuery = useQuery({
     queryKey: ["operator-report", selectedReportId],
     queryFn: () => api.getOperatorReport(selectedReportId ?? ""),
@@ -3507,6 +3515,14 @@ function AuthenticatedDashboard({
 
           {section === "command-center" && (
             <section className="grid gap-4 xl:grid-cols-12">
+              <Panel className="xl:col-span-12" title="EvidenceOps Digest">
+                <EvidenceOpsDigestPanel
+                  digest={evidenceDigestQuery.data?.digest ?? null}
+                  loading={evidenceDigestQuery.isLoading}
+                  error={getErrorMessage(evidenceDigestQuery.error)}
+                />
+              </Panel>
+
               <Panel className="xl:col-span-4" title="System Health">
                 <KeyValue
                   items={[
@@ -10054,6 +10070,192 @@ function AuthenticatedDashboard({
             </section>
           )}
         </main>
+      </div>
+    </div>
+  );
+}
+
+function digestStatusTone(status: EvidenceDigestStatus): "ok" | "danger" | "warning" | "neutral" {
+  switch (status) {
+    case "READY_FOR_HUMAN_REVIEW":
+      return "ok";
+    case "KEEP_OBSERVING":
+      return "neutral";
+    case "EXECUTION_SAFETY_BLOCKED":
+    case "SCHEDULER_DISABLED":
+    case "JOB_DISABLED":
+      return "danger";
+    case "STALLED_DATA":
+    case "DERIVATIVES_STALE":
+      return "warning";
+    default:
+      return "neutral";
+  }
+}
+
+function StatusBadge({
+  label,
+  tone = "neutral",
+}: {
+  label: string;
+  tone?: "ok" | "danger" | "warning" | "neutral";
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex max-w-full items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase leading-none tracking-[0.16em]",
+        tone === "ok" && "border-emerald-400/40 bg-emerald-500/10 text-emerald-200",
+        tone === "danger" && "border-red-400/40 bg-red-500/10 text-red-200",
+        tone === "warning" && "border-amber-400/40 bg-amber-500/10 text-amber-200",
+        tone === "neutral" && "border-border bg-surface/70 text-slate-200",
+      )}
+      title={label}
+    >
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+function CompactMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border bg-surface/60 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-[0.16em] text-muted">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium text-slate-100" title={value}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function EvidenceOpsDigestPanel({
+  digest,
+  loading,
+  error,
+}: {
+  digest: EvidenceDigest | null;
+  loading?: boolean;
+  error?: string;
+}) {
+  if (loading) {
+    return <EmptyState label="Loading EvidenceOps digest..." />;
+  }
+
+  if (error && error !== "Unknown error") {
+    return <EmptyState label={`EvidenceOps digest unavailable: ${error}`} tone="danger" />;
+  }
+
+  if (!digest) {
+    return <EmptyState label="EvidenceOps digest missing." />;
+  }
+
+  const progress = Math.max(0, Math.min(100, digest.evidence_progress.progress_percentage));
+  const rsJob = digest.health.rs_observation_job_status;
+  const dataJob = digest.health.cross_asset_data_refresh_job_status;
+  const derivativesJob = digest.health.derivatives_refresh_job_status;
+  const executionSafetyTotal = Object.values(digest.health.execution_safety_counts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-12">
+      <div className="min-w-0 xl:col-span-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge
+            label={digest.overall_status}
+            tone={digestStatusTone(digest.overall_status)}
+          />
+          <StatusBadge label={digest.next_action} tone="neutral" />
+        </div>
+        <div className="mt-3 rounded-lg border border-border bg-surface/60 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-muted">Candidate</div>
+          <div
+            className="mt-1 truncate font-mono text-sm text-slate-100"
+            title={digest.candidate.candidate_id}
+          >
+            {digest.candidate.candidate_id}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <StatusBadge label={digest.candidate.candidate_status} tone="neutral" />
+            <StatusBadge label={digest.candidate.package_id} tone="neutral" />
+          </div>
+        </div>
+      </div>
+
+      <div className="xl:col-span-4">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.16em] text-muted">
+              Observations
+            </div>
+            <div className="mt-1 text-lg font-semibold text-slate-100">
+              {digest.evidence_progress.independent_observations} /{" "}
+              {digest.evidence_progress.required_observations}
+            </div>
+          </div>
+          <div className="text-sm text-slate-300">{progress}%</div>
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface">
+          <div className="h-full bg-accent" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          <CompactMetric
+            label="Would Select"
+            value={String(digest.evidence_progress.would_select_count)}
+          />
+          <CompactMetric
+            label="No Signal"
+            value={String(digest.evidence_progress.no_signal_count)}
+          />
+          <CompactMetric label="Skipped" value={String(digest.evidence_progress.skipped_count)} />
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 xl:col-span-4">
+        <CompactMetric
+          label="Latest Evaluated"
+          value={formatDateTime(digest.evidence_progress.latest_evaluated_candle)}
+        />
+        <CompactMetric
+          label="Latest Aligned"
+          value={formatDateTime(digest.evidence_progress.latest_aligned_candle)}
+        />
+        <CompactMetric
+          label="RS Job"
+          value={`${rsJob.status}${rsJob.enabled ? "" : " / disabled"}`}
+        />
+        <CompactMetric
+          label="Data Refresh"
+          value={`${dataJob.status}${dataJob.enabled ? "" : " / disabled"}`}
+        />
+        <CompactMetric
+          label="Derivatives"
+          value={
+            digest.health.derivatives_healthy
+              ? "healthy"
+              : `missing ${digest.health.derivatives_missing_count}, stale ${digest.health.derivatives_stale_count}`
+          }
+        />
+        <CompactMetric
+          label="Deriv Job"
+          value={
+            derivativesJob
+              ? `${derivativesJob.status}${derivativesJob.enabled ? "" : " / disabled"}`
+              : "missing"
+          }
+        />
+        <CompactMetric
+          label="Scheduler"
+          value={digest.health.scheduler_enabled ? "enabled" : "disabled"}
+        />
+        <CompactMetric
+          label="Exec Safety"
+          value={
+            digest.health.execution_safety_clear
+              ? "clear / zero"
+              : `blocked / ${executionSafetyTotal}`
+          }
+        />
       </div>
     </div>
   );

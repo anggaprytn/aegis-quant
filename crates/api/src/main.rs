@@ -2495,6 +2495,65 @@ struct CrossAssetEvidenceReviewResponse {
     timestamp: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize)]
+struct EvidenceDigestQuery {
+    candidate_id: Option<Uuid>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EvidenceDigestCandidate {
+    candidate_id: Uuid,
+    candidate_status: String,
+    package_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EvidenceDigestProgress {
+    independent_observations: i64,
+    required_observations: i64,
+    progress_percentage: i64,
+    would_select_count: i64,
+    no_signal_count: i64,
+    skipped_count: i64,
+    latest_evaluated_candle: Option<chrono::DateTime<Utc>>,
+    latest_aligned_candle: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EvidenceDigestHealth {
+    scheduler_enabled: bool,
+    rs_observation_job_status: CrossAssetObservationHealthJobStatus,
+    cross_asset_data_refresh_job_status: CrossAssetObservationHealthJobStatus,
+    derivatives_refresh_job_status: Option<Value>,
+    derivatives_healthy: bool,
+    derivatives_missing_count: i32,
+    derivatives_stale_count: i32,
+    execution_safety_clear: bool,
+    execution_safety_counts: BTreeMap<String, i64>,
+    execution_authority: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EvidenceDigestReport {
+    overall_status: String,
+    candidate: EvidenceDigestCandidate,
+    evidence_progress: EvidenceDigestProgress,
+    health: EvidenceDigestHealth,
+    next_action: String,
+    blockers: Vec<String>,
+    warnings: Vec<String>,
+    no_mutation: bool,
+    generated_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EvidenceDigestResponse {
+    digest: EvidenceDigestReport,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
 #[derive(Serialize)]
 struct CrossAssetAcceptShadowPreviewResponse {
     preview: CrossAssetAcceptShadowPreview,
@@ -3543,6 +3602,7 @@ async fn main() {
             "/reports/operator/daily",
             post(generate_operator_report_handler),
         )
+        .route("/reports/evidence-digest", get(get_evidence_digest_handler))
         .route("/reports/operator", get(list_operator_reports_handler))
         .route("/reports/operator/:id", get(get_operator_report_handler))
         .route("/readiness/check", post(check_execution_readiness_handler))
@@ -14984,6 +15044,125 @@ async fn build_cross_asset_evidence_review_report(
         blockers,
         warnings,
         next_action,
+        no_mutation: true,
+        generated_at: now,
+    })
+}
+
+async fn latest_cross_asset_rs_candidate_record(
+    state: &AppState,
+) -> anyhow::Result<Option<ResearchCandidateRecord>> {
+    let mut records = list_research_candidates(
+        &state.db_pool,
+        &ResearchCandidateListFilters {
+            strategy_id: Some(RELATIVE_STRENGTH_CONTINUATION_V1_ID.to_string()),
+            symbol: Some("CROSS_ASSET_BASKET".to_string()),
+            ..ResearchCandidateListFilters::default()
+        },
+        1,
+    )
+    .await?;
+    Ok(records.pop())
+}
+
+async fn build_evidence_digest_report(
+    state: &AppState,
+    record: &ResearchCandidateRecord,
+    now: DateTime<Utc>,
+) -> anyhow::Result<EvidenceDigestReport> {
+    let health = build_cross_asset_observation_health_report(state, record, now).await?;
+    let evidence = build_cross_asset_evidence_review_report(state, record, now).await?;
+    let derivatives_refresh_job =
+        latest_scheduled_job_by_kind(&state.db_pool, DERIVATIVES_CONTEXT_REFRESH_JOB_KIND).await?;
+    let derivatives_job_active = derivatives_refresh_job
+        .as_ref()
+        .map(|job| {
+            job.get("enabled").and_then(Value::as_bool).unwrap_or(false)
+                && matches!(
+                    job.get("status").and_then(Value::as_str),
+                    Some("ENABLED" | "RUNNING" | "BACKING_OFF" | "ERROR")
+                )
+        })
+        .unwrap_or(false);
+    let derivatives_stale = !evidence.derivatives_healthy || !derivatives_job_active;
+    let data_job_active = cross_asset_evidence_review_job_active(&health.data_refresh_job_status);
+    let latest_candle_already_evaluated = evidence.latest_aligned_candle.is_some()
+        && evidence.latest_evaluated_candle == evidence.latest_aligned_candle;
+    let ready_for_review = evidence.candidate_status
+        == ResearchCandidateStatus::Discovered.as_str()
+        && evidence.independent_observation_count
+            >= RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS;
+
+    let overall_status = if !evidence.execution_safety_clear {
+        "EXECUTION_SAFETY_BLOCKED"
+    } else if !evidence.scheduler_enabled {
+        "SCHEDULER_DISABLED"
+    } else if !evidence.rs_job_enabled || !data_job_active {
+        "JOB_DISABLED"
+    } else if matches!(health.status, CrossAssetObservationHealthStatus::DataStale)
+        || evidence.latest_aligned_candle.is_none()
+    {
+        "STALLED_DATA"
+    } else if derivatives_stale {
+        "DERIVATIVES_STALE"
+    } else if ready_for_review {
+        "READY_FOR_HUMAN_REVIEW"
+    } else {
+        "KEEP_OBSERVING"
+    }
+    .to_string();
+
+    let next_action = match overall_status.as_str() {
+        "EXECUTION_SAFETY_BLOCKED" => "INVESTIGATE_EXECUTION_SAFETY",
+        "SCHEDULER_DISABLED" | "JOB_DISABLED" => "CHECK_SCHEDULER",
+        "DERIVATIVES_STALE" => "RUN_DERIVATIVES_REFRESH_ONCE",
+        "READY_FOR_HUMAN_REVIEW" => "READY_FOR_REVIEW",
+        "STALLED_DATA" => "CHECK_SCHEDULER",
+        _ if latest_candle_already_evaluated => "WAIT_FOR_NEXT_CANDLE",
+        _ => "RUN_RS_OBSERVE_ONCE",
+    }
+    .to_string();
+
+    let progress_percentage = if RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS <= 0 {
+        0
+    } else {
+        ((evidence.independent_observation_count * 100)
+            / RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS)
+            .clamp(0, 100)
+    };
+
+    Ok(EvidenceDigestReport {
+        overall_status,
+        candidate: EvidenceDigestCandidate {
+            candidate_id: evidence.candidate_id,
+            candidate_status: evidence.candidate_status,
+            package_id: health.package_id,
+        },
+        evidence_progress: EvidenceDigestProgress {
+            independent_observations: evidence.independent_observation_count,
+            required_observations: evidence.required_independent_observation_count,
+            progress_percentage,
+            would_select_count: evidence.would_select_count,
+            no_signal_count: evidence.no_signal_count,
+            skipped_count: evidence.skipped_count,
+            latest_evaluated_candle: evidence.latest_evaluated_candle,
+            latest_aligned_candle: evidence.latest_aligned_candle,
+        },
+        health: EvidenceDigestHealth {
+            scheduler_enabled: evidence.scheduler_enabled,
+            rs_observation_job_status: health.rs_observation_job_status,
+            cross_asset_data_refresh_job_status: health.data_refresh_job_status,
+            derivatives_refresh_job_status: derivatives_refresh_job,
+            derivatives_healthy: evidence.derivatives_healthy && derivatives_job_active,
+            derivatives_missing_count: evidence.derivatives_freshness.missing_count,
+            derivatives_stale_count: evidence.derivatives_freshness.stale_count,
+            execution_safety_clear: evidence.execution_safety_clear,
+            execution_safety_counts: evidence.execution_safety,
+            execution_authority: evidence.derivatives_freshness.execution_authority,
+        },
+        next_action,
+        blockers: evidence.blockers,
+        warnings: evidence.warnings,
         no_mutation: true,
         generated_at: now,
     })
@@ -31836,6 +32015,140 @@ async fn get_cross_asset_candidate_evidence_review_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "failed_to_build_cross_asset_evidence_review",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_evidence_digest_handler(
+    State(state): State<AppState>,
+    Query(query): Query<EvidenceDigestQuery>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    match current_actor(actor) {
+        Some(value)
+            if matches!(
+                value.role,
+                UserRole::Owner | UserRole::Operator | UserRole::Viewer
+            ) => {}
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only VIEWER, OPERATOR, or OWNER can read evidence digest."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    }
+
+    let record =
+        if let Some(candidate_id) = query.candidate_id {
+            match get_research_candidate(&state.db_pool, candidate_id).await {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: "evidence_digest_candidate_not_found",
+                            message: "Evidence digest candidate was not found.".to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: now,
+                        }),
+                    )
+                        .into_response()
+                }
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_query_evidence_digest_candidate",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: now,
+                        }),
+                    )
+                        .into_response()
+                }
+            }
+        } else {
+            match latest_cross_asset_rs_candidate_record(&state).await {
+                Ok(Some(record)) => record,
+                Ok(None) => return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "evidence_digest_candidate_not_found",
+                        message:
+                            "No relative_strength_continuation_v1 cross-asset candidate was found."
+                                .to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response(),
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "failed_to_query_evidence_digest_candidate",
+                            message: err.to_string(),
+                            request_id: request.request_id,
+                            correlation_id: request.correlation_id,
+                            timestamp: now,
+                        }),
+                    )
+                        .into_response()
+                }
+            }
+        };
+
+    if record.strategy_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID
+        || !record.symbol.eq_ignore_ascii_case("CROSS_ASSET_BASKET")
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "not_cross_asset_relative_strength_candidate",
+                message: "Candidate is not a relative_strength_continuation_v1 cross-asset research candidate.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    match build_evidence_digest_report(&state, &record, now).await {
+        Ok(digest) => (
+            StatusCode::OK,
+            Json(EvidenceDigestResponse {
+                digest,
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_build_evidence_digest",
                 message: err.to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
