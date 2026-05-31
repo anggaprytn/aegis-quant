@@ -11366,34 +11366,40 @@ function BacktestRunsTable({
   }
 
   return (
-    <div className="space-y-2">
-      {runs.map((run) => (
-        <button
-          key={run.run_id}
-          className={cn(
-            "w-full rounded-xl border p-3 text-left transition",
-            selectedId === run.run_id
-              ? "border-accent bg-accent/5"
-              : "border-border bg-surface/60 hover:border-slate-500",
-          )}
-          onClick={() => onSelect(run.run_id)}
-        >
-          <div className="grid gap-2 md:grid-cols-7">
-            <div className="font-mono text-xs">{shortenId(run.run_id)}</div>
-            <div>{run.strategy_id}</div>
-            <div>{run.symbol}</div>
-            <div>{run.status}</div>
-            <div>PnL {run.pnl}</div>
-            <div>
-              signals {run.raw_signal_count ?? 0}/{run.executed_trade_count ?? run.trade_count}
+    <div className="overflow-x-auto pb-1">
+      <div className="min-w-[820px] space-y-2">
+        {runs.map((run) => (
+          <button
+            key={run.run_id}
+            className={cn(
+              "w-full rounded-xl border p-3 text-left transition",
+              selectedId === run.run_id
+                ? "border-accent bg-accent/5"
+                : "border-border bg-surface/60 hover:border-slate-500",
+            )}
+            onClick={() => onSelect(run.run_id)}
+          >
+            <div className="grid grid-cols-[minmax(7rem,0.9fr)_minmax(14rem,1.5fr)_minmax(5.5rem,0.7fr)_minmax(7rem,0.8fr)_minmax(6rem,0.7fr)_minmax(7.5rem,0.9fr)_minmax(9rem,1fr)] gap-2 whitespace-nowrap">
+              <div className="truncate font-mono text-xs" title={run.run_id}>
+                {shortenId(run.run_id)}
+              </div>
+              <div className="truncate" title={run.strategy_id}>
+                {run.strategy_id}
+              </div>
+              <div>{run.symbol}</div>
+              <div>{run.status}</div>
+              <div>PnL {run.pnl}</div>
+              <div>
+                signals {run.raw_signal_count ?? 0}/{run.executed_trade_count ?? run.trade_count}
+              </div>
+              <div>
+                suppressed c{run.cooldown_suppressed_count ?? 0}/p
+                {run.open_position_suppressed_count ?? 0}
+              </div>
             </div>
-            <div>
-              suppressed c{run.cooldown_suppressed_count ?? 0}/p
-              {run.open_position_suppressed_count ?? 0}
-            </div>
-          </div>
-        </button>
-      ))}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
