@@ -1,3 +1,5 @@
+![Aegis Cover](https://testing-1355450658.cos.ap-jakarta.myqcloud.com/aegis.webp)
+
 # Aegis Quant
 
 Research control plane and deterministic execution infrastructure for risk-gated market systems.
@@ -197,9 +199,9 @@ Experiment plan runner semantics:
 9. Optional shadow runner:
    `docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
 10. Optional derived candle aggregation worker:
-   `docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator`
-10. Optional Prometheus:
-   `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
+    `docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator`
+11. Optional Prometheus:
+    `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
 
 Local dashboard auth note:
 `AEGIS_CORS_ALLOWED_ORIGINS` defaults to `http://localhost:3001,http://127.0.0.1:3001` so the dashboard can call the API at `http://localhost:3000` and receive the refresh-token cookie on `/auth/login` and `/auth/refresh`. For production, add explicit origins such as `https://aegis.anggaprytn.com` via env instead of using `*`.
