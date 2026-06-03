@@ -3,6 +3,7 @@ services:
     image: postgres:16
     container_name: aegis-quant-postgres
     restart: unless-stopped
+    shm_size: "1gb"
     env_file:
       - ../.env
     environment:
@@ -39,7 +40,7 @@ services:
       [
         "sh",
         "-ec",
-        "find crates/db/migrations -maxdepth 1 -type f -name '*.sql' | sort | while IFS= read -r f; do echo \"==> applying $$f\"; psql -h postgres -U ${POSTGRES_USER:-aegis} -d ${POSTGRES_DB:-aegis_quant} -v ON_ERROR_STOP=1 -f \"$$f\"; done",
+        'find crates/db/migrations -maxdepth 1 -type f -name ''*.sql'' | sort | while IFS= read -r f; do echo "==> applying $$f"; psql -h postgres -U ${POSTGRES_USER:-aegis} -d ${POSTGRES_DB:-aegis_quant} -v ON_ERROR_STOP=1 -f "$$f"; done',
       ]
 
   api:
