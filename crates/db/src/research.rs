@@ -134,6 +134,18 @@ pub struct CrossAssetShadowObservationRankingRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateReviewEventRecord {
+    pub id: Uuid,
+    pub candidate_id: Uuid,
+    pub decision: String,
+    pub notes: Option<String>,
+    pub actor: String,
+    pub actor_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub correlation_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResearchCampaignRecord {
     pub id: Uuid,
     pub request: Value,
@@ -4935,6 +4947,19 @@ fn map_cross_asset_shadow_observation_ranking(
     }
 }
 
+fn map_candidate_review_event(row: sqlx::postgres::PgRow) -> CandidateReviewEventRecord {
+    CandidateReviewEventRecord {
+        id: row.get("id"),
+        candidate_id: row.get("candidate_id"),
+        decision: row.get("decision"),
+        notes: row.get("notes"),
+        actor: row.get("actor"),
+        actor_id: row.get("actor_id"),
+        created_at: row.get("created_at"),
+        correlation_id: row.get("correlation_id"),
+    }
+}
+
 pub async fn get_latest_cross_asset_shadow_observation(
     pool: &PgPool,
     candidate_id: Uuid,
@@ -5142,6 +5167,75 @@ pub async fn list_cross_asset_shadow_observation_rankings(
         .into_iter()
         .map(map_cross_asset_shadow_observation_ranking)
         .collect())
+}
+
+pub async fn insert_candidate_review_event(
+    pool: &PgPool,
+    event: &CandidateReviewEventRecord,
+) -> Result<CandidateReviewEventRecord> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO candidate_review_events (
+            id,
+            candidate_id,
+            decision,
+            notes,
+            actor,
+            actor_id,
+            created_at,
+            correlation_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING
+            id,
+            candidate_id,
+            decision,
+            notes,
+            actor,
+            actor_id,
+            created_at,
+            correlation_id
+        "#,
+    )
+    .bind(event.id)
+    .bind(event.candidate_id)
+    .bind(&event.decision)
+    .bind(&event.notes)
+    .bind(&event.actor)
+    .bind(event.actor_id)
+    .bind(event.created_at)
+    .bind(event.correlation_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(map_candidate_review_event(row))
+}
+
+pub async fn list_candidate_review_events(
+    pool: &PgPool,
+    candidate_id: Uuid,
+) -> Result<Vec<CandidateReviewEventRecord>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            id,
+            candidate_id,
+            decision,
+            notes,
+            actor,
+            actor_id,
+            created_at,
+            correlation_id
+        FROM candidate_review_events
+        WHERE candidate_id = $1
+        ORDER BY created_at DESC, id DESC
+        "#,
+    )
+    .bind(candidate_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(map_candidate_review_event).collect())
 }
 
 pub async fn summarize_cross_asset_shadow_observations(

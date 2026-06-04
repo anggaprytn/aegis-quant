@@ -45,6 +45,8 @@ import type {
   ExchangeTestnetRepairsResponse,
   ExchangeTestnetStatusResponse,
   ExchangeTestnetSymbolsResponse,
+  CandidateReviewDecisionRequest,
+  CandidateReviewDecisionResponse,
   EvidenceDigestResponse,
   ExecutionReadinessRequest,
   ExecutionReadinessResponse,
@@ -1293,6 +1295,14 @@ export const api = {
     request<EvidenceDigestResponse>("/reports/evidence-digest", undefined, {
       candidate_id: candidateId,
     }),
+  createCandidateReviewDecision: (candidateId: string, payload: CandidateReviewDecisionRequest) =>
+    request<CandidateReviewDecisionResponse>(
+      `/research/cross-asset/candidates/${candidateId}/review-decision`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
   checkExecutionReadiness: (payload: ExecutionReadinessRequest) =>
     request<ExecutionReadinessResponse>("/readiness/check", {
       method: "POST",

@@ -41,6 +41,7 @@ import type {
   ResearchBatchCandidateSummary,
   ResearchBatchResult,
   ResearchBatchTriage,
+  CandidateReviewDecision,
   EvidenceDigest,
   EvidenceDigestStatus,
   ResearchCampaignBatchResult,
@@ -10136,6 +10137,32 @@ function EvidenceOpsDigestPanel({
   loading?: boolean;
   error?: string;
 }) {
+  const queryClient = useQueryClient();
+  const [activeDialog, setActiveDialog] = useState<
+    "review" | "keep-research-only" | "extend-observation" | null
+  >(null);
+  const [lastReviewEvent, setLastReviewEvent] = useState<string | null>(null);
+  const reviewDecisionMutation = useMutation({
+    mutationFn: async (decision: CandidateReviewDecision) => {
+      if (!digest) {
+        throw new Error("EvidenceOps digest is unavailable.");
+      }
+      return api.createCandidateReviewDecision(digest.candidate.candidate_id, {
+        decision,
+        extension_observations: decision === "EXTEND_OBSERVATION" ? 30 : undefined,
+      });
+    },
+    onSuccess: async (response) => {
+      setActiveDialog(null);
+      setLastReviewEvent(
+        `${response.result.event.decision} recorded at ${formatDateTime(
+          response.result.event.created_at,
+        )}`,
+      );
+      await queryClient.invalidateQueries({ queryKey: ["evidenceops-digest"] });
+    },
+  });
+
   if (loading) {
     return <EmptyState label="Loading EvidenceOps digest..." />;
   }
@@ -10156,6 +10183,11 @@ function EvidenceOpsDigestPanel({
     (total, count) => total + count,
     0,
   );
+  const reviewActionsVisible =
+    digest.evidence_progress.independent_observations >=
+      digest.evidence_progress.required_observations &&
+    digest.overall_status === "READY_FOR_HUMAN_REVIEW" &&
+    digest.next_action === "READY_FOR_REVIEW";
 
   return (
     <div className="grid gap-4 xl:grid-cols-12">
@@ -10256,7 +10288,292 @@ function EvidenceOpsDigestPanel({
               : `blocked / ${executionSafetyTotal}`
           }
         />
+        <CompactMetric label="Authority" value={digest.health.execution_authority} />
       </div>
+
+      {reviewActionsVisible ? (
+        <div className="xl:col-span-12">
+          <div className="rounded-lg border border-border bg-surface/60 px-3 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.16em] text-muted">
+                  Review Actions
+                </div>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  <StatusBadge label="execution_authority=NONE" tone="warning" />
+                  <StatusBadge label="human review only" tone="neutral" />
+                  <StatusBadge label="no execution mutation" tone="neutral" />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <ActionButton
+                  label="Review Evidence"
+                  tone="warning"
+                  onClick={() => setActiveDialog("review")}
+                />
+                <ActionButton
+                  label="Keep Research Only"
+                  tone="ok"
+                  onClick={() => setActiveDialog("keep-research-only")}
+                  busy={
+                    reviewDecisionMutation.isPending &&
+                    activeDialog === "keep-research-only"
+                  }
+                />
+                <ActionButton
+                  label="Extend Observation"
+                  tone="warning"
+                  onClick={() => setActiveDialog("extend-observation")}
+                  busy={
+                    reviewDecisionMutation.isPending &&
+                    activeDialog === "extend-observation"
+                  }
+                />
+              </div>
+            </div>
+            <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+              Human review records an audit event only. It does not accept shadow, enable testnet,
+              promote, create paper orders, or change execution eligibility.
+            </div>
+            <InlineStatus
+              error={getErrorMessage(reviewDecisionMutation.error)}
+              success={lastReviewEvent ?? undefined}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {activeDialog === "review" ? (
+        <EvidenceReviewDialog digest={digest} onClose={() => setActiveDialog(null)} />
+      ) : null}
+      {activeDialog === "keep-research-only" ? (
+        <EvidenceReviewDecisionDialog
+          title="Keep Research Only"
+          confirmationText="Mark this candidate as reviewed and keep it as research-only."
+          detail="This creates a review event only and leaves execution eligibility unchanged."
+          busy={reviewDecisionMutation.isPending}
+          error={getErrorMessage(reviewDecisionMutation.error)}
+          onCancel={() => setActiveDialog(null)}
+          onConfirm={() => reviewDecisionMutation.mutate("KEEP_RESEARCH_ONLY")}
+        />
+      ) : null}
+      {activeDialog === "extend-observation" ? (
+        <EvidenceReviewDecisionDialog
+          title="Extend Observation"
+          confirmationText="Extend passive observation by 30 observations."
+          detail="Default extension is +30 observations. This records an audit event only and does not create or promote a candidate."
+          busy={reviewDecisionMutation.isPending}
+          error={getErrorMessage(reviewDecisionMutation.error)}
+          onCancel={() => setActiveDialog(null)}
+          onConfirm={() => reviewDecisionMutation.mutate("EXTEND_OBSERVATION")}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function EvidenceReviewDialog({
+  digest,
+  onClose,
+}: {
+  digest: EvidenceDigest;
+  onClose: () => void;
+}) {
+  const executionSafetyTotal = Object.values(digest.health.execution_safety_counts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  const safetyRows = Object.entries(digest.health.execution_safety_counts).map(([name, count]) => [
+    toTitleCase(name),
+    String(count),
+  ]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-full w-full max-w-3xl overflow-y-auto rounded-xl border border-border bg-panel p-4 shadow-panel"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">
+              Review Evidence
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <StatusBadge label={digest.overall_status} tone={digestStatusTone(digest.overall_status)} />
+              <StatusBadge label="execution_authority=NONE" tone="warning" />
+              <StatusBadge label="read-only" tone="neutral" />
+            </div>
+          </div>
+          <button
+            className="rounded-lg border border-border bg-surface px-3 py-2 text-sm text-slate-200"
+            type="button"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <CompactMetric label="Candidate ID" value={digest.candidate.candidate_id} />
+          <CompactMetric label="Package ID" value={digest.candidate.package_id} />
+          <CompactMetric
+            label="Observations"
+            value={`${digest.evidence_progress.independent_observations} / ${digest.evidence_progress.required_observations}`}
+          />
+          <CompactMetric
+            label="WOULD_SELECT"
+            value={String(digest.evidence_progress.would_select_count)}
+          />
+          <CompactMetric
+            label="NO_SIGNAL"
+            value={String(digest.evidence_progress.no_signal_count)}
+          />
+          <CompactMetric
+            label="Latest Evaluated Candle"
+            value={formatDateTime(digest.evidence_progress.latest_evaluated_candle)}
+          />
+          <CompactMetric
+            label="Derivatives Health"
+            value={
+              digest.health.derivatives_healthy
+                ? "healthy"
+                : `missing ${digest.health.derivatives_missing_count}, stale ${digest.health.derivatives_stale_count}`
+            }
+          />
+          <CompactMetric
+            label="Execution Safety"
+            value={
+              digest.health.execution_safety_clear
+                ? "clear / zero"
+                : `blocked / ${executionSafetyTotal}`
+            }
+          />
+        </div>
+
+        <div className="mt-4 rounded-lg border border-border bg-surface/60 px-3 py-3">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-muted">
+            Recommendation
+          </div>
+          <div className="mt-1 text-sm text-slate-100">{digest.recommendation}</div>
+        </div>
+
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <ReviewTextList title="Blockers" items={digest.blockers} empty="No blockers." tone="danger" />
+          <ReviewTextList title="Warnings" items={digest.warnings} empty="No warnings." tone="warning" />
+        </div>
+
+        <div className="mt-3 rounded-lg border border-border bg-surface/60 px-3 py-3">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-muted">
+            Execution Safety Counts
+          </div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {safetyRows.map(([name, count]) => (
+              <CompactMetric key={name} label={name} value={count} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EvidenceReviewDecisionDialog({
+  title,
+  confirmationText,
+  detail,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  confirmationText: string;
+  detail: string;
+  busy?: boolean;
+  error?: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-xl rounded-xl border border-border bg-panel p-4 shadow-panel"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-200">
+          {title}
+        </div>
+        <div className="mt-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+          {confirmationText}
+        </div>
+        <div className="mt-3 text-sm text-slate-300">{detail}</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <StatusBadge label="review event only" tone="neutral" />
+          <StatusBadge label="execution eligibility unchanged" tone="warning" />
+          <StatusBadge label="execution_authority=NONE" tone="warning" />
+        </div>
+        <InlineStatus error={error} />
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <button
+            className="rounded-lg border border-border bg-surface px-4 py-2 text-sm text-slate-200"
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <ActionButton
+            label="Confirm"
+            tone="warning"
+            onClick={onConfirm}
+            busy={busy}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewTextList({
+  title,
+  items,
+  empty,
+  tone,
+}: {
+  title: string;
+  items: string[];
+  empty: string;
+  tone: "danger" | "warning";
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-3 py-3 text-sm",
+        tone === "danger" && "border-red-400/40 bg-red-500/10 text-red-100",
+        tone === "warning" && "border-amber-400/40 bg-amber-500/10 text-amber-100",
+      )}
+    >
+      <div className="text-[10px] uppercase tracking-[0.16em] opacity-80">{title}</div>
+      {items.length ? (
+        <ul className="mt-2 space-y-1">
+          {items.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-2">{empty}</div>
+      )}
     </div>
   );
 }

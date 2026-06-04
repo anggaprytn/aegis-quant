@@ -4147,6 +4147,7 @@ export type EvidenceDigest = {
     execution_authority: string;
   };
   next_action: EvidenceDigestNextAction;
+  recommendation: string;
   blockers: string[];
   warnings: string[];
   no_mutation: boolean;
@@ -4155,6 +4156,42 @@ export type EvidenceDigest = {
 
 export type EvidenceDigestResponse = {
   digest: EvidenceDigest;
+  request_id: string;
+  correlation_id: string;
+  timestamp: string;
+};
+
+export type CandidateReviewDecision =
+  | "KEEP_RESEARCH_ONLY"
+  | "EXTEND_OBSERVATION";
+
+export type CandidateReviewDecisionRequest = {
+  decision: CandidateReviewDecision;
+  notes?: string | null;
+  extension_observations?: number | null;
+  correlation_id?: string | null;
+};
+
+export type CandidateReviewEvent = {
+  id: string;
+  candidate_id: string;
+  decision: CandidateReviewDecision;
+  notes: string | null;
+  actor: string;
+  actor_id: string | null;
+  created_at: string;
+  correlation_id: string | null;
+};
+
+export type CandidateReviewDecisionResponse = {
+  result: {
+    event: CandidateReviewEvent;
+    candidate_status_before: string;
+    candidate_status_after: string;
+    execution_authority: string;
+    no_execution_mutation: boolean;
+    extension_observations: number | null;
+  };
   request_id: string;
   correlation_id: string;
   timestamp: string;

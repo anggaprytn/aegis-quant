@@ -228,13 +228,14 @@ use db::{
     get_testnet_promotion_funnel_summary, get_testnet_promotion_lifecycle_breakdown,
     get_testnet_promotion_outcome_breakdown, get_testnet_shadow_promotion_by_id,
     get_testnet_shadow_run_by_id, get_user_by_email, get_user_by_id, insert_audit_log,
-    insert_cross_asset_research_run, insert_cross_asset_research_trades,
-    insert_cross_asset_research_windows, insert_cross_asset_robustness_matrix_cells,
-    insert_cross_asset_robustness_matrix_run, insert_cross_asset_shadow_observation,
-    insert_exchange_testnet_order, insert_exchange_testnet_repair_action,
-    insert_market_data_repair_range, insert_market_data_repair_run, insert_paper_account,
-    insert_paper_equity_snapshot, insert_research_batch, insert_research_batch_step,
-    insert_research_campaign, insert_research_campaign_batch, insert_research_candidate_proposal,
+    insert_candidate_review_event, insert_cross_asset_research_run,
+    insert_cross_asset_research_trades, insert_cross_asset_research_windows,
+    insert_cross_asset_robustness_matrix_cells, insert_cross_asset_robustness_matrix_run,
+    insert_cross_asset_shadow_observation, insert_exchange_testnet_order,
+    insert_exchange_testnet_repair_action, insert_market_data_repair_range,
+    insert_market_data_repair_run, insert_paper_account, insert_paper_equity_snapshot,
+    insert_research_batch, insert_research_batch_step, insert_research_campaign,
+    insert_research_campaign_batch, insert_research_candidate_proposal,
     insert_research_candidate_qualification_evaluation, insert_research_experiment_plan,
     insert_research_experiment_plan_run, insert_research_hypothesis,
     insert_research_regime_calibration, insert_research_regime_dataset,
@@ -2540,6 +2541,7 @@ struct EvidenceDigestReport {
     evidence_progress: EvidenceDigestProgress,
     health: EvidenceDigestHealth,
     next_action: String,
+    recommendation: String,
     blockers: Vec<String>,
     warnings: Vec<String>,
     no_mutation: bool,
@@ -2549,6 +2551,48 @@ struct EvidenceDigestReport {
 #[derive(Serialize, Deserialize)]
 struct EvidenceDigestResponse {
     digest: EvidenceDigestReport,
+    request_id: String,
+    correlation_id: String,
+    timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum CandidateReviewDecision {
+    KeepResearchOnly,
+    ExtendObservation,
+}
+
+impl CandidateReviewDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::KeepResearchOnly => "KEEP_RESEARCH_ONLY",
+            Self::ExtendObservation => "EXTEND_OBSERVATION",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CandidateReviewDecisionRequest {
+    decision: CandidateReviewDecision,
+    notes: Option<String>,
+    extension_observations: Option<i64>,
+    correlation_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct CandidateReviewDecisionResult {
+    event: db::CandidateReviewEventRecord,
+    candidate_status_before: String,
+    candidate_status_after: String,
+    execution_authority: String,
+    no_execution_mutation: bool,
+    extension_observations: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct CandidateReviewDecisionResponse {
+    result: CandidateReviewDecisionResult,
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
@@ -3529,6 +3573,10 @@ async fn main() {
         .route(
             "/research/cross-asset/candidates/:id/accept-shadow/preview",
             get(get_cross_asset_candidate_accept_shadow_preview_handler),
+        )
+        .route(
+            "/research/cross-asset/candidates/:id/review-decision",
+            post(create_candidate_review_decision_handler),
         )
         .route(
             "/research/cross-asset/candidates/:id/shadow-observation/preview",
@@ -15161,6 +15209,7 @@ async fn build_evidence_digest_report(
             execution_authority: evidence.derivatives_freshness.execution_authority,
         },
         next_action,
+        recommendation: evidence.recommendation,
         blockers: evidence.blockers,
         warnings: evidence.warnings,
         no_mutation: true,
@@ -32159,6 +32208,208 @@ async fn get_evidence_digest_handler(
     }
 }
 
+async fn create_candidate_review_decision_handler(
+    State(state): State<AppState>,
+    Path(candidate_id): Path<Uuid>,
+    request: Option<Extension<RequestContext>>,
+    actor: Option<Extension<AuthenticatedActor>>,
+    Json(payload): Json<CandidateReviewDecisionRequest>,
+) -> impl IntoResponse {
+    let request = request_context(request);
+    let now = Utc::now();
+    let actor = match current_actor(actor) {
+        Some(value) if matches!(value.role, UserRole::Owner | UserRole::Operator) => value,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "forbidden",
+                    message: "Only OPERATOR or OWNER can create candidate review decision events."
+                        .to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let record = match get_research_candidate(&state.db_pool, candidate_id).await {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "candidate_review_candidate_not_found",
+                    message: "Candidate was not found.".to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_query_candidate_review_candidate",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    if record.strategy_id != RELATIVE_STRENGTH_CONTINUATION_V1_ID
+        || !record.symbol.eq_ignore_ascii_case("CROSS_ASSET_BASKET")
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "not_cross_asset_relative_strength_candidate",
+                message: "Candidate is not a relative_strength_continuation_v1 cross-asset research candidate.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let digest = match build_evidence_digest_report(&state, &record, now).await {
+        Ok(digest) => digest,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed_to_build_candidate_review_digest",
+                    message: err.to_string(),
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+    };
+    if digest.overall_status != "READY_FOR_HUMAN_REVIEW"
+        || digest.next_action != "READY_FOR_REVIEW"
+        || digest.evidence_progress.independent_observations
+            < digest.evidence_progress.required_observations
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "candidate_not_ready_for_human_review",
+                message: "Candidate must complete required observations and be READY_FOR_HUMAN_REVIEW before recording a review decision.".to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
+
+    let extension_observations = match payload.decision {
+        CandidateReviewDecision::KeepResearchOnly => None,
+        CandidateReviewDecision::ExtendObservation => {
+            let value = payload.extension_observations.unwrap_or(30);
+            if value <= 0 {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(ErrorResponse {
+                        error: "invalid_extension_observations",
+                        message: "extension_observations must be greater than zero.".to_string(),
+                        request_id: request.request_id,
+                        correlation_id: request.correlation_id,
+                        timestamp: now,
+                    }),
+                )
+                    .into_response();
+            }
+            Some(value)
+        }
+    };
+    let notes = payload.notes.clone().or_else(|| match payload.decision {
+        CandidateReviewDecision::KeepResearchOnly => {
+            Some("Mark this candidate as reviewed and keep it as research-only.".to_string())
+        }
+        CandidateReviewDecision::ExtendObservation => Some(format!(
+            "Extend passive observation by {} observations; review event only.",
+            extension_observations.unwrap_or(30)
+        )),
+    });
+    let correlation_id = payload
+        .correlation_id
+        .unwrap_or_else(|| parse_correlation_id(&request.correlation_id));
+    let event = db::CandidateReviewEventRecord {
+        id: Uuid::new_v4(),
+        candidate_id,
+        decision: payload.decision.as_str().to_string(),
+        notes,
+        actor: format!("user:{}", actor.email),
+        actor_id: Some(actor.user_id),
+        created_at: now,
+        correlation_id: Some(correlation_id),
+    };
+
+    match insert_candidate_review_event(&state.db_pool, &event).await {
+        Ok(event) => {
+            let candidate_status_after =
+                match get_research_candidate(&state.db_pool, candidate_id).await {
+                    Ok(Some(after)) => after.status,
+                    Ok(None) => record.status.clone(),
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: "failed_to_query_candidate_after_review_event",
+                                message: err.to_string(),
+                                request_id: request.request_id,
+                                correlation_id: request.correlation_id,
+                                timestamp: now,
+                            }),
+                        )
+                            .into_response()
+                    }
+                };
+            (
+                StatusCode::OK,
+                Json(CandidateReviewDecisionResponse {
+                    result: CandidateReviewDecisionResult {
+                        event,
+                        candidate_status_before: record.status,
+                        candidate_status_after,
+                        execution_authority: digest.health.execution_authority,
+                        no_execution_mutation: true,
+                        extension_observations,
+                    },
+                    request_id: request.request_id,
+                    correlation_id: request.correlation_id,
+                    timestamp: now,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "failed_to_persist_candidate_review_event",
+                message: err.to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn get_cross_asset_candidate_accept_shadow_preview_handler(
     State(state): State<AppState>,
     Path(candidate_id): Path<Uuid>,
@@ -36626,9 +36877,9 @@ mod tests {
         build_cors_layer, build_research_candidate_evidence_bundle,
         build_shadow_promotion_proposed_runner_config, cancel_exchange_testnet_order,
         candidate_promotion_readiness, check_execution_readiness_handler,
-        compression_breakout_refinement_handler, evaluate_strategy_candidate_observation_handler,
-        generate_operator_report_handler, generate_testnet_client_order_id,
-        get_cross_asset_candidate_accept_shadow_preview_handler,
+        compression_breakout_refinement_handler, create_candidate_review_decision_handler,
+        evaluate_strategy_candidate_observation_handler, generate_operator_report_handler,
+        generate_testnet_client_order_id, get_cross_asset_candidate_accept_shadow_preview_handler,
         get_cross_asset_candidate_dossier_handler,
         get_cross_asset_candidate_observation_health_handler,
         get_cross_asset_candidate_qualification_handler,
@@ -38054,6 +38305,10 @@ mod tests {
             .route(
                 "/research/cross-asset/candidates/:id/accept-shadow/preview",
                 get(get_cross_asset_candidate_accept_shadow_preview_handler),
+            )
+            .route(
+                "/research/cross-asset/candidates/:id/review-decision",
+                post(create_candidate_review_decision_handler),
             )
             .route(
                 "/research/cross-asset/candidates/:id/shadow-observation/preview",
@@ -39769,6 +40024,54 @@ mod tests {
         candidate
     }
 
+    async fn insert_cross_asset_review_ready_observations(pool: &PgPool, candidate_id: Uuid) {
+        let start = Utc::now() - chrono::Duration::hours(4 * 31);
+        for index in 0..30_i64 {
+            let evaluated_candle_time = start + chrono::Duration::hours(4 * index);
+            sqlx::query(
+                r#"
+                INSERT INTO cross_asset_candidate_shadow_observations (
+                    id,
+                    candidate_id,
+                    package_id,
+                    evaluated_candle_time,
+                    decision,
+                    status,
+                    selected_symbol,
+                    rank_snapshot_json,
+                    reason,
+                    warnings_json,
+                    created_at,
+                    correlation_id
+                )
+                VALUES (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    'NO_SIGNAL',
+                    'COMPLETED',
+                    NULL,
+                    '[]'::jsonb,
+                    'review readiness fixture',
+                    '[]'::jsonb,
+                    $5,
+                    $6
+                )
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(candidate_id)
+            .bind(aegis_core::RELATIVE_STRENGTH_CONTINUATION_V1_ID)
+            .bind(evaluated_candle_time)
+            .bind(evaluated_candle_time + chrono::Duration::minutes(1))
+            .bind(Uuid::new_v4())
+            .execute(pool)
+            .await
+            .expect("insert review-ready observation");
+        }
+    }
+
     async fn insert_cross_asset_shadow_observation_fresh_fixture_candles(pool: &PgPool) {
         let now = Utc::now();
         let aligned_hour = (now.hour() / 4) * 4;
@@ -41143,6 +41446,164 @@ mod tests {
             Some(1)
         );
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before).await;
+    }
+
+    #[tokio::test]
+    async fn cross_asset_review_decision_records_audit_event_without_execution_mutation() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let candidate = insert_cross_asset_shadow_observation_candidate(&test_db.pool).await;
+        insert_cross_asset_shadow_observation_fresh_fixture_candles(&test_db.pool).await;
+        insert_cross_asset_review_ready_observations(&test_db.pool, candidate.id).await;
+        upsert_enabled_observation_health_jobs(&test_db.pool).await;
+        upsert_derivatives_context_refresh_job(&test_db.pool).await;
+        insert_derivatives_freshness_fixtures(&test_db.pool).await;
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let actor = AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "cross-asset-review-operator@example.com".to_string(),
+            role: UserRole::Operator,
+            session_id: None,
+        };
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let before_review_events = count_table_rows(&test_db.pool, "candidate_review_events").await;
+        let before_candidate_status: String =
+            sqlx::query_scalar("SELECT status FROM research_candidates WHERE id = $1")
+                .bind(candidate.id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("candidate status before review");
+
+        let mut digest_request = cli_request(
+            "GET",
+            &format!("/reports/evidence-digest?candidate_id={}", candidate.id),
+            json!({}),
+        );
+        digest_request.extensions_mut().insert(actor.clone());
+        let digest_response = app
+            .clone()
+            .oneshot(digest_request)
+            .await
+            .expect("evidence digest response");
+        assert_eq!(digest_response.status(), StatusCode::OK);
+        let digest_payload = response_json::<Value>(digest_response).await;
+        assert_eq!(
+            digest_payload["digest"]["overall_status"].as_str(),
+            Some("READY_FOR_HUMAN_REVIEW")
+        );
+        assert_eq!(
+            digest_payload["digest"]["health"]["execution_authority"].as_str(),
+            Some("NONE")
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["independent_observations"].as_i64(),
+            Some(30)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["no_signal_count"].as_i64(),
+            Some(30)
+        );
+
+        let mut keep_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/review-decision",
+                candidate.id
+            ),
+            json!({
+                "decision": "KEEP_RESEARCH_ONLY",
+                "notes": "operator reviewed no-signal evidence"
+            }),
+        );
+        keep_request.extensions_mut().insert(actor.clone());
+        let keep_response = app
+            .clone()
+            .oneshot(keep_request)
+            .await
+            .expect("keep research-only response");
+        assert_eq!(keep_response.status(), StatusCode::OK);
+        let keep_payload = response_json::<Value>(keep_response).await;
+        assert_eq!(
+            keep_payload["result"]["event"]["decision"].as_str(),
+            Some("KEEP_RESEARCH_ONLY")
+        );
+        assert_eq!(
+            keep_payload["result"]["candidate_status_before"].as_str(),
+            Some(before_candidate_status.as_str())
+        );
+        assert_eq!(
+            keep_payload["result"]["candidate_status_after"].as_str(),
+            Some(before_candidate_status.as_str())
+        );
+        assert_eq!(
+            keep_payload["result"]["execution_authority"].as_str(),
+            Some("NONE")
+        );
+        assert_eq!(
+            keep_payload["result"]["no_execution_mutation"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            count_table_rows(&test_db.pool, "candidate_review_events").await,
+            before_review_events + 1
+        );
+
+        let mut extend_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/review-decision",
+                candidate.id
+            ),
+            json!({ "decision": "EXTEND_OBSERVATION" }),
+        );
+        extend_request.extensions_mut().insert(actor.clone());
+        let extend_response = app
+            .clone()
+            .oneshot(extend_request)
+            .await
+            .expect("extend observation response");
+        assert_eq!(extend_response.status(), StatusCode::OK);
+        let extend_payload = response_json::<Value>(extend_response).await;
+        assert_eq!(
+            extend_payload["result"]["event"]["decision"].as_str(),
+            Some("EXTEND_OBSERVATION")
+        );
+        assert_eq!(
+            extend_payload["result"]["extension_observations"].as_i64(),
+            Some(30)
+        );
+
+        let mut rejected_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/review-decision",
+                candidate.id
+            ),
+            json!({ "decision": "ACCEPT_SHADOW" }),
+        );
+        rejected_request.extensions_mut().insert(actor);
+        let rejected_response = app
+            .clone()
+            .oneshot(rejected_request)
+            .await
+            .expect("rejected review decision response");
+        assert_eq!(rejected_response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let after_candidate_status: String =
+            sqlx::query_scalar("SELECT status FROM research_candidates WHERE id = $1")
+                .bind(candidate.id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("candidate status after review");
+        assert_eq!(after_candidate_status, before_candidate_status);
+        assert_eq!(
+            count_table_rows(&test_db.pool, "candidate_review_events").await,
+            before_review_events + 2
+        );
+        assert_eq!(count_research_candidate_reviews(&test_db.pool).await, 0);
+        assert_eq!(count_research_candidate_events(&test_db.pool).await, 1);
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
     }
 
     #[tokio::test]
