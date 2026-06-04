@@ -32297,16 +32297,25 @@ async fn create_candidate_review_decision_handler(
                 .into_response()
         }
     };
-    if digest.overall_status != "READY_FOR_HUMAN_REVIEW"
-        || digest.next_action != "READY_FOR_REVIEW"
-        || digest.evidence_progress.independent_observations
-            < digest.evidence_progress.required_observations
-    {
+    let evidence_threshold_met = digest.evidence_progress.independent_observations
+        >= digest.evidence_progress.required_observations;
+    let execution_safety_counts_clear = digest
+        .health
+        .execution_safety_counts
+        .values()
+        .all(|count| *count == 0);
+    let reviewable_evidence = digest.candidate.candidate_status
+        == ResearchCandidateStatus::Discovered.as_str()
+        && evidence_threshold_met
+        && digest.health.execution_authority == "NONE"
+        && digest.health.execution_safety_clear
+        && execution_safety_counts_clear;
+    if !reviewable_evidence {
         return (
             StatusCode::CONFLICT,
             Json(ErrorResponse {
                 error: "candidate_not_ready_for_human_review",
-                message: "Candidate must complete required observations and be READY_FOR_HUMAN_REVIEW before recording a review decision.".to_string(),
+                message: "Candidate must be DISCOVERED, meet the required observation threshold, and have clear execution safety before recording a review decision.".to_string(),
                 request_id: request.request_id,
                 correlation_id: request.correlation_id,
                 timestamp: now,
@@ -40025,8 +40034,21 @@ mod tests {
     }
 
     async fn insert_cross_asset_review_ready_observations(pool: &PgPool, candidate_id: Uuid) {
+        insert_cross_asset_review_observations(
+            pool,
+            candidate_id,
+            super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS,
+        )
+        .await;
+    }
+
+    async fn insert_cross_asset_review_observations(
+        pool: &PgPool,
+        candidate_id: Uuid,
+        observation_count: i64,
+    ) {
         let start = Utc::now() - chrono::Duration::hours(4 * 31);
-        for index in 0..30_i64 {
+        for index in 0..observation_count {
             let evaluated_candle_time = start + chrono::Duration::hours(4 * index);
             sqlx::query(
                 r#"
@@ -41603,6 +41625,101 @@ mod tests {
         );
         assert_eq!(count_research_candidate_reviews(&test_db.pool).await, 0);
         assert_eq!(count_research_candidate_events(&test_db.pool).await, 1);
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
+    }
+
+    #[tokio::test]
+    async fn cross_asset_review_decision_allows_threshold_exceeded_when_derivatives_stale() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let candidate = insert_cross_asset_shadow_observation_candidate(&test_db.pool).await;
+        insert_cross_asset_shadow_observation_fresh_fixture_candles(&test_db.pool).await;
+        insert_cross_asset_review_observations(
+            &test_db.pool,
+            candidate.id,
+            super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS + 1,
+        )
+        .await;
+        upsert_enabled_observation_health_jobs(&test_db.pool).await;
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let actor = AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "cross-asset-review-stale-derivatives@example.com".to_string(),
+            role: UserRole::Operator,
+            session_id: None,
+        };
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let before_review_events = count_table_rows(&test_db.pool, "candidate_review_events").await;
+        let before_candidate_status: String =
+            sqlx::query_scalar("SELECT status FROM research_candidates WHERE id = $1")
+                .bind(candidate.id)
+                .fetch_one(&test_db.pool)
+                .await
+                .expect("candidate status before review");
+
+        let mut digest_request = cli_request(
+            "GET",
+            &format!("/reports/evidence-digest?candidate_id={}", candidate.id),
+            json!({}),
+        );
+        digest_request.extensions_mut().insert(actor.clone());
+        let digest_response = app
+            .clone()
+            .oneshot(digest_request)
+            .await
+            .expect("evidence digest response");
+        assert_eq!(digest_response.status(), StatusCode::OK);
+        let digest_payload = response_json::<Value>(digest_response).await;
+        assert_eq!(
+            digest_payload["digest"]["overall_status"].as_str(),
+            Some("DERIVATIVES_STALE")
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["independent_observations"].as_i64(),
+            Some(super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS + 1)
+        );
+        assert_eq!(
+            digest_payload["digest"]["health"]["execution_authority"].as_str(),
+            Some("NONE")
+        );
+
+        let mut extend_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/review-decision",
+                candidate.id
+            ),
+            json!({
+                "decision": "EXTEND_OBSERVATION",
+                "extension_observations": 30,
+                "notes": "extend observation after stale derivatives warning"
+            }),
+        );
+        extend_request.extensions_mut().insert(actor);
+        let extend_response = app
+            .clone()
+            .oneshot(extend_request)
+            .await
+            .expect("extend observation response");
+        assert_eq!(extend_response.status(), StatusCode::OK);
+        let extend_payload = response_json::<Value>(extend_response).await;
+        assert_eq!(
+            extend_payload["result"]["event"]["decision"].as_str(),
+            Some("EXTEND_OBSERVATION")
+        );
+        assert_eq!(
+            extend_payload["result"]["candidate_status_before"].as_str(),
+            Some(before_candidate_status.as_str())
+        );
+        assert_eq!(
+            extend_payload["result"]["candidate_status_after"].as_str(),
+            Some(before_candidate_status.as_str())
+        );
+        assert_eq!(
+            count_table_rows(&test_db.pool, "candidate_review_events").await,
+            before_review_events + 1
+        );
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
     }
 

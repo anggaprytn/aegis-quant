@@ -10186,8 +10186,10 @@ function EvidenceOpsDigestPanel({
   const reviewActionsVisible =
     digest.evidence_progress.independent_observations >=
       digest.evidence_progress.required_observations &&
-    digest.overall_status === "READY_FOR_HUMAN_REVIEW" &&
-    digest.next_action === "READY_FOR_REVIEW";
+    digest.candidate.candidate_status === "DISCOVERED" &&
+    digest.health.execution_authority === "NONE" &&
+    digest.health.execution_safety_clear &&
+    executionSafetyTotal === 0;
 
   return (
     <div className="grid gap-4 xl:grid-cols-12">
