@@ -606,6 +606,22 @@ pub fn print_cross_asset_evidence_review(report: &CrossAssetEvidenceReviewReport
         report.skipped_count
     );
     println!(
+        "Review state: base_required={} effective_required={} extension_active={} review_events={} duplicate_extension_warning={} latest_decision={} latest_decision_at={}",
+        report.base_required_independent_observation_count,
+        report.effective_required_independent_observation_count,
+        report.review_extension_active,
+        report.review_events_count,
+        report.duplicate_extension_warning,
+        report
+            .latest_review_decision
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+        report
+            .latest_review_decision_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
         "Candles: latest_evaluated={} latest_aligned={}",
         report
             .latest_evaluated_candle

@@ -10080,6 +10080,7 @@ function digestStatusTone(status: EvidenceDigestStatus): "ok" | "danger" | "warn
   switch (status) {
     case "READY_FOR_HUMAN_REVIEW":
       return "ok";
+    case "EXTENDED_OBSERVATION":
     case "KEEP_OBSERVING":
       return "neutral";
     case "EXECUTION_SAFETY_BLOCKED":
@@ -10183,9 +10184,11 @@ function EvidenceOpsDigestPanel({
     (total, count) => total + count,
     0,
   );
+  const effectiveRequiredObservations =
+    digest.evidence_progress.effective_required_observations ??
+    digest.evidence_progress.required_observations;
   const reviewActionsVisible =
-    digest.evidence_progress.independent_observations >=
-      digest.evidence_progress.required_observations &&
+    digest.evidence_progress.independent_observations >= effectiveRequiredObservations &&
     digest.candidate.candidate_status === "DISCOVERED" &&
     digest.health.execution_authority === "NONE" &&
     digest.health.execution_safety_clear &&
@@ -10224,13 +10227,21 @@ function EvidenceOpsDigestPanel({
             </div>
             <div className="mt-1 text-lg font-semibold text-slate-100">
               {digest.evidence_progress.independent_observations} /{" "}
-              {digest.evidence_progress.required_observations}
+              {effectiveRequiredObservations}
             </div>
           </div>
           <div className="text-sm text-slate-300">{progress}%</div>
         </div>
         <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface">
           <div className="h-full bg-accent" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {digest.evidence_progress.review_extension_active ? (
+            <StatusBadge label="Observation extended +30" tone="warning" />
+          ) : null}
+          {digest.evidence_progress.duplicate_extension_warning ? (
+            <StatusBadge label="duplicate extension events" tone="warning" />
+          ) : null}
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2">
           <CompactMetric
@@ -10291,6 +10302,10 @@ function EvidenceOpsDigestPanel({
           }
         />
         <CompactMetric label="Authority" value={digest.health.execution_authority} />
+        <CompactMetric
+          label="Review Events"
+          value={String(digest.evidence_progress.review_events_count)}
+        />
       </div>
 
       {reviewActionsVisible ? (
@@ -10426,7 +10441,15 @@ function EvidenceReviewDialog({
           <CompactMetric label="Package ID" value={digest.candidate.package_id} />
           <CompactMetric
             label="Observations"
-            value={`${digest.evidence_progress.independent_observations} / ${digest.evidence_progress.required_observations}`}
+            value={`${digest.evidence_progress.independent_observations} / ${digest.evidence_progress.effective_required_observations}`}
+          />
+          <CompactMetric
+            label="Base Required"
+            value={String(digest.evidence_progress.base_required_observations)}
+          />
+          <CompactMetric
+            label="Review Events"
+            value={String(digest.evidence_progress.review_events_count)}
           />
           <CompactMetric
             label="WOULD_SELECT"

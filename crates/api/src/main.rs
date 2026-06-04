@@ -244,21 +244,22 @@ use db::{
     insert_strategy_config_audit, insert_strategy_research_candidate,
     insert_strategy_research_candidate_promotion, insert_system_event,
     insert_testnet_shadow_promotion, insert_user, link_research_candidate_walk_forward_run,
-    list_backtest_runs, list_candle_backfill_runs, list_candles, list_cross_asset_research_runs,
-    list_cross_asset_research_trades, list_cross_asset_research_windows,
-    list_cross_asset_robustness_matrix_cells, list_cross_asset_robustness_matrix_runs,
-    list_cross_asset_shadow_observation_rankings, list_exchange_private_stream_events,
-    list_exchange_reconciliation_mismatches, list_exchange_reconciliation_runs,
-    list_exchange_testnet_order_lifecycle_events, list_exchange_testnet_orders,
-    list_exchange_testnet_repair_actions, list_market_data_repair_runs, list_market_feed_statuses,
-    list_open_paper_positions, list_orders, list_paper_equity_snapshots, list_paper_positions,
-    list_paper_trade_journal, list_recent_risk_decisions_filtered, list_recent_signals,
-    list_recent_system_events_filtered, list_research_batch_steps, list_research_batches,
-    list_research_campaign_batches, list_research_campaigns, list_research_candidate_events,
-    list_research_candidate_proposals, list_research_candidate_qualification_evaluations,
-    list_research_candidate_reviews, list_research_candidate_shadow_runs,
-    list_research_candidate_walk_forward_evidence, list_research_candidate_watchlist_rows,
-    list_research_candidates, list_research_experiment_plans, list_research_hypotheses,
+    list_backtest_runs, list_candidate_review_events, list_candle_backfill_runs, list_candles,
+    list_cross_asset_research_runs, list_cross_asset_research_trades,
+    list_cross_asset_research_windows, list_cross_asset_robustness_matrix_cells,
+    list_cross_asset_robustness_matrix_runs, list_cross_asset_shadow_observation_rankings,
+    list_exchange_private_stream_events, list_exchange_reconciliation_mismatches,
+    list_exchange_reconciliation_runs, list_exchange_testnet_order_lifecycle_events,
+    list_exchange_testnet_orders, list_exchange_testnet_repair_actions,
+    list_market_data_repair_runs, list_market_feed_statuses, list_open_paper_positions,
+    list_orders, list_paper_equity_snapshots, list_paper_positions, list_paper_trade_journal,
+    list_recent_risk_decisions_filtered, list_recent_signals, list_recent_system_events_filtered,
+    list_research_batch_steps, list_research_batches, list_research_campaign_batches,
+    list_research_campaigns, list_research_candidate_events, list_research_candidate_proposals,
+    list_research_candidate_qualification_evaluations, list_research_candidate_reviews,
+    list_research_candidate_shadow_runs, list_research_candidate_walk_forward_evidence,
+    list_research_candidate_watchlist_rows, list_research_candidates,
+    list_research_experiment_plans, list_research_hypotheses,
     list_research_regime_calibration_candidates, list_research_regime_calibrations,
     list_research_regime_datasets, list_research_regime_discoveries,
     list_research_regime_discovery_windows, list_research_regime_windows, list_risk_config_audit,
@@ -380,6 +381,7 @@ const CROSS_ASSET_RS_OBSERVATION_JOB_ID: &str = "31e35959-ae50-4cf4-be31-ae141d3
 const CROSS_ASSET_DATA_REFRESH_JOB_ID: &str = "8e938ccf-8e1b-4dc5-a45b-e77e00198740";
 const CROSS_ASSET_OBSERVATION_STALE_AFTER_HOURS: i64 = 8;
 const RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS: i64 = 30;
+const RS_EVIDENCE_REVIEW_EXTENSION_OBSERVATIONS: i64 = 30;
 const DERIVATIVES_CONTEXT_REFRESH_JOB_KIND: &str = "DERIVATIVES_CONTEXT_REFRESH";
 const DERIVATIVES_CONTEXT_SYMBOLS: [&str; 4] = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"];
 
@@ -2464,7 +2466,14 @@ struct CrossAssetObservationHealthResponse {
 struct CrossAssetEvidenceReviewReport {
     candidate_id: Uuid,
     candidate_status: String,
+    base_required_independent_observation_count: i64,
     required_independent_observation_count: i64,
+    effective_required_independent_observation_count: i64,
+    review_extension_active: bool,
+    review_events_count: i64,
+    duplicate_extension_warning: bool,
+    latest_review_decision: Option<String>,
+    latest_review_decision_at: Option<chrono::DateTime<Utc>>,
     observation_count: i64,
     independent_observation_count: i64,
     would_select_count: i64,
@@ -2512,6 +2521,13 @@ struct EvidenceDigestCandidate {
 struct EvidenceDigestProgress {
     independent_observations: i64,
     required_observations: i64,
+    base_required_observations: i64,
+    effective_required_observations: i64,
+    review_extension_active: bool,
+    review_events_count: i64,
+    duplicate_extension_warning: bool,
+    latest_review_decision: Option<String>,
+    latest_review_decision_at: Option<chrono::DateTime<Utc>>,
     progress_percentage: i64,
     would_select_count: i64,
     no_signal_count: i64,
@@ -2554,6 +2570,17 @@ struct EvidenceDigestResponse {
     request_id: String,
     correlation_id: String,
     timestamp: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct CrossAssetReviewState {
+    base_required_observations: i64,
+    effective_required_observations: i64,
+    review_extension_active: bool,
+    review_events_count: i64,
+    duplicate_extension_warning: bool,
+    latest_review_decision: Option<String>,
+    latest_review_decision_at: Option<chrono::DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -14785,6 +14812,69 @@ fn cross_asset_evidence_review_job_active(job: &CrossAssetObservationHealthJobSt
     !job.missing && cross_asset_observation_job_active(job)
 }
 
+async fn cross_asset_independent_observations_as_of(
+    pool: &PgPool,
+    candidate_id: Uuid,
+    as_of: DateTime<Utc>,
+) -> anyhow::Result<i64> {
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(DISTINCT evaluated_candle_time)::BIGINT
+        FROM cross_asset_candidate_shadow_observations
+        WHERE candidate_id = $1
+          AND created_at <= $2
+        "#,
+    )
+    .bind(candidate_id)
+    .bind(as_of)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}
+
+async fn derive_cross_asset_review_state(
+    state: &AppState,
+    candidate_id: Uuid,
+    independent_observation_count: i64,
+) -> anyhow::Result<CrossAssetReviewState> {
+    let base_required_observations = RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS;
+    let extension_size = RS_EVIDENCE_REVIEW_EXTENSION_OBSERVATIONS;
+    let review_events = list_candidate_review_events(&state.db_pool, candidate_id).await?;
+    let latest_review_decision = review_events.first().map(|event| event.decision.clone());
+    let latest_review_decision_at = review_events.first().map(|event| event.created_at);
+    let mut extension_cycles: BTreeMap<i64, i64> = BTreeMap::new();
+
+    for event in review_events
+        .iter()
+        .filter(|event| event.decision == CandidateReviewDecision::ExtendObservation.as_str())
+    {
+        let observed_at_event = cross_asset_independent_observations_as_of(
+            &state.db_pool,
+            candidate_id,
+            event.created_at,
+        )
+        .await?;
+        let cycle = (observed_at_event / base_required_observations).max(1);
+        *extension_cycles.entry(cycle).or_insert(0) += 1;
+    }
+
+    let effective_required_observations = base_required_observations
+        + extension_size * i64::try_from(extension_cycles.len()).unwrap_or(i64::MAX);
+    let duplicate_extension_warning = extension_cycles.values().any(|count| *count > 1);
+    let review_extension_active = !extension_cycles.is_empty()
+        && independent_observation_count < effective_required_observations;
+
+    Ok(CrossAssetReviewState {
+        base_required_observations,
+        effective_required_observations,
+        review_extension_active,
+        review_events_count: i64::try_from(review_events.len()).unwrap_or(i64::MAX),
+        duplicate_extension_warning,
+        latest_review_decision,
+        latest_review_decision_at,
+    })
+}
+
 fn cross_asset_scheduler_enabled(
     rs_job: &CrossAssetObservationHealthJobStatus,
     refresh_job: &CrossAssetObservationHealthJobStatus,
@@ -14949,8 +15039,11 @@ async fn build_cross_asset_evidence_review_report(
         && !matches!(health.status, CrossAssetObservationHealthStatus::DataStale)
         && health.latest_aligned_4h_candle.is_some();
     let candidate_discovered = health.candidate_status == ResearchCandidateStatus::Discovered;
-    let enough_independent_observations = health.independent_observation_count
-        >= RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS;
+    let review_state =
+        derive_cross_asset_review_state(state, record.id, health.independent_observation_count)
+            .await?;
+    let enough_independent_observations =
+        health.independent_observation_count >= review_state.effective_required_observations;
 
     let mut blockers = Vec::new();
     let mut warnings = Vec::new();
@@ -14963,8 +15056,7 @@ async fn build_cross_asset_evidence_review_report(
     if !enough_independent_observations {
         blockers.push(format!(
             "insufficient_independent_observations: observed {} of required {}",
-            health.independent_observation_count,
-            RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS
+            health.independent_observation_count, review_state.effective_required_observations
         ));
     }
     if !health.scheduler_enabled {
@@ -15024,15 +15116,20 @@ async fn build_cross_asset_evidence_review_report(
             health.skipped_count
         ));
     }
+    if review_state.duplicate_extension_warning {
+        warnings.push("duplicate_review_extension_events_detected".to_string());
+    }
 
     let readiness_status = if !execution_safety_clear {
         "EXECUTION_SAFETY_BLOCKED"
     } else if !health.scheduler_enabled || !rs_job_enabled {
         "STALLED_SCHEDULER"
-    } else if !data_refresh_healthy || !derivatives_healthy {
-        "STALLED_DATA"
     } else if candidate_discovered && enough_independent_observations {
         "READY_FOR_HUMAN_REVIEW"
+    } else if review_state.review_extension_active {
+        "EXTENDED_OBSERVATION"
+    } else if !data_refresh_healthy || !derivatives_healthy {
+        "STALLED_DATA"
     } else {
         "KEEP_OBSERVING"
     }
@@ -15040,6 +15137,9 @@ async fn build_cross_asset_evidence_review_report(
     let recommendation = match readiness_status.as_str() {
         "READY_FOR_HUMAN_REVIEW" => {
             "Candidate has enough passive independent observations for human review."
+        }
+        "EXTENDED_OBSERVATION" => {
+            "Observation window was extended; keep collecting passive evidence."
         }
         "STALLED_DATA" => "Restore data and derivatives refresh health before continuing review.",
         "STALLED_SCHEDULER" => {
@@ -15055,6 +15155,7 @@ async fn build_cross_asset_evidence_review_report(
         "READY_FOR_HUMAN_REVIEW" => {
             "Open human review of the evidence; do not accept, promote, paper, testnet, or live execute."
         }
+        "EXTENDED_OBSERVATION" => "Wait for additional independent closed-candle observations.",
         "STALLED_DATA" => "Run or repair cross-asset market-data and derivatives refresh jobs.",
         "STALLED_SCHEDULER" => "Enable the scheduler and the cross-asset RS observation job.",
         "EXECUTION_SAFETY_BLOCKED" => {
@@ -15067,8 +15168,15 @@ async fn build_cross_asset_evidence_review_report(
     Ok(CrossAssetEvidenceReviewReport {
         candidate_id: health.candidate_id,
         candidate_status: health.candidate_status.as_str().to_string(),
-        required_independent_observation_count:
-            RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS,
+        base_required_independent_observation_count: review_state.base_required_observations,
+        required_independent_observation_count: review_state.effective_required_observations,
+        effective_required_independent_observation_count: review_state
+            .effective_required_observations,
+        review_extension_active: review_state.review_extension_active,
+        review_events_count: review_state.review_events_count,
+        duplicate_extension_warning: review_state.duplicate_extension_warning,
+        latest_review_decision: review_state.latest_review_decision,
+        latest_review_decision_at: review_state.latest_review_decision_at,
         observation_count: health.observation_count,
         independent_observation_count: health.independent_observation_count,
         would_select_count: health.would_select_count,
@@ -15139,7 +15247,7 @@ async fn build_evidence_digest_report(
     let ready_for_review = evidence.candidate_status
         == ResearchCandidateStatus::Discovered.as_str()
         && evidence.independent_observation_count
-            >= RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS;
+            >= evidence.effective_required_independent_observation_count;
 
     let overall_status = if !evidence.execution_safety_clear {
         "EXECUTION_SAFETY_BLOCKED"
@@ -15147,14 +15255,16 @@ async fn build_evidence_digest_report(
         "SCHEDULER_DISABLED"
     } else if !evidence.rs_job_enabled || !data_job_active {
         "JOB_DISABLED"
+    } else if ready_for_review {
+        "READY_FOR_HUMAN_REVIEW"
+    } else if evidence.review_extension_active {
+        "EXTENDED_OBSERVATION"
     } else if matches!(health.status, CrossAssetObservationHealthStatus::DataStale)
         || evidence.latest_aligned_candle.is_none()
     {
         "STALLED_DATA"
     } else if derivatives_stale {
         "DERIVATIVES_STALE"
-    } else if ready_for_review {
-        "READY_FOR_HUMAN_REVIEW"
     } else {
         "KEEP_OBSERVING"
     }
@@ -15165,17 +15275,19 @@ async fn build_evidence_digest_report(
         "SCHEDULER_DISABLED" | "JOB_DISABLED" => "CHECK_SCHEDULER",
         "DERIVATIVES_STALE" => "RUN_DERIVATIVES_REFRESH_ONCE",
         "READY_FOR_HUMAN_REVIEW" => "READY_FOR_REVIEW",
+        "EXTENDED_OBSERVATION" if latest_candle_already_evaluated => "WAIT_FOR_NEXT_CANDLE",
+        "EXTENDED_OBSERVATION" => "RUN_RS_OBSERVE_ONCE",
         "STALLED_DATA" => "CHECK_SCHEDULER",
         _ if latest_candle_already_evaluated => "WAIT_FOR_NEXT_CANDLE",
         _ => "RUN_RS_OBSERVE_ONCE",
     }
     .to_string();
 
-    let progress_percentage = if RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS <= 0 {
+    let progress_percentage = if evidence.effective_required_independent_observation_count <= 0 {
         0
     } else {
         ((evidence.independent_observation_count * 100)
-            / RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS)
+            / evidence.effective_required_independent_observation_count)
             .clamp(0, 100)
     };
 
@@ -15189,6 +15301,14 @@ async fn build_evidence_digest_report(
         evidence_progress: EvidenceDigestProgress {
             independent_observations: evidence.independent_observation_count,
             required_observations: evidence.required_independent_observation_count,
+            base_required_observations: evidence.base_required_independent_observation_count,
+            effective_required_observations: evidence
+                .effective_required_independent_observation_count,
+            review_extension_active: evidence.review_extension_active,
+            review_events_count: evidence.review_events_count,
+            duplicate_extension_warning: evidence.duplicate_extension_warning,
+            latest_review_decision: evidence.latest_review_decision,
+            latest_review_decision_at: evidence.latest_review_decision_at,
             progress_percentage,
             would_select_count: evidence.would_select_count,
             no_signal_count: evidence.no_signal_count,
@@ -32304,6 +32424,23 @@ async fn create_candidate_review_decision_handler(
         .execution_safety_counts
         .values()
         .all(|count| *count == 0);
+    if payload.decision == CandidateReviewDecision::ExtendObservation
+        && digest.evidence_progress.review_extension_active
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "extension_already_active",
+                message:
+                    "An EXTEND_OBSERVATION decision is already active for the current review cycle."
+                        .to_string(),
+                request_id: request.request_id,
+                correlation_id: request.correlation_id,
+                timestamp: now,
+            }),
+        )
+            .into_response();
+    }
     let reviewable_evidence = digest.candidate.candidate_status
         == ResearchCandidateStatus::Discovered.as_str()
         && evidence_threshold_met
@@ -40047,9 +40184,22 @@ mod tests {
         candidate_id: Uuid,
         observation_count: i64,
     ) {
-        let start = Utc::now() - chrono::Duration::hours(4 * 31);
-        for index in 0..observation_count {
+        insert_cross_asset_review_observation_range(pool, candidate_id, 0, observation_count, None)
+            .await;
+    }
+
+    async fn insert_cross_asset_review_observation_range(
+        pool: &PgPool,
+        candidate_id: Uuid,
+        start_index: i64,
+        observation_count: i64,
+        created_at_override: Option<chrono::DateTime<Utc>>,
+    ) {
+        let start = Utc::now() - chrono::Duration::hours(4 * 100);
+        for index in start_index..start_index + observation_count {
             let evaluated_candle_time = start + chrono::Duration::hours(4 * index);
+            let created_at =
+                created_at_override.unwrap_or(evaluated_candle_time + chrono::Duration::minutes(1));
             sqlx::query(
                 r#"
                 INSERT INTO cross_asset_candidate_shadow_observations (
@@ -40086,12 +40236,33 @@ mod tests {
             .bind(candidate_id)
             .bind(aegis_core::RELATIVE_STRENGTH_CONTINUATION_V1_ID)
             .bind(evaluated_candle_time)
-            .bind(evaluated_candle_time + chrono::Duration::minutes(1))
+            .bind(created_at)
             .bind(Uuid::new_v4())
             .execute(pool)
             .await
             .expect("insert review-ready observation");
         }
+    }
+
+    async fn insert_cross_asset_candidate_review_event_fixture(
+        pool: &PgPool,
+        candidate_id: Uuid,
+        decision: &str,
+        created_at: chrono::DateTime<Utc>,
+    ) -> db::CandidateReviewEventRecord {
+        let event = db::CandidateReviewEventRecord {
+            id: Uuid::new_v4(),
+            candidate_id,
+            decision: decision.to_string(),
+            notes: Some("review event fixture".to_string()),
+            actor: "test:operator".to_string(),
+            actor_id: Some(Uuid::new_v4()),
+            created_at,
+            correlation_id: Some(Uuid::new_v4()),
+        };
+        db::insert_candidate_review_event(pool, &event)
+            .await
+            .expect("insert candidate review event fixture")
     }
 
     async fn insert_cross_asset_shadow_observation_fresh_fixture_candles(pool: &PgPool) {
@@ -41673,11 +41844,15 @@ mod tests {
         let digest_payload = response_json::<Value>(digest_response).await;
         assert_eq!(
             digest_payload["digest"]["overall_status"].as_str(),
-            Some("DERIVATIVES_STALE")
+            Some("READY_FOR_HUMAN_REVIEW")
         );
         assert_eq!(
             digest_payload["digest"]["evidence_progress"]["independent_observations"].as_i64(),
             Some(super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS + 1)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["required_observations"].as_i64(),
+            Some(super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS)
         );
         assert_eq!(
             digest_payload["digest"]["health"]["execution_authority"].as_str(),
@@ -41719,6 +41894,234 @@ mod tests {
         assert_eq!(
             count_table_rows(&test_db.pool, "candidate_review_events").await,
             before_review_events + 1
+        );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
+    }
+
+    #[tokio::test]
+    async fn cross_asset_review_state_extends_threshold_and_ignores_duplicate_cycle_events() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let candidate = insert_cross_asset_shadow_observation_candidate(&test_db.pool).await;
+        insert_cross_asset_shadow_observation_fresh_fixture_candles(&test_db.pool).await;
+        insert_cross_asset_review_observations(
+            &test_db.pool,
+            candidate.id,
+            super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS + 1,
+        )
+        .await;
+        upsert_enabled_observation_health_jobs(&test_db.pool).await;
+        upsert_derivatives_context_refresh_job(&test_db.pool).await;
+        insert_derivatives_freshness_fixtures(&test_db.pool).await;
+
+        let event_time = Utc::now();
+        for _ in 0..3 {
+            insert_cross_asset_candidate_review_event_fixture(
+                &test_db.pool,
+                candidate.id,
+                "EXTEND_OBSERVATION",
+                event_time,
+            )
+            .await;
+        }
+
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let actor = AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "cross-asset-review-duplicate-extension@example.com".to_string(),
+            role: UserRole::Operator,
+            session_id: None,
+        };
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+        let before_review_events = count_table_rows(&test_db.pool, "candidate_review_events").await;
+
+        let mut digest_request = cli_request(
+            "GET",
+            &format!("/reports/evidence-digest?candidate_id={}", candidate.id),
+            json!({}),
+        );
+        digest_request.extensions_mut().insert(actor.clone());
+        let digest_response = app
+            .clone()
+            .oneshot(digest_request)
+            .await
+            .expect("evidence digest response");
+        assert_eq!(digest_response.status(), StatusCode::OK);
+        let digest_payload = response_json::<Value>(digest_response).await;
+        assert_eq!(
+            digest_payload["digest"]["overall_status"].as_str(),
+            Some("EXTENDED_OBSERVATION")
+        );
+        assert_eq!(
+            digest_payload["digest"]["next_action"].as_str(),
+            Some("WAIT_FOR_NEXT_CANDLE")
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["independent_observations"].as_i64(),
+            Some(31)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["base_required_observations"].as_i64(),
+            Some(30)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["required_observations"].as_i64(),
+            Some(60)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["effective_required_observations"]
+                .as_i64(),
+            Some(60)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["review_extension_active"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["duplicate_extension_warning"].as_bool(),
+            Some(true)
+        );
+        assert!(digest_payload["digest"]["warnings"]
+            .as_array()
+            .expect("warnings array")
+            .iter()
+            .any(|warning| warning.as_str() == Some("duplicate_review_extension_events_detected")));
+
+        let mut review_request = cli_request(
+            "GET",
+            &format!(
+                "/research/cross-asset/candidates/{}/evidence-review",
+                candidate.id
+            ),
+            json!({}),
+        );
+        review_request.extensions_mut().insert(actor.clone());
+        let review_response = app
+            .clone()
+            .oneshot(review_request)
+            .await
+            .expect("evidence review response");
+        assert_eq!(review_response.status(), StatusCode::OK);
+        let review_payload = response_json::<Value>(review_response).await;
+        assert_eq!(
+            review_payload["report"]["readiness_status"].as_str(),
+            Some("EXTENDED_OBSERVATION")
+        );
+        assert_eq!(
+            review_payload["report"]["required_independent_observation_count"].as_i64(),
+            Some(60)
+        );
+        assert!(review_payload["report"]["blockers"]
+            .as_array()
+            .expect("blockers array")
+            .iter()
+            .any(|blocker| blocker
+                .as_str()
+                .is_some_and(|value| value.contains("observed 31 of required 60"))));
+
+        let mut duplicate_extend_request = cli_request(
+            "POST",
+            &format!(
+                "/research/cross-asset/candidates/{}/review-decision",
+                candidate.id
+            ),
+            json!({ "decision": "EXTEND_OBSERVATION" }),
+        );
+        duplicate_extend_request.extensions_mut().insert(actor);
+        let duplicate_extend_response = app
+            .clone()
+            .oneshot(duplicate_extend_request)
+            .await
+            .expect("duplicate extend response");
+        assert_eq!(duplicate_extend_response.status(), StatusCode::CONFLICT);
+        let duplicate_extend_payload = response_json::<Value>(duplicate_extend_response).await;
+        assert_eq!(
+            duplicate_extend_payload["error"].as_str(),
+            Some("extension_already_active")
+        );
+        assert_eq!(
+            count_table_rows(&test_db.pool, "candidate_review_events").await,
+            before_review_events
+        );
+        assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
+    }
+
+    #[tokio::test]
+    async fn cross_asset_review_state_becomes_ready_again_at_extended_threshold() {
+        let Some(test_db) = setup_optional_test_db().await else {
+            return;
+        };
+        let candidate = insert_cross_asset_shadow_observation_candidate(&test_db.pool).await;
+        insert_cross_asset_shadow_observation_fresh_fixture_candles(&test_db.pool).await;
+        insert_cross_asset_review_observations(
+            &test_db.pool,
+            candidate.id,
+            super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS + 1,
+        )
+        .await;
+        upsert_enabled_observation_health_jobs(&test_db.pool).await;
+        upsert_derivatives_context_refresh_job(&test_db.pool).await;
+        insert_derivatives_freshness_fixtures(&test_db.pool).await;
+
+        let event_time = Utc::now();
+        insert_cross_asset_candidate_review_event_fixture(
+            &test_db.pool,
+            candidate.id,
+            "EXTEND_OBSERVATION",
+            event_time,
+        )
+        .await;
+        insert_cross_asset_review_observation_range(
+            &test_db.pool,
+            candidate.id,
+            super::RS_EVIDENCE_REVIEW_REQUIRED_INDEPENDENT_OBSERVATIONS + 1,
+            super::RS_EVIDENCE_REVIEW_EXTENSION_OBSERVATIONS - 1,
+            Some(event_time + chrono::Duration::seconds(1)),
+        )
+        .await;
+
+        let app = research_test_router(auth_test_state(test_db.pool.clone(), None, None));
+        let actor = AuthenticatedActor {
+            user_id: Uuid::new_v4(),
+            email: "cross-asset-review-ready-after-extension@example.com".to_string(),
+            role: UserRole::Operator,
+            session_id: None,
+        };
+        let before_execution = research_shadow_promotion_execution_counts(&test_db.pool).await;
+
+        let mut digest_request = cli_request(
+            "GET",
+            &format!("/reports/evidence-digest?candidate_id={}", candidate.id),
+            json!({}),
+        );
+        digest_request.extensions_mut().insert(actor);
+        let digest_response = app
+            .clone()
+            .oneshot(digest_request)
+            .await
+            .expect("evidence digest response");
+        assert_eq!(digest_response.status(), StatusCode::OK);
+        let digest_payload = response_json::<Value>(digest_response).await;
+        assert_eq!(
+            digest_payload["digest"]["overall_status"].as_str(),
+            Some("READY_FOR_HUMAN_REVIEW")
+        );
+        assert_eq!(
+            digest_payload["digest"]["next_action"].as_str(),
+            Some("READY_FOR_REVIEW")
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["independent_observations"].as_i64(),
+            Some(60)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["required_observations"].as_i64(),
+            Some(60)
+        );
+        assert_eq!(
+            digest_payload["digest"]["evidence_progress"]["review_extension_active"].as_bool(),
+            Some(false)
         );
         assert_research_shadow_promotion_execution_unchanged(&test_db.pool, before_execution).await;
     }

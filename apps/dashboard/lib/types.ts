@@ -4086,6 +4086,7 @@ export type ScheduledResearchJobKind =
 
 export type EvidenceDigestStatus =
   | "KEEP_OBSERVING"
+  | "EXTENDED_OBSERVATION"
   | "STALLED_DATA"
   | "SCHEDULER_DISABLED"
   | "JOB_DISABLED"
@@ -4094,6 +4095,7 @@ export type EvidenceDigestStatus =
   | "READY_FOR_HUMAN_REVIEW";
 
 export type EvidenceDigestNextAction =
+  | "KEEP_OBSERVING"
   | "WAIT_FOR_NEXT_CANDLE"
   | "RUN_DERIVATIVES_REFRESH_ONCE"
   | "RUN_RS_OBSERVE_ONCE"
@@ -4127,6 +4129,13 @@ export type EvidenceDigest = {
   evidence_progress: {
     independent_observations: number;
     required_observations: number;
+    base_required_observations: number;
+    effective_required_observations: number;
+    review_extension_active: boolean;
+    review_events_count: number;
+    duplicate_extension_warning: boolean;
+    latest_review_decision: CandidateReviewDecision | null;
+    latest_review_decision_at: string | null;
     progress_percentage: number;
     would_select_count: number;
     no_signal_count: number;
