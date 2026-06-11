@@ -902,8 +902,52 @@ pub enum ResearchCommands {
     StaleRuns(ResearchStaleRunCommands),
     #[command(name = "derivatives", subcommand)]
     Derivatives(ResearchDerivativesCommands),
+    #[command(name = "microstructure", subcommand)]
+    Microstructure(ResearchMicrostructureCommands),
     #[command(name = "cross-asset", subcommand)]
     CrossAsset(ResearchCrossAssetCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchMicrostructureCommands {
+    Collect(ResearchMicrostructureCollectArgs),
+    Summary(ResearchMicrostructureSummaryArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchMicrostructureCollectArgs {
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT"
+    )]
+    pub symbols: Vec<String>,
+    #[arg(long = "bucket-seconds", default_value_t = 5)]
+    pub bucket_seconds: i32,
+    #[arg(long = "duration-seconds", default_value_t = 300)]
+    pub duration_seconds: u64,
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long = "market-type", default_value = "usdm")]
+    pub market_type: String,
+    #[arg(long = "dry-run", default_value_t = false)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchMicrostructureSummaryArgs {
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT"
+    )]
+    pub symbols: Vec<String>,
+    #[arg(long = "bucket-seconds", default_value_t = 5)]
+    pub bucket_seconds: i32,
+    #[arg(long, default_value = "binance")]
+    pub exchange: String,
+    #[arg(long = "market-type", default_value = "usdm")]
+    pub market_type: String,
 }
 
 #[derive(Debug, Subcommand)]

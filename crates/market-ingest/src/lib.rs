@@ -26,9 +26,11 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 mod derivatives;
+mod microstructure;
 mod research;
 
 pub use derivatives::*;
+pub use microstructure::*;
 pub use research::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

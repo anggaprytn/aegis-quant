@@ -40,11 +40,12 @@ use cli::cli::{
     ResearchCrossAssetRunArgs, ResearchDataCommands, ResearchDerivativesCommands,
     ResearchDerivativesFundingCommands, ResearchDerivativesOiCommands,
     ResearchDerivativesPositioningCommands, ResearchExperimentPlanCommands,
-    ResearchHypothesisCommands, ResearchRegimeCalibrationCommands, ResearchRegimeDatasetCommands,
-    ResearchRegimeDiscoveryCommands, ResearchRobustnessMatrixCommands,
-    ResearchScheduledJobCommands, ResearchStaleRunCommands, RiskCommands, RiskConfigCommands,
-    StrategyCommands, StrategyConfigCommands, StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT,
-    TESTNET_ORDER_CONFIRMATION_TEXT,
+    ResearchHypothesisCommands, ResearchMicrostructureCollectArgs, ResearchMicrostructureCommands,
+    ResearchMicrostructureSummaryArgs, ResearchRegimeCalibrationCommands,
+    ResearchRegimeDatasetCommands, ResearchRegimeDiscoveryCommands,
+    ResearchRobustnessMatrixCommands, ResearchScheduledJobCommands, ResearchStaleRunCommands,
+    RiskCommands, RiskConfigCommands, StrategyCommands, StrategyConfigCommands,
+    StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
     clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
@@ -52,8 +53,18 @@ use cli::config::{
 use cli::output;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use uuid::Uuid;
 
 const BINANCE_USDM_PUBLIC_BASE_URL: &str = "https://fapi.binance.com";
+const BINANCE_USDM_WS_BASE_URL: &str = "wss://fstream.binance.com";
+
+#[derive(Debug, Serialize)]
+struct MicrostructureCollectCliReport {
+    run_id: Option<Uuid>,
+    result: market_ingest::MicrostructureCollectResult,
+    safety_counts_before: Option<db::ExecutionSafetyCounts>,
+    safety_counts_after: Option<db::ExecutionSafetyCounts>,
+}
 
 async fn connect_research_db() -> anyhow::Result<db::PgPool> {
     let database_url = std::env::var("DATABASE_URL")
@@ -205,6 +216,107 @@ async fn run_derivatives_freshness(
     let pool = connect_research_db().await?;
     db::derivatives_freshness_report(&pool, symbols, oi_period, positioning_period, Utc::now())
         .await
+}
+
+async fn run_microstructure_collect(
+    args: &ResearchMicrostructureCollectArgs,
+) -> anyhow::Result<MicrostructureCollectCliReport> {
+    let mut request = market_ingest::MicrostructureCollectRequest::new(
+        args.exchange.clone(),
+        args.market_type.clone(),
+        normalized_symbols(&args.symbols),
+        args.bucket_seconds,
+        args.duration_seconds,
+        args.dry_run,
+    );
+    request.ws_base_url = std::env::var("BINANCE_USDM_WS_BASE_URL")
+        .unwrap_or_else(|_| BINANCE_USDM_WS_BASE_URL.to_string());
+    request.validate()?;
+
+    let collector = market_ingest::BinanceUsdMMicrostructureCollector::new(request.clone());
+    if args.dry_run {
+        let (result, _) = collector.collect().await?;
+        return Ok(MicrostructureCollectCliReport {
+            run_id: None,
+            result,
+            safety_counts_before: None,
+            safety_counts_after: None,
+        });
+    }
+
+    let pool = connect_research_db().await?;
+    let safety_counts_before = db::execution_safety_counts(&pool).await?;
+    let run_id = Uuid::new_v4();
+    let started_at = Utc::now();
+    db::insert_microstructure_collector_run(
+        &pool,
+        &db::MicrostructureCollectorRunInput {
+            id: run_id,
+            exchange: request.exchange.trim().to_ascii_lowercase(),
+            market_type: request.market_type.trim().to_ascii_lowercase(),
+            symbols: request.normalized_symbols(),
+            started_at,
+            status: "RUNNING".to_string(),
+            config_json: serde_json::to_value(&request)?,
+        },
+    )
+    .await?;
+
+    let execution = async {
+        let (mut result, batch) = collector.collect().await?;
+        let persist_summary = db::upsert_microstructure_metrics(&pool, &batch).await?;
+        result.persist_summary = Some(persist_summary);
+        Ok::<_, anyhow::Error>(result)
+    }
+    .await;
+
+    match execution {
+        Ok(result) => {
+            db::finish_microstructure_collector_run(&pool, run_id, "COMPLETED", Utc::now(), None)
+                .await?;
+            let safety_counts_after = db::execution_safety_counts(&pool).await?;
+            Ok(MicrostructureCollectCliReport {
+                run_id: Some(run_id),
+                result,
+                safety_counts_before: Some(safety_counts_before),
+                safety_counts_after: Some(safety_counts_after),
+            })
+        }
+        Err(err) => {
+            let message = err.to_string();
+            db::finish_microstructure_collector_run(
+                &pool,
+                run_id,
+                "FAILED",
+                Utc::now(),
+                Some(&message),
+            )
+            .await?;
+            Err(err)
+        }
+    }
+}
+
+async fn run_microstructure_summary(
+    args: &ResearchMicrostructureSummaryArgs,
+) -> anyhow::Result<db::MicrostructureSummaryReport> {
+    let pool = connect_research_db().await?;
+    db::microstructure_summary_report(
+        &pool,
+        &args.exchange.trim().to_ascii_lowercase(),
+        &args.market_type.trim().to_ascii_lowercase(),
+        args.bucket_seconds,
+        &normalized_symbols(&args.symbols),
+    )
+    .await
+}
+
+fn normalized_symbols(symbols: &[String]) -> Vec<String> {
+    symbols
+        .iter()
+        .map(|symbol| symbol.trim().to_ascii_uppercase())
+        .filter(|symbol| !symbol.is_empty())
+        .collect()
 }
 
 fn build_cross_asset_research_request(
@@ -1979,6 +2091,16 @@ async fn main() -> anyhow::Result<()> {
                         &args.positioning_period,
                     )
                     .await?;
+                    output::print_json(&report)?;
+                }
+            },
+            ResearchCommands::Microstructure(command) => match command {
+                ResearchMicrostructureCommands::Collect(args) => {
+                    let report = run_microstructure_collect(&args).await?;
+                    output::print_json(&report)?;
+                }
+                ResearchMicrostructureCommands::Summary(args) => {
+                    let report = run_microstructure_summary(&args).await?;
                     output::print_json(&report)?;
                 }
             },

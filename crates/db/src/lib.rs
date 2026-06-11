@@ -59,6 +59,8 @@ mod research;
 pub use research::*;
 mod derivatives;
 pub use derivatives::*;
+mod microstructure;
+pub use microstructure::*;
 pub mod test_support;
 
 #[derive(Debug, Clone)]
