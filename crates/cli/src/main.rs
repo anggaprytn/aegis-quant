@@ -41,6 +41,7 @@ use cli::cli::{
     ResearchDerivativesFundingCommands, ResearchDerivativesOiCommands,
     ResearchDerivativesPositioningCommands, ResearchExperimentPlanCommands,
     ResearchHypothesisCommands, ResearchMicrostructureCollectArgs, ResearchMicrostructureCommands,
+    ResearchMicrostructureRetentionCleanupArgs, ResearchMicrostructureRetentionCommands,
     ResearchMicrostructureSummaryArgs, ResearchRegimeCalibrationCommands,
     ResearchRegimeDatasetCommands, ResearchRegimeDiscoveryCommands,
     ResearchRobustnessMatrixCommands, ResearchScheduledJobCommands, ResearchStaleRunCommands,
@@ -48,7 +49,8 @@ use cli::cli::{
     StrategyExperimentCommands, RESUME_CONFIRMATION_TEXT, TESTNET_ORDER_CONFIRMATION_TEXT,
 };
 use cli::config::{
-    clear_token_file, save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
+    clear_token_file, save_token_file, CliConfig, MicrostructureRetentionConfig, StoredAuthSession,
+    StoredUserSummary,
 };
 use cli::output;
 use serde::{Deserialize, Serialize};
@@ -68,7 +70,7 @@ struct MicrostructureCollectCliReport {
 
 async fn connect_research_db() -> anyhow::Result<db::PgPool> {
     let database_url = std::env::var("DATABASE_URL")
-        .context("DATABASE_URL must be set for local research derivatives commands")?;
+        .context("DATABASE_URL must be set for local research database commands")?;
     db::connect_pool(&db::DbConfig {
         database_url,
         max_connections: std::env::var("DATABASE_MAX_CONNECTIONS")
@@ -307,6 +309,21 @@ async fn run_microstructure_summary(
         &args.market_type.trim().to_ascii_lowercase(),
         args.bucket_seconds,
         &normalized_symbols(&args.symbols),
+    )
+    .await
+}
+
+async fn run_microstructure_retention_cleanup(
+    args: &ResearchMicrostructureRetentionCleanupArgs,
+) -> anyhow::Result<db::MicrostructureRetentionCleanupReport> {
+    let retention = MicrostructureRetentionConfig::from_env()?;
+    let pool = connect_research_db().await?;
+    db::cleanup_microstructure_retention(
+        &pool,
+        Utc::now(),
+        retention.metrics_retention_days,
+        retention.run_retention_days,
+        args.dry_run,
     )
     .await
 }
@@ -2103,6 +2120,12 @@ async fn main() -> anyhow::Result<()> {
                     let report = run_microstructure_summary(&args).await?;
                     output::print_json(&report)?;
                 }
+                ResearchMicrostructureCommands::Retention(command) => match command {
+                    ResearchMicrostructureRetentionCommands::Cleanup(args) => {
+                        let report = run_microstructure_retention_cleanup(&args).await?;
+                        output::print_json(&report)?;
+                    }
+                },
             },
             ResearchCommands::CrossAsset(command) => match command {
                 ResearchCrossAssetCommands::Run(args) => {

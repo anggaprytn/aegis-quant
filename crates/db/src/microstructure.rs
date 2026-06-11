@@ -1,12 +1,12 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::PgPool;
+use crate::{execution_safety_counts, ExecutionSafetyCounts, PgPool};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MicrostructureCollectorRunInput {
@@ -131,6 +131,32 @@ pub struct MicrostructureSummaryReport {
     pub generated_at: DateTime<Utc>,
     pub rows: Vec<MicrostructureSummaryRow>,
     pub latest_collector_run: Option<MicrostructureCollectorRunRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MicrostructureRetentionTableReport {
+    pub table: String,
+    pub timestamp_column: String,
+    pub cutoff: DateTime<Utc>,
+    pub eligible_rows: i64,
+    pub rows_deleted: i64,
+    pub oldest_remaining_row: Option<DateTime<Utc>>,
+    pub newest_remaining_row: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MicrostructureRetentionCleanupReport {
+    pub generated_at: DateTime<Utc>,
+    pub dry_run: bool,
+    pub metrics_retention_days: i64,
+    pub run_retention_days: i64,
+    pub metrics_cutoff: DateTime<Utc>,
+    pub run_cutoff: DateTime<Utc>,
+    pub tables: Vec<MicrostructureRetentionTableReport>,
+    pub estimated_reclaimed_rows: i64,
+    pub total_rows_deleted: i64,
+    pub safety_counts_before: ExecutionSafetyCounts,
+    pub safety_counts_after: ExecutionSafetyCounts,
 }
 
 pub async fn insert_microstructure_collector_run(
@@ -378,6 +404,313 @@ async fn upsert_microstructure_liquidity_metric(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub async fn cleanup_microstructure_retention(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    metrics_retention_days: i64,
+    run_retention_days: i64,
+    dry_run: bool,
+) -> Result<MicrostructureRetentionCleanupReport> {
+    if metrics_retention_days <= 0 {
+        anyhow::bail!("metrics_retention_days must be greater than zero");
+    }
+    if run_retention_days <= 0 {
+        anyhow::bail!("run_retention_days must be greater than zero");
+    }
+
+    let metrics_cutoff = now - Duration::days(metrics_retention_days);
+    let run_cutoff = now - Duration::days(run_retention_days);
+    let safety_counts_before = execution_safety_counts(pool).await?;
+
+    let spread_eligible = count_microstructure_spread_before(pool, metrics_cutoff).await?;
+    let imbalance_eligible = count_microstructure_imbalance_before(pool, metrics_cutoff).await?;
+    let liquidity_eligible = count_microstructure_liquidity_before(pool, metrics_cutoff).await?;
+    let runs_eligible = count_microstructure_runs_before(pool, run_cutoff).await?;
+
+    let (spread_deleted, imbalance_deleted, liquidity_deleted, runs_deleted) = if dry_run {
+        (0, 0, 0, 0)
+    } else {
+        let mut tx = pool.begin().await?;
+        let spread_deleted =
+            sqlx::query("DELETE FROM microstructure_spread_metrics WHERE bucket_start < $1")
+                .bind(metrics_cutoff)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected() as i64;
+        let imbalance_deleted =
+            sqlx::query("DELETE FROM microstructure_imbalance_metrics WHERE bucket_start < $1")
+                .bind(metrics_cutoff)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected() as i64;
+        let liquidity_deleted =
+            sqlx::query("DELETE FROM microstructure_liquidity_metrics WHERE bucket_start < $1")
+                .bind(metrics_cutoff)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected() as i64;
+        let runs_deleted =
+            sqlx::query("DELETE FROM microstructure_collector_runs WHERE started_at < $1")
+                .bind(run_cutoff)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected() as i64;
+        tx.commit().await?;
+        (
+            spread_deleted,
+            imbalance_deleted,
+            liquidity_deleted,
+            runs_deleted,
+        )
+    };
+
+    let spread_remaining =
+        microstructure_spread_remaining_bounds(pool, metrics_cutoff, dry_run).await?;
+    let imbalance_remaining =
+        microstructure_imbalance_remaining_bounds(pool, metrics_cutoff, dry_run).await?;
+    let liquidity_remaining =
+        microstructure_liquidity_remaining_bounds(pool, metrics_cutoff, dry_run).await?;
+    let runs_remaining = microstructure_runs_remaining_bounds(pool, run_cutoff, dry_run).await?;
+    let safety_counts_after = execution_safety_counts(pool).await?;
+
+    let tables = vec![
+        MicrostructureRetentionTableReport {
+            table: "microstructure_spread_metrics".to_string(),
+            timestamp_column: "bucket_start".to_string(),
+            cutoff: metrics_cutoff,
+            eligible_rows: spread_eligible,
+            rows_deleted: spread_deleted,
+            oldest_remaining_row: spread_remaining.0,
+            newest_remaining_row: spread_remaining.1,
+        },
+        MicrostructureRetentionTableReport {
+            table: "microstructure_imbalance_metrics".to_string(),
+            timestamp_column: "bucket_start".to_string(),
+            cutoff: metrics_cutoff,
+            eligible_rows: imbalance_eligible,
+            rows_deleted: imbalance_deleted,
+            oldest_remaining_row: imbalance_remaining.0,
+            newest_remaining_row: imbalance_remaining.1,
+        },
+        MicrostructureRetentionTableReport {
+            table: "microstructure_liquidity_metrics".to_string(),
+            timestamp_column: "bucket_start".to_string(),
+            cutoff: metrics_cutoff,
+            eligible_rows: liquidity_eligible,
+            rows_deleted: liquidity_deleted,
+            oldest_remaining_row: liquidity_remaining.0,
+            newest_remaining_row: liquidity_remaining.1,
+        },
+        MicrostructureRetentionTableReport {
+            table: "microstructure_collector_runs".to_string(),
+            timestamp_column: "started_at".to_string(),
+            cutoff: run_cutoff,
+            eligible_rows: runs_eligible,
+            rows_deleted: runs_deleted,
+            oldest_remaining_row: runs_remaining.0,
+            newest_remaining_row: runs_remaining.1,
+        },
+    ];
+    let estimated_reclaimed_rows = tables.iter().map(|row| row.eligible_rows).sum();
+    let total_rows_deleted = tables.iter().map(|row| row.rows_deleted).sum();
+
+    Ok(MicrostructureRetentionCleanupReport {
+        generated_at: now,
+        dry_run,
+        metrics_retention_days,
+        run_retention_days,
+        metrics_cutoff,
+        run_cutoff,
+        tables,
+        estimated_reclaimed_rows,
+        total_rows_deleted,
+        safety_counts_before,
+        safety_counts_after,
+    })
+}
+
+async fn count_microstructure_spread_before(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<i64> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS rows FROM microstructure_spread_metrics WHERE bucket_start < $1",
+    )
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("rows"))
+}
+
+async fn count_microstructure_imbalance_before(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+) -> Result<i64> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS rows FROM microstructure_imbalance_metrics WHERE bucket_start < $1",
+    )
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("rows"))
+}
+
+async fn count_microstructure_liquidity_before(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+) -> Result<i64> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS rows FROM microstructure_liquidity_metrics WHERE bucket_start < $1",
+    )
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("rows"))
+}
+
+async fn count_microstructure_runs_before(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<i64> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS rows FROM microstructure_collector_runs WHERE started_at < $1",
+    )
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("rows"))
+}
+
+async fn microstructure_spread_remaining_bounds(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    dry_run: bool,
+) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+    let row = if dry_run {
+        sqlx::query(
+            r#"
+            SELECT MIN(bucket_start) AS oldest_remaining_row,
+                   MAX(bucket_start) AS newest_remaining_row
+            FROM microstructure_spread_metrics
+            WHERE bucket_start >= $1
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT MIN(bucket_start) AS oldest_remaining_row,
+                   MAX(bucket_start) AS newest_remaining_row
+            FROM microstructure_spread_metrics
+            "#,
+        )
+        .fetch_one(pool)
+        .await?
+    };
+    Ok((
+        row.get("oldest_remaining_row"),
+        row.get("newest_remaining_row"),
+    ))
+}
+
+async fn microstructure_imbalance_remaining_bounds(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    dry_run: bool,
+) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+    let row = if dry_run {
+        sqlx::query(
+            r#"
+            SELECT MIN(bucket_start) AS oldest_remaining_row,
+                   MAX(bucket_start) AS newest_remaining_row
+            FROM microstructure_imbalance_metrics
+            WHERE bucket_start >= $1
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT MIN(bucket_start) AS oldest_remaining_row,
+                   MAX(bucket_start) AS newest_remaining_row
+            FROM microstructure_imbalance_metrics
+            "#,
+        )
+        .fetch_one(pool)
+        .await?
+    };
+    Ok((
+        row.get("oldest_remaining_row"),
+        row.get("newest_remaining_row"),
+    ))
+}
+
+async fn microstructure_liquidity_remaining_bounds(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    dry_run: bool,
+) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+    let row = if dry_run {
+        sqlx::query(
+            r#"
+            SELECT MIN(bucket_start) AS oldest_remaining_row,
+                   MAX(bucket_start) AS newest_remaining_row
+            FROM microstructure_liquidity_metrics
+            WHERE bucket_start >= $1
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT MIN(bucket_start) AS oldest_remaining_row,
+                   MAX(bucket_start) AS newest_remaining_row
+            FROM microstructure_liquidity_metrics
+            "#,
+        )
+        .fetch_one(pool)
+        .await?
+    };
+    Ok((
+        row.get("oldest_remaining_row"),
+        row.get("newest_remaining_row"),
+    ))
+}
+
+async fn microstructure_runs_remaining_bounds(
+    pool: &PgPool,
+    cutoff: DateTime<Utc>,
+    dry_run: bool,
+) -> Result<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> {
+    let row = if dry_run {
+        sqlx::query(
+            r#"
+            SELECT MIN(started_at) AS oldest_remaining_row,
+                   MAX(started_at) AS newest_remaining_row
+            FROM microstructure_collector_runs
+            WHERE started_at >= $1
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query(
+            r#"
+            SELECT MIN(started_at) AS oldest_remaining_row,
+                   MAX(started_at) AS newest_remaining_row
+            FROM microstructure_collector_runs
+            "#,
+        )
+        .fetch_one(pool)
+        .await?
+    };
+    Ok((
+        row.get("oldest_remaining_row"),
+        row.get("newest_remaining_row"),
+    ))
 }
 
 pub async fn microstructure_summary_report(

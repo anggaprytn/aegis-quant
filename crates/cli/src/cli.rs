@@ -912,6 +912,19 @@ pub enum ResearchCommands {
 pub enum ResearchMicrostructureCommands {
     Collect(ResearchMicrostructureCollectArgs),
     Summary(ResearchMicrostructureSummaryArgs),
+    #[command(name = "retention", subcommand)]
+    Retention(ResearchMicrostructureRetentionCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ResearchMicrostructureRetentionCommands {
+    Cleanup(ResearchMicrostructureRetentionCleanupArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ResearchMicrostructureRetentionCleanupArgs {
+    #[arg(long = "dry-run", default_value_t = false)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args)]

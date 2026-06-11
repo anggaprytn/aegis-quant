@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const DEFAULT_API_BASE_URL: &str = "http://127.0.0.1:3100";
+pub const DEFAULT_MICROSTRUCTURE_RETENTION_DAYS: i64 = 30;
+pub const DEFAULT_MICROSTRUCTURE_RUN_RETENTION_DAYS: i64 = 90;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliConfig {
@@ -18,6 +20,44 @@ pub struct CliConfig {
     pub auth: Option<StoredAuthSession>,
     pub token_path: PathBuf,
     pub auth_from_env: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicrostructureRetentionConfig {
+    pub metrics_retention_days: i64,
+    pub run_retention_days: i64,
+}
+
+impl MicrostructureRetentionConfig {
+    pub fn from_env() -> anyhow::Result<Self> {
+        Ok(Self {
+            metrics_retention_days: read_positive_i64_env(
+                "MICROSTRUCTURE_RETENTION_DAYS",
+                DEFAULT_MICROSTRUCTURE_RETENTION_DAYS,
+            )?,
+            run_retention_days: read_positive_i64_env(
+                "MICROSTRUCTURE_RUN_RETENTION_DAYS",
+                DEFAULT_MICROSTRUCTURE_RUN_RETENTION_DAYS,
+            )?,
+        })
+    }
+}
+
+fn read_positive_i64_env(name: &str, default_value: i64) -> anyhow::Result<i64> {
+    let Some(raw) = std::env::var(name).ok() else {
+        return Ok(default_value);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(default_value);
+    }
+    let parsed = trimmed
+        .parse::<i64>()
+        .map_err(|err| anyhow::anyhow!("{name} must be a positive integer: {err}"))?;
+    if parsed <= 0 {
+        anyhow::bail!("{name} must be greater than zero");
+    }
+    Ok(parsed)
 }
 
 impl CliConfig {
@@ -158,7 +198,9 @@ pub fn clear_token_file(path: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::{
         clear_token_file, load_token_file, normalize_base_url, resolve_api_base_url,
-        save_token_file, CliConfig, StoredAuthSession, StoredUserSummary,
+        save_token_file, CliConfig, MicrostructureRetentionConfig, StoredAuthSession,
+        StoredUserSummary, DEFAULT_MICROSTRUCTURE_RETENTION_DAYS,
+        DEFAULT_MICROSTRUCTURE_RUN_RETENTION_DAYS,
     };
     use aegis_core::{UserRole, UserStatus};
     use chrono::{TimeZone, Utc};
@@ -269,5 +311,54 @@ mod tests {
         env::remove_var("AEGIS_API_BASE_URL");
         env::remove_var("AEGIS_ACCESS_TOKEN");
         env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn microstructure_retention_defaults_when_env_missing() {
+        let _guard = env_lock().lock().expect("env lock");
+        env::remove_var("MICROSTRUCTURE_RETENTION_DAYS");
+        env::remove_var("MICROSTRUCTURE_RUN_RETENTION_DAYS");
+
+        let config = MicrostructureRetentionConfig::from_env().expect("config should load");
+
+        assert_eq!(
+            config.metrics_retention_days,
+            DEFAULT_MICROSTRUCTURE_RETENTION_DAYS
+        );
+        assert_eq!(
+            config.run_retention_days,
+            DEFAULT_MICROSTRUCTURE_RUN_RETENTION_DAYS
+        );
+    }
+
+    #[test]
+    fn microstructure_retention_env_overrides_defaults() {
+        let _guard = env_lock().lock().expect("env lock");
+        env::set_var("MICROSTRUCTURE_RETENTION_DAYS", "14");
+        env::set_var("MICROSTRUCTURE_RUN_RETENTION_DAYS", "45");
+
+        let config = MicrostructureRetentionConfig::from_env().expect("config should load");
+
+        assert_eq!(config.metrics_retention_days, 14);
+        assert_eq!(config.run_retention_days, 45);
+
+        env::remove_var("MICROSTRUCTURE_RETENTION_DAYS");
+        env::remove_var("MICROSTRUCTURE_RUN_RETENTION_DAYS");
+    }
+
+    #[test]
+    fn microstructure_retention_rejects_non_positive_values() {
+        let _guard = env_lock().lock().expect("env lock");
+        env::set_var("MICROSTRUCTURE_RETENTION_DAYS", "0");
+        env::remove_var("MICROSTRUCTURE_RUN_RETENTION_DAYS");
+
+        let err = MicrostructureRetentionConfig::from_env()
+            .expect_err("zero retention should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("MICROSTRUCTURE_RETENTION_DAYS must be greater than zero"));
+
+        env::remove_var("MICROSTRUCTURE_RETENTION_DAYS");
     }
 }
