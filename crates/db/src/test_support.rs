@@ -1,12 +1,9 @@
 use std::{env, path::PathBuf, str::FromStr};
 
 use anyhow::{bail, Context, Result};
-use sqlx::{
-    migrate::Migrator,
-    postgres::{PgConnectOptions, PgPoolOptions},
-};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-use crate::{ensure_system_state, PgPool};
+use crate::{ensure_system_state, run_pending_migrations, MigrationRunConfig, PgPool};
 
 const TEST_TABLES: &[&str] = &[
     "microstructure_liquidity_metrics",
@@ -132,8 +129,14 @@ pub fn assert_safe_test_database(database_url: &str) -> Result<()> {
 
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     let migrations_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let migrator = Migrator::new(migrations_dir.as_path()).await?;
-    migrator.run(pool).await?;
+    run_pending_migrations(
+        pool,
+        &MigrationRunConfig {
+            migrations_dir,
+            applied_by: Some("aegis-test-support".to_string()),
+        },
+    )
+    .await?;
     Ok(())
 }
 

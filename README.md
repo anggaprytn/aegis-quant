@@ -215,7 +215,7 @@ Migrations:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
 
 Migration note:
-The `migrate` service currently applies raw SQL files from `crates/db/migrations` in sorted order with `psql`. This is acceptable for current VPS bootstrap, but rerunning raw SQL may fail if any migration is non-idempotent. Treat this path as intended for fresh/bootstrap VPS databases until a proper `sqlx migrate` image is added.
+The `migrate` service runs `aegis db migrations migrate`. The runner creates `schema_migrations`, records each migration version and SHA-256 checksum, skips already-applied matching migrations, and stops on checksum mismatches or migration failures.
 
 Dashboard:
 `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`

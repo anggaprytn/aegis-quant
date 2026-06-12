@@ -31,14 +31,14 @@ use cli::api::{
 };
 use cli::cli::{
     AnalyticsCommands, AnalyticsStrategyCommands, AnalyticsTestnetCommands, AuthCommands,
-    BacktestCommands, Cli, Commands, EventsCommands, ExchangeCommands, ExchangeTestnetCommands,
-    ExchangeTestnetPrivateStreamCommands, ExchangeTestnetShadowRunnerCommands, ExperimentCommands,
-    MarketCommands, OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands,
-    ReadinessCommands, ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands,
-    ResearchCandidateCommands, ResearchCommands, ResearchCrossAssetCommands,
-    ResearchCrossAssetRobustnessMatrixCommands, ResearchCrossAssetRobustnessMatrixRunArgs,
-    ResearchCrossAssetRunArgs, ResearchDataCommands, ResearchDerivativesCommands,
-    ResearchDerivativesFundingCommands, ResearchDerivativesOiCommands,
+    BacktestCommands, Cli, Commands, DbCommands, DbMigrationCommands, EventsCommands,
+    ExchangeCommands, ExchangeTestnetCommands, ExchangeTestnetPrivateStreamCommands,
+    ExchangeTestnetShadowRunnerCommands, ExperimentCommands, MarketCommands,
+    OperatorReportsCommands, OrderCommands, PaperCommands, PipelineCommands, ReadinessCommands,
+    ReportsCommands, ResearchBatchCommands, ResearchCampaignCommands, ResearchCandidateCommands,
+    ResearchCommands, ResearchCrossAssetCommands, ResearchCrossAssetRobustnessMatrixCommands,
+    ResearchCrossAssetRobustnessMatrixRunArgs, ResearchCrossAssetRunArgs, ResearchDataCommands,
+    ResearchDerivativesCommands, ResearchDerivativesFundingCommands, ResearchDerivativesOiCommands,
     ResearchDerivativesPositioningCommands, ResearchExperimentPlanCommands,
     ResearchHypothesisCommands, ResearchMicrostructureCollectArgs, ResearchMicrostructureCommands,
     ResearchMicrostructureRetentionCleanupArgs, ResearchMicrostructureRetentionCommands,
@@ -79,6 +79,68 @@ async fn connect_research_db() -> anyhow::Result<db::PgPool> {
             .unwrap_or(5),
     })
     .await
+}
+
+fn resolve_migrations_dir(arg: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    arg.or_else(|| std::env::var("AEGIS_MIGRATIONS_DIR").ok().map(Into::into))
+        .unwrap_or_else(|| db::MIGRATIONS_DIR.into())
+}
+
+fn migration_actor() -> String {
+    std::env::var("AEGIS_MIGRATION_ACTOR")
+        .or_else(|_| std::env::var("USER").map(|user| format!("local:{user}")))
+        .unwrap_or_else(|_| "aegis-cli".to_string())
+}
+
+fn print_migration_run_report(report: &db::MigrationRunReport) {
+    println!("Migrations total: {}", report.total_migrations);
+    println!("Applied: {}", report.applied.len());
+    println!("Skipped: {}", report.skipped.len());
+    for migration in &report.applied {
+        println!(
+            "applied {} {} ({} ms)",
+            migration.version, migration.filename, migration.execution_ms
+        );
+    }
+}
+
+fn print_migration_baseline_report(report: &db::MigrationBaselineReport) {
+    println!("Baseline target: {}", report.target_version);
+    println!("Dry run: {}", report.dry_run);
+    println!("Considered: {}", report.total_considered);
+    println!("Already applied: {}", report.already_applied.len());
+    if report.dry_run {
+        println!("Would record: {}", report.would_record.len());
+        for migration in &report.would_record {
+            println!("would record {} {}", migration.version, migration.filename);
+        }
+    } else {
+        println!("Recorded: {}", report.recorded.len());
+        for migration in &report.recorded {
+            println!("recorded {} {}", migration.version, migration.filename);
+        }
+    }
+}
+
+fn print_migration_status_report(report: &db::MigrationStatusReport) {
+    println!("Total migrations: {}", report.total_migrations);
+    println!("Applied count: {}", report.applied_count);
+    println!("Pending count: {}", report.pending_count);
+    match &report.latest_applied {
+        Some(record) => println!("Latest applied: {} {}", record.version, record.filename),
+        None => println!("Latest applied: none"),
+    }
+    println!("Checksum mismatches: {}", report.checksum_mismatches.len());
+    for mismatch in &report.checksum_mismatches {
+        println!(
+            "checksum mismatch {} {} ledger={} file={}",
+            mismatch.version, mismatch.filename, mismatch.expected_sha256, mismatch.actual_sha256
+        );
+    }
+    println!("Pending list:");
+    for migration in &report.pending {
+        println!("pending {} {}", migration.version, migration.filename);
+    }
 }
 
 async fn run_derivatives_funding_backfill(
@@ -676,6 +738,56 @@ async fn main() -> anyhow::Result<()> {
                 output::print_status(&health, &status, &risk, &feed);
             }
         }
+        Commands::Db(command) => match command {
+            DbCommands::Migrations(command) => {
+                let pool = connect_research_db().await?;
+                match command {
+                    DbMigrationCommands::Migrate(args) => {
+                        let report = db::run_pending_migrations(
+                            &pool,
+                            &db::MigrationRunConfig {
+                                migrations_dir: resolve_migrations_dir(args.migrations_dir),
+                                applied_by: Some(migration_actor()),
+                            },
+                        )
+                        .await?;
+                        if cli.json {
+                            output::print_json(&report)?;
+                        } else {
+                            print_migration_run_report(&report);
+                        }
+                    }
+                    DbMigrationCommands::Baseline(args) => {
+                        let report = db::baseline_migrations(
+                            &pool,
+                            &db::MigrationBaselineConfig {
+                                migrations_dir: resolve_migrations_dir(args.migrations_dir),
+                                up_to: args.up_to,
+                                confirm_production_baseline: args.confirm_production_baseline,
+                                dry_run: args.dry_run,
+                                applied_by: Some(migration_actor()),
+                            },
+                        )
+                        .await?;
+                        if cli.json {
+                            output::print_json(&report)?;
+                        } else {
+                            print_migration_baseline_report(&report);
+                        }
+                    }
+                    DbMigrationCommands::Status(args) => {
+                        let report =
+                            db::migration_status(&pool, resolve_migrations_dir(args.migrations_dir))
+                                .await?;
+                        if cli.json {
+                            output::print_json(&report)?;
+                        } else {
+                            print_migration_status_report(&report);
+                        }
+                    }
+                }
+            }
+        },
         Commands::Metrics(args) => {
             let response = client.metrics().await?;
             let filtered = if let Some(pattern) = args.grep.as_deref() {

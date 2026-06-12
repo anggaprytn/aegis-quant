@@ -87,13 +87,61 @@ Do not reset VPS volumes as part of routine sync. Take a database backup before 
 
 ## Migrations
 
-The `migrate` service applies sorted SQL files from `crates/db/migrations` with `psql`:
+The `migrate` service runs the ledger-aware CLI migration runner:
 
 ```bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 ```
 
-Run it after Postgres is healthy and before API/workers. Local environments are disposable; VPS environments should be backed up first.
+Run it after Postgres is healthy and before API/workers. The runner creates `schema_migrations`, skips already-applied matching versions, stops on checksum mismatches, and never continues after a failed pending migration. Local environments are disposable; VPS environments should be backed up first.
+
+### Production Baseline For Existing VPS Schema
+
+Use this only after reviewing the deployment diff. Do not start collectors or execution-like workers during the baseline.
+
+```bash
+ssh tencent
+cd /app/aegis-quant
+
+./scripts/validate-vps-readonly.sh
+
+git fetch origin
+git status --short --branch
+git log --oneline --decorate -5
+# Review the incoming changes before pulling.
+git pull --ff-only
+
+docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
+docker compose -f infra/docker-compose.yml --env-file .env build migrate
+
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
+  aegis db migrations status
+
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
+  aegis db migrations baseline --up-to 0073 --confirm-production-baseline --dry-run
+
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
+  aegis db migrations baseline --up-to 0073 --confirm-production-baseline
+
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
+  aegis db migrations status
+
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
+
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
+  aegis db migrations status
+
+docker exec aegis-quant-postgres psql -U "${POSTGRES_USER:-aegis}" -d "${POSTGRES_DB:-aegis_quant}" \
+  -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'microstructure_%' ORDER BY table_name;"
+
+docker compose -f infra/docker-compose.yml --env-file .env build api
+docker compose -f infra/docker-compose.yml --env-file .env up -d api
+
+# Do not start the microstructure collector yet.
+./scripts/validate-vps-readonly.sh
+```
+
+Expected migration behavior for the current VPS baseline is: baseline records migrations through `0073` without executing their SQL, then normal migrate applies only pending migrations, starting at `0074`.
 
 ## Backups
 

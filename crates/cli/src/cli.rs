@@ -187,6 +187,45 @@ pub enum Commands {
     Readiness(ReadinessCommands),
     #[command(subcommand)]
     Exchange(ExchangeCommands),
+    #[command(subcommand)]
+    Db(DbCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DbCommands {
+    #[command(subcommand)]
+    Migrations(DbMigrationCommands),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DbMigrationCommands {
+    Migrate(DbMigrationsMigrateArgs),
+    Baseline(DbMigrationsBaselineArgs),
+    Status(DbMigrationsStatusArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DbMigrationsMigrateArgs {
+    #[arg(long = "migrations-dir")]
+    pub migrations_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct DbMigrationsBaselineArgs {
+    #[arg(long = "up-to")]
+    pub up_to: String,
+    #[arg(long = "confirm-production-baseline", default_value_t = false)]
+    pub confirm_production_baseline: bool,
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+    #[arg(long = "migrations-dir")]
+    pub migrations_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct DbMigrationsStatusArgs {
+    #[arg(long = "migrations-dir")]
+    pub migrations_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -55,6 +55,8 @@ pub const TESTNET_SHADOW_RUNNER_CONFIG_ID: Uuid =
 pub const TESTNET_SHADOW_RUNNER_STATE_ID: Uuid =
     Uuid::from_u128(0x0180_0000_0000_0000_0000_0000_0000_0002);
 pub use sqlx::PgPool;
+mod migrations;
+pub use migrations::*;
 mod research;
 pub use research::*;
 mod derivatives;

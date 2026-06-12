@@ -23,7 +23,9 @@ services:
       retries: 5
 
   migrate:
-    image: postgres:16
+    build:
+      context: ..
+      dockerfile: Dockerfile
     container_name: aegis-quant-migrate
     profiles: ["migrate"]
     depends_on:
@@ -32,16 +34,9 @@ services:
     env_file:
       - ../.env
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - ..:/app:ro
-    working_dir: /app
-    command:
-      [
-        "sh",
-        "-ec",
-        'find crates/db/migrations -maxdepth 1 -type f -name ''*.sql'' | sort | while IFS= read -r f; do echo "==> applying $$f"; psql -h postgres -U ${POSTGRES_USER:-aegis} -d ${POSTGRES_DB:-aegis_quant} -v ON_ERROR_STOP=1 -f "$$f"; done',
-      ]
+      DATABASE_URL: postgres://${POSTGRES_USER:-aegis}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aegis_quant}
+      AEGIS_MIGRATION_ACTOR: docker-compose:migrate
+    command: ["aegis", "db", "migrations", "migrate"]
 
   api:
     build:
