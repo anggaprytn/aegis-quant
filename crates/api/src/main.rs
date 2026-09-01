@@ -37312,7 +37312,7 @@ mod tests {
     #[test]
     fn cors_allowed_origins_parse_and_dedupe() {
         let origins = parse_cors_allowed_origins(Some(
-            " http://localhost:3001,https://aegis.anggaprytn.com,http://localhost:3001 ",
+            " http://localhost:3001,https://dashboard.example.invalid,http://localhost:3001 ",
         ))
         .expect("parsed origins");
 
@@ -37320,7 +37320,7 @@ mod tests {
             origins,
             vec![
                 HeaderValue::from_static("http://localhost:3001"),
-                HeaderValue::from_static("https://aegis.anggaprytn.com"),
+                HeaderValue::from_static("https://dashboard.example.invalid"),
             ]
         );
     }

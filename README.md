@@ -1,441 +1,325 @@
-![Aegis Cover](https://testing-1355450658.cos.ap-jakarta.myqcloud.com/aegis.webp)
-
 # Aegis Quant
 
-Research control plane and deterministic execution infrastructure for risk-gated market systems.
+Deterministic infrastructure for market-data research, risk-gated paper
+execution, and isolated exchange-testnet operations.
 
-## Current milestone
+> [!WARNING]
+> Aegis Quant is experimental v0.1 software. It is not financial advice, an
+> investment product, or a live-trading system. Live trading is not implemented.
+> Do not connect real-money credentials or treat research, backtest, paper,
+> shadow, or testnet results as evidence of future returns.
 
-Aegis is currently operating as a research control plane, not a live trading bot.
-
-- VPS safe scheduled monitoring is live and read-only validation is clean: `OK=28`, `WARN=0`, `FAIL=0`.
-- The research pipeline is mature enough to ingest market data, build and repair candle datasets, run campaigns, validate candidates, and produce shadow evidence.
-- The first real candidate family is `failed_breakdown_reclaim_v1`, with one ETH-specific `ETHUSDT 1h` candidate promoted to shadow configuration.
-- Current candidate status: `70867792-93df-494c-9a8b-d961c73107e4`, `PROMOTED_TO_SHADOW_CONFIG`, `3/30` independent shadow observations, `0/3` `WOULD_SUBMIT`, `NOT_QUALIFIED`, dossier `BLOCKED`.
-- There is no paper execution, testnet order submission, or live trading from research or shadow observation.
-
-## v0.1 disclaimer
-
-- Not an AI trading bot
-- Not financial advice
-- No live trading support
-- No paper execution from research or shadow observation
-- No testnet order submission from research or shadow observation
-- Testnet execution paths, where present, remain isolated, owner-gated, and outside the current research milestone
+Aegis Quant is a Rust and PostgreSQL control plane for making trading
+experiments and execution workflows inspectable. It ingests public market data,
+stores deterministic candles, evaluates explicit strategy and risk rules, and
+persists the events and state transitions needed to understand what happened.
+Operators can use the HTTP API, the aegis CLI, or the Next.js dashboard over the
+same backend state.
 
 ## Why it exists
 
-Aegis Quant is a Rust-first stack for operators who care about deterministic market data, auditable research evidence, explicit risk gates, replay and backtest, paper accounting boundaries, observation-only shadow mode, isolated testnet lifecycle primitives, operational dashboard and CLI surfaces, and readiness-driven reporting.
+Many trading experiments become difficult to trust before the strategy itself is
+evaluated. Data may be incomplete, prices may be stale, signals may be
+duplicated, accounting may drift, exchange state may require reconciliation, and
+operator actions may be impossible to reconstruct.
 
-## Quick architecture
+Aegis Quant treats those concerns as infrastructure problems. The project is
+for developers, researchers, and operators who want to exercise correctness,
+auditability, and safety controls before considering capital deployment.
 
-```txt
-Public Market Data
-        |
-        v
-     Candles  <----- historical backfill / deterministic candle builder
-        |
-        v
-     Research / Strategy
-        |
-        v
-   Evidence Gates
-        |
-        v
-  +-----+-------------------+------------------------+-------------------+
-  |                         |                        |                   |
-  v                         v                        v                   v
-Research Candidates    Shadow Observation    Testnet Review         Analytics /
-(proposal/gate)        (does not submit)     Dossier (blocked       Reports /
-                                             until qualified)       Readiness
-  +-------------------------+------------------------+-------------------+
+## Current scope
 
-Live Trading: not implemented
-Current milestone: research/shadow observation only
-```
+| Area | Implemented scope |
+| --- | --- |
+| Market data | Binance public WebSocket trade ingestion and public REST candle backfill |
+| Storage | PostgreSQL migrations, events, candles, signals, risk decisions, orders, research artifacts, and audit records |
+| Research | Data quality, aggregation, replay/backtest, experiments, walk-forward validation, robustness analysis, attribution, hypotheses, plans, candidates, and shadow evidence |
+| Execution | Risk-gated simulated paper flow and an isolated, owner-confirmed Binance Spot Testnet flow |
+| Interfaces | Axum API, aegis CLI, Next.js dashboard, JSON output, and Prometheus-compatible metrics |
+| AI boundary | llm-analyst is a dormant advisory boundary; no LLM has execution authority |
+| Maturity | Experimental, single-tenant, and local/host-oriented; not a managed production service |
 
-## What works now
+## Safety model
 
-- [x] Auth-gated operational API
-- [x] Binance public market ingest
-- [x] Historical candle backfill
-- [x] Deterministic 1m candle builder
-- [x] Higher-timeframe candle aggregation: 1m -> 5m / 15m / 1h
-- [x] Candle quality checks and repair
-- [x] Provider diagnostics and fallback handling
-- [x] Strategy config validation
-- [x] Risk config validation
-- [x] Replay/backtest
-- [x] Research batches and campaigns
-- [x] Regime calibration, regime discovery, and regime datasets
-- [x] Robustness matrix and walk-forward validation
-- [x] Failure attribution, opportunity analysis, replay/opportunity consistency, exit attribution, and signal-feature attribution
-- [x] Hypothesis generation and experiment planning
-- [x] Explicit research plan preview/run
-- [x] Candidate creation gate and candidate proposal flow
-- [x] Stale research run recovery
-- [x] Observation-only shadow mode
-- [x] Unique-candle shadow observation workflow
-- [x] Scheduled safe monitoring jobs on VPS
-- [x] Candidate-specific scheduled shadow observation job kind
-- [x] Readiness, qualification, and dossier decision support
-- [x] Operator report
-- [x] CLI/dashboard/Prometheus
+All trade-like behavior is intended to remain traceable through:
 
-## What does not exist
+~~~text
+market event -> signal -> risk decision -> order intent -> execution state
+~~~
 
-- No live trading
-- No production Binance trading endpoint
-- No real-money execution
-- No paper/testnet/live order path from research or shadow observation
-- No LLM decision-maker
-- No auto-submit from strategy
-- No HFT
-- No leverage, futures, or options
-- No financial promise
+The boundaries are explicit:
 
-## 30-second demo path
+- Research and replay write research or backtest state only.
+- Paper accounting uses separate simulated order, fill, position, and PnL state.
+- Shadow observation records would-submit evidence and never submits orders.
+- Testnet actions use isolated persistence and require authorization plus typed
+  confirmation.
+- A persistent PostgreSQL kill switch is checked before guarded actions.
+- No production exchange private endpoint or live-trading path is implemented.
 
-```bash
-cp .env.example .env
-make verify
-./scripts/demo-v0.1.sh
-```
+## Architecture
 
-## Safety boundaries
+~~~text
+              aegis CLI / Next.js dashboard
+                           |
+                           v
+                    Axum operational API
+                           |
+       +-------------------+-------------------+
+       |                   |                   |
+       v                   v                   v
+ public market data   research / replay   paper / testnet
+   and workers        and strategy work   guarded workflows
+       |                   |                   |
+       +-------------------+-------------------+
+                           |
+                           v
+                   PostgreSQL + migrations
+                           |
+                           v
+              events, audit, metrics, reports
+~~~
 
-- Execution flow remains `market event -> signal -> risk decision -> order intent -> execution state`.
-- Strategy logic cannot submit orders directly.
-- Kill switch state is persistent.
-- Paper is simulated only and is not part of the current research/shadow milestone.
-- Shadow observation persists evidence and does not submit.
-- `SHADOW_OBSERVATION_ONLY=false` fails closed for candidate shadow observation; `SHADOW_OBSERVATION_ONLY=true` permits observation-only rows.
-- Testnet execution is isolated from paper and uses testnet-only authenticated exchange actions.
-- Live trading is not implemented.
-- Readiness, analytics, and reports are read-only decision support.
-- Strategy experiments are research-only parameter sweeps on stored candles; they must not mutate live, paper, shadow, promotion, or testnet execution state.
-- Research experiment plan preview persists plan-run audit/history only. It does not create experiment, batch, campaign, matrix, walk-forward, candidate, paper, testnet, or live execution artifacts.
-- Research experiment plan run creates the explicit research artifact after exact confirmation and still must not mutate execution tables.
-- Baseline research strategies such as `trend_filter_momentum_v1`, `trend_filter_momentum_v2`, and `volatility_breakout_v2` are deterministic candle-only comparators for experiments and candidate review. They are not financial advice, do not promise profit, and do not bypass risk, paper, shadow, testnet, or live execution boundaries.
-- Research candidate lifecycle operations are review-only controls; candidate creation, observation, decisions, and archival append auditable lifecycle events and do not execute trades or auto-submit anything.
-- Candidate-specific scheduled shadow observation jobs are manual per candidate, excluded from safe bootstrap, and observation-only.
-- Public Binance market-data endpoints may be used for ingest/backfill; authenticated exchange actions remain testnet-only.
-
-## Repository layout
-
-```txt
-crates/           Rust services and libraries
-apps/dashboard/   Next.js operator cockpit
-infra/            Docker Compose and Prometheus config
-docs/             Architecture, security, and operator docs
-scripts/          Local helper scripts, including the v0.1 demo flow
-```
-
-## Documentation
-
-- [Release notes](./RELEASE_NOTES.md)
-- [Documentation index](./docs/README.md)
-- [Architecture overview](./docs/ARCHITECTURE_OVERVIEW.md)
-- [Research workflow](./docs/RESEARCH.md)
-- [Research milestone report](./docs/RESEARCH_MILESTONE.md)
-- [Runbook](./docs/RUNBOOK.md)
-- [Operator checklist](./docs/OPERATOR_CHECKLIST.md)
-- [Security checklist](./docs/SECURITY_CHECKLIST.md)
-
-## Research workflow
-
-1. Build the research dataset.
-2. Run the multi-timeframe experiment.
-3. Run walk-forward validation.
-4. Create a research candidate from an experiment run or manual review package.
-5. Inspect the candidate, observation output, and lifecycle events.
-6. Explicitly mark it as observing when shadow review begins.
-7. Re-run observation if runner configuration or readiness context changed.
-8. Decide `ACCEPT_FOR_SHADOW`, `REJECT`, `ARCHIVE`, or `REOPEN` with an auditable reason.
-9. Preview and, with explicit typed confirmation, apply shadow-runner config promotion for an `ACCEPTED_FOR_SHADOW` candidate.
-10. Collect unique-candle shadow observations until evidence thresholds are met.
-11. Review candidate qualification and dossier before any testnet promotion consideration.
-
-This workflow does not enable live trading, does not execute trades during candidate lifecycle operations, and does not auto-submit orders. Observation and candidate decisions do not mutate paper or testnet execution state.
-`ACCEPT_FOR_SHADOW` requires the latest persisted observation to be fresh. The default freshness window is 15 minutes.
-`ACCEPTED_FOR_SHADOW` means human/research approval for shadow observation only. `PROMOTED_TO_SHADOW_CONFIG` means the shadow runner config covers the candidate strategy, symbol, and timeframe.
-Shadow promotion requires a fresh observation, explicit confirmation, and only updates `testnet_shadow_runner_config` plus audit/system/research lifecycle records. If the runner config already covers the candidate, apply still fixes lifecycle state to `PROMOTED_TO_SHADOW_CONFIG` without duplicating the lifecycle event on repeated apply. It does not submit testnet orders or mutate paper/testnet/live execution tables.
-After promotion, linked shadow runs can be inspected through candidate shadow-performance and shadow-runs views. New links attach only to `PROMOTED_TO_SHADOW_CONFIG` candidates. The association is research-only and read-only over `testnet_shadow_runs`; it does not mutate paper, testnet submit, or live execution tables.
-Candidate qualification checks are stateless and read-only decision support. They gate whether a candidate is ready for testnet promotion consideration, do not auto-promote anything, do not submit orders, and do not mutate paper/testnet/live execution tables. Default qualification thresholds are `min_shadow_runs=30`, `min_would_submit_count=3`, `max_risk_rejection_rate_pct=40`, and `max_error_or_skipped_rate_pct=20`.
-
-Persisted qualification evaluations are separate research snapshots. `POST /research/candidates/:id/qualification/evaluate` stores the current qualification result, the watchlist tracks how candidate health changes over time, and the history endpoints remain research-only with no execution side effects.
-
-The current ETH candidate remains below threshold: `3/30` independent observations, `0/3` `WOULD_SUBMIT`, `NOT_QUALIFIED`, dossier `BLOCKED`, recommendation `KEEP_OBSERVING`.
-
-Experiment plan runner semantics:
-`run-preview` records plan-run history for auditability and returns the proposed artifact shape. It does not create downstream research artifacts.
-`run` requires `RUN RESEARCH PLAN <plan_id>` and creates the explicit research artifact for the plan type. Neither mode touches execution tables.
-
-## Local prerequisites
-
-- Rust toolchain with `cargo`
-- Node.js 20+ and npm for the dashboard
-- Docker and Docker Compose for local Postgres and optional services
-- PostgreSQL reachability from the configured `DATABASE_URL`
+The repository is a Rust workspace with separate boundaries for core types,
+database access, market ingest, strategy evaluation, risk, replay, accounting,
+exchange state, execution state, telemetry, and the operator API.
 
 ## Quick start
 
-1. Copy `.env.example` to `.env`.
-2. Review `.env` and set a real local `AEGIS_JWT_SECRET`.
-3. Apply database migrations:
-   `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres`
-   `docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
-4. Start core services:
-   `docker compose -f infra/docker-compose.yml --env-file .env up -d api`
-5. Bootstrap the owner:
-   `curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner`
-6. Log in:
-   `cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"`
-7. Optional dashboard:
-   `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
-   This Compose profile builds and runs the dashboard as a production Next.js container for VPS/deployed usage.
-8. Optional market ingest:
-   `docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
-9. Optional shadow runner:
-   `docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
-10. Optional derived candle aggregation worker:
-    `docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator`
-11. Optional Prometheus:
-    `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
+### Requirements
 
-Local dashboard auth note:
-`AEGIS_CORS_ALLOWED_ORIGINS` defaults to `http://localhost:3001,http://127.0.0.1:3001` so the dashboard can call the API at `http://localhost:3000` and receive the refresh-token cookie on `/auth/login` and `/auth/refresh`. For production, add explicit origins such as `https://aegis.anggaprytn.com` via env instead of using `*`.
+- Rust and Cargo. The repository Docker build currently uses Rust 1.88.
+- Node.js 20 or newer and npm for the dashboard.
+- Docker with Compose v2.
+- PostgreSQL if running the API or integration tests without Docker.
 
-## Compose profiles
+### Start PostgreSQL and the API
 
-Core API + DB:
-`docker compose -f infra/docker-compose.yml --env-file .env up -d postgres api`
+From the repository root:
 
-Migrations:
-`docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
+~~~bash
+cp .env.example .env
 
-Migration note:
-The `migrate` service runs `aegis db migrations migrate`. The runner creates `schema_migrations`, records each migration version and SHA-256 checksum, skips already-applied matching migrations, and stops on checksum mismatches or migration failures.
+# Review .env and replace the example JWT and owner password.
+set -a
+source ./.env
+set +a
 
-Dashboard:
-`docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
-
-For local frontend development, run the dashboard manually with `npm --prefix apps/dashboard install` and `npm --prefix apps/dashboard run dev -- --hostname 0.0.0.0 --port 3001`.
-
-If you run the dashboard outside Compose on `http://localhost:3001`, keep `AEGIS_CORS_ALLOWED_ORIGINS` aligned with the browser origin. Example:
-`AEGIS_CORS_ALLOWED_ORIGINS=http://localhost:3001,http://127.0.0.1:3001,https://aegis.anggaprytn.com`
-
-Market ingest:
-`docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest`
-
-Derived candle aggregation:
-`docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator`
-
-Shadow runner:
-`docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner`
-
-Prometheus:
-`docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
-
-## Deploy
-
-For VPS or any fresh environment, run migrations before starting API or DB-backed workers:
-
-```bash
 docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 docker compose -f infra/docker-compose.yml --env-file .env up -d api
+
+curl --fail --silent "$AEGIS_API_BASE_URL/system/health"
+curl --fail --silent -X POST "$AEGIS_API_BASE_URL/auth/bootstrap-owner"
+cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"
+~~~
+
+The API is published on http://127.0.0.1:3100 by Compose and listens on port
+3000 inside the container. Owner bootstrap is intended to run once.
+
+### Start the dashboard
+
+For frontend development:
+
+~~~bash
+npm --prefix apps/dashboard ci
+npm --prefix apps/dashboard run dev -- --hostname 127.0.0.1 --port 3001
+~~~
+
+Open http://127.0.0.1:3001. The dashboard uses
+NEXT_PUBLIC_API_BASE_URL from the environment. The containerized dashboard
+profile is available on http://127.0.0.1:3101:
+
+~~~bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
+~~~
+
+### Optional workers
+
+Start only the workers required for the workflow you are testing:
+
+~~~bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
-docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
 docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
-```
+docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d scheduled-research-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus
+~~~
 
-If your VPS bootstrap script is `/usr/local/bin/syncaegis`, it should run the exact migration command below after Postgres is healthy and before starting `api`, `dashboard`, or any workers:
+The scheduled research runner is disabled by default. Shadow mode is
+observation-only and does not submit exchange orders.
 
-`docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
+## First workflow
 
-Optional workers:
+After authentication, inspect the service, hydrate public candles, and run a
+deterministic replay:
 
-- `market-ingest` uses public Binance market data only.
-- `testnet-shadow-runner` never submits orders.
-- No live trading is implemented.
-- No production Binance endpoints are used.
+~~~bash
+cargo run -p cli -- status
+cargo run -p cli -- market provider-health --provider binance
+cargo run -p cli -- market backfill --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z
+cargo run -p cli -- market aggregate-candles --symbol BTCUSDT --source 1m --target 5m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z
+cargo run -p cli -- backtest run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --holding-candles 3
+cargo run -p cli -- reports operator daily --format markdown
+~~~
 
-Worker logs:
-`docker logs -f aegis-quant-market-ingest`
+Use aegis --help and the [usage guide](docs/USAGE.md) for the complete command
+tree and for mutation-specific safety requirements. Most supported commands
+also provide JSON output.
 
-`docker logs -f aegis-quant-shadow-runner`
+## Operating modes
 
-## Verification
+| Mode | Purpose | Exchange submission |
+| --- | --- | --- |
+| Research and replay | Prepare data, evaluate strategies, and collect evidence | Never |
+| Paper | Exercise the signal, risk, order, and accounting path with simulated fills | Never |
+| Shadow | Record whether a candidate would submit under current data and risk context | Never |
+| Testnet | Exercise isolated Binance Spot Testnet state and reconciliation | Explicit, authorized actions only |
 
-Core verification:
+Research results and candidate qualification are decision support. They do not
+automatically promote a candidate or create execution state.
 
-```bash
-cargo fmt --all
-cargo check
-cargo test
-cargo test -p api --test pipeline_persistence --no-run
-cargo test -p db --test integration_db --no-run
-npm --prefix apps/dashboard install
-npm --prefix apps/dashboard run typecheck
-npm --prefix apps/dashboard run build
-```
+## CLI and API
 
-Convenience target:
+The operator CLI is the primary local fallback:
 
-```bash
+~~~bash
+cargo run -p cli -- --help
+cargo run -p cli -- market --help
+cargo run -p cli -- research --help
+cargo run -p cli -- exchange testnet --help
+~~~
+
+The API exposes route groups for system health, authentication, market data,
+strategy and risk, paper accounting, backtests, research, isolated testnet
+operations, analytics, reports, events, orders, readiness, and metrics. The
+repository does not currently include a generated OpenAPI document; use the
+handlers, CLI help, and [usage guide](docs/USAGE.md) as the source of truth.
+
+## Configuration
+
+Copy the .env.example file to .env and keep the latter untracked. Read the
+[configuration reference](docs/CONFIGURATION.md) before changing
+authentication, CORS, metrics, database URLs, worker behavior, or testnet
+settings.
+
+Important boundaries:
+
+- Authentication is enabled by default and requires AEGIS_JWT_SECRET.
+- AEGIS_AUTH_DISABLED=true is for isolated local development only.
+- Public market-data variables do not authorize exchange actions.
+- Testnet keys are optional, backend-only, and must remain pointed at Binance
+  Spot Testnet.
+- Never put exchange secrets in frontend or NEXT_PUBLIC variables.
+
+## Development
+
+Install dashboard dependencies and run the repository verification target:
+
+~~~bash
+npm --prefix apps/dashboard ci
 make verify
-```
+~~~
 
-## Demo flow
+The verification target runs Rust formatting, checks, tests, compile-only
+database integration tests, dashboard typechecking/build, shell syntax checks,
+and whitespace validation.
 
-Use the defensive demo script:
+Database integration tests are ignored by default because they require a
+disposable PostgreSQL database:
 
-```bash
-./scripts/demo-v0.1.sh
-```
+~~~bash
+make integration-test
+~~~
 
-Optional flags:
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for the test database setup and
+[CONTRIBUTING.md](docs/CONTRIBUTING.md) for change expectations.
 
-- `./scripts/demo-v0.1.sh --with-checks`
-- `./scripts/demo-v0.1.sh --with-compose`
-- `./scripts/demo-v0.1.sh --with-checks --with-compose`
+## Deployment and operations
 
-The script does not submit testnet orders and does not require Binance credentials for the base flow.
+Docker Compose is the supported packaging shape for local and host-style
+deployments. Start PostgreSQL, apply migrations, then start the API and
+optional workers in that order. Back up non-disposable databases before
+migrations or maintenance.
 
-## Common commands
+The [operations runbook](docs/RUNBOOK.md) covers startup, migration behavior,
+read-only validation, backups, worker scheduling, shutdown, and common
+failures. This repository does not provide a hosted service, a secrets manager,
+or a production live-trading deployment.
 
-Owner bootstrap:
-`curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner`
+## Repository layout
 
-Health:
-`curl http://127.0.0.1:3000/system/health`
+~~~text
+crates/
+  api/               Axum API and worker binaries
+  cli/               aegis operator CLI
+  core/              shared domain types and validation
+  db/                PostgreSQL access, migrations, and test support
+  events/            event taxonomy and publisher boundary
+  exchange/          Binance Spot Testnet adapter and state mapping
+  execution-engine/  execution-state interface
+  market-ingest/     public market-data clients and collectors
+  replay-engine/     deterministic replay, backtest, and research analysis
+  risk-engine/       risk rules and decision evaluation
+  strategy-engine/   deterministic strategies and diagnostics
+  telemetry/         Prometheus-compatible metrics
+  llm-analyst/       dormant advisory boundary
+apps/dashboard/      Next.js operator cockpit
+infra/               Docker Compose and Prometheus configuration
+scripts/              demo, integration, deployment, and validation helpers
+docs/                 project, architecture, usage, security, and operations
+~~~
 
-Feed status:
-`curl http://127.0.0.1:3000/market/feed-status`
+## Documentation
 
-Public provider health:
-`cargo run -p cli -- market provider-health --provider binance`
+- [Documentation index](docs/README.md)
+- [Product requirements](docs/PRD.md)
+- [Usage guide](docs/USAGE.md)
+- [Configuration reference](docs/CONFIGURATION.md)
+- [Development guide](docs/DEVELOPMENT.md)
+- [Architecture overview](docs/ARCHITECTURE_OVERVIEW.md)
+- [Detailed architecture](docs/ARCHITECTURE.md)
+- [Research workflows](docs/RESEARCH.md)
+- [Research milestone](docs/RESEARCH_MILESTONE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Operations runbook](docs/RUNBOOK.md)
+- [Operator checklist](docs/OPERATOR_CHECKLIST.md)
+- [Security model](docs/SECURITY.md)
+- [Security policy](docs/SECURITY_POLICY.md)
+- [Contribution guide](docs/CONTRIBUTING.md)
+- [Code of Conduct](docs/CODE_OF_CONDUCT.md)
+- [Release notes](docs/RELEASE_NOTES.md)
+- [Sample evidence bundle](docs/examples/research-candidate-evidence-bundle.json)
 
-Backfill example:
-`cargo run -p cli -- market backfill --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z`
+## Roadmap and maturity
 
-### Public Binance market-data troubleshooting
+The current phase is research-control-plane hardening and evidence collection.
+Near-term work focuses on migration and recovery drills, integration coverage,
+data reliability, operator diagnostics, deployment hygiene, and manual
+promotion gates.
 
-Backfill and ingest use public market-data endpoints only. They do not use Binance credentials and do not call production trading endpoints.
+Live trading, production exchange private endpoints, leverage, multi-exchange
+routing, automatic promotion, and production secrets management are explicitly
+deferred. See the [roadmap](docs/ROADMAP.md) for the current priorities.
 
-Configure REST fallback endpoints when the local network blocks or degrades `https://api.binance.com`:
+## Contributing
 
-```env
-BINANCE_REST_BASE_URL=https://api.binance.com
-BINANCE_REST_FALLBACK_BASE_URLS=https://data-api.binance.vision,https://api1.binance.com,https://api2.binance.com,https://api3.binance.com,https://api4.binance.com
-BINANCE_WS_BASE_URL=wss://stream.binance.com:443
-```
+Contributions are welcome around correctness, tests, documentation,
+observability, and safe operator workflows. Read the
+[contribution guide](docs/CONTRIBUTING.md) and [Code of Conduct](docs/CODE_OF_CONDUCT.md)
+before opening a pull request.
 
-If REST or WebSocket traffic is blocked, try a VPN or the public Binance data endpoints such as `https://data-api.binance.vision` for REST backfill. Failed backfills return structured diagnostics with provider, base URL, endpoint, HTTP status when available, error kind, retryability, and recommendation; they do not pretend candles were inserted.
+## Security
 
-Aggregate higher timeframe candles from stored 1m candles:
-`cargo run -p cli -- market aggregate-candles --symbol BTCUSDT --source 1m --target 5m --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z`
+Do not commit credentials, tokens, private URLs, unredacted logs, or production
+data. Report suspected vulnerabilities privately using the process in the
+[security policy](docs/SECURITY_POLICY.md). The
+[security model](docs/SECURITY.md) documents the implemented boundaries.
 
-Inspect persisted candle coverage by interval:
-`cargo run -p cli -- market candle-coverage --symbol BTCUSDT`
+## License
 
-Backtest example:
-`cargo run -p cli -- backtest run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --holding-candles 3`
+Aegis Quant is released under the [MIT License](LICENSE).
 
-Higher timeframe backtest example:
-`cargo run -p cli -- backtest run --strategy momentum_v1 --symbol BTCUSDT --timeframe 5m --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --holding-candles 3`
-
-Strategy experiment sweep:
-`cargo run -p cli -- experiments strategy run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`
-
-Multi-timeframe strategy comparison:
-`cargo run -p cli -- experiments strategy multi-timeframe --strategy momentum_v1 --symbol BTCUSDT --timeframes 1m,5m,15m,1h --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 3,5,10,20 --holding-candles 3,5,10 --max-signal-age-ms 180000 --max-runs 12`
-
-Baseline research strategy comparison:
-`cargo run -p cli -- experiments strategy multi-timeframe --strategy trend_filter_momentum_v1 --symbol BTCUSDT --timeframes 5m,15m --start 2026-05-23T00:00:00Z --end 2026-05-24T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookbacks 10,20,50 --trend-lookbacks 10,20,50 --momentum-lookbacks 2,3,5 --holding-candles 3,5,10 --max-signal-age-ms 900000 --max-runs 27`
-
-Walk-forward validation:
-`cargo run -p cli -- experiments strategy walk-forward --strategy momentum_v1 --symbol BTCUSDT --timeframe 15m --start 2026-05-01T00:00:00Z --end 2026-05-24T00:00:00Z --train-hours 72 --test-hours 24 --step-hours 24 --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --lookback-candles 5 --holding-candles 3`
-
-List persisted strategy experiments:
-`cargo run -p cli -- experiments strategy list`
-
-Inspect a persisted strategy experiment:
-`cargo run -p cli -- experiments strategy get <experiment_id>`
-
-List ranked candidate runs for an experiment:
-`cargo run -p cli -- experiments strategy runs <experiment_id>`
-
-List walk-forward runs:
-`cargo run -p cli -- experiments strategy walk-forward-list`
-
-Inspect a persisted walk-forward run:
-`cargo run -p cli -- experiments strategy walk-forward-get <walk_forward_id>`
-
-List per-window walk-forward results:
-`cargo run -p cli -- experiments strategy walk-forward-windows <walk_forward_id>`
-
-Readiness example:
-`cargo run -p cli -- readiness check --target PAPER_PIPELINE --symbol BTCUSDT --strategy momentum_v1 --timeframe 1m`
-
-Operator report example:
-`cargo run -p cli -- reports operator daily --start 2026-05-24T00:00:00Z --end 2026-05-24T23:59:59Z --symbol BTCUSDT --strategy momentum_v1 --format markdown`
-
-Optional shadow example:
-`cargo run -p cli -- exchange testnet shadow-run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m`
-
-Research candidate lifecycle examples:
-`cargo run -p cli -- research candidates list --limit 10`
-
-`cargo run -p cli -- research candidates from-experiment-run <experiment_run_id> --notes "review queue"`
-
-`cargo run -p cli -- research candidates create --strategy momentum_v1 --symbol BTCUSDT --timeframe 15m --config-json '{"strategy_id":"momentum_v1","timeframe":"15m","symbols":["BTCUSDT"],"params":{"lookback_candles":8,"holding_candles":2}}' --notes "manual candidate"`
-
-`cargo run -p cli -- research candidates observe <candidate_id>`
-
-`cargo run -p cli -- research candidates decide <candidate_id> --decision REJECT --reason "bad drawdown"`
-
-`cargo run -p cli -- research candidates decide <candidate_id> --decision ACCEPT_FOR_SHADOW --reason "aligned and ready"`
-
-`cargo run -p cli -- research candidates promote-shadow-preview <candidate_id> --allow-missing-runner-alignment`
-
-`cargo run -p cli -- research candidates promote-shadow-apply <candidate_id> --allow-missing-runner-alignment --confirm "PROMOTE CANDIDATE <candidate_id> TO SHADOW"`
-
-`cargo run -p cli -- research candidates qualification <candidate_id>`
-`cargo run -p cli -- research candidates qualification-evaluate <candidate_id>`
-`cargo run -p cli -- research candidates qualification-history <candidate_id> --limit 20`
-`cargo run -p cli -- research candidates watchlist --limit 50`
-
-`cargo run -p cli -- research candidates shadow-performance <candidate_id>`
-
-`cargo run -p cli -- research candidates shadow-runs <candidate_id> --limit 50`
-
-If `ACCEPT_FOR_SHADOW` is rejected with `OBSERVATION_STALE` or `RUNNER_CONFIG_CHANGED`, run `observe` again before retrying.
-
-## Strategy experiment interpretation
-
-- `very_high_trade_count`: turnover is high enough that fee drag and slippage assumptions may dominate the edge.
-- `overtrading_warning`: turnover versus candle count is high enough that the candidate is likely overfit or friction-dominated.
-- `negative_after_fees`: the candidate ended negative once transaction costs were included.
-- `high_drawdown`: the candidate took materially deep peak-to-trough losses during the replay window.
-- `too_few_trades`: the sample is too small to trust the ranking.
-
-Strategy experiments are for research only. They reuse the deterministic replay engine, persist into isolated `strategy_experiments` and `strategy_experiment_runs` tables, optionally group timeframe sweeps with `experiment_group_id`, and do not update persisted strategy config or execution state.
-
-## Walk-forward validation
-
-The best single replay window is not enough to promote a strategy config. A candidate can rank first in one window and still be a fragile overfit.
-
-Walk-forward validation splits a larger chronological range into repeated train/test windows, keeps execution research-only, and scores the candidate on out-of-sample test windows only. For the MVP the train window is metadata only: Aegis does not optimize parameters inside it.
-
-Walk-forward results report a consistency score, aggregate PnL/drawdown/trade metrics, skipped-window reasons, and a robustness status: `ROBUST`, `WEAK`, `OVERFIT_RISK`, `INSUFFICIENT_DATA`, or `FAILED`. These labels are research evidence only and never accept, promote, or execute a candidate automatically.
-
-Walk-forward runs are persisted in isolated `strategy_walk_forward_runs` and `strategy_walk_forward_windows` tables. They do not mutate signals, risk decisions, orders, paper positions/fills, shadow promotions, testnet orders, or any live execution path.
-
-## Notes
-
-- The tracked `apps/dashboard/tsconfig.tsbuildinfo` file was a generated artifact and is now ignored. Fresh builds will recreate it locally without polluting git status.
-- `crates/llm-analyst` remains present in the workspace as an unused boundary only. No LLM integration is enabled in v0.1.
-- Public market-data ingest/backfill still use Binance public endpoints today. Authenticated exchange functionality remains isolated to Binance Spot Testnet only.
+This software is provided for research and infrastructure experimentation. It
+does not provide financial advice, investment recommendations, or guarantees of
+profitability.

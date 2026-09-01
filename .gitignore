@@ -7,7 +7,6 @@
 /.env.production
 !.env.example
 /.DS_Store
-Cargo.lock
 *.log
 logs/
 coverage/

@@ -1,508 +1,255 @@
-# Runbook
+# Operations Runbook
 
-## Local Start
+This runbook covers the supported local and host-style operating procedures for
+Aegis Quant. It assumes a single deployment owner, PostgreSQL, Docker Compose,
+and the safety boundary documented in the [security model](SECURITY.md).
 
-```bash
+This is experimental infrastructure. It has no live-trading path. Treat every
+non-disposable database as production data even when the application is being
+used only for research.
+
+## Local startup
+
+Create a local environment file and start services in dependency order:
+
+~~~bash
 cp .env.example .env
+
 docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 docker compose -f infra/docker-compose.yml --env-file .env up -d api
-docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
-docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
-```
+~~~
 
-Local default URLs:
+The default host URLs are:
 
-- API through Compose: `http://127.0.0.1:3100`
-- Dashboard through Compose: `http://127.0.0.1:3101`
-- Local dashboard dev server: `http://127.0.0.1:3001`
-- Prometheus profile: `http://127.0.0.1:9090`
+- API: http://127.0.0.1:3100
+- Dashboard development server: http://127.0.0.1:3001
+- Containerized dashboard profile: http://127.0.0.1:3101
+- Prometheus profile: http://127.0.0.1:9090
 
-Bootstrap owner after the API is healthy:
+Check the API and bootstrap the first owner after the API is healthy:
 
-```bash
-curl -X POST http://127.0.0.1:3100/auth/bootstrap-owner
+~~~bash
+curl --fail --silent http://127.0.0.1:3100/system/health
+curl --fail --silent -X POST http://127.0.0.1:3100/auth/bootstrap-owner
 cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"
-```
+~~~
 
-## VPS Sync Flow
+Bootstrap is intended to be a one-time operation. A later call should report
+that an owner already exists.
 
-If `/usr/local/bin/syncaegis` is used, keep the order explicit:
+Start optional profiles only when they are needed:
 
-```bash
-git pull --ff-only
-docker compose -f infra/docker-compose.yml --env-file .env build api dashboard market-ingest testnet-shadow-runner candle-aggregator
-docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
-docker compose -f infra/docker-compose.yml --env-file .env up -d api
+~~~bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
 docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
-docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
 docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
-```
+docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d scheduled-research-runner
+docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus
+~~~
 
-If VPS operations use the host CLI at `/usr/local/bin/aegis`, install it from the same checked-out source after the deploy:
+The scheduled research runner is disabled by default. Shadow observation is a
+no-submit path; enabling a worker does not authorize exchange execution.
 
-```bash
-./scripts/install-vps-cli.sh
-```
+Stop local services with:
 
-The VPS host does not need a Rust toolchain. The installer uses host Cargo when available:
+~~~bash
+docker compose -f infra/docker-compose.yml --env-file .env down
+~~~
 
-```bash
-cargo build --release -p cli
-```
+## Migration procedure
 
-If `cargo` is unavailable, it falls back to Docker, builds the repo `Dockerfile`, extracts `/usr/local/bin/aegis` from the built image, installs it to `/usr/local/bin/aegis`, then verifies:
+Run migrations only after PostgreSQL reports healthy and before starting
+database-backed application services:
 
-```bash
-aegis --help
-aegis research --help
-aegis research scheduled-jobs --help
-```
-
-If `/usr/local/bin/syncaegis` is managed outside this repo, keep the script itself out of git and add this step after `git pull` and the service builds:
-
-```bash
-cd /app/aegis-quant
-/app/aegis-quant/scripts/install-vps-cli.sh
-```
-
-To refresh only the scheduled research runner image/container after pulling runner changes, use the targeted helper:
-
-```bash
-./scripts/refresh-vps-scheduled-runner.sh
-```
-
-It only runs:
-
-```bash
-docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler build scheduled-research-runner
-docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d --no-deps --force-recreate scheduled-research-runner
-```
-
-It does not run `docker compose down`, touch Postgres volumes, recreate Postgres/API/dashboard/market-ingest, edit `.env`, or enable the scheduler. The `--no-deps` flag is required for runner-only refreshes so Compose does not recreate dependency containers such as Postgres. After refreshing, verify Postgres was not recreated and confirm `ai_read.execution_safety_counts` still reports zero execution rows.
-
-Do not reset VPS volumes as part of routine sync. Take a database backup before migrations or destructive maintenance.
-
-## Migrations
-
-The `migrate` service runs the ledger-aware CLI migration runner:
-
-```bash
+~~~bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
-```
+~~~
 
-Run it after Postgres is healthy and before API/workers. The runner creates `schema_migrations`, skips already-applied matching versions, stops on checksum mismatches, and never continues after a failed pending migration. Local environments are disposable; VPS environments should be backed up first.
+The migration runner maintains a ledger, skips already-applied matching
+migrations, and stops on checksum mismatches or failed pending migrations.
+Inspect the ledger explicitly when diagnosing a deployment:
 
-### Production Baseline For Existing VPS Schema
+~~~bash
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate aegis db migrations status
+~~~
 
-Use this only after reviewing the deployment diff. Do not start collectors or execution-like workers during the baseline.
+For a non-disposable database:
 
-```bash
-ssh tencent
-cd /app/aegis-quant
+1. Record the current application and migration versions.
+2. Take and verify a database backup.
+3. Review the migration diff.
+4. Run the migration container.
+5. Recheck migration status and API health.
+6. Inspect application logs before enabling optional workers.
 
-./scripts/validate-vps-readonly.sh
+Do not bypass a checksum mismatch by editing the migration ledger manually.
+Resolve the migration history through a reviewed change.
 
-git fetch origin
+## Host-style deployment order
+
+The repository supports Docker Compose on a host or VPS, but does not provide a
+managed deployment service. Keep host names, filesystem paths, synchronization
+scripts, and credentials outside the public repository.
+
+For a reviewed revision, use this order:
+
+~~~bash
+git fetch --prune
 git status --short --branch
-git log --oneline --decorate -5
-# Review the incoming changes before pulling.
 git pull --ff-only
 
-docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
-docker compose -f infra/docker-compose.yml --env-file .env build migrate
-
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
-  aegis db migrations status
-
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
-  aegis db migrations baseline --up-to 0073 --confirm-production-baseline --dry-run
-
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
-  aegis db migrations baseline --up-to 0073 --confirm-production-baseline
-
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
-  aegis db migrations status
-
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
-
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate \
-  aegis db migrations status
-
-docker exec aegis-quant-postgres psql -U "${POSTGRES_USER:-aegis}" -d "${POSTGRES_DB:-aegis_quant}" \
-  -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'microstructure_%' ORDER BY table_name;"
-
 docker compose -f infra/docker-compose.yml --env-file .env build api
+docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
+docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
 docker compose -f infra/docker-compose.yml --env-file .env up -d api
+~~~
 
-# Do not start the microstructure collector yet.
-./scripts/validate-vps-readonly.sh
-```
+Build and start the dashboard or workers separately after the API is healthy:
 
-Expected migration behavior for the current VPS baseline is: baseline records migrations through `0073` without executing their SQL, then normal migrate applies only pending migrations, starting at `0074`.
+~~~bash
+docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
+docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
+docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
+~~~
+
+Do not reset volumes as part of a routine update. Do not run a broad
+docker-compose-down operation when refreshing one worker. If a host-specific
+helper is used, keep that helper outside the repository and make its ordering
+equivalent to the sequence above.
 
 ## Backups
 
-Recommended before VPS migrations:
+For the Compose PostgreSQL service, a simple logical backup is:
 
-```bash
-docker exec aegis-quant-postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > "backup-$(date +%Y%m%d-%H%M%S).sql"
-```
+~~~bash
+docker compose -f infra/docker-compose.yml --env-file .env exec -T postgres pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" > "backup-$(date +%Y%m%d-%H%M%S).sql"
+~~~
 
-Store backups outside the deployment directory and restrict file permissions.
+Store backups outside the deployment directory, restrict their permissions, and
+test restoration separately. Do not publish database dumps, research exports
+containing private identifiers, or token-bearing logs.
 
-## Provider Fallbacks
+## Read-only validation
 
-Public market data can use Binance fallback hosts:
+The repository includes scripts/validate-vps-readonly.sh. The filename reflects
+its original host-style use; the checks are also useful on a local Compose
+deployment. It is intended to inspect state without mutating it:
 
-```txt
-BINANCE_REST_BASE_URL=https://api.binance.com
-BINANCE_REST_FALLBACK_BASE_URLS=https://data-api.binance.vision,https://api1.binance.com,https://api2.binance.com,https://api3.binance.com,https://api4.binance.com
-BINANCE_WS_BASE_URL=wss://stream.binance.com:443
-```
-
-If public REST is blocked by the current network, prefer `https://data-api.binance.vision` or a VPN. Do not switch to production private trading endpoints.
-
-## Health Checks
-
-```bash
-curl -fsS http://127.0.0.1:3100/system/health
-curl -fsS http://127.0.0.1:3100/metrics >/dev/null
-curl -I http://127.0.0.1:3101
-./scripts/verify-research-loop.sh
-```
-
-Use `AEGIS_ACCESS_TOKEN` with the smoke script when authenticated research read endpoints should be checked.
-
-## VPS Read-Only Scheduled Research Validation
-
-Use the VPS read-only validator after deployment or during scheduler triage when you need evidence without mutating production state. SSH to the VPS and run it from the deployed repo:
-
-```bash
-ssh tencent
-cd /app/aegis-quant
-./scripts/validate-vps-readonly.sh
-```
-
-The validator is designed for Docker-based VPS deployments. If `AEGIS_READONLY_DATABASE_URL` is set, it uses local `psql` with that URL and expects the URL to use the `aegis_readonly` role. If the URL is not set and the `aegis-quant-postgres` container is running, it runs:
-
-```bash
-docker exec -i aegis-quant-postgres psql -U aegis_readonly -d aegis_quant -c "<SELECT * FROM ai_read...>"
-```
-
-This means Postgres does not need to expose a host port for validation. If neither a read-only URL nor the Docker container is available, DB checks are reported as `WARN` unless `--strict` is passed.
-
-Run with VPS CLI auth token auto-load (no token required on command line):
-
-```bash
+~~~bash
 export AEGIS_API_BASE_URL=http://127.0.0.1:3100
 export AEGIS_DASHBOARD_URL=http://127.0.0.1:3101
-
-# default behavior is read-only; no automatic login by default
-bash scripts/validate-vps-readonly.sh
-```
-
-`validate-vps-readonly.sh` is read-only and does not print secrets.
-It uses `AEGIS_ACCESS_TOKEN` when set, otherwise loads `~/.config/aegis/token.json` as fallback.
-By default it is read-only and will not run any auth login flow automatically.
-Use `--auto-login` to run a safe optional startup auth refresh flow.
-- Recommended VPS read-only command:
-
-```bash
-export AEGIS_API_BASE_URL=http://127.0.0.1:3100
-export AEGIS_DASHBOARD_URL=http://127.0.0.1:3101
-
-bash scripts/validate-vps-readonly.sh --auto-login
-```
-
-- `--auto-login` performs an auth login POST (`aegislogin`) once at startup and then uses `~/.config/aegis/token.json`.
-- Default mode is read-only and does not run login automatically.
-- Token values are never printed.
-
-Current healthy VPS scheduled-monitoring result:
-
-```txt
-OK=28
-WARN=0
-FAIL=0
-```
-
-Current execution safety counts for the research-only VPS should remain zero:
-
-```txt
-orders=0
-paper_positions=0
-paper_fills=0
-exchange_testnet_orders=0
-exchange_testnet_order_lifecycle_events=0
-testnet_shadow_promotions=0
-```
-
-## Fix stale validator token
-
-If authenticated checks return `401`, use the manual token refresh flow:
-
-```bash
-unset AEGIS_ACCESS_TOKEN
-aegislogin
-
-export AEGIS_ACCESS_TOKEN="$(jq -r '.access_token' ~/.config/aegis/token.json)"
-export AEGIS_API_BASE_URL=http://127.0.0.1:3100
-
-bash scripts/validate-vps-readonly.sh
-```
-
-- `AEGIS_ACCESS_TOKEN` in the environment has priority in the validator.
-- If it is stale, unset it before running the validator.
-- The validator never prints token values.
-- Token values are never printed by `validate-vps-readonly.sh`.
-
-Useful modes:
-
-```bash
 ./scripts/validate-vps-readonly.sh --skip-db
-./scripts/validate-vps-readonly.sh --skip-api
+~~~
+
+When a read-only database role and the ai_read views are configured:
+
+~~~bash
+export AEGIS_READONLY_DATABASE_URL=postgres://readonly-user:password@db-host/aegis_quant
 ./scripts/validate-vps-readonly.sh --strict
-./scripts/validate-vps-readonly.sh --json
-```
+~~~
 
-The script only uses `docker ps`, `docker logs --tail`, `curl` GET requests, `psql` SELECT statements against `ai_read` views, and Docker exec into `aegis-quant-postgres` as `aegis_readonly`. It does not run sync, restart containers, apply migrations, create jobs, run jobs, call POST endpoints, or touch execution paths. If a token is not available and `--auto-login` is not set, authenticated scheduled research API checks are reported as `WARN` and skipped.
+The validator uses health and read endpoints, container status/log tails, and
+read-only queries against ai_read views. It does not run migrations, call
+mutation endpoints, create jobs, run research, repair orders, or restart
+containers. Without a token, authenticated checks are reported as warnings
+unless an explicit auto-login flow is requested.
 
-DB validation queries are limited to these read-only views:
+Use the validator to collect evidence, not to make the environment look clean.
+Non-zero execution-safety counts require investigation and audit review; do not
+delete rows or reset state to clear the result.
 
-```sql
-SELECT * FROM ai_read.candle_coverage;
-SELECT * FROM ai_read.execution_safety_counts;
-SELECT * FROM ai_read.shadow_decision_summary;
-SELECT * FROM ai_read.research_candidate_status;
-SELECT * FROM ai_read.walk_forward_status;
-```
+## Scheduled research runner
 
-Expected healthy shape:
+The scheduled research runner remains idle when
+SCHEDULED_RESEARCH_RUNNER_ENABLED=false. Keep it disabled during migrations and
+deploys. Bootstrap safe monitoring jobs in preview mode first:
 
-```txt
-Aegis VPS read-only validation
-...
-== API Health ==
-OK   GET /system/health HTTP 200
-
-== Dashboard ==
-OK   dashboard HTTP 200
-
-== Containers ==
-OK   aegis-quant-api running; no meaningful warning patterns in last 80 lines
-OK   aegis-quant-scheduled-research-runner running; no meaningful warning patterns in last 80 lines
-
-== Market Feed ==
-OK   GET /market/feed-status HTTP 200; feeds=3 stale_or_degraded=0
-
-== Aggregation Status ==
-OK   GET /market/candles/aggregation-status HTTP 200; rows=9 stale_or_missing=0
-
-== Scheduled Jobs ==
-OK   GET /research/scheduled-jobs HTTP 200; jobs=14 enabled=14 auto_paused=0 backing_off=0
-
-== Database ==
-OK   DB validation mode: docker exec aegis-quant-postgres as aegis_readonly
-
-== Execution Safety ==
-OK   ai_read.execution_safety_counts all reported counts are zero
-orders|0
-paper_positions|0
-paper_fills|0
-exchange_testnet_orders|0
-
-== Summary ==
-OK=... WARN=0 FAIL=0
-```
-
-`OK` means a read-only check completed successfully. `WARN` means the check was unavailable, skipped, stale, missing, or otherwise worth operator attention without making the validator fail by default. `FAIL` means a required endpoint was unreachable or returned an unexpected hard error. With `--strict`, missing `ai_read` views and skipped DB validation become failures.
-
-If an `ai_read` view is missing, the validator prints a warning like:
-
-```txt
-WARN ai_read.walk_forward_status missing or inaccessible; install/grant the ai_read read-only view for VPS validation
-```
-
-Do not inspect the underlying tables with write-capable credentials as part of validation. Apply or repair the `ai_read` schema through the normal reviewed migration/deployment path, then rerun the validator. On the VPS, keep validation read-only: do not run migrations, `syncaegis`, Docker restarts, scheduled jobs, POST requests, or direct SQL against non-`ai_read` tables during this check.
-
-If scheduler jobs are `AUTO_PAUSED` or `BACKING_OFF`, do not immediately reset failures. First inspect the listed job name, last failure reason, and scheduler logs. Fix the underlying input problem, usually provider reachability, missing candles, stale aggregation, or report-generation dependencies. Only after the cause is understood should an operator use the normal authenticated reset or resume flow.
-
-If aggregation is stale or missing, confirm the market ingest and candle aggregator containers are running and that 1m candle freshness is healthy. Prefer read-only inspection first: feed status, aggregation status, and `ai_read.candle_coverage` if available. Do not run repair, backfill, aggregation POSTs, migrations, or restarts as part of validation; handle those as a separate operator action with an explicit backup/maintenance plan when needed.
-
-If `ai_read.execution_safety_counts` reports non-zero counts on a VPS that should be research-only, stop treating the environment as clean. Do not clear rows or run destructive SQL. Capture the counts, review audit logs and operator history, identify which execution surface produced the rows, and keep scheduled research paused until the source is understood. Non-zero paper or testnet counts may be expected only if the VPS is intentionally running those isolated modes.
-
-## Scheduled Research Runner
-
-The scheduled research runner is disabled by default. When `SCHEDULED_RESEARCH_RUNNER_ENABLED=false`, the runner stays alive in idle mode, logs `scheduled research runner disabled; idling`, and does not connect to the database or process jobs. The idle sleep interval is controlled by `SCHEDULED_RESEARCH_DISABLED_SLEEP_SECONDS` and defaults to `300`. In this state the Docker container should show `Up`, not `Restarting`.
-
-Keep the runner disabled during deploys, run migrations, make sure the host `aegis` CLI is current if using it on the VPS, then bootstrap low-risk monitoring jobs first:
-
-```bash
-docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
-./scripts/install-vps-cli.sh
-./scripts/refresh-vps-scheduled-runner.sh
+~~~bash
 cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
 cargo run -p cli -- research scheduled-jobs bootstrap-safe
 cargo run -p cli -- research scheduled-jobs list
-```
+~~~
 
-Only run `scheduled-jobs bootstrap-safe` after the host CLI supports `aegis research scheduled-jobs --help` and the disabled scheduler container is idling instead of restart-looping.
+The safe bootstrap is intended for provider health, aggregation status, market
+data quality, and operator reporting. It does not create candidates, paper
+orders, testnet orders, or live orders.
 
-The safe bootstrap creates only:
+Candidate-specific observation jobs require a reviewed candidate identifier,
+current shadow-runner coverage, and SHADOW_OBSERVATION_ONLY=true:
 
-- `provider-health-binance` every 15 minutes
-- `aggregation-status` every 5 minutes
-- `market-data-quality-<SYMBOL>-<INTERVAL>` every 30 minutes for configured symbols and `1m,5m,15m,1h`
-- `operator-report-daily` every 24 hours
+~~~bash
+cargo run -p cli -- research scheduled-jobs create --name candidate-shadow-observe --kind CANDIDATE_SHADOW_OBSERVE_ONCE --interval-seconds 300 --request-json '{"candidate_id":"<candidate-id>"}'
+~~~
 
-These jobs are safe-only monitoring jobs. They do not create candidates, run research campaigns, create paper orders, submit testnet orders, or touch live execution.
+Replace the placeholder with an identifier from the running system. This job
+records observation evidence only and is intentionally not part of the safe
+bootstrap.
 
-Candidate-specific shadow observation jobs are not part of safe bootstrap. Create them manually only
-after the candidate is `PROMOTED_TO_SHADOW_CONFIG`, the shadow-runner config covers the candidate,
-and `SHADOW_OBSERVATION_ONLY=true`:
+Enable the scheduler only after reviewing the jobs and confirming the
+deployment's data and safety posture:
 
-```bash
-cargo run -p cli -- research scheduled-jobs create \
-  --name eth-fbr-shadow-observe \
-  --kind CANDIDATE_SHADOW_OBSERVE_ONCE \
-  --interval-seconds 300 \
-  --request-json '{"candidate_id":"70867792-93df-494c-9a8b-d961c73107e4"}'
-
-cargo run -p cli -- research scheduled-jobs run-once <job-id>
-```
-
-`CANDIDATE_SHADOW_OBSERVE_ONCE` records no row when there is no newer closed candle; the run result
-reports `SKIPPED_NO_NEW_CANDLE`. When a newer closed candle exists, it records exactly one safe
-`testnet_shadow_runs` row through the existing no-submit shadow path and links it to the candidate.
-It must not create paper positions, paper fills, exchange testnet orders, lifecycle events, or live
-orders.
-
-The host CLI equivalent may be used on the VPS after `/usr/local/bin/aegis` is installed:
-
-```bash
-aegis research scheduled-jobs create \
-  --name eth-fbr-shadow-observe \
-  --kind CANDIDATE_SHADOW_OBSERVE_ONCE \
-  --interval-seconds 300 \
-  --request-json '{"candidate_id":"70867792-93df-494c-9a8b-d961c73107e4"}'
-```
-
-Do not add candidate-specific shadow jobs to bootstrap-safe. Create them only after human review for a specific candidate.
-
-Cross-asset research candidates that depend on symbols outside `MARKET_SYMBOLS` can use a
-manual scheduled public-data refresh job. This is intentionally not part of `bootstrap-safe`
-because it writes market-data/research dataset build rows, not just monitoring results:
-
-```bash
-aegis research scheduled-jobs create \
-  --name rs-v1-cross-asset-data-refresh \
-  --kind CROSS_ASSET_MARKET_DATA_REFRESH \
-  --interval-seconds 900 \
-  --request-json '{"symbols":["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT"],"source_interval":"1m","derived_intervals":["1h","4h"],"lookback_hours":12}'
-```
-
-The job uses public Binance market data only, builds missing `1m` candles through the existing
-research dataset path, derives the requested higher intervals, validates quality, reports the
-latest aligned `4h` candle, and is wrapped by scheduled-job execution isolation. It must not be
-used to accept candidates, change runner config, submit paper/testnet/live orders, or mark anything
-ready for testnet.
-
-Jobs created with `scheduled-jobs create` are disabled unless `--enabled` is passed. The safe bootstrap uses `--enable` to enable bootstrap-managed jobs. The normal VPS path is:
-
-```bash
-cargo run -p cli -- research scheduled-jobs bootstrap-safe --dry-run
-cargo run -p cli -- research scheduled-jobs bootstrap-safe
-cargo run -p cli -- research scheduled-jobs bootstrap-safe --enable
-# set SCHEDULED_RESEARCH_RUNNER_ENABLED=true in .env first, then restart the scheduler
+~~~bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d scheduled-research-runner
-```
+~~~
 
-Use explicit symbols or intervals when needed:
+## Paper and testnet safety
 
-```bash
-cargo run -p cli -- research scheduled-jobs bootstrap-safe --symbols BTCUSDT,ETHUSDT --intervals 1m,5m,15m,1h --dry-run
-```
+Paper execution and Spot Testnet execution are separate persistence domains.
+Before any operator action:
 
-Running the bootstrap repeatedly is idempotent by job name and does not create campaign, batch, regime discovery, or robustness matrix jobs. `--replace-existing` updates definitions for existing bootstrap jobs; without it, `--enable` only changes enabled state for existing jobs.
+- Check system health and the persistent kill-switch state.
+- Confirm the intended symbol, strategy, timeframe, and risk configuration.
+- Use preview endpoints or CLI commands before applying a mutation.
+- Keep testnet credentials backend-only and testnet-specific.
+- Use the exact typed confirmation required by the command.
+- Review the resulting event, audit, order-lifecycle, or reconciliation record.
 
-Monitor auto-paused or failing jobs:
+Research, replay, analytics, readiness, and shadow observation do not grant
+execution authority. No production exchange private endpoint should be
+configured. See the [operator checklist](OPERATOR_CHECKLIST.md) and [security
+model](SECURITY.md) for the detailed boundary.
 
-```bash
-cargo run -p cli -- research scheduled-jobs list
-cargo run -p cli -- research scheduled-jobs runs <job-id> --limit 20
-cargo run -p cli -- research scheduled-jobs reset-failures <job-id>
-```
+## Common failures
 
-## Research Recovery and Safety Checks
+### API reports a missing relation or migration error
 
-Preview stale research recovery before applying it:
+Check PostgreSQL health and migration status, run the migration service, then
+restart the API. Do not edit the migration ledger to skip a checksum mismatch.
 
-```bash
-cargo run -p cli -- research stale-runs recover-preview
-cargo run -p cli -- research stale-runs recover --confirm "RECOVER STALE RESEARCH RUNS"
-```
+### Dashboard login or refresh fails
 
-If the host CLI supports the same command on VPS, prefer:
+Confirm that the browser origin is present in
+AEGIS_CORS_ALLOWED_ORIGINS and that NEXT_PUBLIC_API_BASE_URL is reachable from
+the browser. If cookies are served over HTTPS, use AEGIS_COOKIE_SECURE=true.
 
-```bash
-aegis research stale-runs recover-preview
-aegis research stale-runs recover --confirm "RECOVER STALE RESEARCH RUNS"
-```
+### Public Binance data is unavailable
 
-Run recovery only for research artifacts. It must not be treated as approval for paper, testnet, or live execution.
+Inspect provider health and logs. Public REST fallback hosts can be configured
+with BINANCE_REST_FALLBACK_BASE_URLS. This does not enable private exchange
+actions and should not be used to point authenticated requests at production
+trading endpoints.
 
-Check execution safety counts through the read-only validator or direct `ai_read` view:
+### Scheduled jobs are paused or backing off
 
-```bash
-docker exec -i aegis-quant-postgres psql -U aegis_readonly -d aegis_quant \
-  -c "SELECT * FROM ai_read.execution_safety_counts;"
-```
+Inspect the job's last failure, provider health, candle coverage, aggregation
+status, and runner logs. Fix the underlying input problem before resetting
+failures. A reset is not a substitute for understanding the cause.
 
-All of these should be zero on the current research-only VPS:
+### Read-only validation reports non-zero execution counts
 
-- `orders`
-- `paper_positions`
-- `paper_fills`
-- `exchange_testnet_orders`
-- `exchange_testnet_order_lifecycle_events`
-- `testnet_shadow_promotions`
+Stop treating the environment as research-only. Preserve the evidence, review
+events and audit records, identify the responsible workflow, and pause
+scheduled research until the state is understood.
 
-## Safe Scheduler Refresh
+## Shutdown and emergency stop
 
-To refresh scheduled runner code without enabling/disabling jobs or touching other services:
+For a suspected unsafe state, stop optional workers first and use the persistent
+kill-switch control through the authenticated API or CLI. Then preserve logs and
+database evidence for review. Do not rely on a process-local flag or a container
+restart as the safety mechanism.
 
-```bash
-./scripts/refresh-vps-scheduled-runner.sh
-```
-
-This rebuilds and recreates only `scheduled-research-runner`. It does not run VPS sync, migrations, job creation, job execution, or scheduler enable/disable actions.
-It must use `docker compose up -d --no-deps --force-recreate scheduled-research-runner`; do not use `docker compose down` or recreate Postgres for a runner-only refresh. After the refresh, verify the Postgres container was not recreated and run the read-only validator or `ai_read.execution_safety_counts`.
-
-## Common Failures
-
-Missing migrations:
-
-- Symptom: API returns 500s or logs `relation does not exist`.
-- Fix: run the migration service, then restart API/workers.
-
-Binance public REST blocked:
-
-- Symptom: provider health reports unreachable Binance REST.
-- Fix: set `BINANCE_REST_BASE_URL=https://data-api.binance.vision`, keep fallback URLs populated, or validate through a network/VPN that can reach public Binance data.
-
-CORS/auth mismatch:
-
-- Symptom: dashboard login succeeds in API logs but browser remains unauthenticated or refresh fails.
-- Fix: align `AEGIS_CORS_ALLOWED_ORIGINS` with the browser origin and set `NEXT_PUBLIC_API_BASE_URL` to the API URL reachable from the browser.
-
-Dashboard hydration extension warning:
-
-- Symptom: browser console reports hydration mismatch with no API error and UI still works.
-- Fix: retest in a clean profile or disable browser extensions that inject DOM nodes. Treat it as a browser-extension warning unless the production build also renders broken UI.
-
-## Safety
-
-No live trading is implemented. Testnet submit paths require owner auth and typed confirmation. Research and candidate shadow observation are observation-only and must not create paper/testnet/live orders. Research smoke checks are read-only by default; `scripts/verify-research-loop.sh --with-research-run` requires an existing plan ID and verifies execution table counts before/after.
+The project does not document a live-trading emergency procedure because live
+trading is not implemented. Any future execution-surface change requires a
+separate security and operational review.

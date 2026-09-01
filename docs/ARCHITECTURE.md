@@ -10,7 +10,7 @@ market event -> signal -> risk decision -> order intent -> execution state
 
 No LLM-driven execution path is enabled. Any future LLM component remains advisory-only and does not have execution authority.
 
-The current milestone is research/shadow observation only: safe VPS monitoring is live, research evidence generation is mature, and one ETH-specific candidate is under observation. Research and candidate shadow observation do not submit paper, testnet, or live orders.
+The current milestone is research/shadow observation and safety-control hardening. Research and candidate shadow observation do not submit paper, testnet, or live orders.
 
 ## Initial components
 
@@ -25,7 +25,7 @@ The current milestone is research/shadow observation only: safe VPS monitoring i
 - `crates/execution-engine`: paper execution lifecycle boundary
 - `crates/exchange`: exchange adapter boundary, disabled for live execution in MVP
 - `crates/llm-analyst`: dormant advisory-only boundary, not enabled in the v0.1 release flow
-- `apps/dashboard`: Next.js operational cockpit for paper-only inspection and operator actions
+- `apps/dashboard`: Next.js operational cockpit for research, paper, and isolated testnet inspection and operator actions
 
 ## Data boundaries
 
@@ -635,7 +635,7 @@ Constraints:
 
 ## CLI fallback
 
-`crates/cli` adds an operator-local fallback path for the same paper-only operational surface area when the Next.js dashboard is unavailable.
+`crates/cli` adds an operator-local fallback path for the same research, paper, and isolated testnet operational surface area when the Next.js dashboard is unavailable.
 
 Design constraints:
 
@@ -649,11 +649,11 @@ Supported control and inspection flow:
 
 - `aegis status` aggregates `/system/health`, `/system/status`, `/risk/status`, and `/market/feed-status`
 - `aegis kill` and `aegis resume --confirm "RESUME TRADING"` call the existing risk endpoints and preserve typed confirmation
-- `aegis pipeline run`, `strategy list|enable|disable`, `orders list|get`, `events list`, `risk decisions`, and `backtest run|list|get` map directly onto the existing read and paper-only control APIs
+- `aegis pipeline run`, `strategy list|enable|disable`, `orders list|get`, `events list`, `risk decisions`, and `backtest run|list|get` map directly onto the existing read and paper control APIs
 - `aegis paper account|positions|close|pnl|equity|journal|mark` maps directly onto the paper accounting HTTP APIs
 
 Operational intent:
 
 - Dashboard and CLI are parallel operator surfaces over the same API truth
-- The CLI is a fallback for local inspection and safe paper-only intervention, not a separate execution path
+- The CLI is a fallback for local inspection and safe operator intervention, not a separate execution path
 - Output stays compact by default, with optional `--json` when operators need exact payloads

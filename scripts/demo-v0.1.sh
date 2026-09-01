@@ -3,6 +3,10 @@ set -euo pipefail
 
 run_checks=0
 run_compose=0
+API_BASE_URL="$(printenv AEGIS_API_BASE_URL 2>/dev/null || true)"
+if [[ -z "$API_BASE_URL" ]]; then
+  API_BASE_URL="http://127.0.0.1:3100"
+fi
 
 for arg in "$@"; do
   case "$arg" in
@@ -49,17 +53,21 @@ echo
 
 if [[ "$run_compose" -eq 1 ]]; then
   echo "[4/8] Starting local core services"
-  docker compose -f infra/docker-compose.yml up -d postgres api
+  docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
+  docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate
+  docker compose -f infra/docker-compose.yml --env-file .env up -d api
 else
   echo "[4/8] Local core services"
-  echo "Optional: docker compose -f infra/docker-compose.yml up -d postgres api"
-  echo "Optional dashboard: docker compose -f infra/docker-compose.yml --profile dashboard up -d dashboard"
-  echo "Optional Prometheus: docker compose -f infra/docker-compose.yml --profile prometheus up -d prometheus"
+  echo "Optional: docker compose -f infra/docker-compose.yml --env-file .env up -d postgres"
+  echo "Optional: docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate"
+  echo "Optional: docker compose -f infra/docker-compose.yml --env-file .env up -d api"
+  echo "Optional dashboard: docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard"
+  echo "Optional Prometheus: docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus"
 fi
 echo
 
 echo "[5/8] Owner bootstrap instructions"
-echo "curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner"
+echo "curl -X POST $API_BASE_URL/auth/bootstrap-owner"
 echo "cargo run -p cli -- auth login --email \"\$AEGIS_BOOTSTRAP_OWNER_EMAIL\" --password \"\$AEGIS_BOOTSTRAP_OWNER_PASSWORD\""
 echo
 

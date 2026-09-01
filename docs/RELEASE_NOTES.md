@@ -44,16 +44,18 @@ This release is not an AI trading bot. It does not grant execution authority to 
 ## How to run locally
 
 1. Copy `.env.example` to `.env`.
-2. Start core services:
-   `docker compose -f infra/docker-compose.yml up -d postgres api`
-3. Bootstrap the owner:
-   `curl -X POST http://127.0.0.1:3000/auth/bootstrap-owner`
+2. Start PostgreSQL and apply migrations:
+   `docker compose -f infra/docker-compose.yml --env-file .env up -d postgres`
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile migrate run --rm migrate`
+3. Start the API and bootstrap the owner:
+   `docker compose -f infra/docker-compose.yml --env-file .env up -d api`
+   `curl -X POST http://127.0.0.1:3100/auth/bootstrap-owner`
 4. Log in from the CLI:
    `cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"`
 5. Optional dashboard:
-   `docker compose -f infra/docker-compose.yml --profile dashboard up -d dashboard`
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard`
 6. Optional Prometheus:
-   `docker compose -f infra/docker-compose.yml --profile prometheus up -d prometheus`
+   `docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus`
 
 ## Verification commands
 
