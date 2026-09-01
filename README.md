@@ -1,3 +1,5 @@
+![Aegis Quant Cover](https://testing-1355450658.cos.ap-jakarta.myqcloud.com/aegis-quant.webp)
+
 # Aegis Quant
 
 Deterministic infrastructure for market-data research, risk-gated paper
@@ -29,23 +31,23 @@ auditability, and safety controls before considering capital deployment.
 
 ## Current scope
 
-| Area | Implemented scope |
-| --- | --- |
-| Market data | Binance public WebSocket trade ingestion and public REST candle backfill |
-| Storage | PostgreSQL migrations, events, candles, signals, risk decisions, orders, research artifacts, and audit records |
-| Research | Data quality, aggregation, replay/backtest, experiments, walk-forward validation, robustness analysis, attribution, hypotheses, plans, candidates, and shadow evidence |
-| Execution | Risk-gated simulated paper flow and an isolated, owner-confirmed Binance Spot Testnet flow |
-| Interfaces | Axum API, aegis CLI, Next.js dashboard, JSON output, and Prometheus-compatible metrics |
-| AI boundary | llm-analyst is a dormant advisory boundary; no LLM has execution authority |
-| Maturity | Experimental, single-tenant, and local/host-oriented; not a managed production service |
+| Area        | Implemented scope                                                                                                                                                      |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Market data | Binance public WebSocket trade ingestion and public REST candle backfill                                                                                               |
+| Storage     | PostgreSQL migrations, events, candles, signals, risk decisions, orders, research artifacts, and audit records                                                         |
+| Research    | Data quality, aggregation, replay/backtest, experiments, walk-forward validation, robustness analysis, attribution, hypotheses, plans, candidates, and shadow evidence |
+| Execution   | Risk-gated simulated paper flow and an isolated, owner-confirmed Binance Spot Testnet flow                                                                             |
+| Interfaces  | Axum API, aegis CLI, Next.js dashboard, JSON output, and Prometheus-compatible metrics                                                                                 |
+| AI boundary | llm-analyst is a dormant advisory boundary; no LLM has execution authority                                                                                             |
+| Maturity    | Experimental, single-tenant, and local/host-oriented; not a managed production service                                                                                 |
 
 ## Safety model
 
 All trade-like behavior is intended to remain traceable through:
 
-~~~text
+```text
 market event -> signal -> risk decision -> order intent -> execution state
-~~~
+```
 
 The boundaries are explicit:
 
@@ -59,7 +61,7 @@ The boundaries are explicit:
 
 ## Architecture
 
-~~~text
+```text
               aegis CLI / Next.js dashboard
                            |
                            v
@@ -78,7 +80,7 @@ The boundaries are explicit:
                            |
                            v
               events, audit, metrics, reports
-~~~
+```
 
 The repository is a Rust workspace with separate boundaries for core types,
 database access, market ingest, strategy evaluation, risk, replay, accounting,
@@ -97,7 +99,7 @@ exchange state, execution state, telemetry, and the operator API.
 
 From the repository root:
 
-~~~bash
+```bash
 cp .env.example .env
 
 # Review .env and replace the example JWT and owner password.
@@ -112,7 +114,7 @@ docker compose -f infra/docker-compose.yml --env-file .env up -d api
 curl --fail --silent "$AEGIS_API_BASE_URL/system/health"
 curl --fail --silent -X POST "$AEGIS_API_BASE_URL/auth/bootstrap-owner"
 cargo run -p cli -- auth login --email "$AEGIS_BOOTSTRAP_OWNER_EMAIL" --password "$AEGIS_BOOTSTRAP_OWNER_PASSWORD"
-~~~
+```
 
 The API is published on http://127.0.0.1:3100 by Compose and listens on port
 3000 inside the container. Owner bootstrap is intended to run once.
@@ -121,30 +123,30 @@ The API is published on http://127.0.0.1:3100 by Compose and listens on port
 
 For frontend development:
 
-~~~bash
+```bash
 npm --prefix apps/dashboard ci
 npm --prefix apps/dashboard run dev -- --hostname 127.0.0.1 --port 3001
-~~~
+```
 
 Open http://127.0.0.1:3001. The dashboard uses
 NEXT_PUBLIC_API_BASE_URL from the environment. The containerized dashboard
 profile is available on http://127.0.0.1:3101:
 
-~~~bash
+```bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile dashboard up -d dashboard
-~~~
+```
 
 ### Optional workers
 
 Start only the workers required for the workflow you are testing:
 
-~~~bash
+```bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile ingest up -d market-ingest
 docker compose -f infra/docker-compose.yml --env-file .env --profile aggregation up -d candle-aggregator
 docker compose -f infra/docker-compose.yml --env-file .env --profile shadow up -d testnet-shadow-runner
 docker compose -f infra/docker-compose.yml --env-file .env --profile research-scheduler up -d scheduled-research-runner
 docker compose -f infra/docker-compose.yml --env-file .env --profile prometheus up -d prometheus
-~~~
+```
 
 The scheduled research runner is disabled by default. Shadow mode is
 observation-only and does not submit exchange orders.
@@ -154,14 +156,14 @@ observation-only and does not submit exchange orders.
 After authentication, inspect the service, hydrate public candles, and run a
 deterministic replay:
 
-~~~bash
+```bash
 cargo run -p cli -- status
 cargo run -p cli -- market provider-health --provider binance
 cargo run -p cli -- market backfill --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z
 cargo run -p cli -- market aggregate-candles --symbol BTCUSDT --source 1m --target 5m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z
 cargo run -p cli -- backtest run --strategy momentum_v1 --symbol BTCUSDT --timeframe 1m --start 2026-05-01T00:00:00Z --end 2026-05-02T00:00:00Z --initial-capital 1000000 --fee-bps 10 --slippage-bps 5 --holding-candles 3
 cargo run -p cli -- reports operator daily --format markdown
-~~~
+```
 
 Use aegis --help and the [usage guide](docs/USAGE.md) for the complete command
 tree and for mutation-specific safety requirements. Most supported commands
@@ -169,12 +171,12 @@ also provide JSON output.
 
 ## Operating modes
 
-| Mode | Purpose | Exchange submission |
-| --- | --- | --- |
-| Research and replay | Prepare data, evaluate strategies, and collect evidence | Never |
-| Paper | Exercise the signal, risk, order, and accounting path with simulated fills | Never |
-| Shadow | Record whether a candidate would submit under current data and risk context | Never |
-| Testnet | Exercise isolated Binance Spot Testnet state and reconciliation | Explicit, authorized actions only |
+| Mode                | Purpose                                                                     | Exchange submission               |
+| ------------------- | --------------------------------------------------------------------------- | --------------------------------- |
+| Research and replay | Prepare data, evaluate strategies, and collect evidence                     | Never                             |
+| Paper               | Exercise the signal, risk, order, and accounting path with simulated fills  | Never                             |
+| Shadow              | Record whether a candidate would submit under current data and risk context | Never                             |
+| Testnet             | Exercise isolated Binance Spot Testnet state and reconciliation             | Explicit, authorized actions only |
 
 Research results and candidate qualification are decision support. They do not
 automatically promote a candidate or create execution state.
@@ -183,12 +185,12 @@ automatically promote a candidate or create execution state.
 
 The operator CLI is the primary local fallback:
 
-~~~bash
+```bash
 cargo run -p cli -- --help
 cargo run -p cli -- market --help
 cargo run -p cli -- research --help
 cargo run -p cli -- exchange testnet --help
-~~~
+```
 
 The API exposes route groups for system health, authentication, market data,
 strategy and risk, paper accounting, backtests, research, isolated testnet
@@ -216,10 +218,10 @@ Important boundaries:
 
 Install dashboard dependencies and run the repository verification target:
 
-~~~bash
+```bash
 npm --prefix apps/dashboard ci
 make verify
-~~~
+```
 
 The verification target runs Rust formatting, checks, tests, compile-only
 database integration tests, dashboard typechecking/build, shell syntax checks,
@@ -228,9 +230,9 @@ and whitespace validation.
 Database integration tests are ignored by default because they require a
 disposable PostgreSQL database:
 
-~~~bash
+```bash
 make integration-test
-~~~
+```
 
 See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for the test database setup and
 [CONTRIBUTING.md](docs/CONTRIBUTING.md) for change expectations.
@@ -249,7 +251,7 @@ or a production live-trading deployment.
 
 ## Repository layout
 
-~~~text
+```text
 crates/
   api/               Axum API and worker binaries
   cli/               aegis operator CLI
@@ -268,7 +270,7 @@ apps/dashboard/      Next.js operator cockpit
 infra/               Docker Compose and Prometheus configuration
 scripts/              demo, integration, deployment, and validation helpers
 docs/                 project, architecture, usage, security, and operations
-~~~
+```
 
 ## Documentation
 
